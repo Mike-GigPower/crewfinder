@@ -1,0 +1,6 @@
+{
+  "version": "2.0.0",
+  "release_date": "2026-05-14",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/latest/download/CrewFinder.dmg",
+  "release_notes": "Induction checker, multi-call selection, parallel cache refresh, venue filtering"
+}
