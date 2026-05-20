@@ -1,0 +1,2410 @@
+"""
+Crew Finder App
+===================================
+Flask backend serving the web UI and proxying requests to SmartStaff Solutions.
+
+Run via menubar.py or directly:
+    python3 app.py
+"""
+
+import json
+import os
+import re
+import threading
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request, render_template, session, redirect, url_for
+from bs4 import BeautifulSoup
+import requests as http
+
+app = Flask(__name__)
+app.secret_key = "crewfinder-gigpower-2026-internal"
+
+# ─── PATHS ────────────────────────────────────────────────────────────────────
+
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+CACHE_FILE  = os.path.join(BASE_DIR, "crew_cache.json")
+BASE_URL    = "https://smartstaffsolutions.com"
+CACHE_MAX_AGE_HRS = 24
+IMPORT_LOG_FILE = os.path.join(BASE_DIR, "import_log.json")
+
+VALID_CALL_NAMES = {
+    "Load In", "Load Out", "LX", "SX", "VX", "Backline", "Show Call",
+    "FOH Spot", "Truss Spot", "Wardrobe", "Steel", "Fork", "Truck", "EWP",
+    "Crown Hand", "Crew Boss", "Site", "Utility", "General", "Other"
+}
+
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    return {}
+
+def save_config(data):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+# Load Anthropic API key from config if not already in environment
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    try:
+        _cfg = load_config()
+        _key = _cfg.get("anthropic_api_key", "").strip()
+        if _key:
+            os.environ["ANTHROPIC_API_KEY"] = _key
+    except Exception:
+        pass
+
+# ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
+
+APP_VERSION    = "2.1.0"
+VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
+
+
+_ss_sessions     = {}  # per-user SmartStaff sessions keyed by app session id
+_calls_cache     = {}  # in-memory cache for calls list, keyed by session id
+_refresh_progress = {} # tracks background cache refresh progress
+
+def get_ss_session():
+    """Get or create a SmartStaff HTTP session for the current user."""
+    sid = session.get("sid")
+    if sid and sid in _ss_sessions:
+        return _ss_sessions[sid]
+    return None
+
+def create_ss_session(username, password):
+    """Login to SmartStaff and return a session object."""
+    ss = http.Session()
+    ss.headers.update({"User-Agent": "Mozilla/5.0"})
+    # Set a 30s timeout on all requests via a custom adapter
+    from requests.adapters import HTTPAdapter
+    adapter = HTTPAdapter()
+    ss.mount("https://", adapter)
+    ss.mount("http://", adapter)
+    # Store timeout as session attribute for use in requests
+    ss._default_timeout = 30
+    # Monkey-patch get/post to always use timeout
+    _orig_get  = ss.get
+    _orig_post = ss.post
+    ss.get  = lambda url, **kw: _orig_get(url,  timeout=kw.pop("timeout", 30), **kw)
+    ss.post = lambda url, **kw: _orig_post(url, timeout=kw.pop("timeout", 30), **kw)
+    resp = ss.post(f"{BASE_URL}/login", data={
+        "action": "login",
+        "username": username,
+        "password": password,
+        "x": "54",
+        "y": "22"
+    }, allow_redirects=True)
+    # Check we landed on the dashboard not back on login
+    if resp.url.rstrip("/").endswith("login"):
+        return None, "Invalid credentials"
+    return ss, None
+
+# ─── CACHE ────────────────────────────────────────────────────────────────────
+
+def load_cache():
+    if not os.path.exists(CACHE_FILE):
+        return {}, False
+    try:
+        with open(CACHE_FILE) as f:
+            data = json.load(f)
+        saved_at  = datetime.fromisoformat(data.get("saved_at", "2000-01-01"))
+        age_hours = (datetime.now() - saved_at).total_seconds() / 3600
+        return data.get("crew", {}), age_hours < CACHE_MAX_AGE_HRS
+    except Exception:
+        return {}, False
+
+def save_cache(crew_profiles):
+    with open(CACHE_FILE, "w") as f:
+        json.dump({"saved_at": datetime.now().isoformat(), "crew": crew_profiles}, f)
+
+# ─── SMARTSTAFF SCRAPERS ──────────────────────────────────────────────────────
+
+VENUE_MAP = {
+    "Marvel":         "Marvel",
+    "Rod Laver":      "RLA",
+    "Margaret Court": "MCA",
+    "Festival Hall":  "Festival Hall",
+    "John Cain":      "JCA",
+    "Hamer Hall":     "Hamer Hall",
+    "Palais":         "Palais",
+    "Melbourne Exh":  "MCEC",
+    "MCEC":           "MCEC",
+    "Melbourne Con":  "MCEC",
+    "AAMI":           "AAMI",
+    "Sidney Myer":    "Sidney Myer",
+    "Federation":     "Federation Square",
+    "Crown":          "Crown",
+    "Docklands":      "Docklands",
+    "Hanging Rock":   "Hanging Rock",
+    "GMHBA":          "GMHBA",
+    "Mt Duneed":      "Mt Duneed",
+    "Centrepiece":    "Centrepiece",
+    "MOPT":           "MOPT",
+    "Royal Botanic":  "Royal Botanic",
+    "Forum":          "Forum",
+    "MCG":            "MCG",
+}
+
+# Maps venue code → keywords that appear in induction venue names on SmartStaff
+# Used to match call venue code to an induction row
+INDUCTION_VENUE_MAP = {
+    "RLA":               ["rod laver arena"],
+    "MCA":               ["margaret court arena"],
+    "Marvel":            ["marvel stadium"],
+    "Festival Hall":     ["festival hall"],
+    "JCA":               ["john cain arena"],
+    "Hamer Hall":        ["hamer hall"],
+    "Palais":            ["palais theatre"],
+    "MCEC":              ["melbourne convention & exhibition centre", "melbourne exhibtion centre", "jeffs shed"],
+    "AAMI":              ["aami park"],
+    "Sidney Myer":       ["sidney myer music bowl"],
+    "Federation Square": ["federation square"],
+    "Crown":             ["crown melbourne - palms", "crown melbourne"],
+    "Docklands":         ["docklands studios"],
+    "Hanging Rock":      ["hanging rock reserve"],
+    "GMHBA":             ["gmhba stadium"],
+    "Mt Duneed":         ["mt duneed estate"],
+    "Centrepiece":       ["centrepiece"],
+    "MOPT":              ["mopt catwalk"],
+    "Royal Botanic":     ["royal botanic gardens"],
+    "Forum":             ["forum melbourne"],
+    "MCG":               ["mcg - gate 7", "mcg"],
+}
+
+# Venues with 24-month induction validity (all others are 12 months)
+# Matches against lowercase venue name from SmartStaff
+INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne"}
+
+def induction_status_for_venue(inductions, venue_code):
+    """Given inductions dict and venue code, return:
+      'Complete'   — valid induction
+      'Expired'    — completed but past validity period
+      'Incomplete' — never completed
+      None         — venue not in induction list (no check possible)
+    """
+    keywords = INDUCTION_VENUE_MAP.get(venue_code, [])
+    if not keywords:
+        return None, ""
+
+    for venue_name, data in inductions.items():
+        vl = venue_name.lower()
+        if not any(k in vl for k in keywords):
+            continue
+
+        # Handle both old cache format (string) and new (dict)
+        if isinstance(data, str):
+            status    = data
+            completed = ""
+        else:
+            status    = data.get("status", "")
+            completed = data.get("completed", "")
+
+        if status == "Incomplete":
+            return "Incomplete", venue_name
+
+        # For Complete or Expired from SmartStaff, calculate expiry ourselves
+        if not completed:
+            return "Incomplete", venue_name
+
+        # Parse completion date and check expiry
+        try:
+            from dateutil import parser as dateparser
+            completed_dt = dateparser.parse(completed)
+        except Exception:
+            # Try manual parse: "19 Nov 2025"
+            try:
+                completed_dt = datetime.strptime(completed, "%d %b %Y")
+            except Exception:
+                return status, venue_name  # can't parse, assume valid
+
+        # Determine validity period in days (approx)
+        days = 730 if vl in INDUCTION_24_MONTH else 365
+        expiry = completed_dt + timedelta(days=days)
+        now = datetime.now()
+        if now > expiry:
+            return "Expired", venue_name
+        elif (expiry - now).days <= 14:
+            return "Expiring Soon", venue_name
+
+        return "Complete", venue_name
+
+    return None, ""
+
+def detect_venue(text):
+    for substring, code in VENUE_MAP.items():
+        if substring.lower() in text.lower():
+            return code
+    return None
+
+def parse_shift(date_time_str, length_str):
+    try:
+        m = re.match(r"([A-Z][a-z]+ \d{1,2},\s*\d{4})\s*-\s*(\d{1,2}:\d{2})\s*Hrs", date_time_str.strip())
+        if not m:
+            return None, None
+        start_dt = datetime.strptime(f"{m.group(1).strip()} {m.group(2)}", "%B %d, %Y %H:%M")
+        lm = re.search(r"Length:\s*([\d.]+)\s*Hours?", length_str)
+        if not lm:
+            return None, None
+        end_dt = start_dt + timedelta(hours=float(lm.group(1)))
+        return start_dt, end_dt
+    except Exception:
+        return None, None
+
+def scrape_calls(ss, url):
+    """Scrape calls from a bookings/dashboard page, grouped by parent booking.
+
+    SmartStaff dashboard structure (confirmed from live HTML):
+      <div class="ydisplayarea">
+        <h2>Booking Name</h2>
+        <div class="bookinginfobox">... venue ...</div>
+      </div>
+      <table id="booking_XXXXX" class="styledtable">
+        <tr>  ← header row (th cells)
+        <tr>  ← call row: checkbox | #num | day | dd/mm/yy | HH:MM | name | N hrs |
+                          <b class="neutral">B/R</b> | awaiting | NOTES_TEXT | view/edit
+        <tr>  ← next call row
+        <tr class="altrow">  ← shared notes/contact row at bottom of booking
+    Notes live in the 10th <td> of the call row (index 9, 0-based).
+    Booking name is in the <h2> of the .ydisplayarea div that immediately
+    precedes the table (sibling, not parent).
+    """
+    resp = ss.get(url)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    calls = []
+    seen  = set()
+
+    for link in soup.find_all("a", href=re.compile(r"bookings/(\d+)/callsheet/(\d+)")):
+        href = link.get("href", "")
+        m    = re.search(r"bookings/(\d+)/callsheet/(\d+)", href)
+        if not m:
+            continue
+        booking_id = m.group(1)
+        call_id    = m.group(2)
+        if call_id in seen:
+            continue
+        seen.add(call_id)
+
+        row = link.find_parent("tr")
+        if not row:
+            continue
+        row_text = row.get_text(" ", strip=True)
+
+        # ── call number ──────────────────────────────────────────────────────
+        call_num_m = re.search(r"#(\d+)", row_text)
+
+        # ── date (dd/mm/yy) ──────────────────────────────────────────────────
+        date_m = re.search(r"(\d{2}/\d{2}/\d{2})", row_text)
+
+        # ── time (HH:MM) ─────────────────────────────────────────────────────
+        time_m = re.search(r"(\d{2}:\d{2})", row_text)
+
+        # ── length ───────────────────────────────────────────────────────────
+        length_m = re.search(r"(\d+(?:\.\d+)?)\s*hrs?", row_text, re.I)
+
+        # ── call name — read directly from td[5] ─────────────────────────────
+        tds = row.find_all("td")
+        call_name = tds[5].get_text(strip=True) if len(tds) >= 6 else ""
+
+        # ── booked / required ─────────────────────────────────────────────────
+        # <b class="neutral">1 / 10</b> inside a <td align="center">
+        booked = 0
+        required = 0
+        for b_tag in row.find_all("b"):
+            bm = re.fullmatch(r"\s*(\d{1,3})\s*/\s*(\d{1,3})\s*", b_tag.get_text())
+            if bm:
+                booked   = int(bm.group(1))
+                required = int(bm.group(2))
+                break
+
+        # ── notes — td[9] in the call row ────────────────────────────────────
+        notes = ""
+        if len(tds) >= 10:
+            notes_text = tds[9].get_text(strip=True)
+            if notes_text:
+                notes = notes_text
+
+        # ── booking name + venue ──────────────────────────────────────────────
+        # The <table id="booking_XXXXX"> is a sibling that comes AFTER the
+        # <div class="ydisplayarea"> — so we find the table, then look for the
+        # preceding sibling div.ydisplayarea in the parent container.
+        booking_name = ""
+        venue = ""
+        table = row.find_parent("table", id=re.compile(r"^booking_"))
+        if table:
+            # Walk previous siblings of the table to find .ydisplayarea
+            for sibling in table.previous_siblings:
+                if getattr(sibling, "name", None) == "div" and "ydisplayarea" in sibling.get("class", []):
+                    h2 = sibling.find("h2")
+                    if h2:
+                        booking_name = h2.get_text(strip=True)
+                    info_box = sibling.find("div", class_="bookinginfobox")
+                    if info_box:
+                        venue = detect_venue(info_box.get_text()) or ""
+                    break
+
+        calls.append({
+            "booking_id":   booking_id,
+            "call_id":      call_id,
+            "call_num":     call_num_m.group(1) if call_num_m else call_id,
+            "date":         date_m.group(1) if date_m else "",
+            "time":         time_m.group(1) if time_m else "",
+            "length":       float(length_m.group(1)) if length_m else 0,
+            "call_name":    call_name,
+            "booked":       booked,
+            "required":     required,
+            "unfilled":     booked < required,
+            "venue":        venue,
+            "notes":        notes,
+            "booking_name": booking_name,
+        })
+
+    return calls
+
+def scrape_call_details(ss, booking_id, call_id):
+    """Get call date/time/duration/venue from callsheet."""
+    resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/{call_id}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    date_el   = soup.find("input", {"name": "start_date"})
+    time_el   = soup.find("input", {"name": "start_time"})
+    length_el = soup.find("input", {"name": "length"})
+    name_el   = soup.find("input", {"name": "name"})
+    crew_el   = soup.find("input", {"name": "crew_required"})
+
+    date_val   = date_el["value"].strip()   if date_el   else ""
+    time_val   = time_el["value"].strip()   if time_el   else ""
+    length_val = length_el["value"].strip() if length_el else "0"
+    name_val   = name_el["value"].strip()   if name_el   else ""
+    crew_req   = int(crew_el["value"])      if crew_el   else 0
+
+    try:
+        time_clean = time_val[:5]
+        start_dt   = datetime.strptime(f"{date_val.strip()} {time_clean}", "%B %d, %Y %H:%M")
+        end_dt     = start_dt + timedelta(hours=float(length_val))
+    except Exception as e:
+        return None, str(e)
+
+    venue = detect_venue(resp.text) or ""
+
+    # Crew required from banner
+    banner_m = re.search(r"THIS CALL REQUIRES (\d+) CREW", resp.text)
+    crew_required = int(banner_m.group(1)) if banner_m else crew_req
+
+    return {
+        "call_name":     name_val,
+        "start_dt":      start_dt.isoformat(),
+        "end_dt":        end_dt.isoformat(),
+        "length_hrs":    float(length_val),
+        "venue":         venue,
+        "crew_required": crew_required,
+        "date_str":      start_dt.strftime("%A %d %B %Y"),
+        "start_str":     start_dt.strftime("%H:%M"),
+        "end_str":       end_dt.strftime("%H:%M"),
+    }, None
+
+def scrape_all_crew(ss):
+    """Get all crew from all pages."""
+    all_crew = []
+    page_num = 0
+    while True:
+        resp = ss.get(f"{BASE_URL}/crew?p={page_num}&")
+        soup = BeautifulSoup(resp.text, "html.parser")
+        rows = soup.select("#crewcontent tr")
+        page_crew = []
+        for row in rows:
+            name_link   = row.find("a", href=re.compile(r"add-call\.php.*userID="))
+            manage_link = row.find("a", href=re.compile(r"crew/manage/"))
+            phone_link  = row.find("a", href=re.compile(r"^tel:"))
+            if not name_link or not manage_link:
+                continue
+            name  = name_link.get_text(strip=True)
+            href  = manage_link.get("href", "")
+            m     = re.search(r"crew/manage/(\d+)", href)
+            phone = phone_link.get_text(strip=True) if phone_link else ""
+            if m and name:
+                page_crew.append({"name": name, "id": m.group(1), "phone": phone})
+
+        if not page_crew:
+            break
+        all_crew.extend(page_crew)
+
+        # Check for NEXT
+        has_next = any(
+            a.get_text(strip=True).upper() == "NEXT"
+            for a in soup.find_all("a", href=re.compile(r"crew\?p="))
+        )
+        if not has_next:
+            break
+        page_num += 1
+
+    return all_crew
+
+def scrape_crew_profile(ss, crew_id):
+    """Get groups and rating for a crew member."""
+    resp  = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page=1")
+    soup  = BeautifulSoup(resp.text, "html.parser")
+    groups = [el.get_text(strip=True) for el in soup.select("div.crewgroup") if el.get_text(strip=True)]
+    # Rating is set via JS: "var rating = N" — stars are all off in raw HTML
+    rating_m = re.search(r"var rating\s*=\s*(\d+)", resp.text)
+    rating   = int(rating_m.group(1)) if rating_m else 0
+    return groups, rating
+
+def scrape_crew_inductions(ss, crew_id):
+    """Get induction status for each venue for a crew member.
+    Returns dict: {venue_name: {'status': 'Complete'|'Incomplete', 'completed': 'DD Mon YYYY'|''}}
+    """
+    resp = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page=inductions")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    inductions = {}
+
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) >= 2:
+            venue_name  = cells[0].get_text(strip=True)
+            status_text = cells[1].get_text(strip=True)
+            completed   = cells[2].get_text(strip=True) if len(cells) >= 3 else ""
+            if venue_name and status_text in ("Complete", "Incomplete", "Expired", "Expiring Soon"):
+                inductions[venue_name] = {"status": status_text, "completed": completed}
+
+    return inductions
+
+def get_crew_shifts(ss, crew_id, today):
+    """Get confirmed future shifts for a crew member from page 1.
+    
+    The plain HTTP response wraps data in <b> tags:
+      <b>May 24, 2026 - 22:00 Hrs</b><br /><b>Length:</b> 4 Hours ... Confirmed
+    """
+    resp    = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page=1")
+    content = resp.text
+    
+    # Match the HTML format: <b>DATE - TIME Hrs</b> ... Length: N Hours ... Confirmed
+    pattern = r"<b>([A-Z][a-z]+ \d{1,2},\s*\d{4}\s*-\s*\d{1,2}:\d{2}\s*Hrs)</b>.*?<b>Length:</b>\s*([\d.]+)\s*Hours?.*?(Confirmed|Declined|Pending)"
+    matches = list(re.finditer(pattern, content, re.DOTALL))
+    
+    shifts  = []
+    seen    = set()
+    for match in matches:
+        date_time_str = match.group(1)
+        length_str    = f"Length: {match.group(2)} Hours"
+        status        = match.group(3)
+        
+        start_dt, end_dt = parse_shift(date_time_str, length_str)
+        if not start_dt or not end_dt:
+            continue
+        if end_dt < today:
+            continue
+        if status.lower() != "confirmed":
+            continue
+        key = (start_dt, end_dt)
+        if key in seen:
+            continue
+        seen.add(key)
+        preceding = content[max(0, match.start()-300):match.start()]
+        venue     = detect_venue(preceding)
+        shifts.append({
+            "start": start_dt.isoformat(),
+            "end":   end_dt.isoformat(),
+            "venue": venue or "",
+        })
+    return shifts
+
+# ─── CONFLICT RULES ───────────────────────────────────────────────────────────
+
+LONG_SHIFT_HRS  = 8
+LONG_GAP_HRS    = 6
+VENUE_GAP_HRS   = 2
+MAX_24H_HRS     = 16
+
+def check_conflict(shifts, target_start, target_end, target_venue):
+    for s in shifts:
+        shift_start = datetime.fromisoformat(s["start"])
+        shift_end   = datetime.fromisoformat(s["end"])
+        shift_venue = s.get("venue", "")
+        shift_dur   = (shift_end - shift_start).total_seconds() / 3600
+
+        # Rule 1: overlap
+        if shift_start < target_end and shift_end > target_start:
+            return True, f"Rule 1 - Overlap: {shift_start.strftime('%d %b %H:%M')}-{shift_end.strftime('%H:%M')} @ {shift_venue or '?'}"
+
+        # Gap
+        if target_start >= shift_end:
+            gap = (target_start - shift_end).total_seconds() / 3600
+        elif shift_start >= target_end:
+            gap = (shift_start - target_end).total_seconds() / 3600
+        else:
+            continue
+
+        # Rule 2: long shift gap
+        if shift_dur >= LONG_SHIFT_HRS and gap < LONG_GAP_HRS:
+            return True, f"Rule 2 - {shift_dur:.0f}hr shift needs {LONG_GAP_HRS}hr gap (only {gap:.1f}hrs): {shift_start.strftime('%d %b %H:%M')} @ {shift_venue or '?'}"
+
+        # Rule 3: venue change
+        if shift_venue and target_venue and shift_venue != target_venue and gap < VENUE_GAP_HRS:
+            return True, f"Rule 3 - Venue change {shift_venue}→{target_venue} needs {VENUE_GAP_HRS}hr gap (only {gap:.1f}hrs)"
+
+    # Rule 4: rolling 24hr window
+    for win_start, win_end in [
+        (target_end - timedelta(hours=24), target_end),
+        (target_start, target_start + timedelta(hours=24)),
+    ]:
+        total = 0.0
+        for s in shifts:
+            ss = datetime.fromisoformat(s["start"])
+            se = datetime.fromisoformat(s["end"])
+            if se <= win_start or ss >= win_end:
+                continue
+            total += (min(se, win_end) - max(ss, win_start)).total_seconds() / 3600
+        t_start = max(target_start, win_start)
+        t_end   = min(target_end,   win_end)
+        if t_end > t_start:
+            total += (t_end - t_start).total_seconds() / 3600
+        if total > MAX_24H_HRS:
+            return True, f"Rule 4 - Would work {total:.1f}hrs in 24hr window (max {MAX_24H_HRS}hrs)"
+
+    return False, ""
+
+# ─── IMPORT LOG ───────────────────────────────────────────────────────────────
+
+def load_import_log():
+    if not os.path.exists(IMPORT_LOG_FILE):
+        return []
+    try:
+        with open(IMPORT_LOG_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_import_log(log):
+    with open(IMPORT_LOG_FILE, "w") as f:
+        json.dump(log, f, indent=2)
+
+def find_import_log_entry(estimate_id):
+    for entry in load_import_log():
+        if entry.get("estimate_id") == estimate_id:
+            return entry
+    return None
+
+# ─── SMARTSTAFF BOOKING/CALL CREATION ────────────────────────────────────────
+
+def ss_get_customers(ss):
+    """Scrape all customers from /customers list pages → list of {id, name}."""
+    customers = []
+    seen = set()
+    page = 0
+    while True:
+        resp = ss.get(f"{BASE_URL}/customers?p={page}")
+        soup = BeautifulSoup(resp.text, "html.parser")
+        found = 0
+        for a in soup.find_all("a", href=re.compile(r"^customer/edit/(\d+)$")):
+            m = re.search(r"customer/edit/(\d+)", a["href"])
+            name = a.get_text(strip=True)
+            if m and name and name != "view/edit" and m.group(1) not in seen:
+                seen.add(m.group(1))
+                customers.append({"id": m.group(1), "name": name})
+                found += 1
+        if not found:
+            break
+        # Check for next page
+        has_next = any(
+            a.get_text(strip=True).upper() == "NEXT"
+            for a in soup.find_all("a", href=re.compile(r"customers\?p="))
+        )
+        if not has_next:
+            break
+        page += 1
+    return customers
+
+def ss_get_contacts(ss):
+    """Scrape all contacts from /contacts list pages → list of {id, name}."""
+    contacts = []
+    seen = set()
+    page = 0
+    while True:
+        resp = ss.get(f"{BASE_URL}/contacts?p={page}")
+        soup = BeautifulSoup(resp.text, "html.parser")
+        found = 0
+        for a in soup.find_all("a", href=re.compile(r"^contact/edit/(\d+)$")):
+            m = re.search(r"contact/edit/(\d+)", a["href"])
+            name = a.get_text(strip=True)
+            if m and name and name != "view/edit" and m.group(1) not in seen:
+                seen.add(m.group(1))
+                contacts.append({"id": m.group(1), "name": name})
+                found += 1
+        if not found:
+            break
+        has_next = any(
+            a.get_text(strip=True).upper() == "NEXT"
+            for a in soup.find_all("a", href=re.compile(r"contacts\?p="))
+        )
+        if not has_next:
+            break
+        page += 1
+    return contacts
+
+def ss_get_venues(ss):
+    """Scrape all venues from /venues list pages → list of {id, name}."""
+    venues = []
+    seen = set()
+    page = 0
+    while True:
+        resp = ss.get(f"{BASE_URL}/venues?p={page}")
+        soup = BeautifulSoup(resp.text, "html.parser")
+        found = 0
+        for a in soup.find_all("a", href=re.compile(r"^venues/edit/(\d+)$")):
+            m = re.search(r"venues/edit/(\d+)", a["href"])
+            name = a.get_text(strip=True)
+            if m and name and name != "view/edit" and m.group(1) not in seen:
+                seen.add(m.group(1))
+                venues.append({"id": m.group(1), "name": name})
+                found += 1
+        if not found:
+            break
+        has_next = any(
+            a.get_text(strip=True).upper() == "NEXT"
+            for a in soup.find_all("a", href=re.compile(r"venues\?p="))
+        )
+        if not has_next:
+            break
+        page += 1
+    return venues
+
+def fuzzy_match(name, options):
+    """Find best match for name in list of {id, name} dicts.
+    Returns matching dict or None. Case-insensitive substring match."""
+    name_l = name.lower().strip()
+    # Exact match first
+    for o in options:
+        if o["name"].lower().strip() == name_l:
+            return o
+    # Substring match
+    for o in options:
+        if name_l in o["name"].lower() or o["name"].lower() in name_l:
+            return o
+    return None
+
+def ss_create_booking(ss, booking_data):
+    """POST to SmartStaff to create a booking.
+    booking_data keys: booking_name, booking_date (dd-Mon-yy), invoice_ref,
+                       notes, customer_id, contact_id, onsite_contact_id, venue_id
+    Returns: (booking_id, error_str)
+
+    Field names confirmed from /bookings/add form inspection:
+      name, creation_date, reference, status, customer, contact, onsiteUserID, venue
+    """
+    resp = ss.get(f"{BASE_URL}/bookings/add")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    post_data = {}
+    form = soup.find("form")
+    if form:
+        for inp in form.find_all("input", {"type": "hidden"}):
+            if inp.get("name"):
+                post_data[inp["name"]] = inp.get("value", "")
+
+    post_data.update({
+        "name":          booking_data["booking_name"],
+        "creation_date": booking_data["booking_date"],
+        "status":        "0",  # 0 = Active
+        "reference":     booking_data.get("invoice_ref", ""),
+        "notes":         booking_data.get("notes", ""),
+        "customer":      booking_data.get("customer_id", ""),
+        "contact":       booking_data.get("contact_id", ""),
+        "onsiteUserID":  booking_data.get("onsite_contact_id", ""),
+        "venue":         booking_data.get("venue_id", ""),
+        "action":        "add",
+    })
+
+    resp = ss.post(f"{BASE_URL}/bookings/add", data=post_data, allow_redirects=True)
+
+    # SmartStaff redirects to /bookings/{id} on success
+    m = re.search(r"/bookings/(\d+)", resp.url)
+    if m:
+        return m.group(1), None
+
+    m = re.search(r"/bookings/(\d+)", resp.text)
+    if m:
+        return m.group(1), None
+
+    return None, f"Booking creation failed — unexpected response URL: {resp.url}"
+
+def ss_create_call(ss, booking_id, call_data):
+    """POST to SmartStaff to create a call within a booking.
+    URL confirmed: /bookings/{id}/callsheet/add
+    Field names confirmed from form inspection:
+      call_name (select), call_name_hidden, start_date, start_time, length,
+      required, notes, times_filled, call_locked, edit_times,
+      is_pubhol, is_pubhol_tomorrow, action
+    Returns: (call_id, error_str)
+    """
+    resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/add")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    post_data = {}
+    form = soup.find("form")
+    if form:
+        for inp in form.find_all("input", {"type": "hidden"}):
+            if inp.get("name"):
+                post_data[inp["name"]] = inp.get("value", "")
+
+    cn = call_data["call_name"]
+    post_data.update({
+        "call_name":          cn,
+        "call_name_hidden":   cn,
+        "start_date":         call_data["start_date"],
+        "start_time":         call_data["start_time"],
+        "length":             str(call_data["duration_hours"]),
+        "required":           str(call_data["crew_required"]),
+        "notes":              call_data.get("notes", "") or "",
+        "action":             "add",
+    })
+
+    # Checkboxes — only include in POST if True (unchecked fields are omitted)
+    if call_data.get("times_filled"):
+        post_data["times_filled"] = "1"
+    if call_data.get("call_locked"):
+        post_data["call_locked"] = "1"
+    if call_data.get("crew_can_edit_times"):
+        post_data["edit_times"] = "1"
+    if call_data.get("public_holiday_same_day"):
+        post_data["is_pubhol"] = "1"
+    if call_data.get("public_holiday_next_day"):
+        post_data["is_pubhol_tomorrow"] = "1"
+
+    resp = ss.post(
+        f"{BASE_URL}/bookings/{booking_id}/callsheet/add",
+        data=post_data,
+        allow_redirects=True
+    )
+
+    final_url = resp.url.replace("//bookings", "/bookings")  # fix double-slash if present
+
+    # Success: redirected to a specific callsheet
+    m = re.search(r"/bookings/\d+/callsheet/(\d+)", final_url)
+    if m:
+        return m.group(1), None
+
+    # Also check response body for callsheet link
+    m = re.search(r"/bookings/\d+/callsheet/(\d+)", resp.text)
+    if m:
+        return m.group(1), None
+
+    # SmartStaff redirects to /bookings/{id} after successful call creation
+    # (confirmed from live testing — treat this as success)
+    if re.search(r"/bookings/\d+$", final_url.rstrip("/")):
+        return "created", None
+
+    return None, f"Call creation failed — unexpected response: {resp.url}"
+
+def format_ss_date(date_str):
+    """Convert YYYY-MM-DD → 'Month D, YYYY' for SmartStaff start_date field.
+    e.g. '2026-05-21' → 'May 21, 2026'
+    """
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        return dt.strftime("%B ") + str(dt.day) + dt.strftime(", %Y")
+    except Exception:
+        return date_str
+
+def format_booking_date(date_str):
+    """Convert YYYY-MM-DD → 'dd-Mon-yy' for SmartStaff booking_date field."""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        return dt.strftime("%d-%b-%y")  # e.g. '21-May-26'
+    except Exception:
+        return date_str
+
+def validate_payload(payload):
+    """Validate import payload. Returns list of error strings (empty = valid)."""
+    errors = []
+
+    if not isinstance(payload, dict):
+        return ["Payload must be a JSON object"]
+
+    if payload.get("schema_version") != "1.0":
+        errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0')")
+
+    est = payload.get("estimate", {})
+    if not est.get("estimate_id"):
+        errors.append("Missing: estimate.estimate_id")
+    if not est.get("quote_number"):
+        errors.append("Missing: estimate.quote_number")
+    if est.get("status") != "Approved":
+        errors.append(f"Estimate status is '{est.get('status')}' — only Approved estimates can be imported")
+
+    if not payload.get("customer", {}).get("company_name"):
+        errors.append("Missing: customer.company_name")
+
+    event = payload.get("event", {})
+    if not event.get("event_name"):
+        errors.append("Missing: event.event_name")
+
+    lines = payload.get("labour_lines", [])
+    if not lines:
+        errors.append("No labour_lines in payload")
+
+    seen_ids = set()
+    for ll in lines:
+        lid = ll.get("line_id", "?")
+        if lid in seen_ids:
+            errors.append(f"Duplicate line_id: {lid}")
+        seen_ids.add(lid)
+
+        qty = ll.get("quantity")
+        if not isinstance(qty, int) or qty < 1:
+            errors.append(f"Invalid quantity on line {lid} (must be integer ≥ 1)")
+
+        dur = ll.get("duration_hours")
+        if not isinstance(dur, (int, float)) or dur <= 0:
+            errors.append(f"Invalid duration_hours on line {lid} (must be > 0)")
+
+        date = ll.get("date", "")
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except Exception:
+            errors.append(f"Invalid date '{date}' on line {lid} (expected YYYY-MM-DD)")
+
+        time = ll.get("start_time", "")
+        try:
+            datetime.strptime(time, "%H:%M")
+        except Exception:
+            errors.append(f"Invalid start_time '{time}' on line {lid} (expected HH:MM)")
+
+    return errors
+
+# ─── IMPORT STATE ─────────────────────────────────────────────────────────────
+
+_import_progress = {}  # tracks active import progress
+
+# ─── ROUTES ───────────────────────────────────────────────────────────────────
+
+@app.route("/")
+def index():
+    if not session.get("sid") or not get_ss_session():
+        return redirect(url_for("login"))
+    return render_template("index.html")
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        remember = request.form.get("remember") == "on"
+
+        ss, err = create_ss_session(username, password)
+        if err:
+            error = err
+        else:
+            import uuid
+            sid = str(uuid.uuid4())
+            session["sid"] = sid
+            session.permanent = remember
+            _ss_sessions[sid] = ss
+
+            if remember:
+                cfg = load_config()
+                cfg["username"] = username
+                cfg["password"] = password
+                save_config(cfg)
+
+            return redirect(url_for("index"))
+
+    # Pre-fill from config
+    cfg = load_config()
+    return render_template("login.html",
+        error=error,
+        saved_username=cfg.get("username", "")
+    )
+
+@app.route("/logout")
+def logout():
+    sid = session.pop("sid", None)
+    if sid:
+        _ss_sessions.pop(sid, None)
+    return redirect(url_for("login"))
+
+@app.route("/api/calls")
+def api_calls():
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    force = request.args.get("force") == "1"
+    sid   = session.get("sid", "")
+
+    # Cache calls in memory per session for 2 minutes to avoid hammering SmartStaff
+    cache_key = f"calls_{sid}"
+    cached    = _calls_cache.get(cache_key)
+    if cached and not force:
+        age = (datetime.now() - cached["at"]).total_seconds()
+        if age < 120:
+            return jsonify({"calls": cached["calls"], "cached": True})
+
+    calls  = None
+    error  = None
+    result = [None]
+
+    def do_scrape():
+        try:
+            result[0] = scrape_calls(ss, f"{BASE_URL}/dash")
+        except Exception as e:
+            result[0] = []
+
+    t = threading.Thread(target=do_scrape)
+    t.start()
+    t.join(timeout=25)  # give up after 25 seconds
+
+    calls = result[0] if result[0] is not None else []
+    _calls_cache[cache_key] = {"calls": calls, "at": datetime.now()}
+    return jsonify({"calls": calls})
+
+@app.route("/api/call/<booking_id>/<call_id>")
+def api_call_details(booking_id, call_id):
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    details, err = scrape_call_details(ss, booking_id, call_id)
+    if err:
+        return jsonify({"error": err}), 500
+    return jsonify(details)
+
+@app.route("/api/availability", methods=["POST"])
+def api_availability():
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    data            = request.json
+    required_groups = data.get("required_groups", [])
+    min_rating      = int(data.get("min_rating", 3))
+
+    # Support both single call (legacy) and multiple calls
+    # Multi-call payload: { "calls": [ {booking_id, call_id, start_dt, end_dt, venue, call_num, call_name}, ... ] }
+    # Single call payload (legacy): { booking_id, call_id, start_dt, end_dt, venue }
+    raw_calls = data.get("calls")
+    if not raw_calls:
+        raw_calls = [{
+            "booking_id": data["booking_id"],
+            "call_id":    data["call_id"],
+            "start_dt":   data["start_dt"],
+            "end_dt":     data["end_dt"],
+            "venue":      data.get("venue", ""),
+            "call_num":   data.get("call_num", data["call_id"]),
+            "call_name":  data.get("call_name", ""),
+        }]
+
+    # Parse target windows
+    targets = []
+    for c in raw_calls:
+        targets.append({
+            "booking_id": c["booking_id"],
+            "call_id":    c["call_id"],
+            "call_num":   c.get("call_num", c["call_id"]),
+            "call_name":  c.get("call_name", ""),
+            "start":      datetime.fromisoformat(c["start_dt"]),
+            "end":        datetime.fromisoformat(c["end_dt"]),
+            "venue":      c.get("venue", ""),
+        })
+
+    today = datetime.now()
+
+    # Reference time for nearby-shift window (earliest call start)
+    ref_start = min(t["start"] for t in targets)
+
+    # Load crew list and cache
+    all_crew      = scrape_all_crew(ss)
+    cache, _      = load_cache()
+    updated_cache = dict(cache)
+
+    available = []
+    conflicts  = []
+    skipped    = []
+
+    for crew in all_crew:
+        cid = crew["id"]
+
+        # Profile from cache or web
+        if cid in cache:
+            groups     = cache[cid]["groups"]
+            rating     = cache[cid]["rating"]
+            inductions = cache[cid].get("inductions", {})
+        else:
+            groups, rating = scrape_crew_profile(ss, cid)
+            inductions     = scrape_crew_inductions(ss, cid)
+            updated_cache[cid] = {"name": crew["name"], "phone": crew.get("phone", ""), "groups": groups, "rating": rating, "inductions": inductions}
+
+        crew["groups"]     = groups
+        crew["rating"]     = rating
+        crew["inductions"] = inductions
+
+        # Filter by rating / groups
+        reasons = []
+        if rating < min_rating:
+            reasons.append(f"Rating {rating} < {min_rating}")
+        groups_lower = [g.lower() for g in groups]
+        for cert in required_groups:
+            if cert.lower() not in groups_lower:
+                reasons.append(f"Missing: {cert}")
+
+        if reasons:
+            skipped.append({**crew, "reason": " | ".join(reasons)})
+            continue
+
+        # Get this crew member's existing confirmed shifts once
+        shifts = get_crew_shifts(ss, cid, today)
+
+        # Check against each target call individually
+        call_results = []
+        any_conflict = False
+        for t in targets:
+            conflict, reason = check_conflict(shifts, t["start"], t["end"], t["venue"])
+
+            # Induction check — only if call has a known venue
+            induction_warning = ""
+            if t["venue"]:
+                ind_status, ind_venue = induction_status_for_venue(inductions, t["venue"])
+                if ind_status == "Incomplete":
+                    induction_warning = f"No induction: {t['venue']}"
+                elif ind_status == "Expired":
+                    induction_warning = f"Expired induction: {t['venue']}"
+                elif ind_status == "Expiring Soon":
+                    induction_warning = f"Expiring induction: {t['venue']}"
+
+            call_results.append({
+                "call_id":           t["call_id"],
+                "call_num":          t["call_num"],
+                "call_name":         t["call_name"],
+                "available":         not conflict,
+                "detail":            reason,
+                "induction_warning": induction_warning,
+            })
+            if conflict:
+                any_conflict = True
+
+        avail_count = sum(1 for r in call_results if r["available"])
+        total_calls = len(targets)
+
+        # Collect all induction warnings across calls (deduplicated)
+        induction_warnings = list(dict.fromkeys(
+            r["induction_warning"] for r in call_results if r["induction_warning"]
+        ))
+
+        # Nearby shifts for timeline — include shifts within 3 days of ANY target call,
+        # plus any shift explicitly cited in a conflict reason (may be further away)
+        nearby_set = set()
+        nearby = []
+        for s in shifts:
+            s_start = datetime.fromisoformat(s["start"])
+            in_window = any(
+                abs((s_start - t["start"]).total_seconds()) <= 3 * 86400
+                for t in targets
+            )
+            # Also include if this shift's time appears in any conflict detail string
+            cited = any(
+                s_start.strftime("%d %b %H:%M") in r["detail"]
+                for result in call_results
+                for r in [result]
+                if r.get("detail")
+            )
+            key = s["start"]
+            if (in_window or cited) and key not in nearby_set:
+                nearby_set.add(key)
+                nearby.append(s)
+
+        # Overall status: available for all, some, or none
+        conflict_details = " | ".join(r["detail"] for r in call_results if r["detail"])
+
+        entry = {
+            **crew,
+            "shifts":              nearby,
+            "call_results":        call_results,
+            "avail_count":         avail_count,
+            "total_calls":         total_calls,
+            "detail":              conflict_details,
+            "induction_warnings":  induction_warnings,
+        }
+
+        if avail_count == total_calls:
+            available.append(entry)
+        elif avail_count == 0:
+            conflicts.append(entry)
+        else:
+            # Partial — available for some calls; goes in a separate bucket
+            # We include in available list but flagged as partial
+            entry["partial"] = True
+            available.append(entry)
+
+    # Save cache
+    save_cache(updated_cache)
+
+    # Sort: full availability first, then partial, then by rating desc
+    available.sort(key=lambda x: (-x["avail_count"], -x["rating"]))
+    conflicts.sort(key=lambda x: x["rating"], reverse=True)
+
+    return jsonify({
+        "available":   available,
+        "conflicts":   conflicts,
+        "skipped":     skipped,
+        "targets":     [{"call_id": t["call_id"], "call_num": t["call_num"],
+                         "call_name": t["call_name"], "start_dt": t["start"].isoformat(),
+                         "end_dt": t["end"].isoformat(), "venue": t["venue"]} for t in targets],
+        # Legacy single-call fields for backward compat
+        "call_id":    targets[0]["call_id"],
+        "booking_id": targets[0]["booking_id"],
+    })
+
+@app.route("/api/cache/status")
+def api_cache_status():
+    cache, is_fresh = load_cache()
+    age_str = "No cache"
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE) as f:
+                d = json.load(f)
+            saved = datetime.fromisoformat(d.get("saved_at", "2000-01-01"))
+            hours = (datetime.now() - saved).total_seconds() / 3600
+            age_str = f"{hours:.1f} hours ago"
+        except Exception:
+            pass
+    return jsonify({
+        "fresh":    is_fresh,
+        "profiles": len(cache),
+        "age":      age_str,
+    })
+
+@app.route("/api/cache/refresh", methods=["POST"])
+def api_cache_refresh():
+    """Trigger a full parallel cache refresh in the background."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # If a refresh is already running, don't start another
+    if _refresh_progress.get("running"):
+        return jsonify({"status": "Already running", "progress": _refresh_progress})
+
+    def refresh():
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+
+        _refresh_progress["running"]   = True
+        _refresh_progress["done"]      = 0
+        _refresh_progress["total"]     = 0
+        _refresh_progress["errors"]    = 0
+        _refresh_progress["started"]   = time.time()
+
+        try:
+            all_crew = scrape_all_crew(ss)
+            total = len(all_crew)
+            _refresh_progress["total"] = total
+
+            # Load existing cache so we can merge
+            cache, _ = load_cache()
+            new_cache = dict(cache)
+            lock = threading.Lock()
+
+            def fetch_one(crew):
+                try:
+                    groups, rating = scrape_crew_profile(ss, crew["id"])
+                    inductions     = scrape_crew_inductions(ss, crew["id"])
+                    return crew["id"], {
+                        "name":       crew["name"],
+                        "phone":      crew.get("phone", ""),
+                        "groups":     groups,
+                        "rating":     rating,
+                        "inductions": inductions,
+                    }, None
+                except Exception as e:
+                    return crew["id"], None, str(e)
+
+            # 10 parallel workers — enough to be fast, not enough to get rate-limited
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(fetch_one, c): c for c in all_crew}
+                for future in as_completed(futures):
+                    cid, data, err = future.result()
+                    with lock:
+                        if data:
+                            new_cache[cid] = data
+                        else:
+                            _refresh_progress["errors"] += 1
+                        _refresh_progress["done"] += 1
+                        # Save incrementally every 50 crew
+                        if _refresh_progress["done"] % 50 == 0:
+                            save_cache(new_cache)
+
+            save_cache(new_cache)
+            _refresh_progress["elapsed"] = round(time.time() - _refresh_progress["started"], 1)
+
+        except Exception as e:
+            _refresh_progress["error"] = str(e)
+        finally:
+            _refresh_progress["running"] = False
+
+    threading.Thread(target=refresh, daemon=True).start()
+    return jsonify({"status": "Refresh started in background"})
+
+
+@app.route("/api/cache/progress")
+def api_cache_progress():
+    """Return current refresh progress."""
+    return jsonify(_refresh_progress)
+
+@app.route("/api/inductions")
+def api_inductions():
+    """Return induction status for all cached crew, with expiry checking."""
+    ss = get_ss_session()
+    cache, _ = load_cache()
+
+    # Build name lookup from crew list if names missing from cache
+    name_map = {cid: data.get("name", "") for cid, data in cache.items()}
+    if any(not v for v in name_map.values()):
+        if ss:
+            try:
+                all_crew = scrape_all_crew(ss)
+                for c in all_crew:
+                    name_map[c["id"]] = c["name"]
+            except Exception:
+                pass
+
+    all_venues = sorted({
+        venue_name
+        for data in cache.values()
+        for venue_name in data.get("inductions", {})
+    })
+
+    result = []
+    for cid, data in cache.items():
+        groups     = data.get("groups") or []
+        rating     = data.get("rating", 0)
+        inductions = data.get("inductions", {})
+        name       = name_map.get(cid, cid)
+
+        venue_status = {}
+        for venue_name, ind_data in inductions.items():
+            if isinstance(ind_data, str):
+                status, completed = ind_data, ""
+            else:
+                status    = ind_data.get("status", "")
+                completed = ind_data.get("completed", "")
+
+            if status == "Incomplete":
+                venue_status[venue_name] = {"status": "Incomplete", "completed": ""}
+            elif not completed:
+                venue_status[venue_name] = {"status": "Incomplete", "completed": ""}
+            else:
+                try:
+                    completed_dt = datetime.strptime(completed, "%d %b %Y")
+                    days   = 730 if venue_name.lower() in INDUCTION_24_MONTH else 365
+                    expiry = completed_dt + timedelta(days=days)
+                    now    = datetime.now()
+                    if now > expiry:
+                        st = "Expired"
+                    elif (expiry - now).days <= 14:
+                        st = "Expiring Soon"
+                    else:
+                        st = "Complete"
+                    venue_status[venue_name] = {"status": st, "completed": completed, "expiry": expiry.strftime("%d %b %Y")}
+                except Exception:
+                    venue_status[venue_name] = {"status": status, "completed": completed}
+
+        result.append({"id": cid, "name": name, "groups": groups, "rating": rating, "venue_status": venue_status})
+
+    result.sort(key=lambda x: x["name"] or "")
+    return jsonify({"crew": result, "venues": all_venues})
+    return jsonify({"groups": [
+        "W.B.", "PhD.", "CI Card", "JOAT", "Audio", "Backline",
+        "Fork", "Lights", "Set/Stg", "Spot", "Truck", "Wardrobe",
+        "EWP", "MCEC", "MCG", "MOPT"
+    ]})
+
+@app.route("/api/version")
+def api_version():
+    """Check for updates against GitHub version.json."""
+    try:
+        resp = http.get(VERSION_URL, timeout=5)
+        remote = resp.json()
+        remote_ver = remote.get("version", "0.0.0")
+        update_available = remote_ver != APP_VERSION
+
+        def parse_ver(v):
+            try: return tuple(int(x) for x in v.split("."))
+            except: return (0,0,0)
+
+        newer = parse_ver(remote_ver) > parse_ver(APP_VERSION)
+        return jsonify({
+            "current":          APP_VERSION,
+            "latest":           remote_ver,
+            "update_available": newer,
+            "dmg_url":          remote.get("dmg_url", ""),
+            "release_notes":    remote.get("release_notes", ""),
+            "release_date":     remote.get("release_date", ""),
+        })
+    except Exception as e:
+        return jsonify({"current": APP_VERSION, "update_available": False, "error": str(e)})
+
+@app.route("/api/groups")
+def api_groups():
+    return jsonify({"groups": [
+        "W.B.", "PhD.", "CI Card", "JOAT", "Audio", "Backline",
+        "Fork", "Lights", "Set/Stg", "Spot", "Truck", "Wardrobe",
+        "EWP", "MCEC", "MCG", "MOPT"
+    ]})
+
+# ─── FORECAST ─────────────────────────────────────────────────────────────────
+
+_forecast_cache = {}  # {session_id: {data, generated_at, start_date}}
+
+@app.route("/api/forecast")
+def api_forecast():
+    """Return 28-day shift forecast for all cached crew.
+    Query params: start_date (YYYY-MM-DD, default today)
+    Uses ThreadPoolExecutor to parallelise shift fetching.
+    Results cached for 5 minutes per session + start_date.
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    start_str = request.args.get("start_date", datetime.now().strftime("%Y-%m-%d"))
+    try:
+        days = min(28, max(1, int(request.args.get("days", 28))))
+    except ValueError:
+        days = 28
+    try:
+        start_dt = datetime.strptime(start_str, "%Y-%m-%d").replace(hour=0, minute=0, second=0)
+    except ValueError:
+        return jsonify({"error": "Invalid start_date"}), 400
+
+    end_dt = start_dt + timedelta(days=days)
+
+    # Cache check — 5 min per session + start_date + days
+    cache_key = f"{session.get('id', 'anon')}_{start_str}_{days}"
+    cached = _forecast_cache.get(cache_key)
+    if cached and (datetime.now() - cached["at"]).total_seconds() < 300:
+        return jsonify(cached["data"])
+
+    crew_data, _ = load_cache()
+    if not crew_data:
+        return jsonify({"error": "No crew cache. Run a cache refresh first."}), 400
+
+    # Enrich cache entries with phone numbers from the crew list
+    # (phone is not stored in older cache entries)
+    if any(not info.get("phone") for info in crew_data.values()):
+        try:
+            live_crew = scrape_all_crew(ss)
+            phone_map = {c["id"]: c.get("phone", "") for c in live_crew}
+            for cid, info in crew_data.items():
+                if not info.get("phone") and cid in phone_map:
+                    info["phone"] = phone_map[cid]
+        except Exception:
+            pass  # phone enrichment is best-effort
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def fetch_crew_forecast(item):
+        cid, info = item
+        try:
+            shifts = get_crew_shifts(ss, cid, today)
+        except Exception:
+            shifts = []
+
+        # Filter to window
+        window_shifts = []
+        for s in shifts:
+            s_start = datetime.fromisoformat(s["start"])
+            s_end   = datetime.fromisoformat(s["end"])
+            if s_start < end_dt and s_end > start_dt:
+                window_shifts.append(s)
+
+        # Per-day hours dict {YYYY-MM-DD: hours}
+        day_hours = {}
+        total_hours = 0.0
+        for s in window_shifts:
+            s_start = datetime.fromisoformat(s["start"])
+            s_end   = datetime.fromisoformat(s["end"])
+            # Clamp to window
+            clamped_start = max(s_start, start_dt)
+            clamped_end   = min(s_end, end_dt)
+            hrs = (clamped_end - clamped_start).total_seconds() / 3600
+            total_hours += hrs
+            # Attribute hours to each calendar day the shift spans
+            cur = clamped_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            while cur < clamped_end:
+                day_str = cur.strftime("%Y-%m-%d")
+                day_start = max(clamped_start, cur)
+                day_end   = min(clamped_end, cur + timedelta(days=1))
+                day_hrs   = (day_end - day_start).total_seconds() / 3600
+                day_hours[day_str] = day_hours.get(day_str, 0) + day_hrs
+                cur += timedelta(days=1)
+
+        return {
+            "id":          cid,
+            "name":        info.get("name", ""),
+            "phone":       info.get("phone", ""),
+            "rating":      info.get("rating", 0),
+            "groups":      info.get("groups", []),
+            "total_hours": round(total_hours, 1),
+            "day_hours":   day_hours,
+        }
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    results = []
+    items = list(crew_data.items())
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_crew_forecast, item): item for item in items}
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception:
+                pass
+
+    # Build date axis — list of YYYY-MM-DD strings for 28 days
+    dates = [(start_dt + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+
+    payload = {
+        "start_date": start_str,
+        "end_date":   end_dt.strftime("%Y-%m-%d"),
+        "dates":      dates,
+        "crew":       results,
+    }
+
+    _forecast_cache[cache_key] = {"data": payload, "at": datetime.now()}
+    return jsonify(payload)
+
+
+
+
+@app.route("/api/debug/booking-form")
+def api_debug_booking_form():
+    """Inspect customers and venues page structure to find scraping targets."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    result = {}
+
+    # Full customers page — return all links, table rows, and any JS data
+    resp = ss.get(f"{BASE_URL}/customers")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    result["customers_all_links"] = [
+        {"href": a.get("href",""), "text": a.get_text(strip=True)}
+        for a in soup.find_all("a") if a.get("href")
+    ][:30]
+    result["customers_tables"] = [
+        {"id": t.get("id",""), "class": t.get("class",""),
+         "first_row": t.find("tr").get_text(" ", strip=True)[:100] if t.find("tr") else ""}
+        for t in soup.find_all("table")
+    ]
+    # Any JS variables that might hold customer data
+    scripts = " ".join(s.get_text() for s in soup.find_all("script"))
+    result["customers_js_snippet"] = scripts[:1000]
+
+    # Same for venues
+    resp2 = ss.get(f"{BASE_URL}/venues")
+    soup2 = BeautifulSoup(resp2.text, "html.parser")
+    result["venues_all_links"] = [
+        {"href": a.get("href",""), "text": a.get_text(strip=True)}
+        for a in soup2.find_all("a") if a.get("href")
+    ][:30]
+    result["venues_tables"] = [
+        {"id": t.get("id",""), "class": t.get("class",""),
+         "first_row": t.find("tr").get_text(" ", strip=True)[:100] if t.find("tr") else ""}
+        for t in soup2.find_all("table")
+    ]
+    result["venues_js_snippet"] = " ".join(s.get_text() for s in soup2.find_all("script"))[:1000]
+
+    return jsonify(result)
+
+
+
+@app.route("/api/debug/call-form/<booking_id>")
+def api_debug_call_form(booking_id):
+    """Inspect the callsheet/add form for a given booking."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/add")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    form = soup.find("form")
+
+    return jsonify({
+        "final_url": resp.url,
+        "status": resp.status_code,
+        "form_action": form.get("action", "") if form else None,
+        "form_method": form.get("method", "") if form else None,
+        "inputs": [
+            {"name": i.get("name",""), "type": i.get("type",""), "value": i.get("value","")}
+            for i in (form.find_all("input") if form else [])
+        ],
+        "selects": [
+            {"name": s.get("name",""), "id": s.get("id",""), "options": [
+                {"value": o.get("value",""), "text": o.get_text(strip=True)}
+                for o in s.find_all("option")
+            ][:10]}
+            for s in (form.find_all("select") if form else [])
+        ],
+        "textareas": [
+            {"name": t.get("name",""), "id": t.get("id","")}
+            for t in (form.find_all("textarea") if form else [])
+        ],
+    })
+
+
+
+# ─── ASK GOAT ─────────────────────────────────────────────────────────────────
+
+GOAT_TOOLS = [
+    {
+        "name": "get_calls",
+        "description": "Fetch current unfilled calls from the SmartStaff dashboard. Returns bookings grouped with their calls, including call name, date/time, venue, booked vs required crew counts, and notes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "force_refresh": {
+                    "type": "boolean",
+                    "description": "If true, bypass the 2-minute cache and fetch fresh data"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "search_availability",
+        "description": "Search crew availability for one or more specific calls. Returns available crew, conflicts, and skipped crew with their ratings, groups, and shift timeline.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "calls": {
+                    "type": "array",
+                    "description": "List of calls to check availability for",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "booking_id": {"type": "string"},
+                            "call_id":    {"type": "string"},
+                            "call_name":  {"type": "string"},
+                            "start_dt":   {"type": "string", "description": "ISO format datetime"},
+                            "end_dt":     {"type": "string", "description": "ISO format datetime"},
+                            "venue":      {"type": "string"}
+                        },
+                        "required": ["booking_id", "call_id", "start_dt", "end_dt"]
+                    }
+                },
+                "required_groups": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter crew by group membership"
+                },
+                "min_rating": {
+                    "type": "integer",
+                    "description": "Minimum star rating (1-10)",
+                    "default": 1
+                }
+            },
+            "required": ["calls"]
+        }
+    },
+    {
+        "name": "get_inductions",
+        "description": "Get induction compliance status. Can filter by venue to see who is compliant, expiring, or non-compliant.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "venue_filter": {
+                    "type": "string",
+                    "description": "Venue code to filter by (e.g. RLA, Forum, MCG)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_forecast",
+        "description": "Get crew utilization forecast showing bookings over a date range.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_date": {
+                    "type": "string",
+                    "description": "Start date in YYYY-MM-DD format. Defaults to today."
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to forecast (1-28). Default 7.",
+                    "default": 7
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_cache_status",
+        "description": "Get the current crew cache status — how many profiles are cached and how fresh the data is.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "get_import_log",
+        "description": "Get the history of estimate imports — which quotes have been imported, when, and what SmartStaff booking they created.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "lookup_crew_id",
+        "description": "Look up a crew member's exact ID and full name from the cache by searching for a name. Use this before add_crew_to_call to verify you have the correct crew_id for the person being booked. Always verify IDs this way rather than relying on IDs seen in previous tool results.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Full or partial name to search for"
+                }
+            },
+            "required": ["name"]
+        }
+    },
+
+    {
+        "name": "add_crew_to_call",
+        "description": "WRITE ACTION — Add one or more crew members to a call in SmartStaff. Requires confirmation before execution. Returns a confirmation request with details for the operator to approve.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "crew": {
+                    "type": "array",
+                    "description": "Crew members to add",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name":    {"type": "string"},
+                            "crew_id": {"type": "string"}
+                        },
+                        "required": ["name", "crew_id"]
+                    }
+                },
+                "calls": {
+                    "type": "array",
+                    "description": "Calls to add them to",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "call_id":    {"type": "string"},
+                            "booking_id": {"type": "string"},
+                            "call_name":  {"type": "string"},
+                            "date":       {"type": "string"}
+                        },
+                        "required": ["call_id", "booking_id"]
+                    }
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "If true, also confirm the crew (not just add)"
+                }
+            },
+            "required": ["crew", "calls"]
+        }
+    },
+    {
+        "name": "send_sms_to_crew",
+        "description": "WRITE ACTION — Send an SMS availability request to crew members for a call. Requires confirmation before execution.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "crew": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name":    {"type": "string"},
+                            "crew_id": {"type": "string"}
+                        },
+                        "required": ["name", "crew_id"]
+                    }
+                },
+                "calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "call_id":    {"type": "string"},
+                            "booking_id": {"type": "string"},
+                            "call_name":  {"type": "string"},
+                            "date":       {"type": "string"}
+                        },
+                        "required": ["call_id", "booking_id"]
+                    }
+                }
+            },
+            "required": ["crew", "calls"]
+        }
+    }
+]
+
+GOAT_SYSTEM = """You are THE GOAT — the Gig Power Operations and Administration Terminal. An AI assistant embedded inside a live events crew management platform built for Gig Power Pty Ltd in Melbourne, Australia.
+
+Your personality: confident, sharp, occasionally cocky (you are, after all, The GOAT). You have deep knowledge of the live events industry — bump ins, load outs, stagehands, crew bosses, venues, SmartStaff, rosters, inductions. You speak like a seasoned ops person who also happens to be an AI. You're direct, occasionally funny, never waste words. Australian English.
+
+You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data.
+
+CRITICAL — WRITE ACTION RULES:
+- ALWAYS call lookup_crew_id for each crew member before calling add_crew_to_call or send_sms_to_crew. Never use an ID from a previous search result without verifying it first — name formats differ between SmartStaff and what the operator types.
+- When you call add_crew_to_call or send_sms_to_crew, this generates a CONFIRMATION CARD in the UI for the operator to approve.
+- You must NEVER claim the action was completed after calling the tool. The action has NOT happened yet.
+- After calling the tool, tell the operator you have prepared the action and they need to confirm it using the card above.
+- Only after the operator clicks Confirm will the action actually execute in SmartStaff.
+- Example: after calling add_crew_to_call, say something like "I've set that up — confirm it using the card above and I'll get them added."
+
+Keep responses concise but warm. Occasional GOAT pun or dry humour is encouraged — never at the expense of being useful."""
+
+
+def execute_goat_tool(tool_name, tool_input, ss):
+    """Execute a GOAT tool call and return the result as a string."""
+    import json as _json
+
+    if tool_name == "lookup_crew_id":
+        try:
+            query = tool_input.get("name", "").lower().strip()
+            crew_data, _ = load_cache()
+            # Also search the live crew list for phone numbers etc
+            matches = []
+            for cid, info in crew_data.items():
+                name = info.get("name", "")
+                # Match against both "Last, First" and "First Last" formats
+                name_parts = [p.strip().lower() for p in name.replace(",", " ").split()]
+                query_parts = query.replace(",", " ").split()
+                if all(any(qp in np for np in name_parts) for qp in query_parts):
+                    matches.append({
+                        "id":     cid,
+                        "name":   name,
+                        "rating": info.get("rating", 0),
+                        "groups": info.get("groups", []),
+                        "phone":  info.get("phone", ""),
+                    })
+            if not matches:
+                return _json.dumps({"found": False, "message": f"No crew found matching '{query}'"})
+            return _json.dumps({"found": True, "matches": matches[:5]})
+        except Exception as e:
+            return f"Error looking up crew: {e}"
+
+    elif tool_name == "get_calls":
+        force = tool_input.get("force_refresh", False)
+        try:
+            with app.test_request_context():
+                calls = scrape_calls(ss, f"{BASE_URL}/dash")
+            return _json.dumps(calls[:20])  # cap at 20 for token budget
+        except Exception as e:
+            return f"Error fetching calls: {e}"
+
+    elif tool_name == "search_availability":
+        try:
+            calls   = tool_input.get("calls", [])
+            groups  = tool_input.get("required_groups", [])
+            rating  = tool_input.get("min_rating", 1)
+            today   = datetime.now()
+            all_crew = scrape_all_crew(ss)
+            cache, _ = load_cache()
+            results = {"available": [], "conflicts": [], "skipped": []}
+            targets = []
+            for c in calls:
+                try:
+                    s = datetime.fromisoformat(c["start_dt"])
+                    e = datetime.fromisoformat(c["end_dt"])
+                    targets.append({**c, "start": s, "end": e})
+                except Exception:
+                    pass
+            if not targets:
+                return "No valid calls provided"
+
+            count = 0
+            for crew in all_crew[:50]:  # cap at 50 for speed
+                cid = crew["id"]
+                cached = cache.get(cid, {})
+                crew_groups = cached.get("groups", [])
+                crew_rating = cached.get("rating", 0)
+                if groups and not any(g in crew_groups for g in groups):
+                    results["skipped"].append(crew["name"])
+                    continue
+                if crew_rating < rating:
+                    results["skipped"].append(crew["name"])
+                    continue
+                shifts = get_crew_shifts(ss, cid, today)
+                conflict = False
+                for t in targets:
+                    c_flag, reason = check_conflict(shifts, t["start"], t["end"], t.get("venue",""))
+                    if c_flag:
+                        results["conflicts"].append({"name": crew["name"], "reason": reason})
+                        conflict = True
+                        break
+                if not conflict:
+                    results["available"].append({
+                        "name": crew["name"],
+                        "id": cid,
+                        "rating": crew_rating,
+                        "groups": crew_groups
+                    })
+                count += 1
+            return _json.dumps(results)
+        except Exception as e:
+            return f"Error searching availability: {e}"
+
+    elif tool_name == "get_inductions":
+        try:
+            cache, _ = load_cache()
+            venue_filter = tool_input.get("venue_filter", "").lower()
+            summary = {"compliant": [], "expiring": [], "expired": [], "incomplete": []}
+            for cid, info in list(cache.items())[:100]:
+                inductions = info.get("inductions", {})
+                for venue_name, ind in inductions.items():
+                    if venue_filter and venue_filter not in venue_name.lower():
+                        continue
+                    status = ind.get("status", "")
+                    entry = {"name": info.get("name",""), "venue": venue_name}
+                    if status == "Complete":
+                        summary["compliant"].append(entry)
+                    elif status == "Expiring Soon":
+                        summary["expiring"].append(entry)
+                    elif status == "Expired":
+                        summary["expired"].append(entry)
+                    else:
+                        summary["incomplete"].append(entry)
+            # Return counts + first few of each
+            return _json.dumps({
+                "compliant_count":  len(summary["compliant"]),
+                "expiring_count":   len(summary["expiring"]),
+                "expired_count":    len(summary["expired"]),
+                "incomplete_count": len(summary["incomplete"]),
+                "expiring_sample":  summary["expiring"][:5],
+                "expired_sample":   summary["expired"][:5],
+            })
+        except Exception as e:
+            return f"Error fetching inductions: {e}"
+
+    elif tool_name == "get_forecast":
+        try:
+            start_str = tool_input.get("start_date", datetime.now().strftime("%Y-%m-%d"))
+            days      = min(28, max(1, tool_input.get("days", 7)))
+            start_dt  = datetime.strptime(start_str, "%Y-%m-%d")
+            end_dt    = start_dt + timedelta(days=days)
+            crew_data, _ = load_cache()
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            summary = []
+            for cid, info in list(crew_data.items())[:30]:  # cap for speed
+                shifts = get_crew_shifts(ss, cid, today)
+                total = sum(
+                    (min(datetime.fromisoformat(s["end"]), end_dt) -
+                     max(datetime.fromisoformat(s["start"]), start_dt)).total_seconds() / 3600
+                    for s in shifts
+                    if datetime.fromisoformat(s["start"]) < end_dt and
+                       datetime.fromisoformat(s["end"]) > start_dt
+                )
+                if total > 0:
+                    summary.append({"name": info.get("name",""), "total_hours": round(total,1)})
+            summary.sort(key=lambda x: x["total_hours"], reverse=True)
+            return _json.dumps({"period": f"{start_str} to {end_dt.strftime('%Y-%m-%d')}", "busy_crew": summary[:15]})
+        except Exception as e:
+            return f"Error fetching forecast: {e}"
+
+    elif tool_name == "get_cache_status":
+        try:
+            crew_data, fresh = load_cache()
+            import os as _os
+            age_hrs = 0
+            if _os.path.exists(CACHE_FILE):
+                age_hrs = round((datetime.now().timestamp() - _os.path.getmtime(CACHE_FILE)) / 3600, 1)
+            return _json.dumps({"crew_count": len(crew_data), "age_hours": age_hrs, "is_fresh": fresh})
+        except Exception as e:
+            return f"Error: {e}"
+
+    elif tool_name == "get_import_log":
+        try:
+            log = load_import_log()
+            return _json.dumps({"count": len(log), "recent": log[-5:] if log else []})
+        except Exception as e:
+            return f"Error: {e}"
+
+    elif tool_name in ("add_crew_to_call", "send_sms_to_crew"):
+        # These return a confirmation request — actual execution happens client-side
+        return _json.dumps({
+            "requires_confirmation": True,
+            "action":  tool_name,
+            "crew":    tool_input.get("crew", []),
+            "calls":   tool_input.get("calls", []),
+            "confirm": tool_input.get("confirm", False),
+        })
+
+    return f"Unknown tool: {tool_name}"
+
+
+_goat_histories = {}  # {sid: [{role, content}, ...]} — per-session conversation history
+GOAT_MAX_HISTORY = 50  # max messages to retain per session
+
+
+@app.route("/api/goat/history")
+def api_goat_history():
+    """Return stored conversation history for the current session."""
+    if not session.get("sid") or not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+    sid = session["sid"]
+    history = _goat_histories.get(sid, [])
+    # Only return user/assistant text messages (skip tool internals)
+    clean = [m for m in history if m.get("role") in ("user", "assistant")
+             and isinstance(m.get("content"), str)]
+    return jsonify({"history": clean})
+
+
+@app.route("/api/goat/history/clear", methods=["POST"])
+def api_goat_history_clear():
+    """Clear conversation history for the current session."""
+    if not session.get("sid"):
+        return jsonify({"error": "Not logged in"}), 401
+    _goat_histories.pop(session["sid"], None)
+    return jsonify({"status": "cleared"})
+
+
+@app.route("/api/goat", methods=["POST"])
+def api_goat():
+    """GOAT AI endpoint — runs Claude with tools, executes tool calls, streams final response."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body     = request.get_json(force=True)
+    messages = body.get("messages", [])
+    if not messages:
+        return jsonify({"error": "No messages"}), 400
+
+    sid = session.get("sid", "anon")
+
+    # Merge incoming messages into server-side history
+    # The frontend sends the full history each time — use it as the source of truth
+    # but cap at GOAT_MAX_HISTORY to keep token usage bounded
+    _goat_histories[sid] = messages[-GOAT_MAX_HISTORY:]
+
+    import anthropic as _anthropic
+    try:
+        client = _anthropic.Anthropic()
+    except Exception as e:
+        return jsonify({"error": f"Anthropic client error: {e}"}), 500
+
+    def generate():
+        import json as _json
+        msgs = list(messages[-GOAT_MAX_HISTORY:])
+
+        # Agentic loop — run until no more tool calls
+        while True:
+            try:
+                response = client.messages.create(
+                    model      = "claude-haiku-4-5-20251001",
+                    max_tokens = 1024,
+                    system     = GOAT_SYSTEM,
+                    tools      = GOAT_TOOLS,
+                    messages   = msgs,
+                )
+            except Exception as e:
+                yield f"data: {_json.dumps({'type':'error','error':str(e)})}\n\n"
+                return
+
+            # Check for tool use
+            tool_calls = [b for b in response.content if b.type == "tool_use"]
+
+            if tool_calls:
+                # Add assistant message with tool calls
+                msgs.append({"role": "assistant", "content": response.content})
+
+                # Execute each tool and collect results
+                tool_results = []
+                for tc in tool_calls:
+                    yield f"data: {_json.dumps({'type':'tool_start','tool':tc.name})}\n\n"
+                    result = execute_goat_tool(tc.name, tc.input, ss)
+
+                    try:
+                        parsed = _json.loads(result)
+                        if parsed.get("requires_confirmation"):
+                            yield f"data: {_json.dumps({'type':'confirm_request','payload':parsed})}\n\n"
+                    except Exception:
+                        pass
+
+                    tool_results.append({
+                        "type":        "tool_result",
+                        "tool_use_id": tc.id,
+                        "content":     result,
+                    })
+
+                msgs.append({"role": "user", "content": tool_results})
+                continue
+
+            # No tool calls — stream the final text response
+            full_response = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    words = block.text.split(" ")
+                    for i, word in enumerate(words):
+                        chunk = word + (" " if i < len(words)-1 else "")
+                        full_response += chunk
+                        yield f"data: {_json.dumps({'type':'text','text':chunk})}\n\n"
+
+            # Persist the final assistant response to server-side history
+            if full_response:
+                hist = _goat_histories.get(sid, list(msgs))
+                hist.append({"role": "assistant", "content": full_response})
+                _goat_histories[sid] = hist[-GOAT_MAX_HISTORY:]
+
+            yield f"data: {_json.dumps({'type':'done'})}\n\n"
+            return
+
+    return app.response_class(generate(), mimetype="text/event-stream",
+                              headers={"X-Accel-Buffering": "no",
+                                       "Cache-Control": "no-cache"})
+
+
+
+@app.route("/api/goat/add-crew", methods=["POST"])
+def api_goat_add_crew():
+    """Add crew to calls server-side using the existing SmartStaff session."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body    = request.get_json(force=True)
+    crew    = body.get("crew", [])
+    calls   = body.get("calls", [])
+    confirm = body.get("confirm", False)
+    action  = "confcrew" if confirm else "addcrew"
+
+    results = []
+    for call in calls:
+        for c in crew:
+            url = f"{BASE_URL}/add-call.php?action={action}&id={call['call_id']}&userID={c['crew_id']}"
+            try:
+                resp = ss.get(url, allow_redirects=True)
+                results.append({
+                    "crew":    c["name"],
+                    "call":    call.get("call_name", call["call_id"]),
+                    "success": resp.status_code == 200,
+                })
+            except Exception as e:
+                results.append({
+                    "crew":    c["name"],
+                    "call":    call.get("call_name", call["call_id"]),
+                    "success": False,
+                    "error":   str(e),
+                })
+            import time; time.sleep(0.8)
+
+    return jsonify({"results": results})
+
+
+@app.route("/api/goat/send-sms", methods=["POST"])
+def api_goat_send_sms():
+    """Add crew to calls and send SMS server-side using the existing SmartStaff session."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body  = request.get_json(force=True)
+    crew  = body.get("crew", [])
+    calls = body.get("calls", [])
+
+    import time
+    results = []
+
+    # Step 1: add crew
+    for call in calls:
+        for c in crew:
+            url = f"{BASE_URL}/add-call.php?action=addcrew&id={call['call_id']}&userID={c['crew_id']}"
+            try:
+                ss.get(url, allow_redirects=True)
+            except Exception:
+                pass
+            time.sleep(0.8)
+
+    # Step 2: send SMS per call
+    crew_params = "&".join(f"crewSelectList={c['crew_id']}" for c in crew)
+    for call in calls:
+        url = f"{BASE_URL}/add-call.php?action=sendsms&id={call['call_id']}&bookingID={call['booking_id']}&{crew_params}"
+        try:
+            resp = ss.get(url, allow_redirects=True)
+            results.append({
+                "call":    call.get("call_name", call["call_id"]),
+                "success": resp.status_code == 200,
+            })
+        except Exception as e:
+            results.append({
+                "call":    call.get("call_name", call["call_id"]),
+                "success": False,
+                "error":   str(e),
+            })
+        time.sleep(0.8)
+
+    return jsonify({"results": results})
+
+
+
+def api_import_validate():
+    """Validate an import payload and return preview data + duplicate check."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    try:
+        payload = request.get_json(force=True)
+    except Exception:
+        return jsonify({"errors": ["Invalid JSON"]}), 400
+
+    errors = validate_payload(payload)
+    if errors:
+        return jsonify({"valid": False, "errors": errors})
+
+    est     = payload["estimate"]
+    event   = payload["event"]
+    customer = payload["customer"]
+    lines   = payload["labour_lines"]
+
+    # Duplicate check
+    existing = find_import_log_entry(est["estimate_id"])
+    if existing:
+        return jsonify({
+            "valid":     False,
+            "duplicate": True,
+            "errors":    [
+                f"This estimate ({est['quote_number']}) was already imported on "
+                f"{existing.get('imported_at', 'unknown date')}. "
+                f"SmartStaff Booking ID: {existing.get('smartstaff_booking_id', 'unknown')}. "
+                f"After initial import, updates must be made manually in SmartStaff."
+            ]
+        })
+
+    # Scrape SmartStaff lists for matching
+    customers = ss_get_customers(ss)
+    venues    = ss_get_venues(ss)
+    contacts  = ss_get_contacts(ss)
+
+    customer_match = fuzzy_match(customer["company_name"], customers)
+    venue_match    = fuzzy_match(event.get("venue_name", ""), venues)
+    contact_match  = fuzzy_match(customer.get("contact_name", ""), contacts)
+
+    # Earliest date for booking date field
+    dates = [ll["date"] for ll in lines if ll.get("date")]
+    earliest_date = min(dates) if dates else ""
+
+    # Build call preview rows
+    call_previews = []
+    for ll in lines:
+        call_previews.append({
+            "line_id":        ll["line_id"],
+            "call_name":      ll.get("call_name") or "",
+            "crew_type":      ll.get("crew_type", ""),
+            "date":           ll["date"],
+            "start_time":     ll["start_time"],
+            "duration_hours": ll["duration_hours"],
+            "quantity":       ll["quantity"],
+            "shift_notes":    ll.get("shift_notes") or "",
+        })
+
+    # Build combined booking notes
+    notes_parts = [
+        event.get("event_notes", ""),
+        event.get("access_notes", ""),
+        event.get("operational_notes", ""),
+    ]
+    booking_notes = "\n\n".join(p for p in notes_parts if p.strip())
+
+    return jsonify({
+        "valid":    True,
+        "duplicate": False,
+        "errors":   [],
+        "preview":  {
+            "booking_name":    event["event_name"],
+            "booking_date":    format_booking_date(earliest_date),
+            "invoice_ref":     est["quote_number"],
+            "booking_notes":   booking_notes,
+            "quote_number":    est["quote_number"],
+            "version":         est.get("version", 1),
+            "call_count":      len(lines),
+            "calls":           call_previews,
+        },
+        "matching": {
+            "customer_name":    customer["company_name"],
+            "customer_matched": customer_match is not None,
+            "customer_id":      customer_match["id"] if customer_match else None,
+            "venue_name":       event.get("venue_name", ""),
+            "venue_matched":    venue_match is not None,
+            "venue_id":         venue_match["id"] if venue_match else None,
+            "contact_name":     customer.get("contact_name", ""),
+            "contact_matched":  contact_match is not None,
+            "contact_id":       contact_match["id"] if contact_match else None,
+            "customers":        customers,
+            "venues":           venues,
+            "contacts":         contacts,
+        },
+    })
+
+
+@app.route("/api/import/start", methods=["POST"])
+def api_import_start():
+    """Begin the SmartStaff booking/call creation process in a background thread."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    if _import_progress.get("running"):
+        return jsonify({"error": "An import is already in progress"}), 409
+
+    body = request.get_json(force=True)
+    payload     = body.get("payload")
+    customer_id = body.get("customer_id")
+    contact_id  = body.get("contact_id", "")
+    venue_id    = body.get("venue_id")
+    call_names  = body.get("call_names", {})  # {line_id: call_name} — operator-selected (may be partial)
+
+    if not payload or not customer_id or not venue_id:
+        return jsonify({"error": "Missing payload, customer_id, or venue_id"}), 400
+
+    # Resolve final call name per line: operator selection → JSON field → missing
+    resolved_call_names = {}
+    missing_names = []
+    invalid_names = []
+    for ll in payload.get("labour_lines", []):
+        lid = ll.get("line_id", "?")
+        cn  = call_names.get(lid) or ll.get("call_name") or ""
+        resolved_call_names[lid] = cn
+        if not cn:
+            missing_names.append(lid)
+        elif cn not in VALID_CALL_NAMES:
+            invalid_names.append(f"{lid}: '{cn}'")
+
+    if missing_names:
+        return jsonify({"error": f"Call name not selected for lines: {', '.join(missing_names)}"}), 400
+    if invalid_names:
+        return jsonify({"error": f"Invalid call names: {', '.join(invalid_names)}"}), 400
+
+    errors = validate_payload(payload)
+    if errors:
+        return jsonify({"error": "Payload failed validation", "errors": errors}), 400
+
+    est   = payload["estimate"]
+    event = payload["event"]
+    lines = payload["labour_lines"]
+
+    dates = [ll["date"] for ll in lines if ll.get("date")]
+    earliest_date = min(dates) if dates else ""
+
+    notes_parts = [
+        event.get("event_notes", ""),
+        event.get("access_notes", ""),
+        event.get("operational_notes", ""),
+    ]
+    booking_notes = "\n\n".join(p for p in notes_parts if p.strip())
+
+    def run_import():
+        import time
+        _import_progress.clear()
+        _import_progress.update({
+            "running":    True,
+            "step":       "Creating booking...",
+            "done":       0,
+            "total":      len(lines),
+            "errors":     [],
+            "call_log":   [],
+            "booking_id": None,
+            "started":    time.time(),
+        })
+
+        try:
+            # Step 1: create booking
+            booking_data = {
+                "booking_name":     event["event_name"],
+                "booking_date":     format_booking_date(earliest_date),
+                "invoice_ref":      est["quote_number"],
+                "notes":            booking_notes,
+                "customer_id":      customer_id,
+                "contact_id":       contact_id,
+                "onsite_contact_id": "",
+                "venue_id":         venue_id,
+            }
+            booking_id, err = ss_create_booking(ss, booking_data)
+            if err:
+                _import_progress["errors"].append(f"Booking creation failed: {err}")
+                _import_progress["running"] = False
+                return
+
+            _import_progress["booking_id"] = booking_id
+            _import_progress["step"] = f"Booking #{booking_id} created. Adding calls..."
+
+            # Step 2: create each call sequentially
+            for i, ll in enumerate(lines):
+                resolved_cn = resolved_call_names[ll["line_id"]]
+                _import_progress["step"] = f"Creating call {i+1}/{len(lines)}: {resolved_cn}..."
+                call_data = {
+                    "call_name":               resolved_cn,
+                    "start_date":              format_ss_date(ll["date"]),
+                    "start_time":              ll["start_time"] + ":00",
+                    "duration_hours":          ll["duration_hours"],
+                    "crew_required":           ll["quantity"],
+                    "notes":                   ll.get("shift_notes") or "",
+                    "public_holiday_same_day": ll.get("public_holiday_same_day", False),
+                    "public_holiday_next_day": ll.get("public_holiday_next_day", False),
+                }
+                call_id, call_err = ss_create_call(ss, booking_id, call_data)
+                log_entry = {
+                    "line_id":   ll["line_id"],
+                    "call_name": resolved_cn,
+                    "date":      ll["date"],
+                    "success":   call_err is None,
+                    "call_id":   call_id,
+                    "error":     call_err,
+                }
+                _import_progress["call_log"].append(log_entry)
+                if call_err:
+                    _import_progress["errors"].append(f"Line {ll['line_id']} ({resolved_cn}): {call_err}")
+                _import_progress["done"] += 1
+                time.sleep(1.2)  # respectful pacing, matches existing add/confirm behaviour
+
+            # Step 3: record in import log
+            import_log = load_import_log()
+            import_log.append({
+                "estimate_id":          est["estimate_id"],
+                "quote_number":         est["quote_number"],
+                "version":              est.get("version", 1),
+                "imported_at":          datetime.now().isoformat(),
+                "smartstaff_booking_id": booking_id,
+                "calls_created":        _import_progress["done"],
+                "errors":               len(_import_progress["errors"]),
+            })
+            save_import_log(import_log)
+
+            _import_progress["step"] = "Complete"
+            _import_progress["elapsed"] = round(time.time() - _import_progress["started"], 1)
+
+        except Exception as e:
+            _import_progress["errors"].append(f"Unexpected error: {str(e)}")
+        finally:
+            _import_progress["running"] = False
+
+    threading.Thread(target=run_import, daemon=True).start()
+    return jsonify({"status": "Import started"})
+
+
+@app.route("/api/import/progress")
+def api_import_progress():
+    """Poll current import progress."""
+    return jsonify(_import_progress)
+
+
+@app.route("/api/import/log")
+def api_import_log():
+    """Return the full import history log."""
+    return jsonify({"log": load_import_log()})
+
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5001, debug=False, threaded=True)
