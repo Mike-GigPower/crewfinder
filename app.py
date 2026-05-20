@@ -58,7 +58,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.0.0"
+APP_VERSION    = "3.0.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
@@ -1052,8 +1052,22 @@ def api_availability():
             skipped.append({**crew, "reason": " | ".join(reasons)})
             continue
 
-        # Get this crew member's existing confirmed shifts once
-        shifts = get_crew_shifts(ss, cid, today)
+        # Get this crew member's existing confirmed shifts —
+        # use cache if available and less than 2 hours old, otherwise fetch live
+        cached_shifts    = cache.get(cid, {}).get("shifts")
+        cached_shifts_at = cache.get(cid, {}).get("shifts_at")
+        shifts_stale     = True
+        if cached_shifts is not None and cached_shifts_at:
+            try:
+                age_hrs = (datetime.now() - datetime.fromisoformat(cached_shifts_at)).total_seconds() / 3600
+                shifts_stale = age_hrs > 2
+            except Exception:
+                pass
+
+        if not shifts_stale and cached_shifts is not None:
+            shifts = cached_shifts
+        else:
+            shifts = get_crew_shifts(ss, cid, today)
 
         # Check against each target call individually
         call_results = []
@@ -1209,12 +1223,15 @@ def api_cache_refresh():
                 try:
                     groups, rating = scrape_crew_profile(ss, crew["id"])
                     inductions     = scrape_crew_inductions(ss, crew["id"])
+                    shifts         = get_crew_shifts(ss, crew["id"], datetime.now())
                     return crew["id"], {
                         "name":       crew["name"],
                         "phone":      crew.get("phone", ""),
                         "groups":     groups,
                         "rating":     rating,
                         "inductions": inductions,
+                        "shifts":     shifts,
+                        "shifts_at":  datetime.now().isoformat(),
                     }, None
                 except Exception as e:
                     return crew["id"], None, str(e)
@@ -1256,17 +1273,7 @@ def api_inductions():
     """Return induction status for all cached crew, with expiry checking."""
     ss = get_ss_session()
     cache, _ = load_cache()
-
-    # Build name lookup from crew list if names missing from cache
     name_map = {cid: data.get("name", "") for cid, data in cache.items()}
-    if any(not v for v in name_map.values()):
-        if ss:
-            try:
-                all_crew = scrape_all_crew(ss)
-                for c in all_crew:
-                    name_map[c["id"]] = c["name"]
-            except Exception:
-                pass
 
     all_venues = sorted({
         venue_name
@@ -1388,18 +1395,6 @@ def api_forecast():
     crew_data, _ = load_cache()
     if not crew_data:
         return jsonify({"error": "No crew cache. Run a cache refresh first."}), 400
-
-    # Enrich cache entries with phone numbers from the crew list
-    # (phone is not stored in older cache entries)
-    if any(not info.get("phone") for info in crew_data.values()):
-        try:
-            live_crew = scrape_all_crew(ss)
-            phone_map = {c["id"]: c.get("phone", "") for c in live_crew}
-            for cid, info in crew_data.items():
-                if not info.get("phone") and cid in phone_map:
-                    info["phone"] = phone_map[cid]
-        except Exception:
-            pass  # phone enrichment is best-effort
 
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
