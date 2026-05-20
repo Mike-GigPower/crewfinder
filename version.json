@@ -1,6 +1,6 @@
 {
-  "version": "2.1.0",
-  "release_date": "2026-05-15",
+  "version": "2.2.0",
+  "release_date": "2026-05-20",
   "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/latest/download/CrewFinder.dmg",
-  "release_notes": "Brief description of what changed"
+  "release_notes": "This version adds the Estimate Import Utility to for creation of Bookings"
 }
