@@ -21,7 +21,13 @@ app.secret_key = "crewfinder-gigpower-2026-internal"
 
 # ─── PATHS ────────────────────────────────────────────────────────────────────
 
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+import sys as _sys
+# When running inside a PyInstaller bundle, use the executable's directory
+# When running as a script, use the script's directory
+if getattr(_sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(_sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 CACHE_FILE  = os.path.join(BASE_DIR, "crew_cache.json")
 BASE_URL    = "https://smartstaffsolutions.com"
@@ -58,7 +64,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.1.0"
+APP_VERSION    = "3.1.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
@@ -2307,8 +2313,9 @@ def api_goat():
     _goat_histories[sid] = messages[-GOAT_MAX_HISTORY:]
 
     import anthropic as _anthropic
+    _api_key = os.environ.get("ANTHROPIC_API_KEY") or load_config().get("anthropic_api_key","").strip()
     try:
-        client = _anthropic.Anthropic()
+        client = _anthropic.Anthropic(api_key=_api_key)
     except Exception as e:
         return jsonify({"error": f"Anthropic client error: {e}"}), 500
 
