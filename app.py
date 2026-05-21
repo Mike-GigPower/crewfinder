@@ -58,7 +58,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.0.1"
+APP_VERSION    = "3.0.2"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
@@ -1022,10 +1022,10 @@ def api_availability():
     conflicts  = []
     skipped    = []
 
+    # Step 1: filter by rating/groups using cache only (fast)
+    candidates = []
     for crew in all_crew:
         cid = crew["id"]
-
-        # Profile from cache or web
         if cid in cache:
             groups     = cache[cid]["groups"]
             rating     = cache[cid]["rating"]
@@ -1039,7 +1039,6 @@ def api_availability():
         crew["rating"]     = rating
         crew["inductions"] = inductions
 
-        # Filter by rating / groups
         reasons = []
         if rating < min_rating:
             reasons.append(f"Rating {rating} < {min_rating}")
@@ -1050,24 +1049,30 @@ def api_availability():
 
         if reasons:
             skipped.append({**crew, "reason": " | ".join(reasons)})
-            continue
-
-        # Get this crew member's existing confirmed shifts —
-        # use cache if available and less than 2 hours old, otherwise fetch live
-        cached_shifts    = cache.get(cid, {}).get("shifts")
-        cached_shifts_at = cache.get(cid, {}).get("shifts_at")
-        shifts_stale     = True
-        if cached_shifts is not None and cached_shifts_at:
-            try:
-                age_hrs = (datetime.now() - datetime.fromisoformat(cached_shifts_at)).total_seconds() / 3600
-                shifts_stale = age_hrs > 2
-            except Exception:
-                pass
-
-        if not shifts_stale and cached_shifts is not None:
-            shifts = cached_shifts
         else:
-            shifts = get_crew_shifts(ss, cid, today)
+            candidates.append(crew)
+
+    # Step 2: fetch shifts in parallel for candidates only
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+    def fetch_shifts(crew):
+        return crew, get_crew_shifts(ss, crew["id"], today)
+
+    shift_map = {}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_shifts, c): c for c in candidates}
+        for future in _as_completed(futures):
+            try:
+                crew, shifts = future.result()
+                shift_map[crew["id"]] = shifts
+            except Exception:
+                shift_map[futures[future]["id"]] = []
+
+    # Step 3: check conflicts using fetched shifts
+    for crew in candidates:
+        cid    = crew["id"]
+        shifts = shift_map.get(cid, [])
+        inductions = crew["inductions"]
 
         # Check against each target call individually
         call_results = []
@@ -1223,15 +1228,12 @@ def api_cache_refresh():
                 try:
                     groups, rating = scrape_crew_profile(ss, crew["id"])
                     inductions     = scrape_crew_inductions(ss, crew["id"])
-                    shifts         = get_crew_shifts(ss, crew["id"], datetime.now())
                     return crew["id"], {
                         "name":       crew["name"],
                         "phone":      crew.get("phone", ""),
                         "groups":     groups,
                         "rating":     rating,
                         "inductions": inductions,
-                        "shifts":     shifts,
-                        "shifts_at":  datetime.now().isoformat(),
                     }, None
                 except Exception as e:
                     return crew["id"], None, str(e)
@@ -1549,7 +1551,327 @@ def api_debug_call_form(booking_id):
 
 
 
-# ─── ASK GOAT ─────────────────────────────────────────────────────────────────
+def scrape_schedule(ss, days=14):
+    """Scrape all bookings from /bookings, return calls for the next `days` days.
+    Handles pagination. Returns calls grouped by booking_id, filtered to date window.
+    Also scrapes venue and contact from each booking header.
+    """
+    today    = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date = today + timedelta(days=days)
+    all_calls = []
+    seen_calls = set()
+    page = 0
+
+    while True:
+        url  = f"{BASE_URL}/bookings?p={page}" if page > 0 else f"{BASE_URL}/bookings"
+        resp = ss.get(url)
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        page_calls = []
+        earliest_date = None  # track earliest date on this page to know when to stop
+
+        for link in soup.find_all("a", href=re.compile(r"bookings/(\d+)/callsheet/(\d+)")):
+            href = link.get("href", "")
+            m    = re.search(r"bookings/(\d+)/callsheet/(\d+)", href)
+            if not m:
+                continue
+            booking_id = m.group(1)
+            call_id    = m.group(2)
+            if call_id in seen_calls:
+                continue
+            seen_calls.add(call_id)
+
+            row = link.find_parent("tr")
+            if not row:
+                continue
+
+            row_text = row.get_text(" ", strip=True)
+
+            # Date
+            date_m = re.search(r"(\d{2}/\d{2}/\d{2})", row_text)
+            if not date_m:
+                continue
+            date_str = date_m.group(1)
+            try:
+                call_date = datetime.strptime(date_str, "%d/%m/%y")
+            except ValueError:
+                continue
+
+            # Track earliest date on this page for pagination cutoff
+            if earliest_date is None or call_date < earliest_date:
+                earliest_date = call_date
+
+            # Skip if outside our window
+            if call_date < today or call_date >= end_date:
+                continue
+
+            # Time, length, call name, booked/required, notes
+            time_m   = re.search(r"(\d{2}:\d{2})", row_text)
+            length_m = re.search(r"(\d+(?:\.\d+)?)\s*hrs?", row_text, re.I)
+            tds      = row.find_all("td")
+            call_name = tds[5].get_text(strip=True) if len(tds) >= 6 else ""
+
+            booked = required = 0
+            for b_tag in row.find_all("b"):
+                bm = re.fullmatch(r"\s*(\d{1,3})\s*/\s*(\d{1,3})\s*", b_tag.get_text())
+                if bm:
+                    booked   = int(bm.group(1))
+                    required = int(bm.group(2))
+                    break
+
+            # Notes column — td index varies: dashboard uses td[9], bookings page may differ
+            # Try td[9] first, fall back to td[10] if it looks more like notes
+            notes = ""
+            if len(tds) >= 10:
+                n9 = tds[9].get_text(strip=True)
+                n10 = tds[10].get_text(strip=True) if len(tds) >= 11 else ""
+                # Notes shouldn't look like a link or short action text
+                if n9 and n9.lower() not in ("view/edit", "edit", "view"):
+                    notes = n9
+                elif n10 and n10.lower() not in ("view/edit", "edit", "view"):
+                    notes = n10
+
+            # Booking name, venue, contact from ydisplayarea
+            booking_name = venue = contact = ""
+            table = row.find_parent("table", id=re.compile(r"^booking_"))
+            if table:
+                for sibling in table.previous_siblings:
+                    if getattr(sibling, "name", None) == "div" and "ydisplayarea" in sibling.get("class", []):
+                        h2 = sibling.find("h2")
+                        if h2:
+                            booking_name = h2.get_text(strip=True)
+                        info_box = sibling.find("div", class_="bookinginfobox")
+                        if info_box:
+                            venue   = detect_venue(info_box.get_text()) or info_box.get_text(strip=True)[:40]
+                            # Extract contact name
+                            contact_m = re.search(r"Contact[:\s]+([^\n/]+)", info_box.get_text())
+                            if contact_m:
+                                contact = contact_m.group(1).strip()
+                        break
+
+            # Build ISO datetimes
+            time_str = time_m.group(1) if time_m else "00:00"
+            length   = float(length_m.group(1)) if length_m else 0
+            try:
+                start_dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%y %H:%M")
+                end_dt   = start_dt + timedelta(hours=length)
+            except ValueError:
+                start_dt = end_dt = call_date
+
+            page_calls.append({
+                "booking_id":   booking_id,
+                "call_id":      call_id,
+                "booking_name": booking_name,
+                "venue":        venue,
+                "contact":      contact,
+                "call_name":    call_name,
+                "date":         date_str,
+                "date_iso":     call_date.strftime("%Y-%m-%d"),
+                "time":         time_str,
+                "length":       length,
+                "start_iso":    start_dt.isoformat(),
+                "end_iso":      end_dt.isoformat(),
+                "booked":       booked,
+                "required":     required,
+                "full":         booked >= required and required > 0,
+                "notes":        notes,
+            })
+
+        all_calls.extend(page_calls)
+
+        # Stop paginating if earliest date on this page is already past our window
+        # or if no calls found on this page
+        if not page_calls and not any(
+            link for link in soup.find_all("a", href=re.compile(r"bookings/(\d+)/callsheet/(\d+)"))
+        ):
+            break
+        if earliest_date and earliest_date >= end_date:
+            break
+
+        # Check for next page link
+        has_next = any(
+            a.get_text(strip=True).upper() == "NEXT"
+            for a in soup.find_all("a", href=re.compile(r"bookings\?p="))
+        )
+        if not has_next:
+            break
+        page += 1
+
+    return sorted(all_calls, key=lambda c: (c["date_iso"], c["time"]))
+
+
+_schedule_cache = {}  # {sid: {data, at}}
+
+@app.route("/api/schedule")
+def api_schedule():
+    """Return all calls for the next 14 days grouped by booking."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    days  = min(28, max(1, int(request.args.get("days", 14))))
+    force = request.args.get("force") == "1"
+    sid   = session.get("sid", "anon")
+    key   = f"{sid}_{days}"
+
+    cached = _schedule_cache.get(key)
+    if not force and cached and (datetime.now() - cached["at"]).total_seconds() < 120:
+        return jsonify(cached["data"])
+
+    calls = scrape_schedule(ss, days=days)
+
+    # Group by booking_id
+    bookings = {}
+    for c in calls:
+        bid = c["booking_id"]
+        if bid not in bookings:
+            bookings[bid] = {
+                "booking_id":   bid,
+                "booking_name": c["booking_name"],
+                "venue":        c["venue"],
+                "contact":      c["contact"],
+                "calls":        [],
+            }
+        bookings[bid]["calls"].append(c)
+
+    # Build date axis
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+
+    payload = {
+        "days":     days,
+        "dates":    dates,
+        "bookings": list(bookings.values()),
+        "total_calls": len(calls),
+    }
+    _schedule_cache[key] = {"data": payload, "at": datetime.now()}
+    return jsonify(payload)
+
+
+@app.route("/api/debug/booked-crew/<booking_id>/<call_id>")
+def api_debug_booked_crew(booking_id, call_id):
+    """Inspect the booked crew tab structure on a callsheet."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/{call_id}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    tables = []
+    for t in soup.find_all("table"):
+        rows = []
+        for tr in t.find_all("tr")[:8]:
+            tds = []
+            for i, td in enumerate(tr.find_all("td")):
+                # For status cell (index 2), show raw HTML too
+                cell = {"text": td.get_text(strip=True)[:60]}
+                if i == 2:
+                    cell["html"] = str(td)[:300]
+                tds.append(cell)
+            rows.append(tds)
+        tables.append({"class": str(t.get("class","")), "rows": rows})
+
+    return jsonify({"url": resp.url, "tables": tables[:2]})
+
+
+@app.route("/api/booked-crew/<booking_id>/<call_id>")
+def api_booked_crew(booking_id, call_id):
+    """Scrape crew already booked for a call with their confirmation status."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/{call_id}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Debug: return all table info
+    debug = request.args.get("debug") == "1"
+    if debug:
+        tables = []
+        for t in soup.find_all("table"):
+            rows = []
+            for tr in t.find_all("tr")[:8]:
+                tds = [td.get_text(strip=True)[:40] for td in tr.find_all("td")]
+                rows.append(tds)
+            tables.append({"class": str(t.get("class","")), "rows": rows})
+        return jsonify({"url": resp.url, "tables": tables})
+
+    crew = []
+    status_keywords = {"confirmed", "unconfirmed", "declined", "waiting", "sent"}
+
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        found_in_table = []
+        for row in rows[1:]:
+            tds = row.find_all("td")
+            if len(tds) < 3:
+                continue
+            name_raw = tds[1].get_text(strip=True)  # tds[0] is checkbox
+            status   = tds[2].get_text(strip=True).lower()  # tds[2] is status
+            if not name_raw:
+                continue
+            # Direct matching — unconfirmed MUST be checked before confirmed
+            if "unconfirm" in status:
+                status_key = "unconfirmed"
+            elif "confirm" in status:
+                status_key = "confirmed"
+            elif "decline" in status:
+                status_key = "declined"
+            elif status:
+                status_key = "waiting"
+            else:
+                continue
+            # Convert "Last, First" → "First Last"
+            if "," in name_raw:
+                parts = name_raw.split(",", 1)
+                name = parts[1].strip() + " " + parts[0].strip()
+            else:
+                name = name_raw.strip()
+            found_in_table.append({"name": name, "status": status_key})
+
+        if found_in_table:
+            crew = found_in_table
+            break
+
+    return jsonify({"crew": crew, "total": len(crew)})
+
+@app.route("/api/call-status/<booking_id>/<call_id>")
+def api_call_status(booking_id, call_id):
+    """Fetch confirmed/waiting/declined counts from the callsheet page."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/{call_id}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Blue banner contains: "THIS CALL REQUIRES X CREW / Y/Z CREW HAVE BEEN CONTACTED:
+    #                         A CONFIRMED  B DECLINED / WAITING ON C CREW TO RESPOND"
+    banner = None
+    for div in soup.find_all("div"):
+        txt = div.get_text(" ", strip=True)
+        if "CONFIRMED" in txt.upper() and "WAITING" in txt.upper():
+            banner = div
+            break
+
+    result = {"confirmed": 0, "declined": 0, "waiting": 0, "required": 0, "contacted": 0}
+
+    if banner:
+        txt = banner.get_text(" ", strip=True)
+        m = re.search(r"REQUIRES\s+(\d+)\s+CREW", txt, re.I)
+        if m: result["required"] = int(m.group(1))
+        m = re.search(r"(\d+)\s*/\s*(\d+)\s+CREW\s+HAVE\s+BEEN\s+CONTACTED", txt, re.I)
+        if m: result["contacted"] = int(m.group(1))
+        m = re.search(r"(\d+)\s+CONFIRMED", txt, re.I)
+        if m: result["confirmed"] = int(m.group(1))
+        m = re.search(r"(\d+)\s+DECLINED", txt, re.I)
+        if m: result["declined"] = int(m.group(1))
+        m = re.search(r"WAITING\s+ON\s+(\d+)", txt, re.I)
+        if m: result["waiting"] = int(m.group(1))
+
+    return jsonify(result)
+
 
 GOAT_TOOLS = [
     {
@@ -2144,6 +2466,8 @@ def api_goat_send_sms():
 
 
 
+# ── IMPORT ENDPOINTS ── DO NOT REMOVE DECORATOR BELOW ────────────────────────
+@app.route("/api/import/validate", methods=["POST"])
 def api_import_validate():
     """Validate an import payload and return preview data + duplicate check."""
     ss = get_ss_session()

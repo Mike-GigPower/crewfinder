@@ -328,8 +328,8 @@ tr.skipped{opacity:.6}
 .fc-table tr:hover td{background:var(--surface2)}
 .fc-col-name{width:180px}
 .fc-col-phone{width:120px}
-.fc-col-stars{width:60px}
-.fc-col-id{width:60px}
+.fc-col-stars{width:80px;white-space:nowrap;overflow:hidden}
+.fc-col-id{width:70px}
 .fc-col-hours{width:64px}
 .fc-col-bar{width:auto}
 .fc-name{font-weight:600;color:var(--text)}
@@ -534,6 +534,44 @@ tr.skipped{opacity:.6}
 }
 .goat-send:hover{background:#c9a227;box-shadow:0 0 10px rgba(212,175,55,0.3)}
 .goat-send:disabled{opacity:.3;cursor:not-allowed}
+/* ── SCHEDULE TAB ── */
+.schedule-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;background:var(--bg)}
+.schedule-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
+.schedule-body{display:flex;flex:1;overflow:hidden;min-height:0}
+.schedule-left{width:300px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;background:var(--surface)}
+.schedule-right{flex:1;overflow:auto;position:relative}
+.sched-booking{border-bottom:1px solid var(--border)}
+.sched-booking-head{padding:8px 12px;background:var(--surface2);border-left:2px solid var(--border-gold);cursor:pointer;transition:background .15s}
+.sched-booking-head:hover{background:rgba(212,175,55,0.06)}
+.sched-booking-name{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sched-booking-meta{font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;letter-spacing:.05em;margin-top:2px}
+.sched-call{display:flex;align-items:center;gap:8px;padding:6px 12px 6px 20px;border-top:1px solid var(--border);cursor:pointer;transition:background .15s}
+.sched-call:hover{background:rgba(212,175,55,0.04)}
+.sched-call.selected{background:var(--accent-bg);border-left:3px solid var(--accent)}
+.sched-call-name{font-size:11px;font-weight:600;color:var(--text);min-width:70px}
+.sched-call-time{font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);white-space:nowrap}
+.sched-call-status{font-family:'Share Tech Mono',monospace;font-size:10px;font-weight:700;margin-left:auto;white-space:nowrap}
+.sched-call-status.full{color:var(--available)}
+.sched-call-status.partial{color:var(--warn)}
+.sched-call-status.empty{color:var(--conflict)}
+
+/* Timeline right panel */
+.sched-timeline-wrap{min-width:max-content}
+.sched-header-row{display:flex;position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--border)}
+.sched-header-spacer{width:300px;flex-shrink:0;border-right:1px solid var(--border);padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;display:flex;align-items:center}
+.sched-day-col{flex:0 0 52px;text-align:center;padding:6px 2px;border-right:1px solid var(--border);font-size:9px;color:var(--muted)}
+.sched-day-col.today{color:var(--accent);font-weight:700}
+.sched-day-col.weekend{color:rgba(212,175,55,0.5)}
+.sched-booking-row{display:flex;border-bottom:1px solid var(--border)}
+.sched-booking-label{width:300px;flex-shrink:0;border-right:1px solid var(--border);background:var(--surface2);padding:6px 12px;display:flex;flex-direction:column;justify-content:center}
+.sched-timeline-row{display:flex;flex:1}
+.sched-day-cell{flex:0 0 52px;border-right:1px solid var(--border);padding:2px;display:flex;flex-direction:column;gap:1px;min-height:36px}
+.sched-call-block{border-radius:2px;padding:2px 4px;font-size:9px;font-weight:700;font-family:'Share Tech Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;transition:opacity .15s}
+.sched-call-block:hover{opacity:.8}
+.sched-call-block.full{background:rgba(34,197,94,0.2);border-left:2px solid #22c55e;color:#22c55e}
+.sched-call-block.partial{background:rgba(245,158,11,0.15);border-left:2px solid var(--warn);color:var(--warn)}
+.sched-call-block.empty{background:rgba(227,30,36,0.1);border-left:2px solid var(--accent2);color:var(--accent2)}
+.sched-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:10px;color:var(--muted);text-align:center;padding:60px}
 </style>
 </head>
 <body>
@@ -554,6 +592,7 @@ tr.skipped{opacity:.6}
       <span class="nav-goat-title">THE GOAT</span>
       <span class="nav-goat-sub">Gig Power Operations Platform</span>
     </div>
+    <span id="nav-version" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;align-self:flex-end;padding-bottom:2px"></span>
   </div>
   <div class="nav-right">
     <div class="cache-badge" id="cache-badge" onclick="refreshCache()">Loading cache...</div>
@@ -571,14 +610,15 @@ tr.skipped{opacity:.6}
   <button class="update-banner-close" onclick="document.getElementById('update-banner').classList.remove('show')">&#215;</button>
 </div>
 <div class="tab-bar">
-  <button class="tab-btn active" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
+  <button class="tab-btn active" onclick="switchTab('schedule')">📅 Schedule</button>
+  <button class="tab-btn" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
   <button class="tab-btn" onclick="switchTab('forecast')">📊 Crew Utilization</button>
   <button class="tab-btn" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
   <button class="tab-btn" onclick="switchTab('import')" id="import-tab-btn">⬆ Estimate Import</button>
 </div>
 <div class="main">
   <!-- ── CREW FINDER TAB ── -->
-  <div class="tab-panel active" id="tab-crew-finder">
+  <div class="tab-panel" id="tab-crew-finder">
   <div class="sidebar">
     <div class="sidebar-top">
       <div class="section-label">Filters</div>
@@ -650,6 +690,58 @@ tr.skipped{opacity:.6}
     </div>
   </div>
   </div><!-- end tab-crew-finder -->
+
+  <!-- ── SCHEDULE TAB ── -->
+  <div class="tab-panel active" id="tab-schedule">
+    <div class="schedule-panel">
+
+      <div class="schedule-toolbar">
+        <span class="section-label">NEXT</span>
+        <input type="number" id="sched-days" value="14" min="1" max="28"
+               style="width:44px;background:var(--surface2);border:1px solid var(--border);
+                      border-radius:4px;padding:4px 8px;color:var(--text);
+                      font-family:'Share Tech Mono',monospace;font-size:11px;
+                      outline:none;text-align:center"
+               oninput="this.value=Math.min(28,Math.max(1,this.value||1))">
+        <span style="font-size:10px;color:var(--muted)">days</span>
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+        <input type="text" id="sched-search" placeholder="Search bookings..."
+               style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
+                      padding:5px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;
+                      font-size:11px;outline:none;width:160px"
+               oninput="renderSchedule()">
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+        <span class="section-label">SHOW</span>
+        <span class="fc-group-chip active" id="sched-filter-all"  onclick="setSchedFilter('all')">All</span>
+        <span class="fc-group-chip"        id="sched-filter-open" onclick="setSchedFilter('open')">Open</span>
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.3);border-left:2px solid #22c55e;display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Full</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(245,158,11,0.2);border-left:2px solid var(--warn);display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Partial</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(227,30,36,0.15);border-left:2px solid var(--accent2);display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Unfilled</span>
+        </div>
+        <button class="btn" onclick="loadSchedule(true)" style="margin-left:auto">⟳ Refresh</button>
+        <span id="sched-summary" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+
+      <div class="schedule-body" id="schedule-body">
+        <div class="sched-empty" id="sched-placeholder">
+          <div style="font-size:32px;opacity:.4">📅</div>
+          <div style="font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600">Schedule</div>
+          <div style="font-size:11px;max-width:240px;line-height:1.6">Shows all bookings and calls for the next 14 days with staffing status.</div>
+          <button class="btn-search" onclick="loadSchedule()" style="width:auto;padding:8px 20px">Load Schedule</button>
+        </div>
+        <div id="sched-loading" style="display:none" class="sched-empty">
+          <div style="font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;color:var(--muted)">Loading schedule...</div>
+        </div>
+        <div id="sched-timeline" style="display:none;flex:1;overflow:auto"></div>
+      </div>
+
+    </div>
+  </div><!-- end tab-schedule -->
 
   <!-- ── INDUCTION CHECKER TAB ── -->
   <div class="tab-panel" id="tab-induction-checker">
@@ -939,6 +1031,7 @@ function hToLabel(h,targetDate){
 
 document.addEventListener('DOMContentLoaded',()=>{
   Promise.all([loadGroups(), loadCalls(), loadCacheStatus(), checkForUpdates()]);
+  loadSchedule();
 });
 
 async function loadGroups(){
@@ -1016,6 +1109,7 @@ function handleCallClick(event, call){
     card.classList.add('selected');
   }
   updateCallSelectionUI();
+  greyOutResults();
 }
 
 function clearCallSelection(){
@@ -1065,6 +1159,24 @@ function deselectCall(callId){
   const card=document.querySelector('.call-card[data-call-id="'+callId+'"]');
   if(card)card.classList.remove('selected');
   updateCallSelectionUI();
+  greyOutResults();
+}
+
+function greyOutResults(){
+  const wrap   = document.getElementById('results-wrap');
+  const header = document.getElementById('results-header');
+  const booked = document.getElementById('booked-crew-section');
+  if(header && header.style.display !== 'none'){
+    if(wrap){ wrap.style.opacity='0.25'; wrap.style.pointerEvents='none'; }
+    if(booked){ booked.style.opacity='0.25'; booked.style.pointerEvents='none'; }
+  }
+}
+
+function restoreResults(){
+  const wrap   = document.getElementById('results-wrap');
+  const booked = document.getElementById('booked-crew-section');
+  if(wrap){ wrap.style.opacity=''; wrap.style.pointerEvents=''; }
+  if(booked){ booked.style.opacity=''; booked.style.pointerEvents=''; }
 }
 
 // ── SEARCH ──
@@ -1097,11 +1209,26 @@ async function runSearch(){
         min_rating:parseInt(document.getElementById('rating-slider').value)
       })});
     const result=await resp.json();
+
+    // Fetch already-booked crew for the first call (if single call search)
+    let bookedCrew = [];
+    if(calls.length === 1){
+      try{
+        const bc = await fetch(`/api/booked-crew/${calls[0].booking_id}/${calls[0].call_id}`);
+        const bcData = await bc.json();
+        bookedCrew = bcData.crew || [];
+      } catch(e){}
+    }
+    result.bookedCrew = bookedCrew;
+
     // Use first call's details as reference for timeline date
     currentResult={...result, details:detailsArr[0], calls:calls};
     renderResults(result, detailsArr[0], result.targets);
   }catch(e){alert('Search error: '+e)}
-  finally{document.getElementById('loading-overlay').classList.remove('show')}
+  finally{
+    document.getElementById('loading-overlay').classList.remove('show');
+    restoreResults();
+  }
 }
 
 function setView(view){
@@ -1113,13 +1240,66 @@ function setView(view){
 
 function renderResults(result,details,targets){
   const{available,conflicts,skipped}=result;
+  const bookedCrew = result.bookedCrew || [];
   document.getElementById('cnt-avail').textContent=available.length;
   document.getElementById('cnt-conf').textContent=conflicts.length;
   document.getElementById('cnt-skip').textContent=skipped.length;
   document.getElementById('results-header').style.display='flex';
   selected.clear();updateSelCount();
+
+  // Build booked crew section
+  const existingBooked = document.getElementById('booked-crew-section');
+  if(existingBooked) existingBooked.remove();
+
+  let bookedSection = null;
+  if(bookedCrew.length > 0){
+    const statusConfig = {
+      confirmed:   {label:'Confirmed',   color:'#22c55e', bg:'rgba(34,197,94,0.08)'},
+      unconfirmed: {label:'Unconfirmed', color:'var(--warn)', bg:'rgba(245,158,11,0.08)'},
+      waiting:     {label:'Waiting',     color:'var(--warn)', bg:'rgba(245,158,11,0.08)'},
+      declined:    {label:'Declined',    color:'var(--accent2)', bg:'rgba(227,30,36,0.08)'},
+    };
+    const grouped = {confirmed:[], unconfirmed:[], waiting:[], declined:[]};
+    bookedCrew.forEach(c => (grouped[c.status]||grouped.waiting).push(c.name));
+
+    const chips = Object.entries(grouped)
+      .filter(([,names]) => names.length > 0)
+      .map(([status, names]) => {
+        const cfg = statusConfig[status];
+        return `<div style="margin-bottom:6px">
+          <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+                      color:${cfg.color};font-family:'Share Tech Mono',monospace;margin-bottom:4px">
+            ${cfg.label} (${names.length})
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${names.map(n=>`<span style="background:${cfg.bg};border:1px solid ${cfg.color};
+              color:${cfg.color};padding:2px 8px;border-radius:3px;font-size:10px;
+              font-family:'Rajdhani',sans-serif;font-weight:600">${n}</span>`).join('')}
+          </div>
+        </div>`;
+      }).join('');
+
+    bookedSection = document.createElement('div');
+    bookedSection.id = 'booked-crew-section';
+    bookedSection.style.cssText = 'padding:12px 16px;border-bottom:1px solid var(--border-gold);background:var(--surface2);flex-shrink:0';
+    bookedSection.innerHTML = `
+      <div style="font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;
+                  color:var(--accent);letter-spacing:.08em;margin-bottom:8px">
+        ⚡ ALREADY BOOKED (${bookedCrew.length})
+      </div>
+      ${chips}`;
+  }
+
   if(currentView==='timeline')renderTimeline(result,details,targets||[]);
   else renderTable(result,targets||[]);
+
+  // Insert booked crew section after render (results-wrap now exists)
+  const existingBooked2 = document.getElementById('booked-crew-section');
+  if(existingBooked2) existingBooked2.remove();
+  if(bookedCrew.length > 0){
+    const resultsWrap = document.getElementById('results-wrap');
+    if(resultsWrap) resultsWrap.before(bookedSection);
+  }
 }
 
 // ── STATUS HELPERS ──
@@ -1430,7 +1610,7 @@ async function sendSMS(){
 
 // ── TABS ──
 function switchTab(tab){
-  const tabNames = ['crew-finder','forecast','induction-checker','import'];
+  const tabNames = ['schedule','crew-finder','forecast','induction-checker','import'];
   document.querySelectorAll('.tab-btn').forEach((b,i)=>{
     b.classList.toggle('active', tabNames[i]===tab);
   });
@@ -1440,6 +1620,7 @@ function switchTab(tab){
   if(tab==='induction-checker' && !_indData) loadInductions();
   if(tab==='import') loadImportHistory();
   if(tab==='forecast') initForecast();
+  if(tab==='schedule') { initSchedule(); if(!_schedData) loadSchedule(); }
 }
 
 // ── CALL SEARCH & COLLAPSE ──
@@ -2133,7 +2314,7 @@ function renderForecastTable(){
     return `<tr>
       <td class="fc-col-name"><span class="fc-name">${c.name}</span></td>
       <td class="fc-col-phone">${phoneLink(c.phone)}</td>
-      <td class="fc-col-stars"><span style="color:#f59e0b;font-size:10px">${stars}</span><span style="color:var(--border);font-size:10px">${noStars}</span></td>
+      <td class="fc-col-stars"><span style="color:#f59e0b;font-size:8px;letter-spacing:0">${stars}</span><span style="color:var(--border);font-size:8px;letter-spacing:0">${noStars}</span></td>
       <td class="fc-col-id"><span class="fc-id">${c.id}</span></td>
       <td class="fc-col-hours"><span class="fc-hours">${c.total_hours > 0 ? c.total_hours + 'h' : '—'}</span></td>
       ${dayCells}
@@ -2202,6 +2383,29 @@ function goatWelcome(){
   ];
   msgs.forEach((m, i) => setTimeout(() => appendGoatMessage('goat', m), i * 600));
 }
+
+function goatEasterEgg(){
+  const overlay = document.getElementById('goat-easter-egg');
+  const audio   = document.getElementById('goat-bray');
+  overlay.style.display = 'flex';
+
+  // Play the bray
+  audio.currentTime = 0;
+  audio.play().catch(()=>{});
+
+  const dismiss = () => {
+    overlay.style.display = 'none';
+    audio.pause();
+    audio.currentTime = 0;
+    appendGoatMessage('goat', `Pants. The answer is pants. You're welcome. 🐐`);
+    overlay.onclick = null;
+  };
+
+  setTimeout(dismiss, 5000);
+  overlay.onclick = dismiss;
+}
+
+function goatEggFallback(){}
 
 function goatSuggest(el){
   document.getElementById('goat-input').value = el.textContent;
@@ -2520,11 +2724,366 @@ function cancelGoatAction(cardId){
 }
 
 
+
+// ── SCHEDULE TAB ────────────────────────────────────────────────────────────
+
+let _schedData    = null;
+let _schedInitDone = false;
+let _schedFilter   = 'all'; // 'all' | 'full' | 'partial' | 'empty'
+
+function setSchedFilter(f){
+  _schedFilter = f;
+  ['all','open'].forEach(s => {
+    const el = document.getElementById('sched-filter-' + s);
+    if(el) el.classList.toggle('active', s === f);
+  });
+  renderSchedule();
+}
+
+function initSchedule(){
+  if(_schedInitDone) return;
+  _schedInitDone = true;
+}
+
+async function loadSchedule(force=false){
+  const days = document.getElementById('sched-days').value || 14;
+  document.getElementById('sched-placeholder').style.display = 'none';
+  document.getElementById('sched-loading').style.display     = 'flex';
+  document.getElementById('sched-timeline').style.display    = 'none';
+
+  try{
+    const url  = `/api/schedule?days=${days}` + (force ? '&force=1' : '');
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if(data.error){ alert('Schedule error: ' + data.error); return; }
+    _schedData = data;
+    renderSchedule();
+  } catch(e){
+    alert('Error loading schedule: ' + e.message);
+  } finally{
+    document.getElementById('sched-loading').style.display = 'none';
+  }
+}
+
+function renderSchedule(){
+  if(!_schedData) return;
+
+  const search   = document.getElementById('sched-search').value.toLowerCase().trim();
+  const dates    = _schedData.dates;
+  const today    = dates[0];
+
+  // Filter bookings by search and status
+  let bookings = _schedData.bookings.filter(b => {
+    if(search && !b.booking_name.toLowerCase().includes(search) && !b.venue.toLowerCase().includes(search))
+      return false;
+    if(_schedFilter === 'all') return true;
+    // 'open' = any call that is partial or unfilled
+    return b.calls.some(c => !c.full);
+  });
+
+  const totalRequired = bookings.reduce((sum, b) => sum + b.calls.reduce((s, c) => s + (c.required||0), 0), 0);
+  const totalBooked   = bookings.reduce((sum, b) => sum + b.calls.reduce((s, c) => s + (c.booked||0), 0), 0);
+
+  document.getElementById('sched-summary').textContent =
+    `${bookings.length} booking${bookings.length!==1?'s':''} · ${_schedData.total_calls} calls · ${totalBooked}/${totalRequired} resources`;
+
+  if(!bookings.length){
+    document.getElementById('sched-timeline').style.display = 'none';
+    document.getElementById('sched-placeholder').style.display = 'flex';
+    return;
+  }
+
+  document.getElementById('sched-placeholder').style.display = 'none';
+  const wrap = document.getElementById('sched-timeline');
+  wrap.style.display = 'flex';
+  wrap.style.flexDirection = 'column';
+  wrap.style.overflow = 'auto';
+
+  // Build day headers
+  const dayHeaders = dates.map(d => {
+    const dt  = new Date(d + 'T12:00:00');
+    const dow = dt.toLocaleDateString('en-AU',{weekday:'short'});
+    const day = dt.getDate();
+    const mon = dt.toLocaleDateString('en-AU',{month:'short'});
+    const isToday   = d === today;
+    const isWeekend = dt.getDay()===0 || dt.getDay()===6;
+    const cls = isToday ? 'today' : isWeekend ? 'weekend' : '';
+    const colWidth = isToday ? '70px' : '52px';
+    return `<div class="sched-day-col ${cls}" style="flex:0 0 ${colWidth};${isToday?'background:rgba(212,175,55,0.08);border-top:2px solid var(--accent)':''}">
+      <div style="font-weight:${isToday?'700':'400'}">${dow}</div>
+      <div style="font-size:11px;color:${isToday?'var(--accent)':'var(--text)'}">${day}</div>
+      <div style="font-size:8px">${mon}</div>
+      ${isToday?'<div style="font-size:7px;color:var(--accent);font-weight:700;letter-spacing:.05em">TODAY</div>':''}
+    </div>`;
+  }).join('');
+
+  let html = `
+    <div style="display:flex;position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--border);min-width:max-content">
+        <div style="width:300px;flex-shrink:0;border-right:1px solid var(--border);
+                    padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:9px;
+                    color:var(--muted);letter-spacing:.1em;display:flex;align-items:center;
+                    position:sticky;left:0;z-index:11;background:var(--surface)">BOOKING / CALL</div>
+      ${dayHeaders}
+    </div>`;
+
+  // Build booking rows
+  let bookingIdx = 0;
+  for(const booking of bookings){
+    const bid = `sched-b-${bookingIdx++}`;
+    const callsByDay = {};
+    dates.forEach(d => callsByDay[d] = []);
+    for(const call of booking.calls){
+      if(callsByDay[call.date_iso] !== undefined){
+        callsByDay[call.date_iso].push(call);
+      }
+    }
+
+    // Booking header row
+    const dayCells = dates.map(d => {
+      const dayCalls  = callsByDay[d];
+      const isToday   = d === today;
+      const blocks = dayCalls.map(c => {
+        const cls    = c.full ? 'full' : c.booked > 0 ? 'partial' : 'empty';
+        const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
+        const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        return `<div class="sched-call-block ${cls}" title="${safeTitle}"
+                     onclick="schedJumpToCrewFinder('${c.booking_id}','${c.call_id}')"
+                     style="font-size:8px;padding:2px 3px;${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}">
+          <div style="font-size:7px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.time}</div>
+          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
+          ${c.notes ? `<div style="font-size:7px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px;font-style:italic">${c.notes}</div>` : ''}
+        </div>`;
+      }).join('');
+      const dt = new Date(d + 'T12:00:00');
+      const isWeekend = dt.getDay()===0||dt.getDay()===6;
+      return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
+                          min-height:${booking.calls.length>0?'36':'28'}px;
+                          overflow:hidden;min-width:0;
+                          background:${isToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'};
+                          ${isToday?'border-top:1px solid rgba(212,175,55,0.3)':''}
+                          display:flex;flex-direction:column;gap:1px">${blocks}</div>`;
+    }).join('');
+
+    // Date range across all calls in this booking
+    const callDates  = booking.calls.map(c => c.date_iso).sort();
+    const firstDate  = callDates[0];
+    const lastDate   = callDates[callDates.length - 1];
+    const fmtDate    = d => {
+      const dt = new Date(d + 'T12:00:00');
+      return dt.toLocaleDateString('en-AU',{day:'numeric',month:'short'});
+    };
+    const dateRange  = firstDate === lastDate
+      ? fmtDate(firstDate)
+      : `${fmtDate(firstDate)} – ${fmtDate(lastDate)}`;
+    const totalCalls   = booking.calls.length;
+    const fullCalls    = booking.calls.filter(c=>c.full).length;
+    const partialCalls = booking.calls.filter(c=>!c.full && c.booked>0).length;
+    const emptyCalls   = booking.calls.filter(c=>c.booked===0).length;
+
+    const hasNotes = booking.calls.some(c => c.notes);
+
+    html += `
+      <div style="display:flex;border-bottom:1px solid var(--border-gold);min-width:max-content;
+                  background:var(--surface2);cursor:pointer"
+           onclick="toggleSchedBooking('${bid}')">
+        <div style="width:300px;flex-shrink:0;border-right:1px solid var(--border);
+                    padding:6px 12px;border-left:2px solid var(--border-gold);display:flex;align-items:center;gap:8px;
+                    position:sticky;left:0;z-index:2;background:var(--surface2)">
+          <span id="${bid}-arrow" style="font-size:10px;color:var(--accent);transition:transform .2s;display:inline-block">▶</span>
+          <div style="min-width:0">
+            <div style="font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;
+                        color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px"
+                 title="${booking.booking_name}">${booking.booking_name}
+              ${hasNotes ? `<span title="Some calls have notes" style="font-size:9px;color:var(--muted);opacity:.7">📝</span>` : ''}
+            </div>
+            <div style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-top:1px">
+              <span style="color:rgba(212,175,55,0.6)">${dateRange}</span>
+              ${booking.venue ? ' · ' + booking.venue : ''}
+              · ${totalCalls} call${totalCalls!==1?'s':''}
+              ${fullCalls ? `<span style="color:#22c55e"> · ${fullCalls} full</span>` : ''}
+              ${partialCalls ? `<span style="color:var(--warn)"> · ${partialCalls} partial</span>` : ''}
+              ${emptyCalls ? `<span style="color:var(--accent2)"> · ${emptyCalls} empty</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;flex:1">${dayCells}</div>
+      </div>`;
+
+    // Individual call rows — wrapped in collapsible container, hidden by default
+    html += `<div id="${bid}-calls" style="display:none">`;
+
+    for(const call of booking.calls){
+      const cls    = call.full ? 'full' : call.booked > 0 ? 'partial' : 'empty';
+      const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)'};
+      const statusColor = colors[cls];
+
+      const isToday = call.date_iso === today;
+
+      const callDayCells = dates.map(d => {
+        const dt = new Date(d + 'T12:00:00');
+        const isWeekend = dt.getDay()===0||dt.getDay()===6;
+        if(d === call.date_iso){
+          return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
+                              background:${isToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
+            <div class="sched-call-block ${cls}" style="font-size:8px;padding:2px 3px;cursor:pointer;
+                 ${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
+                 onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
+                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}">
+              <div style="font-size:7px;opacity:.7">${call.time}</div>
+              ${call.booked}/${call.required}
+            </div>
+          </div>`;
+        }
+        return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);
+                            background:${isWeekend?'rgba(255,255,255,0.015)':'transparent'}"></div>`;
+      }).join('');
+
+      html += `
+        <div style="display:flex;border-bottom:1px solid var(--border);min-width:max-content;
+                    ${isToday?'background:rgba(212,175,55,0.03);border-left:2px solid rgba(212,175,55,0.4)':''}">
+          <div style="width:300px;flex-shrink:0;border-right:1px solid var(--border);
+                      padding:5px 12px 5px 36px;cursor:pointer;transition:background .15s;
+                      position:sticky;left:0;z-index:2;
+                      background:${isToday?'rgba(212,175,55,0.06)':'var(--bg)'}"
+               onclick="schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
+               onmouseover="this.style.background='rgba(212,175,55,0.08)'"
+               onmouseout="this.style.background='${isToday?'rgba(212,175,55,0.06)':'var(--bg)'}'">
+            <div style="display:flex;align-items:center;gap:8px">
+              ${isToday?'<span style="font-size:8px;background:var(--accent);color:#000;padding:1px 5px;border-radius:2px;font-family:\'Share Tech Mono\',monospace;letter-spacing:.05em;flex-shrink:0">TODAY</span>':''}
+              <span style="font-size:11px;font-weight:600;color:${isToday?'var(--accent)':'var(--text)'}">${call.call_name}</span>
+              <span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted)">
+                ${call.time} · ${call.length}h
+              </span>
+              <span style="font-family:'Share Tech Mono',monospace;font-size:10px;
+                           font-weight:700;color:${statusColor};margin-left:auto">
+                ${call.booked}/${call.required}
+              </span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+              <span data-call-status="${call.booking_id}/${call.call_id}"
+                    style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;flex:1">
+                <span style="opacity:.4">loading...</span>
+              </span>
+              <button onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
+                      title="Find available crew for this call"
+                      style="background:rgba(212,175,55,0.1);border:1px solid rgba(212,175,55,0.25);
+                             color:var(--accent);border-radius:3px;padding:2px 7px;
+                             font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:600;
+                             cursor:pointer;transition:all .15s;white-space:nowrap"
+                      onmouseover="this.style.background='rgba(212,175,55,0.2)'"
+                      onmouseout="this.style.background='rgba(212,175,55,0.1)'">
+                🔍 Find Crew
+              </button>
+              <button onclick="event.stopPropagation();schedOpenSMS('${call.booking_id}','${call.call_id}')"
+                      title="Send SMS for this call"
+                      style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);
+                             color:#22c55e;border-radius:3px;padding:2px 7px;
+                             font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:600;
+                             cursor:pointer;transition:all .15s;white-space:nowrap"
+                      onmouseover="this.style.background='rgba(34,197,94,0.18)'"
+                      onmouseout="this.style.background='rgba(34,197,94,0.08)'">
+                📱 SMS
+              </button>
+              <a href="https://smartstaffsolutions.com/bookings/${call.booking_id}/callsheet/${call.call_id}"
+                 target="_blank"
+                 onclick="event.stopPropagation()"
+                 title="Open callsheet in SmartStaff"
+                 style="background:rgba(255,255,255,0.04);border:1px solid var(--border);
+                        color:var(--muted);border-radius:3px;padding:2px 7px;
+                        font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:600;
+                        text-decoration:none;transition:all .15s;white-space:nowrap"
+                 onmouseover="this.style.color='var(--text)'"
+                 onmouseout="this.style.color='var(--muted)'">
+                ↗ SmartStaff
+              </a>
+            </div>
+            ${call.notes ? `<div style="font-size:9px;color:var(--muted);margin-top:1px;
+                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${call.notes}</div>` : ''}
+          </div>
+          <div style="display:flex;flex:1">${callDayCells}</div>
+        </div>`;
+    }
+
+    html += `</div>`; // end collapsible calls
+  }
+
+  wrap.innerHTML = html;
+}
+
+function renderCallStatusBadge(el, data){
+  const { confirmed, waiting, declined, required } = data;
+  const unfilled = required - confirmed - waiting - declined;
+  let html = '';
+
+  if(confirmed > 0)
+    html += `<span style="color:#22c55e;font-size:9px;font-family:'Share Tech Mono',monospace">✓${confirmed}</span>`;
+  if(waiting > 0)
+    html += `<span style="color:var(--warn);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">⏳${waiting}</span>`;
+  if(declined > 0)
+    html += `<span style="color:var(--accent2);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">✗${declined}</span>`;
+  if(unfilled > 0 && required > 0)
+    html += `<span style="color:var(--muted);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">○${unfilled}</span>`;
+
+  el.innerHTML = html || '—';
+}
+
+function toggleSchedBooking(bid){
+  const calls  = document.getElementById(bid + '-calls');
+  const arrow  = document.getElementById(bid + '-arrow');
+  if(!calls) return;
+  const open = calls.style.display === 'none';
+  calls.style.display = open ? '' : 'none';
+  arrow.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+
+  // Lazy-load call status on first expand
+  if(open && !calls.dataset.statusLoaded){
+    calls.dataset.statusLoaded = '1';
+    calls.querySelectorAll('[data-call-status]').forEach(async el => {
+      const [bookingId, callId] = el.dataset.callStatus.split('/');
+      try{
+        const resp = await fetch(`/api/call-status/${bookingId}/${callId}`);
+        const data = await resp.json();
+        renderCallStatusBadge(el, data);
+      } catch(e){}
+    });
+  }
+}
+
+function schedOpenSMS(bookingId, callId){
+  // Open SmartStaff SMS page for this call in a new tab
+  window.open(
+    `https://smartstaffsolutions.com/bookings/${bookingId}/callsheet/${callId}`,
+    'goat_sms'
+  );
+}
+
+async function schedJumpToCrewFinder(bookingId, callId){
+  // Switch to Crew Finder tab and pre-select the call
+  switchTab('crew-finder');
+
+  // Wait for calls to load then select the call
+  const trySelect = (attempts=0) => {
+    const callCard = document.querySelector(`.call-card[data-call-id="${callId}"]`);
+    if(callCard){
+      callCard.click();
+    } else if(attempts < 20){
+      setTimeout(() => trySelect(attempts+1), 300);
+    }
+  };
+  // Ensure calls are loaded
+  if(!document.querySelector('.call-card')){
+    await loadCalls();
+  }
+  setTimeout(() => trySelect(), 400);
+}
+
 async function checkForUpdates(){
   try{
     const resp=await fetch('/api/version');
     if(!resp.ok)return;
     const data=await resp.json();
+    const verEl = document.getElementById('nav-version');
+    if(verEl && data.current) verEl.textContent = 'v' + data.current;
     if(data.update_available){
       document.getElementById('update-version').textContent=data.latest;
       document.getElementById('update-notes').textContent=data.release_notes?'— '+data.release_notes:'';
@@ -2603,6 +3162,20 @@ async function pollRefreshProgress(){
     <span class="goat-sug" onclick="goatSuggest(this)">Induction alerts</span>
     <span class="goat-sug" onclick="goatSuggest(this)">Crew utilization this week</span>
     <span class="goat-sug" onclick="goatSuggest(this)">Recent imports</span>
+    <span class="goat-sug" onclick="goatEasterEgg()">What do goats eat? 🐐</span>
+  </div>
+
+  <!-- Easter egg fullscreen overlay -->
+  <div id="goat-easter-egg" style="display:none;position:fixed;inset:0;z-index:99999;
+       background:#000;align-items:center;justify-content:center;flex-direction:column">
+    <audio id="goat-bray" src="/static/goat-bray.mp3" preload="auto"></audio>
+    <img src="/static/eating-goat.png" alt="🐐"
+         style="max-width:100%;max-height:90vh;object-fit:contain">
+    <div style="position:absolute;bottom:40px;font-family:'Bebas Neue',sans-serif;
+                font-size:32px;color:var(--accent);letter-spacing:.2em;
+                text-shadow:0 0 20px rgba(212,175,55,0.8);animation:eyeGlow 1s ease-in-out infinite">
+      APPARENTLY... PANTS. 🐐
+    </div>
   </div>
 
   <div class="goat-input-area">
