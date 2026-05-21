@@ -1,5 +1,5 @@
 {
-  "version": "3.0.1",
-  "release_notes": "Performance fix — resolved slowness in Crew Finder availability search",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.0.1/TheGOAT.dmg"
+  "version": "3.1.0",
+  "release_notes": "Schedule tab, booked crew display, scheduler improvements, Estimate Import fix",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.1.0/TheGOAT.dmg"
 }
