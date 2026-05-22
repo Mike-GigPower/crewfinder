@@ -1,5 +1,5 @@
 {
-  "version": "3.1.1",
-  "release_notes": "Fix: Ask THE GOAT now works in the installed app",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.1.1/TheGOAT.dmg"
+  "version": "3.2.0",
+  "release_notes": "Major updates across the entire GOAT suite",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.2.0/TheGOAT.dmg"
 }
