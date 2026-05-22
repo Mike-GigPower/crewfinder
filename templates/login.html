@@ -434,7 +434,7 @@ body{
 
     <div class="remember-row">
       <label class="remember-label">
-        <input type="checkbox" name="remember"{% if saved_username %} checked{% endif %}>
+        <input type="checkbox" name="remember" checked>
         Remember credentials
       </label>
     </div>
@@ -463,11 +463,19 @@ function updateClock(){
 updateClock();
 setInterval(updateClock, 1000);
 
-// Loading state on form submit
-document.querySelector('form').addEventListener('submit', () => {
+// Play welcome tone on sign in, then submit after a short delay
+document.querySelector('form').addEventListener('submit', (e) => {
   const btn = document.getElementById('signin-btn');
+  // If already in loading state, let it submit normally
+  if(btn.classList.contains('loading')) return;
+  e.preventDefault();
+  const audio = new Audio('/static/welcome.mp3');
+  audio.volume = 0.7;
+  audio.play().catch(() => {});
   btn.textContent = 'AUTHENTICATING...';
   btn.classList.add('loading');
+  // Submit after 1.2s — enough for the sound to land
+  setTimeout(() => document.querySelector('form').submit(), 1200);
 });
 </script>
 </body>

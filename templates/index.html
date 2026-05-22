@@ -61,6 +61,12 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .btn-search:disabled{opacity:.4;cursor:not-allowed}
 .spinner{width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
 @keyframes spin{to{transform:rotate(360deg)}}
+@keyframes stampede{0%{left:-120px;transform:scaleX(1)}49%{transform:scaleX(1)}50%{transform:scaleX(-1)}100%{left:calc(100vw + 120px);transform:scaleX(-1)}}
+@keyframes confettiFall{0%{transform:translateY(-20px) rotate(0deg);opacity:1}100%{transform:translateY(100vh) rotate(720deg);opacity:0}}
+@keyframes goldPulse{0%,100%{box-shadow:none}50%{box-shadow:inset 0 0 0 1px rgba(212,175,55,0.4),0 0 12px rgba(212,175,55,0.2)}}
+.stampede-goat{position:fixed;top:40%;font-size:64px;z-index:99998;pointer-events:none;animation:stampede linear forwards}
+.confetti-piece{position:fixed;top:-20px;width:10px;height:10px;border-radius:2px;z-index:99997;pointer-events:none;animation:confettiFall ease-in forwards}
+.fc-table tr.gold-row td{animation:goldPulse 2s ease-in-out infinite}
 .calls-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px;border-bottom:1px solid var(--border)}
 .btn-refresh{font-size:10px;padding:3px 8px;border-radius:5px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-family:'Share Tech Mono',monospace;transition:all .12s}
 .btn-refresh:hover{border-color:var(--accent);color:var(--accent)}
@@ -162,6 +168,7 @@ tr.skipped{opacity:.6}
 .tl-bar:hover{opacity:1}
 .tl-bar.bar-available{background:var(--shift-bar)}
 .tl-bar.bar-conflict{background:var(--conflict)}
+.tl-bar.bar-unavail{background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)}
 .tl-bar[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:#1a1d23;color:#fff;font-size:10px;padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:200;pointer-events:none}
 .tl-time-header{position:relative;height:20px}
 .tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%)}
@@ -180,9 +187,9 @@ tr.skipped{opacity:.6}
 .panel-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 .feedback{font-size:10px;color:var(--available);margin-left:6px}
 /* LOADING */
-#loading-overlay{display:none;position:fixed;inset:0;background:rgba(240,242,245,.92);z-index:100;flex-direction:column;align-items:center;justify-content:center;gap:16px}
+#loading-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:100;flex-direction:column;align-items:center;justify-content:center;gap:16px;backdrop-filter:blur(4px)}
 #loading-overlay.show{display:flex}
-.loading-spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+.loading-goat{width:120px;height:auto;image-rendering:auto}
 .loading-text{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:var(--text)}
 .loading-sub{font-size:11px;color:var(--muted)}
 /* ── TABS ── */
@@ -281,6 +288,7 @@ tr.skipped{opacity:.6}
 .import-field select:focus{border-color:var(--accent)}
 .import-match-ok{font-size:10px;color:var(--available);display:flex;align-items:center;gap:4px}
 .import-match-warn{font-size:10px;color:var(--warn);display:flex;align-items:center;gap:4px}
+.import-field-shadow{font-size:10px;color:var(--muted);margin-top:3px;padding-left:2px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .import-calls-table{width:100%;border-collapse:collapse;font-size:11px}
 .import-calls-table th{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface2)}
 .import-calls-table td{padding:7px 10px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
@@ -571,13 +579,18 @@ tr.skipped{opacity:.6}
 .sched-call-block.full{background:rgba(34,197,94,0.2);border-left:2px solid #22c55e;color:#22c55e}
 .sched-call-block.partial{background:rgba(245,158,11,0.15);border-left:2px solid var(--warn);color:var(--warn)}
 .sched-call-block.empty{background:rgba(227,30,36,0.1);border-left:2px solid var(--accent2);color:var(--accent2)}
+.sched-call-block.clash{background:rgba(249,115,22,0.2);border-left:2px solid #f97316;color:#f97316;animation:clashPulse 2s ease-in-out infinite}
+@keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
+.crew-clash{color:#ef4444!important;font-weight:700}
+.crew-clash::before{content:'⚠ '}
+.sched-clash-badge{background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.4);color:#f97316;font-size:8px;font-family:'Share Tech Mono',monospace;padding:1px 5px;border-radius:3px;white-space:nowrap}
 .sched-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:10px;color:var(--muted);text-align:center;padding:60px}
 </style>
 </head>
 <body>
 <div id="loading-overlay">
-  <div class="loading-spinner"></div>
-  <div class="loading-text">Checking availability...</div>
+  <img src="/static/running-goat.gif" alt="Loading..." class="loading-goat">
+  <div class="loading-text" id="loading-overlay-text">Checking availability...</div>
   <div class="loading-sub">This may take a minute</div>
 </div>
 <nav>
@@ -852,6 +865,10 @@ tr.skipped{opacity:.6}
                   <label>Booking Notes</label>
                   <div class="import-field-val" id="prev-notes" style="white-space:pre-wrap;font-size:11px;max-height:80px;overflow-y:auto"></div>
                 </div>
+                <div class="import-field" id="prev-onsite-row" style="display:none">
+                  <label>Onsite Contact</label>
+                  <div class="import-field-val" id="prev-onsite"></div>
+                </div>
               </div>
             </div>
 
@@ -861,18 +878,26 @@ tr.skipped{opacity:.6}
                 <span class="import-section-title">🔗 SmartStaff Matching</span>
               </div>
               <div class="import-section-body">
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
                   <div class="import-field">
                     <label>Customer <span id="cust-match-status"></span></label>
                     <select id="match-customer" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="cust-shadow"></div>
                   </div>
                   <div class="import-field">
                     <label>Contact <span id="contact-match-status"></span></label>
                     <select id="match-contact" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="contact-shadow"></div>
+                  </div>
+                  <div class="import-field">
+                    <label>Onsite Contact <span id="onsite-contact-match-status"></span></label>
+                    <select id="match-onsite-contact" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="onsite-contact-shadow"></div>
                   </div>
                   <div class="import-field">
                     <label>Venue <span id="venue-match-status"></span></label>
                     <select id="match-venue" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="venue-shadow"></div>
                   </div>
                 </div>
               </div>
@@ -968,18 +993,20 @@ tr.skipped{opacity:.6}
         <span class="section-label">SORT</span>
         <button class="fc-sort-btn active" id="fc-sort-name"    onclick="setFcSort('name')">Name</button>
         <button class="fc-sort-btn"        id="fc-sort-rating"  onclick="setFcSort('rating')">Stars</button>
-        <button class="fc-sort-btn"        id="fc-sort-id"      onclick="setFcSort('id')">ID</button>
+        <button class="fc-sort-btn"        id="fc-sort-id"      onclick="setFcSort('id')">EIN</button>
         <button class="fc-sort-btn"        id="fc-sort-hours"   onclick="setFcSort('hours')">Hours</button>
 
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
 
         <button class="btn" onclick="loadForecast(true)">⟳ Refresh</button>
+        <span id="fc-cache-status" style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace"></span>
 
         <div class="fc-legend">
           <div class="fc-legend-swatch" style="background:var(--surface2);border:1px solid var(--border)"></div><span>0h</span>
           <div class="fc-legend-swatch" style="background:rgba(16,185,129,0.35)"></div><span>1–4h</span>
           <div class="fc-legend-swatch" style="background:rgba(16,185,129,0.65)"></div><span>4–8h</span>
           <div class="fc-legend-swatch" style="background:rgba(16,185,129,1)"></div><span>8h+</span>
+          <div class="fc-legend-swatch" style="background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)"></div><span>Unavailable</span>
         </div>
       </div>
 
@@ -995,8 +1022,8 @@ tr.skipped{opacity:.6}
           <button class="btn-search" onclick="loadForecast()">Load Forecast</button>
         </div>
         <div id="fc-loading-indicator" style="display:none" class="fc-loading">
-          <div class="fc-loading-text">Loading shifts...</div>
-          <div style="font-size:10px;color:var(--muted)" id="fc-loading-sub">Fetching from SmartStaff</div>
+          <img src="/static/running-goat.gif" alt="Loading..." class="loading-goat">
+          <div class="fc-loading-text" id="fc-loading-sub">Fetching from SmartStaff...</div>
         </div>
         <table class="fc-table" id="fc-table" style="display:none">
           <thead id="fc-thead"></thead>
@@ -1088,6 +1115,7 @@ async function loadCalls(force=false){
         +'<div class="booking-group-calls">'+callsHtml+'</div>'
         +'</div>';
     }).join('');
+    setTimeout(checkAllBooked, 100);
   }catch(e){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-sub">Error loading calls</div></div>'}
 }
 
@@ -1182,7 +1210,7 @@ function restoreResults(){
 // ── SEARCH ──
 async function runSearch(){
   if(!selectedCalls.size)return;
-  document.getElementById('loading-overlay').classList.add('show');
+  showOverlay('Checking Availability...', 'This may take a minute');
   try{
     const calls=[...selectedCalls.values()];
     // Fetch details for all selected calls in parallel
@@ -1226,7 +1254,7 @@ async function runSearch(){
     renderResults(result, detailsArr[0], result.targets);
   }catch(e){alert('Search error: '+e)}
   finally{
-    document.getElementById('loading-overlay').classList.remove('show');
+    hideOverlay();
     restoreResults();
   }
 }
@@ -1493,6 +1521,17 @@ function renderTimeline(result,details,targets){
         bar.dataset.tip=hToLabel(sh,targetDate)+'-'+hToLabel(eh,targetDate)+' @ '+(s.venue||'?');
         inner.appendChild(bar);
       });
+      (crew.unavails||[]).forEach(u=>{
+        const sh=dtToH(u.start,targetDate),eh=dtToH(u.end,targetDate);
+        if(eh<tlMin||sh>tlMax)return;
+        const bar=document.createElement('div');
+        bar.className='tl-bar bar-unavail';
+        bar.style.left=pctD(Math.max(sh,tlMin))+'%';
+        bar.style.width=(pctD(Math.min(eh,tlMax))-pctD(Math.max(sh,tlMin)))+'%';
+        bar.style.top='0'; bar.style.bottom='0'; bar.style.opacity='0.5';
+        bar.dataset.tip='Unavailable: '+(u.reason||'Leave');
+        inner.appendChild(bar);
+      });
     }
     tlTd.appendChild(inner);tr.appendChild(tlTd);
 
@@ -1643,6 +1682,7 @@ let _indData=null, _indActiveGroup=null, _selectedVenues=new Set();
 async function loadInductions(force=false){
   if(_indData && !force) return;
   document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">Loading inductions...</div></div>';
+  showOverlay('Loading Inductions...', 'Reading crew induction records');
   try{
     const resp=await fetch('/api/inductions'), data=await resp.json();
     _indData=data;
@@ -1656,6 +1696,8 @@ async function loadInductions(force=false){
     renderInductionTable();
   }catch(e){
     document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">Error loading inductions</div></div>';
+  } finally{
+    hideOverlay();
   }
 }
 
@@ -1768,7 +1810,7 @@ function renderInductionTable(){
   crew.forEach(c=>{
     const tr=document.createElement('tr');
     const nameTd=document.createElement('td');
-    nameTd.textContent=c.name||c.id;
+    nameTd.textContent=c.name||c.ein||c.id;
     tr.appendChild(nameTd);
     venues.forEach(v=>{
       const td=document.createElement('td');
@@ -1799,7 +1841,7 @@ function exportInductionCSV(){
   const venues=(_indData.venues||[]).filter(v=>_selectedVenues.size===0||_selectedVenues.has(v));
   const rows=[['Resource',...venues]];
   _indData.crew.forEach(c=>{
-    rows.push([c.name||c.id,...venues.map(v=>{
+    rows.push([c.name||c.ein||c.id,...venues.map(v=>{
       const vs=c.venue_status[v];
       if(!vs) return '';
       if(vs.status==='Complete') return 'Valid ('+vs.expiry+')';
@@ -1900,10 +1942,28 @@ function renderImportPreview(data){
     document.getElementById('prev-notes-row').style.display = 'none';
   }
 
+  // Onsite contact — read-only display (name + phone from JSON)
+  const onsiteName  = p.onsite_contact || '';
+  const onsitePhone = p.onsite_contact_phone || '';
+  const onsiteRow   = document.getElementById('prev-onsite-row');
+  const onsiteEl    = document.getElementById('prev-onsite');
+  if(onsiteName || onsitePhone){
+    onsiteEl.textContent = [onsiteName, onsitePhone].filter(Boolean).join(' · ');
+    onsiteRow.style.display = '';
+  } else {
+    onsiteRow.style.display = 'none';
+  }
+
+  // Shared contacts list (used by both Contact and Onsite Contact dropdowns)
+  const contactOptions = '<option value="">-- Select contact --</option>' +
+    m.contacts.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+
   // Customer dropdown
   const custSel = document.getElementById('match-customer');
   custSel.innerHTML = '<option value="">-- Select customer --</option>' +
     m.customers.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  document.getElementById('cust-shadow').textContent =
+    m.customer_name ? `From file: ${m.customer_name}` : '';
   if(m.customer_matched && m.customer_id){
     custSel.value = m.customer_id;
     document.getElementById('cust-match-status').innerHTML =
@@ -1913,10 +1973,11 @@ function renderImportPreview(data){
       '<span class="import-match-warn">⚠ select manually</span>';
   }
 
-  // Contact dropdown
+  // Contact dropdown (billing contact — from customer.contact_name)
   const contactSel = document.getElementById('match-contact');
-  contactSel.innerHTML = '<option value="">-- Select contact --</option>' +
-    m.contacts.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  contactSel.innerHTML = contactOptions;
+  document.getElementById('contact-shadow').textContent =
+    m.contact_name ? `From file: ${m.contact_name}` : '';
   if(m.contact_matched && m.contact_id){
     contactSel.value = m.contact_id;
     document.getElementById('contact-match-status').innerHTML =
@@ -1926,10 +1987,26 @@ function renderImportPreview(data){
       '<span class="import-match-warn">⚠ select manually</span>';
   }
 
+  // Onsite Contact dropdown (from event.onsite_contact — same contacts list)
+  const onsiteContactSel = document.getElementById('match-onsite-contact');
+  onsiteContactSel.innerHTML = contactOptions;
+  document.getElementById('onsite-contact-shadow').textContent =
+    m.onsite_contact_name ? `From file: ${m.onsite_contact_name}` : '';
+  if(m.onsite_contact_matched && m.onsite_contact_id){
+    onsiteContactSel.value = m.onsite_contact_id;
+    document.getElementById('onsite-contact-match-status').innerHTML =
+      '<span class="import-match-ok">✓ matched</span>';
+  } else {
+    document.getElementById('onsite-contact-match-status').innerHTML =
+      '<span class="import-match-warn">⚠ select manually</span>';
+  }
+
   // Venue dropdown
   const venueSel = document.getElementById('match-venue');
   venueSel.innerHTML = '<option value="">-- Select venue --</option>' +
     m.venues.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+  document.getElementById('venue-shadow').textContent =
+    m.venue_name ? `From file: ${m.venue_name}` : '';
   if(m.venue_matched && m.venue_id){
     venueSel.value = m.venue_id;
     document.getElementById('venue-match-status').innerHTML =
@@ -2012,9 +2089,10 @@ function updateImportReadiness(){
 
 async function startImport(){
   if(!_importPayload || !_importPreview) return;
-  const customerId = document.getElementById('match-customer').value;
-  const contactId  = document.getElementById('match-contact').value;
-  const venueId    = document.getElementById('match-venue').value;
+  const customerId       = document.getElementById('match-customer').value;
+  const contactId        = document.getElementById('match-contact').value;
+  const onsiteContactId  = document.getElementById('match-onsite-contact').value;
+  const venueId          = document.getElementById('match-venue').value;
   if(!customerId || !venueId){ alert('Select customer and venue first'); return; }
 
   // Collect operator-selected call names — only send non-blank values
@@ -2037,11 +2115,12 @@ async function startImport(){
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        payload:     _importPayload,
-        customer_id: customerId,
-        contact_id:  contactId,
-        venue_id:    venueId,
-        call_names:  callNames,
+        payload:           _importPayload,
+        customer_id:       customerId,
+        contact_id:        contactId,
+        onsite_contact_id: onsiteContactId,
+        venue_id:          venueId,
+        call_names:        callNames,
       })
     });
     const data = await resp.json();
@@ -2087,6 +2166,7 @@ function updateImportProgressUI(data){
       link.href = 'https://smartstaffsolutions.com/bookings/' + data.booking_id;
       link.textContent = '→ View Booking #' + data.booking_id + ' in SmartStaff';
       document.getElementById('import-done-link').style.display = '';
+      if(!data.errors?.length){const a=document.getElementById('cha-ching');if(a){a.currentTime=0;a.play().catch(()=>{})}}
     }
   }
 
@@ -2191,6 +2271,8 @@ async function loadForecast(force=false){
   document.getElementById('fc-placeholder').style.display        = 'none';
   document.getElementById('fc-loading-indicator').style.display  = 'flex';
   document.getElementById('fc-table').style.display              = 'none';
+  showOverlay('Loading Utilization...', 'Fetching crew shifts from SmartStaff');
+  updateFcCacheStatus();
 
   try{
     const url = `/api/forecast?start_date=${startDate}&days=${days}` + (force ? '&force=1' : '');
@@ -2210,7 +2292,33 @@ async function loadForecast(force=false){
     alert('Error loading forecast: ' + e.message);
   } finally{
     document.getElementById('fc-loading-indicator').style.display = 'none';
+    hideOverlay();
+    updateFcCacheStatus();
   }
+}
+
+async function updateFcCacheStatus(){
+  try{
+    const resp = await fetch('/api/forecast/preload-status');
+    const d    = await resp.json();
+    const el   = document.getElementById('fc-cache-status');
+    if(!el) return;
+    const fc = d.forecast, uc = d.unavail;
+    if(fc.running){
+      el.textContent = `⟳ shifts ${fc.done}/${fc.total}`;
+      el.style.color = 'var(--accent)';
+    } else if(uc && uc.running){
+      el.textContent = `⟳ unavail ${uc.done}/${uc.total}`;
+      el.style.color = 'var(--accent)';
+    } else if(fc.fresh){
+      const mins = Math.round((fc.cache_age||0)*60);
+      el.textContent = `● cached ${mins}m ago`;
+      el.style.color = 'var(--available)';
+    } else {
+      el.textContent = fc.cache_age ? `● cache ${Math.round(fc.cache_age)}h old` : '● no cache';
+      el.style.color = 'var(--warn)';
+    }
+  } catch(e){}
 }
 
 function renderFcGroupChips(){
@@ -2261,7 +2369,7 @@ function renderForecastTable(){
     switch(_fcSort){
       case 'name':   av = a.name.toLowerCase(); bv = b.name.toLowerCase(); break;
       case 'rating': av = a.rating||0;          bv = b.rating||0;          break;
-      case 'id':     av = parseInt(a.id)||0;    bv = parseInt(b.id)||0;    break;
+      case 'id':     av = parseInt(a.ein||a.id)||0; bv = parseInt(b.ein||b.id)||0; break;
       case 'hours':  av = a.total_hours||0;     bv = b.total_hours||0;     break;
       default:       av = a.name.toLowerCase(); bv = b.name.toLowerCase();
     }
@@ -2285,7 +2393,7 @@ function renderForecastTable(){
       <th class="fc-col-name">Name</th>
       <th class="fc-col-phone">Phone</th>
       <th class="fc-col-stars">★</th>
-      <th class="fc-col-id">ID</th>
+      <th class="fc-col-id">EIN</th>
       <th class="fc-col-hours" style="text-align:right">Hours</th>
       ${dayLabels}
     </tr>`;
@@ -2296,16 +2404,23 @@ function renderForecastTable(){
     const stars   = '★'.repeat(Math.min(c.rating||0,10));
     const noStars = '★'.repeat(Math.max(0,10-(c.rating||0)));
     const dayCells = dates.map(d => {
-      const hrs = c.day_hours?.[d] || 0;
-      const dt  = new Date(d + 'T00:00:00');
+      const hrs     = c.day_hours?.[d] || 0;
+      const unavail = c.day_unavail?.[d] || '';
+      const dt      = new Date(d + 'T00:00:00');
       const isWeekend = dt.getDay()===0 || dt.getDay()===6;
-      let bg;
-      if(hrs <= 0)  bg = isWeekend ? 'rgba(255,255,255,0.04)' : 'transparent';
-      else if(hrs < 1)  bg = 'rgba(16,185,129,0.15)';
-      else if(hrs < 4)  bg = 'rgba(16,185,129,0.35)';
-      else if(hrs < 8)  bg = 'rgba(16,185,129,0.65)';
-      else               bg = 'rgba(16,185,129,1.0)';
-      const title = hrs > 0 ? `${d}: ${hrs.toFixed(1)}h` : d;
+      let bg, title;
+      if(hrs > 0){
+        if(hrs < 1)       bg = 'rgba(16,185,129,0.15)';
+        else if(hrs < 4)  bg = 'rgba(16,185,129,0.35)';
+        else if(hrs < 8)  bg = 'rgba(16,185,129,0.65)';
+        else              bg = 'rgba(16,185,129,1.0)';
+        title = `${d}: ${hrs.toFixed(1)}h booked`;
+        if(unavail) title += ` · also unavail: ${unavail}`;
+      } else if(unavail){
+        bg = 'rgba(168,85,247,0.55)'; title = `${d}: Unavailable — ${unavail}`;
+      } else {
+        bg = isWeekend ? 'rgba(255,255,255,0.04)' : 'transparent'; title = d;
+      }
       return `<td style="padding:3px 2px;border-bottom:1px solid var(--border)">
         <div style="height:22px;border-radius:2px;background:${bg}" title="${title}"></div>
       </td>`;
@@ -2315,7 +2430,7 @@ function renderForecastTable(){
       <td class="fc-col-name"><span class="fc-name">${c.name}</span></td>
       <td class="fc-col-phone">${phoneLink(c.phone)}</td>
       <td class="fc-col-stars"><span style="color:#f59e0b;font-size:8px;letter-spacing:0">${stars}</span><span style="color:var(--border);font-size:8px;letter-spacing:0">${noStars}</span></td>
-      <td class="fc-col-id"><span class="fc-id">${c.id}</span></td>
+      <td class="fc-col-id"><span class="fc-id">${c.ein||c.id}</span></td>
       <td class="fc-col-hours"><span class="fc-hours">${c.total_hours > 0 ? c.total_hours + 'h' : '—'}</span></td>
       ${dayCells}
     </tr>`;
@@ -2328,6 +2443,8 @@ function renderForecastTable(){
   } else {
     document.getElementById('fc-placeholder').style.display = 'none';
   }
+  // Easter egg: gold glow for 10-star available crew
+  setTimeout(applyGoldRows, 50);
 }
 
 
@@ -2425,15 +2542,74 @@ function autoResizeGoatInput(el){
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-async function goatSend(){
-  const input = document.getElementById('goat-input');
-  const text  = input.value.trim();
-  if(!text || _goatBusy) return;
+// ── GOAT EASTER EGG INTERCEPTS ───────────────────────────────────────────────
 
-  input.value = '';
-  input.style.height = 'auto';
-  _goatBusy = true;
-  document.getElementById('goat-send').disabled = true;
+const _SWEAR_WORDS = /\b(fuck|shit|cunt|bastard|asshole|dick|piss|damn|hell|crap|bloody hell|bugger)\b/i;
+
+function checkGoatEasterEgg(text){
+  const t = text.toLowerCase().trim();
+  if(/\bwho\s+is\s+(the\s+)?goat\b/.test(t))
+    return {type:'text', text:'The GOAT is you. You built this. You run the crew. You make the calls. THE GOAT is just here to help. 🐐'};
+  if(/^m+o+o+[?!.\s]*$/.test(t) || t==='moo')
+    return {type:'image', text:"I\'m a GOAT. Not a cow. 🐐", img:'/static/goat-smile.gif'};
+  if(/what\s+time\s+is\s+it/.test(t))
+    return {type:'text', text:'Time to book some crew. 🐐'};
+  if(_SWEAR_WORDS.test(text))
+    return {type:'image', text:'Language. 🐐', img:'/static/goat-smile.gif'};
+  return null;
+}
+
+function appendGoatEasterEggResponse(egg){
+  const wrap=document.getElementById('goat-messages');
+  const row=document.createElement('div'); row.className='gm-row gm-goat';
+  if(egg.img){
+    row.innerHTML=`<div class="gm-avatar">🐐</div><div class="gm-bubble"><div class="goat-silly-wrap"><div style="font-size:15px;margin-bottom:6px">${egg.text}</div><img src="${egg.img}" alt="" class="goat-silly-img"></div></div>`;
+  } else {
+    row.innerHTML=`<div class="gm-avatar">🐐</div><div class="gm-bubble">${egg.text}</div>`;
+  }
+  wrap.appendChild(row); wrap.scrollTop=9999;
+}
+
+function isSillyGoatQuestion(text){
+  const t=text.toLowerCase();
+  const w=[/\b(book(ing)?|call|crew|staff|worker|shift|venue|event|show|gig|tour|concert|festival)\b/,
+    /\b(load\s*(in|out)|bump.?(in|out)|show\s*call|lx|sx|vx|backline|wardrobe|rigger|fork|ewp)\b/,
+    /\b(customer|client|contact|invoice|quote|estimat|import|schedule|roster|availab)\b/,
+    /\b(smartstaff|gigpower|crewfinder|induction|certif|licence|whs|ohs|safety)\b/,
+    /\b(date|time|start|finish|duration|hour|week|tomorrow|today|tonight|weekend)\b/,
+    /\b(sms|message|notif|send|confirm|cancel|assign|add|remov|creat|updat|delet)\b/,
+    /\b(who|which|when|where|how many|how long|list|find|show me|search|check)\b/];
+  return !w.some(p=>p.test(t));
+}
+
+function appendGoatSillyResponse(){
+  const wrap=document.getElementById('goat-messages');
+  const row=document.createElement('div'); row.className='gm-row gm-goat';
+  row.innerHTML=`<div class="gm-avatar">🐐</div><div class="gm-bubble"><div class="goat-silly-wrap"><div class="goat-silly-really">REALLY?</div><img src="/static/goat-smile.gif" alt="Really?" class="goat-silly-img"></div></div>`;
+  wrap.appendChild(row); wrap.scrollTop=9999;
+}
+
+async function goatSend(){
+  const input=document.getElementById('goat-input');
+  const text=input.value.trim();
+  if(!text||_goatBusy) return;
+  input.value=''; input.style.height='auto';
+  const egg=checkGoatEasterEgg(text);
+  if(egg){
+    _goatBusy=true; document.getElementById('goat-send').disabled=true;
+    appendGoatMessage('user',text); _goatHistory.push({role:'user',content:text});
+    appendGoatEasterEggResponse(egg); _goatHistory.push({role:'assistant',content:egg.text});
+    _goatBusy=false; document.getElementById('goat-send').disabled=false;
+    document.getElementById('goat-input').focus(); return;
+  }
+  if(isSillyGoatQuestion(text)){
+    _goatBusy=true; document.getElementById('goat-send').disabled=true;
+    appendGoatMessage('user',text); _goatHistory.push({role:'user',content:text});
+    appendGoatSillyResponse(); _goatHistory.push({role:'assistant',content:'REALLY?'});
+    _goatBusy=false; document.getElementById('goat-send').disabled=false;
+    document.getElementById('goat-input').focus(); return;
+  }
+  _goatBusy=true; document.getElementById('goat-send').disabled=true;
 
   appendGoatMessage('user', text);
   _goatHistory.push({role: 'user', content: text});
@@ -2740,6 +2916,15 @@ function setSchedFilter(f){
   renderSchedule();
 }
 
+function showOverlay(text='Loading...', sub=''){
+  document.getElementById('loading-overlay-text').textContent = text;
+  document.querySelector('.loading-sub').textContent = sub;
+  document.getElementById('loading-overlay').classList.add('show');
+}
+function hideOverlay(){
+  document.getElementById('loading-overlay').classList.remove('show');
+}
+
 function initSchedule(){
   if(_schedInitDone) return;
   _schedInitDone = true;
@@ -2750,6 +2935,7 @@ async function loadSchedule(force=false){
   document.getElementById('sched-placeholder').style.display = 'none';
   document.getElementById('sched-loading').style.display     = 'flex';
   document.getElementById('sched-timeline').style.display    = 'none';
+  showOverlay('Loading Schedule...', 'Fetching bookings from SmartStaff');
 
   try{
     const url  = `/api/schedule?days=${days}` + (force ? '&force=1' : '');
@@ -2757,11 +2943,13 @@ async function loadSchedule(force=false){
     const data = await resp.json();
     if(data.error){ alert('Schedule error: ' + data.error); return; }
     _schedData = data;
+    _schedCrewIndex = {};  // reset clash index for fresh data
     renderSchedule();
   } catch(e){
     alert('Error loading schedule: ' + e.message);
   } finally{
     document.getElementById('sched-loading').style.display = 'none';
+    hideOverlay();
   }
 }
 
@@ -2847,6 +3035,7 @@ function renderSchedule(){
         const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
         const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         return `<div class="sched-call-block ${cls}" title="${safeTitle}"
+                     data-call-id-block="${c.call_id}"
                      onclick="schedJumpToCrewFinder('${c.booking_id}','${c.call_id}')"
                      style="font-size:8px;padding:2px 3px;${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}">
           <div style="font-size:7px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.time}</div>
@@ -2927,6 +3116,7 @@ function renderSchedule(){
                               background:${isToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
             <div class="sched-call-block ${cls}" style="font-size:8px;padding:2px 3px;cursor:pointer;
                  ${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
+                 data-call-id-block="${call.call_id}"
                  onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
                  title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}">
               <div style="font-size:7px;opacity:.7">${call.time}</div>
@@ -2961,9 +3151,11 @@ function renderSchedule(){
             </div>
             <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
               <span data-call-status="${call.booking_id}/${call.call_id}"
+                    data-call-meta="${call.call_id}|${call.booking_id}|${call.start_iso||''}|${call.end_iso||''}|${call.call_name||''}"
                     style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;flex:1">
                 <span style="opacity:.4">loading...</span>
               </span>
+              <span data-crew-list="${call.call_id}" style="display:none;font-size:9px;margin-top:2px;flex-basis:100%"></span>
               <button onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
                       title="Find available crew for this call"
                       style="background:rgba(212,175,55,0.1);border:1px solid rgba(212,175,55,0.25);
@@ -3010,10 +3202,66 @@ function renderSchedule(){
   wrap.innerHTML = html;
 }
 
-function renderCallStatusBadge(el, data){
-  const { confirmed, waiting, declined, required } = data;
-  const unfilled = required - confirmed - waiting - declined;
+// ── SCHEDULING CLASH DETECTION ───────────────────────────────────────────────
+// _schedCrewIndex: {crewName: [{call_id, booking_id, start_iso, end_iso, call_name}]}
+// Built lazily as crew are loaded; used to detect double-bookings.
+let _schedCrewIndex = {};
+
+function schedIndexCrew(callMeta, crewList){
+  // callMeta: {call_id, booking_id, start_iso, end_iso, call_name}
+  crewList.forEach(c => {
+    const name = c.name;
+    if(!_schedCrewIndex[name]) _schedCrewIndex[name] = [];
+    // Only add if not already indexed for this call
+    if(!_schedCrewIndex[name].some(e => e.call_id === callMeta.call_id)){
+      _schedCrewIndex[name].push(callMeta);
+    }
+  });
+}
+
+function schedFindClashes(callMeta, crewList){
+  // Returns set of crew names that are double-booked during this call
+  const clashing = new Set();
+  const s1 = new Date(callMeta.start_iso).getTime();
+  const e1 = new Date(callMeta.end_iso).getTime();
+  if(!s1 || !e1) return clashing;
+
+  crewList.forEach(c => {
+    const otherCalls = (_schedCrewIndex[c.name] || []).filter(e => e.call_id !== callMeta.call_id);
+    for(const other of otherCalls){
+      const s2 = new Date(other.start_iso).getTime();
+      const e2 = new Date(other.end_iso).getTime();
+      if(s2 < e1 && e2 > s1){
+        clashing.add(c.name);
+        break;
+      }
+    }
+  });
+  return clashing;
+}
+
+function schedMarkCallClash(callId, hasClash){
+  // Update all rendered blocks for this call in the schedule grid
+  document.querySelectorAll(`[data-call-id-block="${callId}"]`).forEach(el => {
+    if(hasClash){
+      el.classList.remove('full','partial','empty');
+      el.classList.add('clash');
+    }
+  });
+}
+
+function renderCallStatusBadge(el, data, callMeta){
+  const { confirmed, waiting, declined, required, crew } = data;
+  const unfilled = Math.max(0, required - confirmed - waiting - declined);
   let html = '';
+
+  // Detect clashes if crew list and call meta provided
+  let clashing = new Set();
+  if(crew && callMeta){
+    schedIndexCrew(callMeta, crew);
+    clashing = schedFindClashes(callMeta, crew);
+    if(clashing.size > 0) schedMarkCallClash(callMeta.call_id, true);
+  }
 
   if(confirmed > 0)
     html += `<span style="color:#22c55e;font-size:9px;font-family:'Share Tech Mono',monospace">✓${confirmed}</span>`;
@@ -3023,8 +3271,24 @@ function renderCallStatusBadge(el, data){
     html += `<span style="color:var(--accent2);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">✗${declined}</span>`;
   if(unfilled > 0 && required > 0)
     html += `<span style="color:var(--muted);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">○${unfilled}</span>`;
+  if(clashing.size > 0)
+    html += ` <span class="sched-clash-badge">⚡ ${clashing.size} clash${clashing.size>1?'es':''}</span>`;
 
   el.innerHTML = html || '—';
+
+  // Render clashing crew names only — hidden when no clashes
+  const crewEl = el.nextElementSibling;
+  if(crewEl && crewEl.dataset.crewList !== undefined){
+    if(clashing.size > 0){
+      crewEl.innerHTML = [...clashing].map(name =>
+        `<span class="crew-clash" style="font-size:9px;margin-right:6px">${name}</span>`
+      ).join('');
+      crewEl.style.display = '';
+    } else {
+      crewEl.innerHTML = '';
+      crewEl.style.display = 'none';
+    }
+  }
 }
 
 function toggleSchedBooking(bid){
@@ -3040,11 +3304,24 @@ function toggleSchedBooking(bid){
     calls.dataset.statusLoaded = '1';
     calls.querySelectorAll('[data-call-status]').forEach(async el => {
       const [bookingId, callId] = el.dataset.callStatus.split('/');
+      const metaParts = (el.dataset.callMeta || '').split('|');
+      const callMeta = metaParts.length >= 4 ? {
+        call_id:    metaParts[0],
+        booking_id: metaParts[1],
+        start_iso:  metaParts[2],
+        end_iso:    metaParts[3],
+        call_name:  metaParts[4] || '',
+      } : null;
       try{
-        const resp = await fetch(`/api/call-status/${bookingId}/${callId}`);
-        const data = await resp.json();
-        renderCallStatusBadge(el, data);
-      } catch(e){}
+        // Fetch status counts and booked crew in parallel
+        const [statusResp, crewResp] = await Promise.all([
+          fetch(`/api/call-status/${bookingId}/${callId}`),
+          fetch(`/api/booked-crew/${bookingId}/${callId}`),
+        ]);
+        const statusData = await statusResp.json();
+        const crewData   = await crewResp.json();
+        renderCallStatusBadge(el, {...statusData, crew: crewData.crew || []}, callMeta);
+      } catch(e){ renderCallStatusBadge(el, {confirmed:0,waiting:0,declined:0,required:0,crew:[]}, null); }
     });
   }
 }
@@ -3076,6 +3353,44 @@ async function schedJumpToCrewFinder(bookingId, callId){
   }
   setTimeout(() => trySelect(), 400);
 }
+
+// ── SESSION MONITORING ──────────────────────────────────────────────────────
+
+let _sessionToastShown = false;
+
+function showSessionToast(msg){
+  if(_sessionToastShown) return;
+  _sessionToastShown = true;
+  const toast = document.createElement('div');
+  toast.id = 'session-toast';
+  toast.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+    background:rgba(227,30,36,0.95);color:#fff;padding:10px 20px;border-radius:4px;
+    font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;z-index:9999;
+    letter-spacing:.05em;box-shadow:0 4px 12px rgba(0,0,0,.4);transition:opacity .3s`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => { toast.style.opacity='0'; setTimeout(()=>toast.remove(),300); _sessionToastShown=false; }, 5000);
+}
+
+async function pingSession(){
+  try{
+    const resp = await fetch('/api/session/ping');
+    if(resp.status === 401){
+      const data = await resp.json();
+      if(data.reason === 'expired'){
+        showSessionToast('⚠ SmartStaff session expired — reconnecting...');
+      }
+    } else {
+      const data = await resp.json();
+      if(data.reauthed){
+        showSessionToast('✓ Reconnected to SmartStaff');
+      }
+    }
+  } catch(e){}
+}
+
+// Ping every 9 minutes (keepalive runs every 8, this catches any gaps)
+setInterval(pingSession, 9 * 60 * 1000);
 
 async function checkForUpdates(){
   try{
@@ -3131,6 +3446,113 @@ async function pollRefreshProgress(){
     }catch(e){ clearInterval(interval); loadCacheStatus(); }
   }, 1000);
 }
+
+// ── EASTER EGGS ──────────────────────────────────────────────────────────────
+
+// 1. Konami Code → goat stampede
+(function(){
+  const KONAMI = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+  let _seq = [];
+  document.addEventListener('keydown', e => {
+    _seq.push(e.key);
+    if(_seq.length > KONAMI.length) _seq.shift();
+    if(_seq.join(',') === KONAMI.join(',')){ _seq = []; triggerStampede(); }
+  });
+})();
+
+function triggerStampede(){
+  const count = 8;
+  const goats = ['🐐','🐐','🐐','🐐','🐐','🐐','🐐','🐐'];
+  goats.forEach((g, i) => {
+    const el = document.createElement('div');
+    el.className = 'stampede-goat';
+    el.textContent = g;
+    const dur = 1800 + Math.random() * 800;
+    const top  = 20 + Math.random() * 60;
+    el.style.top = top + '%';
+    el.style.animationDuration = dur + 'ms';
+    el.style.animationDelay   = (i * 180) + 'ms';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), dur + i * 180 + 100);
+  });
+}
+
+// 2. Typing "baaa" anywhere (not in an input) → bleat
+(function(){
+  let _buf = '';
+  document.addEventListener('keydown', e => {
+    if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    _buf += e.key.toLowerCase();
+    if(_buf.length > 6) _buf = _buf.slice(-6);
+    if(_buf.includes('baaa')){
+      _buf = '';
+      const audio = document.getElementById('goat-bray');
+      if(audio){ audio.currentTime = 0; audio.play().catch(()=>{}); }
+      // Flash a little goat emoji centre screen
+      const el = document.createElement('div');
+      el.textContent = '🐐';
+      el.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-size:80px;z-index:99999;pointer-events:none;transition:opacity .5s';
+      document.body.appendChild(el);
+      setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 500); }, 800);
+    }
+  });
+})();
+
+// 3. 666 crew selected → devil goat flash
+const _origUpdateSelCount = updateSelCount;
+function updateSelCount(){
+  _origUpdateSelCount();
+  if(selected.size === 666) triggerDevilGoat();
+}
+function triggerDevilGoat(){
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;flex-direction:column;pointer-events:none;background:rgba(180,0,0,0.15)';
+  el.innerHTML = '<div style="font-size:100px;animation:spin 1s linear infinite">😈</div>'
+    + '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:48px;color:#ff4444;letter-spacing:.2em;text-shadow:0 0 20px #ff0000;margin-top:16px">THE GOAT OF DARKNESS</div>';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2000);
+}
+
+// 4. All calls fully booked → confetti burst with 🐐
+function checkAllBooked(){
+  const cards = document.querySelectorAll('.call-booked');
+  if(!cards.length) return;
+  const allFull = [...cards].every(c => c.classList.contains('ok'));
+  if(allFull) triggerConfetti();
+}
+function triggerConfetti(){
+  const colours = ['#d4af37','#10b981','#8b5cf6','#f59e0b','#ef4444','#fff'];
+  for(let i = 0; i < 80; i++){
+    const el = document.createElement('div');
+    el.className = 'confetti-piece';
+    el.style.left = Math.random() * 100 + 'vw';
+    el.style.background = colours[Math.floor(Math.random() * colours.length)];
+    el.style.width  = (6 + Math.random() * 8) + 'px';
+    el.style.height = (6 + Math.random() * 8) + 'px';
+    el.style.animationDuration = (1.5 + Math.random() * 2) + 's';
+    el.style.animationDelay   = (Math.random() * 0.8) + 's';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+  // And a big 🐐 in the middle
+  const goat = document.createElement('div');
+  goat.style.cssText = 'position:fixed;top:40%;left:50%;transform:translate(-50%,-50%);font-size:72px;z-index:99999;pointer-events:none;transition:all 1s';
+  goat.textContent = '🐐';
+  document.body.appendChild(goat);
+  setTimeout(() => { goat.style.opacity='0'; goat.style.transform='translate(-50%,-150%)'; setTimeout(()=>goat.remove(),1000); }, 1500);
+}
+
+// 5. 10-star available crew → gold glow row in forecast table
+// Applied during renderForecastTable (hooked below via wrapper)
+function applyGoldRows(){
+  document.querySelectorAll('#fc-tbody tr').forEach(tr => {
+    const starsEl = tr.querySelector('.fc-stars');
+    if(!starsEl) return;
+    const stars = (starsEl.textContent.match(/★/g)||[]).length;
+    if(stars >= 10) tr.classList.add('gold-row');
+    else tr.classList.remove('gold-row');
+  });
+}
 </script>
 <!-- ── ASK GOAT DRAWER ── -->
 <div class="goat-drawer" id="goat-drawer">
@@ -3169,6 +3591,7 @@ async function pollRefreshProgress(){
   <div id="goat-easter-egg" style="display:none;position:fixed;inset:0;z-index:99999;
        background:#000;align-items:center;justify-content:center;flex-direction:column">
     <audio id="goat-bray" src="/static/goat-bray.mp3" preload="auto"></audio>
+    <audio id="cha-ching" src="/static/cha-ching.mp3" preload="auto"></audio>
     <img src="/static/eating-goat.png" alt="🐐"
          style="max-width:100%;max-height:90vh;object-fit:contain">
     <div style="position:absolute;bottom:40px;font-family:'Bebas Neue',sans-serif;

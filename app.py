@@ -30,6 +30,10 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 CACHE_FILE  = os.path.join(BASE_DIR, "crew_cache.json")
+FORECAST_CACHE_FILE        = os.path.join(BASE_DIR, "forecast_cache.json")
+UNAVAIL_CACHE_FILE         = os.path.join(BASE_DIR, "unavail_cache.json")
+FORECAST_CACHE_MAX_AGE_HRS = 1
+UNAVAIL_CACHE_MAX_AGE_HRS  = 4
 BASE_URL    = "https://smartstaffsolutions.com"
 CACHE_MAX_AGE_HRS = 24
 IMPORT_LOG_FILE = os.path.join(BASE_DIR, "import_log.json")
@@ -64,20 +68,83 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.1.1"
+APP_VERSION    = "3.2.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
 _ss_sessions     = {}  # per-user SmartStaff sessions keyed by app session id
-_calls_cache     = {}  # in-memory cache for calls list, keyed by session id
-_refresh_progress = {} # tracks background cache refresh progress
+_keepalive_thread = None
+
+def is_ss_session_valid(ss):
+    """Check if a SmartStaff session is still active by hitting a lightweight endpoint."""
+    try:
+        resp = ss.get(f"{BASE_URL}/dash", allow_redirects=False)
+        # If redirected to login, session has expired
+        if resp.status_code in (301, 302):
+            location = resp.headers.get("Location", "")
+            if "login" in location.lower():
+                return False
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+def reauth_ss_session(sid):
+    """Re-authenticate a SmartStaff session using saved credentials."""
+    cfg = load_config()
+    username = cfg.get("username", "")
+    password = cfg.get("password", "")
+    if not username or not password:
+        return False
+    ss, err = create_ss_session(username, password)
+    if err or not ss:
+        return False
+    _ss_sessions[sid] = ss
+    app.logger.info(f"SmartStaff session re-authenticated for sid {sid}")
+    return True
+
+def keepalive_worker():
+    """Background thread — pings SmartStaff every 8 minutes, re-auths if expired."""
+    import time
+    while True:
+        time.sleep(480)  # 8 minutes
+        for sid, ss in list(_ss_sessions.items()):
+            try:
+                if not is_ss_session_valid(ss):
+                    app.logger.info(f"Session {sid} expired — re-authenticating...")
+                    reauth_ss_session(sid)
+                else:
+                    app.logger.debug(f"Session {sid} keepalive OK")
+            except Exception as e:
+                app.logger.warning(f"Keepalive error for {sid}: {e}")
+
+def start_keepalive():
+    """Start the keepalive background thread once."""
+    global _keepalive_thread
+    if _keepalive_thread is None or not _keepalive_thread.is_alive():
+        _keepalive_thread = threading.Thread(target=keepalive_worker, daemon=True)
+        _keepalive_thread.start()
+        app.logger.info("SmartStaff session keepalive started")
+
+_calls_cache      = {}  # in-memory cache for calls list, keyed by session id
+_refresh_progress          = {}
+_forecast_preload_progress = {}
+_unavail_preload_progress  = {}
 
 def get_ss_session():
-    """Get or create a SmartStaff HTTP session for the current user."""
+    """Get SmartStaff session for current user. Auto re-auths if session expired."""
     sid = session.get("sid")
-    if sid and sid in _ss_sessions:
-        return _ss_sessions[sid]
-    return None
+    if not sid:
+        return None
+    ss = _ss_sessions.get(sid)
+    if not ss:
+        return None
+    # Quick validity check — if session has expired, try to re-auth silently
+    if not is_ss_session_valid(ss):
+        app.logger.info(f"Session {sid} detected as expired in get_ss_session — re-authing")
+        if not reauth_ss_session(sid):
+            return None
+        ss = _ss_sessions.get(sid)
+    return ss
 
 def create_ss_session(username, password):
     """Login to SmartStaff and return a session object."""
@@ -93,8 +160,8 @@ def create_ss_session(username, password):
     # Monkey-patch get/post to always use timeout
     _orig_get  = ss.get
     _orig_post = ss.post
-    ss.get  = lambda url, **kw: _orig_get(url,  timeout=kw.pop("timeout", 30), **kw)
-    ss.post = lambda url, **kw: _orig_post(url, timeout=kw.pop("timeout", 30), **kw)
+    ss.get  = lambda url, **kw: _orig_get(url,  timeout=kw.pop("timeout", 10), **kw)
+    ss.post = lambda url, **kw: _orig_post(url, timeout=kw.pop("timeout", 10), **kw)
     resp = ss.post(f"{BASE_URL}/login", data={
         "action": "login",
         "username": username,
@@ -124,6 +191,30 @@ def load_cache():
 def save_cache(crew_profiles):
     with open(CACHE_FILE, "w") as f:
         json.dump({"saved_at": datetime.now().isoformat(), "crew": crew_profiles}, f)
+
+def load_forecast_cache():
+    if not os.path.exists(FORECAST_CACHE_FILE): return None, None
+    try:
+        with open(FORECAST_CACHE_FILE) as f: data=json.load(f)
+        return data.get("payload"),(datetime.now()-datetime.fromisoformat(data.get("saved_at","2000-01-01"))).total_seconds()/3600
+    except: return None, None
+
+def save_forecast_cache(payload):
+    try:
+        with open(FORECAST_CACHE_FILE,"w") as f: json.dump({"saved_at":datetime.now().isoformat(),"payload":payload},f)
+    except: pass
+
+def load_unavail_cache():
+    if not os.path.exists(UNAVAIL_CACHE_FILE): return {}, None
+    try:
+        with open(UNAVAIL_CACHE_FILE) as f: data=json.load(f)
+        return data.get("unavails",{}),(datetime.now()-datetime.fromisoformat(data.get("saved_at","2000-01-01"))).total_seconds()/3600
+    except: return {}, None
+
+def save_unavail_cache(unavails):
+    try:
+        with open(UNAVAIL_CACHE_FILE,"w") as f: json.dump({"saved_at":datetime.now().isoformat(),"unavails":unavails},f)
+    except: pass
 
 # ─── SMARTSTAFF SCRAPERS ──────────────────────────────────────────────────────
 
@@ -426,11 +517,34 @@ def scrape_all_crew(ss):
             if not name_link or not manage_link:
                 continue
             name  = name_link.get_text(strip=True)
-            href  = manage_link.get("href", "")
-            m     = re.search(r"crew/manage/(\d+)", href)
+            # userID = used for adding to calls/SMS (internal SmartStaff DB key)
+            uid_m = re.search(r"userID=(\d+)", name_link.get("href", ""))
+            # manage_id = used for profile/shift URLs
+            mgr_m = re.search(r"crew/manage/(\d+)", manage_link.get("href", ""))
             phone = phone_link.get_text(strip=True) if phone_link else ""
-            if m and name:
-                page_crew.append({"name": name, "id": m.group(1), "phone": phone})
+            # EIN = the human-facing employee number shown in the EIN column.
+            # It lives as plain cell text (not in a href), e.g. "6070". The little
+            # locate-pin next to it is a separate anchor, so we read text-only cells.
+            ein = ""
+            for td in row.find_all("td"):
+                # Skip cells that contain the name/manage/phone links
+                if td.find("a", href=re.compile(r"add-call\.php|crew/manage/|^tel:")):
+                    continue
+                cell_txt = td.get_text(strip=True)
+                # EIN is a short pure-digit token (typically 4 digits), possibly
+                # followed by icon/whitespace. Match a standalone leading digit run.
+                m = re.match(r"^(\d{3,6})(?:\D.*)?$", cell_txt)
+                if m and not cell_txt.startswith("0"):  # avoid phone fragments like 0423...
+                    ein = m.group(1)
+                    break
+            if uid_m and mgr_m and name:
+                page_crew.append({
+                    "name":      name,
+                    "id":        uid_m.group(1),   # userID — operations only (add-to-call/SMS)
+                    "manage_id": mgr_m.group(1),   # manage ID — profile/shift URLs
+                    "ein":       ein or uid_m.group(1),  # EIN — display; fall back to userID
+                    "phone":     phone,
+                })
 
         if not page_crew:
             break
@@ -515,6 +629,127 @@ def get_crew_shifts(ss, crew_id, today):
             "venue": venue or "",
         })
     return shifts
+
+
+def get_crew_unavailabilities(ss, crew_id, today):
+    """Scrape genuine crew-entered unavailability periods.
+    Filters out call booking entries identified by:
+      - @ symbol (e.g. "Event @ Venue")
+      - en-dash or em-dash separators
+      - space-hyphen-space " - " (e.g. "IDLE - RLA - Load Out")
+    Genuine entries are plain text: "On leave", "Holiday", etc.
+    """
+    resp = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page=unavailabilities")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    unavails = []
+    for row in soup.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 2: continue
+        from_text = cells[0].get_text(strip=True)
+        to_text   = cells[1].get_text(strip=True)
+        reason    = cells[2].get_text(strip=True) if len(cells) >= 3 else ""
+        if "@" in reason or "–" in reason or "—" in reason or " - " in reason:
+            continue
+        start_dt = end_dt = None
+        for fmt in ("%d %b %Y", "%d/%m/%Y", "%Y-%m-%d"):
+            try:    start_dt = datetime.strptime(from_text, fmt); break
+            except: continue
+        for fmt in ("%d %b %Y", "%d/%m/%Y", "%Y-%m-%d"):
+            try:    end_dt = datetime.strptime(to_text, fmt).replace(hour=23, minute=59, second=59); break
+            except: continue
+        if not start_dt or not end_dt or end_dt < today: continue
+        unavails.append({"start": start_dt.isoformat(), "end": end_dt.isoformat(), "reason": reason or "Unavailable"})
+    return unavails
+
+
+def trigger_forecast_preload(ss, force=False):
+    if _forecast_preload_progress.get("running"): return
+    if not force:
+        _, age = load_forecast_cache()
+        if age is not None and age < FORECAST_CACHE_MAX_AGE_HRS: return
+    def preload():
+        import time as _time
+        _forecast_preload_progress.update({"running":True,"started":_time.time(),"done":0,"total":0,"error":None})
+        try:
+            start_dt=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
+            days=28; end_dt=start_dt+timedelta(days=days); today=start_dt
+            crew_data,_=load_cache()
+            if not crew_data: _forecast_preload_progress["error"]="No crew cache"; return
+            items=list(crew_data.items()); _forecast_preload_progress["total"]=len(items)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            shifts_map={}
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                sf={executor.submit(get_crew_shifts,ss,cid,today):cid for cid,_ in items}
+                for future in as_completed(sf):
+                    cid=sf[future]
+                    try: shifts_map[cid]=future.result()
+                    except: shifts_map[cid]=[]
+                    _forecast_preload_progress["done"]+=1
+            unavail_cache,_=load_unavail_cache()
+            results=[]
+            for cid,info in items:
+                shifts=shifts_map.get(cid,[]); unavails=unavail_cache.get(cid,[])
+                ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
+                wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
+                day_hours={}; total_hours=0.0
+                for s in ws:
+                    cs=max(datetime.fromisoformat(s["start"]),start_dt); ce=min(datetime.fromisoformat(s["end"]),end_dt)
+                    total_hours+=(ce-cs).total_seconds()/3600
+                    cur=cs.replace(hour=0,minute=0,second=0,microsecond=0)
+                    while cur<ce:
+                        ds=cur.strftime("%Y-%m-%d")
+                        day_hours[ds]=day_hours.get(ds,0)+(min(ce,cur+timedelta(days=1))-max(cs,cur)).total_seconds()/3600
+                        cur+=timedelta(days=1)
+                day_unavail={}
+                for u in wu:
+                    us=max(datetime.fromisoformat(u["start"]),start_dt); ue=min(datetime.fromisoformat(u["end"]),end_dt)
+                    cur=us.replace(hour=0,minute=0,second=0,microsecond=0)
+                    while cur<=ue:
+                        ds=cur.strftime("%Y-%m-%d")
+                        if ds not in day_unavail: day_unavail[ds]=u.get("reason","Unavailable")
+                        cur+=timedelta(days=1)
+                results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
+                    "manage_id":cid,"name":info.get("name",""),"phone":info.get("phone",""),
+                    "rating":info.get("rating",0),"groups":info.get("groups",[]),
+                    "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail})
+            dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+            save_forecast_cache({"start_date":start_dt.strftime("%Y-%m-%d"),"end_date":end_dt.strftime("%Y-%m-%d"),
+                                  "dates":dates,"crew":results})
+            _forecast_preload_progress["elapsed"]=round(_time.time()-_forecast_preload_progress["started"],1)
+        except Exception as e: _forecast_preload_progress["error"]=str(e)
+        finally: _forecast_preload_progress["running"]=False
+    threading.Thread(target=preload,daemon=True).start()
+
+
+def trigger_unavail_preload(ss, force=False):
+    if _unavail_preload_progress.get("running"): return
+    if not force:
+        _,age=load_unavail_cache()
+        if age is not None and age<UNAVAIL_CACHE_MAX_AGE_HRS: return
+    def preload():
+        import time as _time
+        _unavail_preload_progress.update({"running":True,"started":_time.time(),"done":0,"total":0,"error":None})
+        try:
+            crew_data,_=load_cache()
+            if not crew_data: return
+            items=list(crew_data.items()); _unavail_preload_progress["total"]=len(items)
+            today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            unavail_map={}
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                uf={executor.submit(get_crew_unavailabilities,ss,cid,today):cid for cid,_ in items}
+                for future in as_completed(uf):
+                    cid=uf[future]
+                    try: unavail_map[cid]=future.result()
+                    except: unavail_map[cid]=[]
+                    _unavail_preload_progress["done"]+=1
+            save_unavail_cache(unavail_map)
+            _unavail_preload_progress["elapsed"]=round(_time.time()-_unavail_preload_progress["started"],1)
+            trigger_forecast_preload(ss,force=True)
+        except Exception as e: _unavail_preload_progress["error"]=str(e)
+        finally: _unavail_preload_progress["running"]=False
+    threading.Thread(target=preload,daemon=True).start()
+
 
 # ─── CONFLICT RULES ───────────────────────────────────────────────────────────
 
@@ -897,7 +1132,7 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
-        remember = request.form.get("remember") == "on"
+        remember = request.form.get("remember", "on") == "on"
 
         ss, err = create_ss_session(username, password)
         if err:
@@ -908,6 +1143,9 @@ def login():
             session["sid"] = sid
             session.permanent = remember
             _ss_sessions[sid] = ss
+            start_keepalive()  # ensure keepalive thread is running
+            trigger_forecast_preload(ss)
+            trigger_unavail_preload(ss)
 
             if remember:
                 cfg = load_config()
@@ -1039,11 +1277,25 @@ def api_availability():
         else:
             groups, rating = scrape_crew_profile(ss, cid)
             inductions     = scrape_crew_inductions(ss, cid)
-            updated_cache[cid] = {"name": crew["name"], "phone": crew.get("phone", ""), "groups": groups, "rating": rating, "inductions": inductions}
+            updated_cache[crew.get("manage_id", cid)] = {
+                "name":      crew["name"],
+                "phone":     crew.get("phone", ""),
+                "user_id":   crew.get("id", cid),
+                "ein":       crew.get("ein", crew.get("id", cid)),
+                "groups":    groups,
+                "rating":    rating,
+                "inductions": inductions,
+            }
 
         crew["groups"]     = groups
         crew["rating"]     = rating
         crew["inductions"] = inductions
+        # Ensure user_id is set for display — cache may have it stored
+        if not crew.get("user_id"):
+            crew["user_id"] = cache.get(cid, {}).get("user_id", cid)
+        # EIN for display: prefer freshly-scraped EIN, then cached EIN, then userID
+        if not crew.get("ein"):
+            crew["ein"] = cache.get(cid, {}).get("ein", crew.get("id", cid))
 
         reasons = []
         if rating < min_rating:
@@ -1058,33 +1310,34 @@ def api_availability():
         else:
             candidates.append(crew)
 
-    # Step 2: fetch shifts in parallel for candidates only
+    # Step 2: fetch shifts; unavailabilities from disk cache (instant)
     from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
-
-    def fetch_shifts(crew):
-        return crew, get_crew_shifts(ss, crew["id"], today)
-
+    unavail_cache, _ = load_unavail_cache()
     shift_map = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_shifts, c): c for c in candidates}
-        for future in _as_completed(futures):
-            try:
-                crew, shifts = future.result()
-                shift_map[crew["id"]] = shifts
-            except Exception:
-                shift_map[futures[future]["id"]] = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        sf = {executor.submit(get_crew_shifts, ss, c["id"], today): c["id"] for c in candidates}
+        for future in _as_completed(sf):
+            cid = sf[future]
+            try:    shift_map[cid] = future.result()
+            except: shift_map[cid] = []
 
-    # Step 3: check conflicts using fetched shifts
+    # Step 3: check conflicts using shifts + cached unavailabilities
     for crew in candidates:
-        cid    = crew["id"]
-        shifts = shift_map.get(cid, [])
+        cid      = crew["id"]
+        shifts   = shift_map.get(cid, [])
+        unavails = unavail_cache.get(cid, [])
         inductions = crew["inductions"]
 
-        # Check against each target call individually
         call_results = []
         any_conflict = False
         for t in targets:
             conflict, reason = check_conflict(shifts, t["start"], t["end"], t["venue"])
+            if not conflict:
+                for u in unavails:
+                    if datetime.fromisoformat(u["start"]) <= t["end"] and datetime.fromisoformat(u["end"]) >= t["start"]:
+                        conflict = True
+                        reason   = f"Unavailable: {u.get('reason','Leave/unavailable')}"
+                        break
 
             # Induction check — only if call has a known venue
             induction_warning = ""
@@ -1138,12 +1391,17 @@ def api_availability():
                 nearby_set.add(key)
                 nearby.append(s)
 
-        # Overall status: available for all, some, or none
+        nearby_unavails = [u for u in unavails if any(
+            datetime.fromisoformat(u["end"]) >= t["start"] - timedelta(days=3)
+            and datetime.fromisoformat(u["start"]) <= t["end"] + timedelta(days=3)
+            for t in targets)]
+
         conflict_details = " | ".join(r["detail"] for r in call_results if r["detail"])
 
         entry = {
             **crew,
             "shifts":              nearby,
+            "unavails":            nearby_unavails,
             "call_results":        call_results,
             "avail_count":         avail_count,
             "total_calls":         total_calls,
@@ -1234,11 +1492,13 @@ def api_cache_refresh():
                 try:
                     groups, rating = scrape_crew_profile(ss, crew["id"])
                     inductions     = scrape_crew_inductions(ss, crew["id"])
-                    return crew["id"], {
-                        "name":       crew["name"],
-                        "phone":      crew.get("phone", ""),
-                        "groups":     groups,
-                        "rating":     rating,
+                    return crew["manage_id"], {
+                        "name":      crew["name"],
+                        "phone":     crew.get("phone", ""),
+                        "user_id":   crew.get("id", crew["manage_id"]),  # userID — operations only
+                        "ein":       crew.get("ein", crew.get("id", crew["manage_id"])),  # EIN — display
+                        "groups":    groups,
+                        "rating":    rating,
                         "inductions": inductions,
                     }, None
                 except Exception as e:
@@ -1324,7 +1584,7 @@ def api_inductions():
                 except Exception:
                     venue_status[venue_name] = {"status": status, "completed": completed}
 
-        result.append({"id": cid, "name": name, "groups": groups, "rating": rating, "venue_status": venue_status})
+        result.append({"id": data.get("user_id", cid), "ein": data.get("ein", data.get("user_id", cid)), "name": name, "groups": groups, "rating": rating, "venue_status": venue_status})
 
     result.sort(key=lambda x: x["name"] or "")
     return jsonify({"crew": result, "venues": all_venues})
@@ -1333,6 +1593,22 @@ def api_inductions():
         "Fork", "Lights", "Set/Stg", "Spot", "Truck", "Wardrobe",
         "EWP", "MCEC", "MCG", "MOPT"
     ]})
+
+@app.route("/api/session/ping")
+def api_session_ping():
+    """Lightweight endpoint to check if the SmartStaff session is still valid."""
+    ss = _ss_sessions.get(session.get("sid"))
+    if not ss:
+        return jsonify({"valid": False, "reason": "no_session"}), 401
+    valid = is_ss_session_valid(ss)
+    if not valid:
+        # Try silent re-auth
+        sid = session.get("sid")
+        if reauth_ss_session(sid):
+            return jsonify({"valid": True, "reauthed": True})
+        return jsonify({"valid": False, "reason": "expired"}), 401
+    return jsonify({"valid": True})
+
 
 @app.route("/api/version")
 def api_version():
@@ -1369,114 +1645,92 @@ def api_groups():
 
 # ─── FORECAST ─────────────────────────────────────────────────────────────────
 
-_forecast_cache = {}  # {session_id: {data, generated_at, start_date}}
+_forecast_cache = {}
 
 @app.route("/api/forecast")
 def api_forecast():
-    """Return 28-day shift forecast for all cached crew.
-    Query params: start_date (YYYY-MM-DD, default today)
-    Uses ThreadPoolExecutor to parallelise shift fetching.
-    Results cached for 5 minutes per session + start_date.
-    """
-    ss = get_ss_session()
-    if not ss:
-        return jsonify({"error": "Not logged in"}), 401
-
-    start_str = request.args.get("start_date", datetime.now().strftime("%Y-%m-%d"))
-    try:
-        days = min(28, max(1, int(request.args.get("days", 28))))
-    except ValueError:
-        days = 28
-    try:
-        start_dt = datetime.strptime(start_str, "%Y-%m-%d").replace(hour=0, minute=0, second=0)
-    except ValueError:
-        return jsonify({"error": "Invalid start_date"}), 400
-
-    end_dt = start_dt + timedelta(days=days)
-
-    # Cache check — 5 min per session + start_date + days
-    cache_key = f"{session.get('id', 'anon')}_{start_str}_{days}"
-    cached = _forecast_cache.get(cache_key)
-    if cached and (datetime.now() - cached["at"]).total_seconds() < 300:
-        return jsonify(cached["data"])
-
-    crew_data, _ = load_cache()
-    if not crew_data:
-        return jsonify({"error": "No crew cache. Run a cache refresh first."}), 400
-
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
-    def fetch_crew_forecast(item):
-        cid, info = item
-        try:
-            shifts = get_crew_shifts(ss, cid, today)
-        except Exception:
-            shifts = []
-
-        # Filter to window
-        window_shifts = []
-        for s in shifts:
-            s_start = datetime.fromisoformat(s["start"])
-            s_end   = datetime.fromisoformat(s["end"])
-            if s_start < end_dt and s_end > start_dt:
-                window_shifts.append(s)
-
-        # Per-day hours dict {YYYY-MM-DD: hours}
-        day_hours = {}
-        total_hours = 0.0
-        for s in window_shifts:
-            s_start = datetime.fromisoformat(s["start"])
-            s_end   = datetime.fromisoformat(s["end"])
-            # Clamp to window
-            clamped_start = max(s_start, start_dt)
-            clamped_end   = min(s_end, end_dt)
-            hrs = (clamped_end - clamped_start).total_seconds() / 3600
-            total_hours += hrs
-            # Attribute hours to each calendar day the shift spans
-            cur = clamped_start.replace(hour=0, minute=0, second=0, microsecond=0)
-            while cur < clamped_end:
-                day_str = cur.strftime("%Y-%m-%d")
-                day_start = max(clamped_start, cur)
-                day_end   = min(clamped_end, cur + timedelta(days=1))
-                day_hrs   = (day_end - day_start).total_seconds() / 3600
-                day_hours[day_str] = day_hours.get(day_str, 0) + day_hrs
-                cur += timedelta(days=1)
-
-        return {
-            "id":          cid,
-            "name":        info.get("name", ""),
-            "phone":       info.get("phone", ""),
-            "rating":      info.get("rating", 0),
-            "groups":      info.get("groups", []),
-            "total_hours": round(total_hours, 1),
-            "day_hours":   day_hours,
-        }
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    results = []
-    items = list(crew_data.items())
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_crew_forecast, item): item for item in items}
-        for future in as_completed(futures):
-            try:
-                results.append(future.result())
-            except Exception:
-                pass
-
-    # Build date axis — list of YYYY-MM-DD strings for 28 days
-    dates = [(start_dt + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
-
-    payload = {
-        "start_date": start_str,
-        "end_date":   end_dt.strftime("%Y-%m-%d"),
-        "dates":      dates,
-        "crew":       results,
-    }
-
-    _forecast_cache[cache_key] = {"data": payload, "at": datetime.now()}
+    ss=get_ss_session()
+    if not ss: return jsonify({"error":"Not logged in"}),401
+    force=request.args.get("force","0")=="1"
+    start_str=request.args.get("start_date",datetime.now().strftime("%Y-%m-%d"))
+    try:    days=min(28,max(1,int(request.args.get("days",28))))
+    except: days=28
+    try:    start_dt=datetime.strptime(start_str,"%Y-%m-%d").replace(hour=0,minute=0,second=0)
+    except: return jsonify({"error":"Invalid start_date"}),400
+    end_dt=start_dt+timedelta(days=days); cache_key=f"{start_str}_{days}"
+    if not force:
+        c=_forecast_cache.get(cache_key)
+        if c and (datetime.now()-c["at"]).total_seconds()<300: return jsonify(c["data"])
+    if not force:
+        dp,age=load_forecast_cache()
+        if dp is not None and age is not None:
+            _forecast_cache[cache_key]={"data":dp,"at":datetime.now()}
+            if age>=FORECAST_CACHE_MAX_AGE_HRS: trigger_forecast_preload(ss,force=True)
+            return jsonify(dp)
+    crew_data,_=load_cache()
+    if not crew_data: return jsonify({"error":"No crew cache. Run a cache refresh first."}),400
+    today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
+    items=list(crew_data.items()); unavail_cache,_=load_unavail_cache()
+    from concurrent.futures import ThreadPoolExecutor,as_completed
+    shifts_map={}
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        sf={executor.submit(get_crew_shifts,ss,cid,today):cid for cid,_ in items}
+        for future in as_completed(sf):
+            cid=sf[future]
+            try: shifts_map[cid]=future.result()
+            except: shifts_map[cid]=[]
+    results=[]
+    for cid,info in items:
+        shifts=shifts_map.get(cid,[]); unavails=unavail_cache.get(cid,[])
+        ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
+        wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
+        day_hours={}; total_hours=0.0
+        for s in ws:
+            cs=max(datetime.fromisoformat(s["start"]),start_dt); ce=min(datetime.fromisoformat(s["end"]),end_dt)
+            total_hours+=(ce-cs).total_seconds()/3600
+            cur=cs.replace(hour=0,minute=0,second=0,microsecond=0)
+            while cur<ce:
+                ds=cur.strftime("%Y-%m-%d")
+                day_hours[ds]=day_hours.get(ds,0)+(min(ce,cur+timedelta(days=1))-max(cs,cur)).total_seconds()/3600
+                cur+=timedelta(days=1)
+        day_unavail={}
+        for u in wu:
+            us=max(datetime.fromisoformat(u["start"]),start_dt); ue=min(datetime.fromisoformat(u["end"]),end_dt)
+            cur=us.replace(hour=0,minute=0,second=0,microsecond=0)
+            while cur<=ue:
+                ds=cur.strftime("%Y-%m-%d")
+                if ds not in day_unavail: day_unavail[ds]=u.get("reason","Unavailable")
+                cur+=timedelta(days=1)
+        results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
+            "manage_id":cid,"name":info.get("name",""),"phone":info.get("phone",""),
+            "rating":info.get("rating",0),"groups":info.get("groups",[]),
+            "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail})
+    dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    payload={"start_date":start_str,"end_date":end_dt.strftime("%Y-%m-%d"),"dates":dates,"crew":results}
+    _forecast_cache[cache_key]={"data":payload,"at":datetime.now()}; save_forecast_cache(payload)
     return jsonify(payload)
 
 
+@app.route("/api/forecast/preload-status")
+def api_forecast_preload_status():
+    _,fc_age=load_forecast_cache(); _,uc_age=load_unavail_cache()
+    return jsonify({
+        "forecast":{"running":_forecast_preload_progress.get("running",False),"done":_forecast_preload_progress.get("done",0),
+            "total":_forecast_preload_progress.get("total",0),"elapsed":_forecast_preload_progress.get("elapsed"),
+            "error":_forecast_preload_progress.get("error"),"cache_age":round(fc_age,2) if fc_age else None,
+            "fresh":fc_age is not None and fc_age<FORECAST_CACHE_MAX_AGE_HRS},
+        "unavail":{"running":_unavail_preload_progress.get("running",False),"done":_unavail_preload_progress.get("done",0),
+            "total":_unavail_preload_progress.get("total",0),"elapsed":_unavail_preload_progress.get("elapsed"),
+            "error":_unavail_preload_progress.get("error"),"cache_age":round(uc_age,2) if uc_age else None,
+            "fresh":uc_age is not None and uc_age<UNAVAIL_CACHE_MAX_AGE_HRS},
+    })
+
+@app.route("/api/forecast/preload", methods=["POST"])
+def api_forecast_preload():
+    ss=get_ss_session()
+    if not ss: return jsonify({"error":"Not logged in"}),401
+    trigger_forecast_preload(ss,force=True); trigger_unavail_preload(ss,force=True)
+    return jsonify({"status":"Preloads started"})
 
 
 @app.route("/api/debug/booking-form")
@@ -1983,7 +2237,7 @@ GOAT_TOOLS = [
     },
     {
         "name": "lookup_crew_id",
-        "description": "Look up a crew member's exact ID and full name from the cache by searching for a name. Use this before add_crew_to_call to verify you have the correct crew_id for the person being booked. Always verify IDs this way rather than relying on IDs seen in previous tool results.",
+        "description": "Look up a crew member's operational crew_id (userID, used for add_crew_to_call/send_sms) and human-facing EIN (the employee number operators recognise, e.g. 6070) from the cache by searching for a name. Use this before add_crew_to_call to verify you have the correct crew_id. When referring to a person by number to the operator, use their EIN, not crew_id. Always verify IDs this way rather than relying on IDs seen in previous tool results.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2106,11 +2360,14 @@ def execute_goat_tool(tool_name, tool_input, ss):
                 query_parts = query.replace(",", " ").split()
                 if all(any(qp in np for np in name_parts) for qp in query_parts):
                     matches.append({
-                        "id":     cid,
-                        "name":   name,
-                        "rating": info.get("rating", 0),
-                        "groups": info.get("groups", []),
-                        "phone":  info.get("phone", ""),
+                        # crew_id is the operational userID (for add_crew_to_call / send_sms).
+                        # The cache key (cid) is the manage_id — NOT valid for add-call.
+                        "crew_id": info.get("user_id", cid),
+                        "ein":     info.get("ein", info.get("user_id", cid)),  # human-facing EIN for display
+                        "name":    name,
+                        "rating":  info.get("rating", 0),
+                        "groups":  info.get("groups", []),
+                        "phone":   info.get("phone", ""),
                     })
             if not matches:
                 return _json.dumps({"found": False, "message": f"No crew found matching '{query}'"})
