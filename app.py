@@ -340,7 +340,13 @@ def parse_shift(date_time_str, length_str):
         m = re.match(r"([A-Z][a-z]+ \d{1,2},\s*\d{4})\s*-\s*(\d{1,2}:\d{2})\s*Hrs", date_time_str.strip())
         if not m:
             return None, None
-        start_dt = datetime.strptime(f"{m.group(1).strip()} {m.group(2)}", "%B %d, %Y %H:%M")
+        date_clean = re.sub(r"\s+", " ", m.group(1).strip())
+        start_dt = None
+        for fmt in ("%B %d, %Y %H:%M", "%b %d, %Y %H:%M"):
+            try:    start_dt = datetime.strptime(f"{date_clean} {m.group(2)}", fmt); break
+            except: continue
+        if not start_dt:
+            return None, None
         lm = re.search(r"Length:\s*([\d.]+)\s*Hours?", length_str)
         if not lm:
             return None, None
@@ -477,9 +483,15 @@ def scrape_call_details(ss, booking_id, call_id):
     crew_req   = int(crew_el["value"])      if crew_el   else 0
 
     try:
-        time_clean = time_val[:5]
-        start_dt   = datetime.strptime(f"{date_val.strip()} {time_clean}", "%B %d, %Y %H:%M")
-        end_dt     = start_dt + timedelta(hours=float(length_val))
+        time_clean  = time_val[:5]
+        date_clean  = re.sub(r"\s+", " ", date_val.strip())
+        start_dt    = None
+        for fmt in ("%B %d, %Y %H:%M", "%b %d, %Y %H:%M"):
+            try:    start_dt = datetime.strptime(f"{date_clean} {time_clean}", fmt); break
+            except: continue
+        if not start_dt:
+            return None, f"Could not parse date: {date_clean!r}"
+        end_dt = start_dt + timedelta(hours=float(length_val))
     except Exception as e:
         return None, str(e)
 
