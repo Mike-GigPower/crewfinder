@@ -68,7 +68,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.2.0"
+APP_VERSION    = "3.2.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
@@ -866,7 +866,7 @@ def ss_get_contacts(ss):
         resp = ss.get(f"{BASE_URL}/contacts?p={page}")
         soup = BeautifulSoup(resp.text, "html.parser")
         found = 0
-        for a in soup.find_all("a", href=re.compile(r"^contact/edit/(\d+)$")):
+        for a in soup.find_all("a", href=re.compile(r"contact/edit/(\d+)")):
             m = re.search(r"contact/edit/(\d+)", a["href"])
             name = a.get_text(strip=True)
             if m and name and name != "view/edit" and m.group(1) not in seen:
@@ -913,16 +913,52 @@ def ss_get_venues(ss):
 
 def fuzzy_match(name, options):
     """Find best match for name in list of {id, name} dicts.
-    Returns matching dict or None. Case-insensitive substring match."""
-    name_l = name.lower().strip()
-    # Exact match first
+    Four-tier matching:
+      1. Exact (case-insensitive)
+      2. Token-sort — catches "Smith, John" ↔ "John Smith"
+      3. All tokens present in target (subset match)
+      4. Substring
+    Returns matching dict or None.
+    """
+    if not name or not options:
+        return None
+
+    import re as _re
+    def normalise(s):
+        s = s.lower().strip()
+        s = _re.sub(r"[,.'`]", " ", s)
+        s = _re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def token_sort_key(s):
+        return " ".join(sorted(normalise(s).split()))
+
+    name_n = normalise(name)
+    name_ts = token_sort_key(name)
+    name_tokens = set(name_n.split())
+
+    # Tier 1 — exact
     for o in options:
-        if o["name"].lower().strip() == name_l:
+        if normalise(o["name"]) == name_n:
             return o
-    # Substring match
+
+    # Tier 2 — token sort (handles "Svendsen, Jesse" ↔ "Jesse Svendsen")
     for o in options:
-        if name_l in o["name"].lower() or o["name"].lower() in name_l:
+        if token_sort_key(o["name"]) == name_ts:
             return o
+
+    # Tier 3 — all tokens from query present in candidate
+    for o in options:
+        cand_tokens = set(normalise(o["name"]).split())
+        if name_tokens and name_tokens.issubset(cand_tokens):
+            return o
+
+    # Tier 4 — substring
+    for o in options:
+        cand_n = normalise(o["name"])
+        if name_n in cand_n or cand_n in name_n:
+            return o
+
     return None
 
 def ss_create_booking(ss, booking_data):
@@ -2771,9 +2807,10 @@ def api_import_validate():
     venues    = ss_get_venues(ss)
     contacts  = ss_get_contacts(ss)
 
-    customer_match = fuzzy_match(customer["company_name"], customers)
-    venue_match    = fuzzy_match(event.get("venue_name", ""), venues)
-    contact_match  = fuzzy_match(customer.get("contact_name", ""), contacts)
+    customer_match        = fuzzy_match(customer["company_name"], customers)
+    venue_match           = fuzzy_match(event.get("venue_name", ""), venues)
+    contact_match         = fuzzy_match(customer.get("contact_name", ""), contacts)
+    onsite_contact_match  = fuzzy_match(event.get("onsite_contact", ""), contacts)
 
     # Earliest date for booking date field
     dates = [ll["date"] for ll in lines if ll.get("date")]
@@ -2816,18 +2853,21 @@ def api_import_validate():
             "calls":           call_previews,
         },
         "matching": {
-            "customer_name":    customer["company_name"],
-            "customer_matched": customer_match is not None,
-            "customer_id":      customer_match["id"] if customer_match else None,
-            "venue_name":       event.get("venue_name", ""),
-            "venue_matched":    venue_match is not None,
-            "venue_id":         venue_match["id"] if venue_match else None,
-            "contact_name":     customer.get("contact_name", ""),
-            "contact_matched":  contact_match is not None,
-            "contact_id":       contact_match["id"] if contact_match else None,
-            "customers":        customers,
-            "venues":           venues,
-            "contacts":         contacts,
+            "customer_name":          customer["company_name"],
+            "customer_matched":       customer_match is not None,
+            "customer_id":            customer_match["id"] if customer_match else None,
+            "venue_name":             event.get("venue_name", ""),
+            "venue_matched":          venue_match is not None,
+            "venue_id":               venue_match["id"] if venue_match else None,
+            "contact_name":           customer.get("contact_name", ""),
+            "contact_matched":        contact_match is not None,
+            "contact_id":             contact_match["id"] if contact_match else None,
+            "onsite_contact_name":    event.get("onsite_contact", ""),
+            "onsite_contact_matched": onsite_contact_match is not None,
+            "onsite_contact_id":      onsite_contact_match["id"] if onsite_contact_match else None,
+            "customers":              customers,
+            "venues":                 venues,
+            "contacts":               contacts,
         },
     })
 
@@ -2843,11 +2883,12 @@ def api_import_start():
         return jsonify({"error": "An import is already in progress"}), 409
 
     body = request.get_json(force=True)
-    payload     = body.get("payload")
-    customer_id = body.get("customer_id")
-    contact_id  = body.get("contact_id", "")
-    venue_id    = body.get("venue_id")
-    call_names  = body.get("call_names", {})  # {line_id: call_name} — operator-selected (may be partial)
+    payload           = body.get("payload")
+    customer_id       = body.get("customer_id")
+    contact_id        = body.get("contact_id", "")
+    onsite_contact_id = body.get("onsite_contact_id", "")
+    venue_id          = body.get("venue_id")
+    call_names        = body.get("call_names", {})  # {line_id: call_name} — operator-selected (may be partial)
 
     if not payload or not customer_id or not venue_id:
         return jsonify({"error": "Missing payload, customer_id, or venue_id"}), 400
@@ -2911,7 +2952,7 @@ def api_import_start():
                 "notes":            booking_notes,
                 "customer_id":      customer_id,
                 "contact_id":       contact_id,
-                "onsite_contact_id": "",
+                "onsite_contact_id":    onsite_contact_id,
                 "venue_id":         venue_id,
             }
             booking_id, err = ss_create_booking(ss, booking_data)
