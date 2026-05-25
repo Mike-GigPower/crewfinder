@@ -927,6 +927,32 @@ tr.skipped{opacity:.6}
               </div>
             </div>
 
+            <!-- Non-labour items table (schema 1.1) -->
+            <div class="import-section" id="import-non-labour-section" style="display:none">
+              <div class="import-section-head">
+                <span class="import-section-title">📦 Non-labour Items</span>
+                <span id="prev-non-labour-summary" style="font-size:10px;color:var(--muted)"></span>
+              </div>
+              <div class="import-section-body" style="padding:0;overflow-x:auto">
+                <table class="import-calls-table">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Qty</th>
+                      <th>Unit (ex GST)</th>
+                      <th>Line (ex GST)</th>
+                      <th>SmartStaff Call</th>
+                      <th>Notes → SmartStaff</th>
+                    </tr>
+                  </thead>
+                  <tbody id="import-non-labour-tbody"></tbody>
+                </table>
+                <div style="font-size:10px;color:var(--muted);padding:8px 12px">
+                  Each item is created as an <b>"Other"</b> call. Date, time &amp; length are left blank — SmartStaff defaults them to the booking date / 00:00 / 0. Crew required is 0.
+                </div>
+              </div>
+            </div>
+
             <!-- Action row -->
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
               <button class="btn-import" id="btn-start-import" disabled onclick="startImport()">
@@ -1373,8 +1399,26 @@ function renderTable(result,targets){
   const tbody=document.getElementById('results-tbody');
   const addSec=label=>{const tr=document.createElement('tr');tr.className='section-row';tr.innerHTML='<td colspan="7">'+label+'</td>';tbody.appendChild(tr)};
 
+  // Easter egg: searching for "goat" adds the GOAT to the available list
+  const goatInput = document.getElementById('calls-search-input');
+  const goatSummoned = goatInput && goatInput.value.toLowerCase().includes('goat');
+  const theGoat = goatSummoned ? [{
+    name: 'G.O.A.T, The',
+    phone: '0400 BAAA AA',
+    rating: 10,
+    groups: ['All Disciplines'],
+    call_results: targets.map(t => ({available: true, call_num: t.call_num || '', detail: ''})),
+    avail_count: targets.length,
+    total_calls: targets.length,
+    detail: '',
+    induction_warnings: [],
+    shifts: [],
+    unavails: [],
+    _isGoat: true,
+  }] : [];
+
   // Separate partial from full available
-  const fullAvail=available.filter(c=>!c.partial);
+  const fullAvail=[...theGoat, ...available.filter(c=>!c.partial)];
   const partial=available.filter(c=>c.partial);
 
   addSec('&#9656; AVAILABLE FOR ALL ('+fullAvail.length+')');
@@ -1391,8 +1435,10 @@ function renderTable(result,targets){
 
 function addTableRow(tbody,crew,status,targets){
   const isSelectable=status==='available'||status==='partial';
+  const isGoat = crew._isGoat === true;
   const tr=document.createElement('tr');
   tr.className=status==='partial'?'partial available':status;
+  if(isGoat) tr.style.cssText='background:rgba(212,175,55,0.08);box-shadow:inset 0 0 0 1px rgba(212,175,55,0.3)';
   const cbTd=document.createElement('td');cbTd.className='cb-cell';
   if(isSelectable){
     const cb=document.createElement('input');cb.type='checkbox';
@@ -1407,7 +1453,10 @@ function addTableRow(tbody,crew,status,targets){
   tr.appendChild(cbTd);
   function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
   const ph=phoneLink(crew.phone);
-  tr.appendChild(mkTd('name-cell',crew.name+inductionWarnHtml(crew)));
+  const nameHtml=(isGoat?'🐐 ':'')+crew.name+inductionWarnHtml(crew);
+  const nameTd=mkTd('name-cell',nameHtml);
+  if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
+  tr.appendChild(nameTd);
   tr.appendChild(mkTd('',statusLabel(crew,targets)+breakdownHtml(crew)));
   tr.appendChild(mkTd('phone-cell',ph));
   tr.appendChild(mkTd('rating-cell',crew.rating));
@@ -1566,6 +1615,8 @@ function updateSelCount(){
   if(n===0){panel.style.display='none';return}
   panel.style.display='block';
   chips.innerHTML=[...selected.values()].map(c=>'<div class="chip"><span>'+c.name+'</span><button onclick="removeChip(\''+c.name.replace(/'/g,"\\'")+'\')">\u00d7</button></div>').join('');
+  // Easter egg: 666 crew selected
+  if(n===666) triggerDevilGoat();
 }
 function removeChip(name){
   selected.delete(name);
@@ -2053,6 +2104,39 @@ function renderImportPreview(data){
     [...new Set(p.calls.map(c=>c.date))].length + ' date' +
     ([...new Set(p.calls.map(c=>c.date))].length!==1?'s':'');
 
+  // Non-labour items table (schema 1.1)
+  const nlSection = document.getElementById('import-non-labour-section');
+  const nlBody    = document.getElementById('import-non-labour-tbody');
+  const nlItems   = p.non_labour || [];
+  const escHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const money = n => (n == null) ? '—'
+    : '$' + Number(n).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if(nlItems.length){
+    nlSection.style.display = '';
+    nlBody.innerHTML = nlItems.map(n => `
+      <tr>
+        <td>${escHtml(n.item_name)}</td>
+        <td>${n.quantity == null ? '—' : n.quantity}</td>
+        <td>${money(n.unit_cost_ex_gst)}</td>
+        <td>${money(n.line_total_ex_gst)}</td>
+        <td style="color:var(--muted);font-size:10px">Other</td>
+        <td class="td-notes" style="white-space:pre-wrap">${escHtml(n.notes) || '<span style="opacity:.4">—</span>'}</td>
+      </tr>`).join('');
+    const nlTotal = nlItems.reduce((s,n)=> s + (n.line_total_ex_gst || 0), 0);
+    document.getElementById('prev-non-labour-summary').textContent =
+      nlItems.length + ' item' + (nlItems.length!==1?'s':'') +
+      (nlTotal ? ' · ' + money(nlTotal) + ' ex GST' : '');
+    const totalCalls = p.call_count + nlItems.length;
+    document.getElementById('prev-call-count').textContent =
+      totalCalls + ' call' + (totalCalls!==1?'s':'') +
+      ' (' + p.call_count + ' labour + ' + nlItems.length + ' non-labour)';
+  } else {
+    nlSection.style.display = 'none';
+    nlBody.innerHTML = '';
+  }
+
   // Reset progress panel
   document.getElementById('import-progress-panel').style.display = 'none';
   document.getElementById('import-action-note').textContent = '';
@@ -2072,13 +2156,18 @@ function updateImportReadiness(){
   const custOk  = !!document.getElementById('match-customer')?.value;
   const venueOk = !!document.getElementById('match-venue')?.value;
   const selects = document.querySelectorAll('.call-name-select');
-  const allCallsNamed = selects.length > 0 && [...selects].every(s => s.value);
+  // Labour calls each need a name. A booking may legitimately have zero labour
+  // calls (non-labour only), in which case there's nothing to name.
+  const hasNonLabour = (_importPreview?.preview?.non_labour_count || 0) > 0;
+  const allCallsNamed = selects.length === 0
+    ? hasNonLabour
+    : [...selects].every(s => s.value);
   const btn = document.getElementById('btn-start-import');
   if(!btn) return;
   btn.disabled = !(custOk && venueOk && allCallsNamed && _importPayload);
   if(!custOk || !venueOk){
     document.getElementById('import-action-note').textContent = 'Select customer and venue to continue';
-  } else if(!allCallsNamed){
+  } else if(selects.length > 0 && ![...selects].every(s => s.value)){
     const missing = [...selects].filter(s=>!s.value).length;
     document.getElementById('import-action-note').textContent =
       `Select a call name for all lines (${missing} remaining)`;
@@ -2380,12 +2469,23 @@ function renderForecastTable(){
 
   // Build header
   const startDt   = new Date(_fcData.start_date + 'T00:00:00');
+  const today_str = new Date().toISOString().slice(0,10);
   const dayLabels  = dates.map((d,i) => {
-    const dt = new Date(d + 'T00:00:00');
-    const dow = dt.toLocaleDateString('en-AU',{weekday:'narrow'});
-    const day = dt.getDate();
+    const dt        = new Date(d + 'T12:00:00');
+    const dow       = dt.toLocaleDateString('en-AU',{weekday:'short'});
+    const day       = dt.getDate();
+    const mon       = dt.toLocaleDateString('en-AU',{month:'short'});
+    const isToday   = d === today_str;
     const isWeekend = dt.getDay()===0 || dt.getDay()===6;
-    return `<th style="padding:3px 0;text-align:center;font-size:8px;color:${isWeekend?'var(--accent)':'var(--muted)'};font-weight:${isWeekend?'700':'400'};min-width:18px">${dow}<br>${day}</th>`;
+    const showMon   = day === 1 || i === 0;
+    const accent    = isToday ? 'var(--accent)' : isWeekend ? 'rgba(212,175,55,0.6)' : 'var(--muted)';
+    const bg        = isToday ? 'background:rgba(212,175,55,0.08);border-top:2px solid var(--accent);' : '';
+    return `<th style="padding:2px 0;text-align:center;min-width:28px;${bg}">
+      <div style="font-size:8px;color:${accent};font-weight:${isWeekend||isToday?'700':'400'};letter-spacing:.02em">${dow}</div>
+      <div style="font-size:11px;color:${isToday?'var(--accent)':'var(--text)'};font-weight:${isToday?'700':'500'}">${day}</div>
+      <div style="font-size:7px;color:var(--muted)">${showMon ? mon : ''}</div>
+      ${isToday?'<div style="font-size:6px;color:var(--accent);font-weight:700;letter-spacing:.05em">TODAY</div>':''}
+    </th>`;
   }).join('');
 
   document.getElementById('fc-thead').innerHTML = `
@@ -3498,12 +3598,7 @@ function triggerStampede(){
   });
 })();
 
-// 3. 666 crew selected → devil goat flash
-const _origUpdateSelCount = updateSelCount;
-function updateSelCount(){
-  _origUpdateSelCount();
-  if(selected.size === 666) triggerDevilGoat();
-}
+// 3. 666 crew selected → devil goat flash (hook is in updateSelCount directly)
 function triggerDevilGoat(){
   const el = document.createElement('div');
   el.style.cssText = 'position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;flex-direction:column;pointer-events:none;background:rgba(180,0,0,0.15)';

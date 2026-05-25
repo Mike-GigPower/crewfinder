@@ -68,12 +68,41 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.2.1"
+APP_VERSION    = "3.3.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
 _ss_sessions     = {}  # per-user SmartStaff sessions keyed by app session id
-_keepalive_thread = None
+_keepalive_thread    = None
+_auto_refresh_thread = None
+
+def start_auto_refresh():
+    """Background thread that proactively refreshes caches when stale.
+    Checks every 30 minutes — rebuilds forecast if >1hr old, unavails if >4hrs old.
+    Only runs when an active SS session exists.
+    """
+    global _auto_refresh_thread
+    if _auto_refresh_thread and _auto_refresh_thread.is_alive():
+        return
+    def _loop():
+        import time as _time
+        while True:
+            _time.sleep(1800)  # check every 30 minutes
+            try:
+                ss = get_ss_session()
+                if not ss:
+                    continue
+                _, fc_age = load_forecast_cache()
+                _, uc_age = load_unavail_cache()
+                # Rebuild unavails first (triggers forecast rebuild on completion)
+                if uc_age is None or uc_age >= UNAVAIL_CACHE_MAX_AGE_HRS:
+                    trigger_unavail_preload(ss, force=True)
+                elif fc_age is None or fc_age >= FORECAST_CACHE_MAX_AGE_HRS:
+                    trigger_forecast_preload(ss, force=True)
+            except Exception:
+                pass
+    _auto_refresh_thread = threading.Thread(target=_loop, daemon=True)
+    _auto_refresh_thread.start()
 
 def is_ss_session_valid(ss):
     """Check if a SmartStaff session is still active by hitting a lightweight endpoint."""
@@ -603,43 +632,51 @@ def scrape_crew_inductions(ss, crew_id):
     return inductions
 
 def get_crew_shifts(ss, crew_id, today):
-    """Get confirmed future shifts for a crew member from page 1.
-    
+    """Get confirmed future shifts for a crew member, paginating through all pages.
+
     The plain HTTP response wraps data in <b> tags:
       <b>May 24, 2026 - 22:00 Hrs</b><br /><b>Length:</b> 4 Hours ... Confirmed
     """
-    resp    = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page=1")
-    content = resp.text
-    
-    # Match the HTML format: <b>DATE - TIME Hrs</b> ... Length: N Hours ... Confirmed
     pattern = r"<b>([A-Z][a-z]+ \d{1,2},\s*\d{4}\s*-\s*\d{1,2}:\d{2}\s*Hrs)</b>.*?<b>Length:</b>\s*([\d.]+)\s*Hours?.*?(Confirmed|Declined|Pending)"
-    matches = list(re.finditer(pattern, content, re.DOTALL))
-    
     shifts  = []
     seen    = set()
-    for match in matches:
-        date_time_str = match.group(1)
-        length_str    = f"Length: {match.group(2)} Hours"
-        status        = match.group(3)
-        
-        start_dt, end_dt = parse_shift(date_time_str, length_str)
-        if not start_dt or not end_dt:
-            continue
-        if end_dt < today:
-            continue
-        if status.lower() != "confirmed":
-            continue
-        key = (start_dt, end_dt)
-        if key in seen:
-            continue
-        seen.add(key)
-        preceding = content[max(0, match.start()-300):match.start()]
-        venue     = detect_venue(preceding)
-        shifts.append({
-            "start": start_dt.isoformat(),
-            "end":   end_dt.isoformat(),
-            "venue": venue or "",
-        })
+
+    for page in range(1, 10):  # up to 9 pages — bail early when no new shifts found
+        resp    = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page={page}")
+        content = resp.text
+        matches = list(re.finditer(pattern, content, re.DOTALL))
+        if not matches:
+            break
+
+        found_new = False
+        for match in matches:
+            date_time_str = match.group(1)
+            length_str    = f"Length: {match.group(2)} Hours"
+            status        = match.group(3)
+
+            start_dt, end_dt = parse_shift(date_time_str, length_str)
+            if not start_dt or not end_dt:
+                continue
+            if end_dt < today:
+                continue
+            if status.lower() != "confirmed":
+                continue
+            key = (start_dt, end_dt)
+            if key in seen:
+                continue
+            seen.add(key)
+            found_new = True
+            preceding = content[max(0, match.start()-300):match.start()]
+            venue     = detect_venue(preceding)
+            shifts.append({
+                "start": start_dt.isoformat(),
+                "end":   end_dt.isoformat(),
+                "venue": venue or "",
+            })
+
+        if not found_new:
+            break  # all matches on this page were past or already seen
+
     return shifts
 
 
@@ -674,6 +711,97 @@ def get_crew_unavailabilities(ss, crew_id, today):
     return unavails
 
 
+def scrape_shifts_from_bookings(ss, start_dt, end_dt):
+    """Build a crew→shifts map by scraping all bookings in the date window.
+    Uses scrape_schedule which covers ALL bookings (including fully booked ones).
+    Returns {crew_name: [{start, end, venue}]}
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+    # scrape_schedule returns a FLAT list of call dicts
+    days = max(1, (end_dt - start_dt).days)
+    try:
+        all_calls = scrape_schedule(ss, days=days)  # flat list
+    except Exception:
+        return {}
+
+    # Filter to our window and only calls with booked crew
+    window_calls = []
+    for c in all_calls:
+        if c.get("booked", 0) == 0:
+            continue  # no crew booked — skip
+        try:
+            cs = datetime.fromisoformat(c["start_iso"])
+            ce = datetime.fromisoformat(c["end_iso"])
+        except:
+            continue
+        if ce < start_dt or cs > end_dt:
+            continue
+        window_calls.append({
+            "booking_id": c["booking_id"],
+            "call_id":    c["call_id"],
+            "start":      c["start_iso"],
+            "end":        c["end_iso"],
+            "venue":      c.get("venue", ""),
+        })
+
+    if not window_calls:
+        return {}
+
+    # For each call, fetch confirmed crew in parallel
+    def fetch_call_crew(call):
+        try:
+            resp = ss.get(f"{BASE_URL}/bookings/{call['booking_id']}/callsheet/{call['call_id']}")
+            soup = BeautifulSoup(resp.text, "html.parser")
+            crew = []
+            for table in soup.find_all("table"):
+                rows = table.find_all("tr")
+                found = []
+                for row in rows[1:]:
+                    tds = row.find_all("td")
+                    if len(tds) < 3: continue
+                    name_raw = tds[1].get_text(strip=True)
+                    status   = tds[2].get_text(strip=True).lower()
+                    if not name_raw: continue
+                    if "confirm" in status and "unconfirm" not in status:
+                        if "," in name_raw:
+                            parts = name_raw.split(",", 1)
+                            name = parts[1].strip() + " " + parts[0].strip()
+                        else:
+                            name = name_raw.strip()
+                        found.append(name)
+                if found:
+                    crew = found
+                    break
+            return call, crew
+        except:
+            return call, []
+
+    shifts_by_name = {}
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(fetch_call_crew, c): c for c in window_calls}
+        for future in _as_completed(futures):
+            call, crew_names = future.result()
+            for name in crew_names:
+                # Normalise to "Last, First" to match crew cache key format
+                # fetch_call_crew already converts "Last, First" → "First Last"
+                # so convert back: "First Last" → "Last, First"
+                parts = name.strip().split()
+                if len(parts) >= 2:
+                    cache_name = parts[-1] + ", " + " ".join(parts[:-1])
+                else:
+                    cache_name = name
+                if cache_name not in shifts_by_name:
+                    shifts_by_name[cache_name] = []
+                shifts_by_name[cache_name].append({
+                    "start": call["start"],
+                    "end":   call["end"],
+                    "venue": call["venue"],
+                })
+
+    return shifts_by_name
+
+
 def trigger_forecast_preload(ss, force=False):
     if _forecast_preload_progress.get("running"): return
     if not force:
@@ -684,23 +812,20 @@ def trigger_forecast_preload(ss, force=False):
         _forecast_preload_progress.update({"running":True,"started":_time.time(),"done":0,"total":0,"error":None})
         try:
             start_dt=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
-            days=28; end_dt=start_dt+timedelta(days=days); today=start_dt
+            days=28; end_dt=start_dt+timedelta(days=days)
             crew_data,_=load_cache()
             if not crew_data: _forecast_preload_progress["error"]="No crew cache"; return
             items=list(crew_data.items()); _forecast_preload_progress["total"]=len(items)
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            shifts_map={}
-            with ThreadPoolExecutor(max_workers=15) as executor:
-                sf={executor.submit(get_crew_shifts,ss,cid,today):cid for cid,_ in items}
-                for future in as_completed(sf):
-                    cid=sf[future]
-                    try: shifts_map[cid]=future.result()
-                    except: shifts_map[cid]=[]
-                    _forecast_preload_progress["done"]+=1
+
+            # Build shifts from bookings (more reliable than crew profile pages)
+            shifts_by_name = scrape_shifts_from_bookings(ss, start_dt, end_dt)
+
             unavail_cache,_=load_unavail_cache()
             results=[]
-            for cid,info in items:
-                shifts=shifts_map.get(cid,[]); unavails=unavail_cache.get(cid,[])
+            for i,(cid,info) in enumerate(items):
+                name = info.get("name","")
+                shifts  = shifts_by_name.get(name, [])
+                unavails= unavail_cache.get(cid,[])
                 ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
                 wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
                 day_hours={}; total_hours=0.0
@@ -721,9 +846,10 @@ def trigger_forecast_preload(ss, force=False):
                         if ds not in day_unavail: day_unavail[ds]=u.get("reason","Unavailable")
                         cur+=timedelta(days=1)
                 results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
-                    "manage_id":cid,"name":info.get("name",""),"phone":info.get("phone",""),
+                    "manage_id":cid,"name":name,"phone":info.get("phone",""),
                     "rating":info.get("rating",0),"groups":info.get("groups",[]),
                     "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail})
+                _forecast_preload_progress["done"]=i+1
             dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
             save_forecast_cache({"start_date":start_dt.strftime("%Y-%m-%d"),"end_date":end_dt.strftime("%Y-%m-%d"),
                                   "dates":dates,"crew":results})
@@ -1038,9 +1164,16 @@ def ss_create_call(ss, booking_id, call_data):
                 post_data[inp["name"]] = inp.get("value", "")
 
     cn = call_data["call_name"]
+    # For "Other" calls the select value is "Other" but the actual displayed
+    # name is free text, carried in call_name_hidden. call_name_free overrides
+    # the hidden field; labour calls leave it unset so name == select value.
+    # NOTE: SmartStaff's call_name_hidden input has a typo in its HTML
+    # (type="test", not "text"/"hidden"), so the form-scrape above does NOT
+    # pick it up — we always set it explicitly here regardless.
+    cn_hidden = call_data.get("call_name_free") or cn
     post_data.update({
         "call_name":          cn,
-        "call_name_hidden":   cn,
+        "call_name_hidden":   cn_hidden,
         "start_date":         call_data["start_date"],
         "start_time":         call_data["start_time"],
         "length":             str(call_data["duration_hours"]),
@@ -1104,6 +1237,90 @@ def format_booking_date(date_str):
     except Exception:
         return date_str
 
+# ─── NON-LABOUR ITEMS ─────────────────────────────────────────────────────────
+# GigPower export schema 1.1 adds a `non_labour_lines` array (truck hire,
+# consumables, harness hire, etc.). These are quote lines, NOT shifts — they
+# carry no date/time/duration. Each becomes a SmartStaff "Other" call:
+#   - call_name select = "Other"; free-text name = title (→ description fallback)
+#   - date/time/length left blank → SmartStaff auto-defaults them (confirmed
+#     by live test: blank submit saves a call dated to the booking date,
+#     time 00:00:00, length 0, crew 0)
+#   - crew_required = 0
+#   - cost detail (qty × unit_cost_ex_gst) composed into the Notes field, since
+#     the export emits no totals (computed downstream per the import contract)
+# See GOAT_Import_Function_Spec.md §2/§5.
+
+NON_LABOUR_CALL_NAME = "Other"  # SmartStaff select value that unlocks free-text naming
+
+def nl_item_name(nl):
+    """Lead descriptor for a non-labour line: title, falling back to description.
+    Per spec §4: title is the lead field; when title is '' fall back to description.
+    """
+    title = (nl.get("title") or "").strip()
+    if title:
+        return title
+    return (nl.get("description") or "").strip()
+
+def nl_compose_notes(nl):
+    """Build the SmartStaff Notes text for a non-labour line: description (if any)
+    plus a computed cost summary line. The export carries no totals (spec §3), so
+    quantity × unit_cost_ex_gst is computed here.
+    """
+    parts = []
+    desc = (nl.get("description") or "").strip()
+    # Only repeat description in notes if it differs from the name we're using
+    # as the call's free-text name (avoids "Harness Hire / Harness Hire").
+    if desc and desc != nl_item_name(nl):
+        parts.append(desc)
+
+    qty  = nl.get("quantity")
+    cost = nl.get("unit_cost_ex_gst")
+    if isinstance(qty, (int, float)) and isinstance(cost, (int, float)):
+        line_total = qty * cost
+        def money(n):
+            return f"${n:,.2f}".rstrip("0").rstrip(".") if n == int(n) else f"${n:,.2f}"
+        parts.append(f"Qty {qty} × {money(cost)} ex GST = {money(line_total)} ex GST")
+    elif isinstance(qty, (int, float)):
+        parts.append(f"Qty {qty}")
+
+    return "\n".join(parts)
+
+def extract_non_labour(payload):
+    """Return the non_labour_lines array (empty list if absent). Tolerates the
+    section being missing entirely (older 1.0 exports without it)."""
+    nls = payload.get("non_labour_lines")
+    return nls if isinstance(nls, list) else []
+
+def validate_non_labour(nls):
+    """Validate non-labour lines. Looser than labour: no date/time/duration
+    required (they're synthesised by SmartStaff). Returns list of error strings.
+    """
+    errors = []
+    seen_ids = set()
+    for nl in nls:
+        if not isinstance(nl, dict):
+            errors.append("Non-labour line is not an object")
+            continue
+        lid = nl.get("line_id", "?")
+        if lid in seen_ids:
+            errors.append(f"Duplicate non-labour line_id: {lid}")
+        seen_ids.add(lid)
+
+        # Defensive: spec §4 says the Estimator filters blank rows, but handle
+        # a fully-empty line rather than assume it can't happen.
+        if not nl_item_name(nl):
+            errors.append(f"Non-labour line {lid} has no title or description — cannot name the call")
+
+        qty = nl.get("quantity")
+        if qty is not None and (not isinstance(qty, (int, float)) or qty <= 0):
+            errors.append(f"Invalid quantity on non-labour line {lid} (must be > 0 if present)")
+
+        cost = nl.get("unit_cost_ex_gst")
+        if cost is not None and not isinstance(cost, (int, float)):
+            errors.append(f"Invalid unit_cost_ex_gst on non-labour line {lid} (must be a number)")
+
+    return errors
+
 def validate_payload(payload):
     """Validate import payload. Returns list of error strings (empty = valid)."""
     errors = []
@@ -1111,8 +1328,8 @@ def validate_payload(payload):
     if not isinstance(payload, dict):
         return ["Payload must be a JSON object"]
 
-    if payload.get("schema_version") != "1.0":
-        errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0')")
+    if payload.get("schema_version") not in ("1.0", "1.1"):
+        errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0' or '1.1')")
 
     est = payload.get("estimate", {})
     if not est.get("estimate_id"):
@@ -1130,8 +1347,9 @@ def validate_payload(payload):
         errors.append("Missing: event.event_name")
 
     lines = payload.get("labour_lines", [])
-    if not lines:
-        errors.append("No labour_lines in payload")
+    non_labour = extract_non_labour(payload)
+    if not lines and not non_labour:
+        errors.append("No labour_lines or non_labour_lines in payload")
 
     seen_ids = set()
     for ll in lines:
@@ -1159,6 +1377,9 @@ def validate_payload(payload):
             datetime.strptime(time, "%H:%M")
         except Exception:
             errors.append(f"Invalid start_time '{time}' on line {lid} (expected HH:MM)")
+
+    # Non-labour lines (schema 1.1) — looser rules, no scheduling fields required
+    errors.extend(validate_non_labour(non_labour))
 
     return errors
 
@@ -1192,6 +1413,7 @@ def login():
             session.permanent = remember
             _ss_sessions[sid] = ss
             start_keepalive()  # ensure keepalive thread is running
+            start_auto_refresh()  # proactively refresh caches every 30min
             trigger_forecast_preload(ss)
             trigger_unavail_preload(ss)
 
@@ -1711,7 +1933,7 @@ def api_forecast():
         if c and (datetime.now()-c["at"]).total_seconds()<300: return jsonify(c["data"])
     if not force:
         dp,age=load_forecast_cache()
-        if dp is not None and age is not None:
+        if dp is not None and age is not None and dp.get("start_date") == start_str:
             _forecast_cache[cache_key]={"data":dp,"at":datetime.now()}
             if age>=FORECAST_CACHE_MAX_AGE_HRS: trigger_forecast_preload(ss,force=True)
             return jsonify(dp)
@@ -1719,17 +1941,15 @@ def api_forecast():
     if not crew_data: return jsonify({"error":"No crew cache. Run a cache refresh first."}),400
     today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
     items=list(crew_data.items()); unavail_cache,_=load_unavail_cache()
-    from concurrent.futures import ThreadPoolExecutor,as_completed
-    shifts_map={}
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        sf={executor.submit(get_crew_shifts,ss,cid,today):cid for cid,_ in items}
-        for future in as_completed(sf):
-            cid=sf[future]
-            try: shifts_map[cid]=future.result()
-            except: shifts_map[cid]=[]
+
+    # Build shifts from bookings (reliable — not from crew profile pages)
+    shifts_by_name = scrape_shifts_from_bookings(ss, start_dt, end_dt)
+
     results=[]
     for cid,info in items:
-        shifts=shifts_map.get(cid,[]); unavails=unavail_cache.get(cid,[])
+        name    = info.get("name","")
+        shifts  = shifts_by_name.get(name, [])
+        unavails= unavail_cache.get(cid,[])
         ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
         wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
         day_hours={}; total_hours=0.0
@@ -1750,7 +1970,7 @@ def api_forecast():
                 if ds not in day_unavail: day_unavail[ds]=u.get("reason","Unavailable")
                 cur+=timedelta(days=1)
         results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
-            "manage_id":cid,"name":info.get("name",""),"phone":info.get("phone",""),
+            "manage_id":cid,"name":name,"phone":info.get("phone",""),
             "rating":info.get("rating",0),"groups":info.get("groups",[]),
             "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail})
     dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
@@ -1771,6 +1991,7 @@ def api_forecast_preload_status():
             "total":_unavail_preload_progress.get("total",0),"elapsed":_unavail_preload_progress.get("elapsed"),
             "error":_unavail_preload_progress.get("error"),"cache_age":round(uc_age,2) if uc_age else None,
             "fresh":uc_age is not None and uc_age<UNAVAIL_CACHE_MAX_AGE_HRS},
+        "auto_refresh":{"running": bool(_auto_refresh_thread and _auto_refresh_thread.is_alive())},
     })
 
 @app.route("/api/forecast/preload", methods=["POST"])
@@ -1780,6 +2001,43 @@ def api_forecast_preload():
     trigger_forecast_preload(ss,force=True); trigger_unavail_preload(ss,force=True)
     return jsonify({"status":"Preloads started"})
 
+
+@app.route("/api/debug/crew-shifts/<crew_id>")
+def api_debug_crew_shifts(crew_id):
+    """Debug: show raw scraped shifts for a crew member across all pages."""
+    ss = get_ss_session()
+    if not ss: return jsonify({"error": "Not logged in"}), 401
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    pattern = r"<b>([A-Z][a-z]+ \d{1,2},\s*\d{4}\s*-\s*\d{1,2}:\d{2}\s*Hrs)</b>.*?<b>Length:</b>\s*([\d.]+)\s*Hours?.*?(Confirmed|Declined|Pending)"
+    pages_info = []
+    for page in range(1, 6):
+        resp    = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page={page}")
+        content = resp.text
+        matches = list(re.finditer(pattern, content, re.DOTALL))
+        raw_matches = []
+        for m in matches:
+            start_dt, end_dt = parse_shift(m.group(1), f"Length: {m.group(2)} Hours")
+            raw_matches.append({
+                "raw":    m.group(1),
+                "status": m.group(3),
+                "start":  start_dt.isoformat() if start_dt else None,
+                "end":    end_dt.isoformat()   if end_dt   else None,
+                "future": end_dt > today if end_dt else False,
+            })
+        # Also grab a snippet of the raw HTML around "Jun" to see the structure
+        jun_snippets = []
+        for m in re.finditer(r".{0,200}Jun.{0,200}", content):
+            jun_snippets.append(m.group(0))
+        pages_info.append({
+            "page": page,
+            "match_count": len(matches),
+            "matches": raw_matches,
+            "jun_snippets": jun_snippets[:5],  # first 5 occurrences of "Jun"
+        })
+        if not matches:
+            break
+    shifts = get_crew_shifts(ss, crew_id, today)
+    return jsonify({"crew_id": crew_id, "final_shifts": shifts, "pages": pages_info})
 
 @app.route("/api/debug/booking-form")
 def api_debug_booking_form():
@@ -2798,7 +3056,8 @@ def api_import_validate():
     est     = payload["estimate"]
     event   = payload["event"]
     customer = payload["customer"]
-    lines   = payload["labour_lines"]
+    lines   = payload.get("labour_lines", [])
+    non_labour = extract_non_labour(payload)
 
     # Duplicate check
     existing = find_import_log_entry(est["estimate_id"])
@@ -2822,7 +3081,11 @@ def api_import_validate():
     customer_match        = fuzzy_match(customer["company_name"], customers)
     venue_match           = fuzzy_match(event.get("venue_name", ""), venues)
     contact_match         = fuzzy_match(customer.get("contact_name", ""), contacts)
-    onsite_contact_match  = fuzzy_match(event.get("onsite_contact", ""), contacts)
+    # Onsite contact: if the export didn't supply one, fall back to the booking
+    # contact name so the onsite field matches/displays the same person.
+    onsite_contact_name   = (event.get("onsite_contact") or "").strip() \
+        or (customer.get("contact_name") or "").strip()
+    onsite_contact_match  = fuzzy_match(onsite_contact_name, contacts)
 
     # Earliest date for booking date field
     dates = [ll["date"] for ll in lines if ll.get("date")]
@@ -2840,6 +3103,24 @@ def api_import_validate():
             "duration_hours": ll["duration_hours"],
             "quantity":       ll["quantity"],
             "shift_notes":    ll.get("shift_notes") or "",
+        })
+
+    # Build non-labour preview rows (schema 1.1). Each becomes an "Other" call.
+    non_labour_previews = []
+    for nl in non_labour:
+        qty  = nl.get("quantity")
+        cost = nl.get("unit_cost_ex_gst")
+        line_total = (qty * cost) if isinstance(qty, (int, float)) and isinstance(cost, (int, float)) else None
+        non_labour_previews.append({
+            "line_id":           nl.get("line_id", ""),
+            "item_name":         nl_item_name(nl),
+            "title":             nl.get("title", ""),
+            "description":       nl.get("description", ""),
+            "quantity":          qty,
+            "unit_cost_ex_gst":  cost,
+            "line_total_ex_gst": line_total,
+            "notes":             nl_compose_notes(nl),
+            "call_name":         NON_LABOUR_CALL_NAME,
         })
 
     # Build combined booking notes
@@ -2863,6 +3144,8 @@ def api_import_validate():
             "version":         est.get("version", 1),
             "call_count":      len(lines),
             "calls":           call_previews,
+            "non_labour_count": len(non_labour_previews),
+            "non_labour":      non_labour_previews,
         },
         "matching": {
             "customer_name":          customer["company_name"],
@@ -2874,7 +3157,7 @@ def api_import_validate():
             "contact_name":           customer.get("contact_name", ""),
             "contact_matched":        contact_match is not None,
             "contact_id":             contact_match["id"] if contact_match else None,
-            "onsite_contact_name":    event.get("onsite_contact", ""),
+            "onsite_contact_name":    onsite_contact_name,
             "onsite_contact_matched": onsite_contact_match is not None,
             "onsite_contact_id":      onsite_contact_match["id"] if onsite_contact_match else None,
             "customers":              customers,
@@ -2929,7 +3212,8 @@ def api_import_start():
 
     est   = payload["estimate"]
     event = payload["event"]
-    lines = payload["labour_lines"]
+    lines = payload.get("labour_lines", [])
+    non_labour = extract_non_labour(payload)
 
     dates = [ll["date"] for ll in lines if ll.get("date")]
     earliest_date = min(dates) if dates else ""
@@ -2948,7 +3232,7 @@ def api_import_start():
             "running":    True,
             "step":       "Creating booking...",
             "done":       0,
-            "total":      len(lines),
+            "total":      len(lines) + len(non_labour),
             "errors":     [],
             "call_log":   [],
             "booking_id": None,
@@ -3004,6 +3288,45 @@ def api_import_start():
                     _import_progress["errors"].append(f"Line {ll['line_id']} ({resolved_cn}): {call_err}")
                 _import_progress["done"] += 1
                 time.sleep(1.2)  # respectful pacing, matches existing add/confirm behaviour
+
+            # Step 2b: create each non-labour item as an "Other" call.
+            # IMPORTANT: SmartStaff pre-fills the add-call form client-side, but
+            # does NOT default these fields server-side — a POST with blank
+            # start_date/length is rejected and the form re-renders (no redirect),
+            # which reads as a failure. So we send the same values a hand-entered
+            # "Other" call ends up with: booking's earliest date, 00:00, length 0.
+            nl_start_date = format_ss_date(earliest_date) if earliest_date else format_ss_date(
+                datetime.now().strftime("%Y-%m-%d")
+            )
+            for j, nl in enumerate(non_labour):
+                item_name = nl_item_name(nl)
+                lid = nl.get("line_id", "?")
+                _import_progress["step"] = (
+                    f"Creating non-labour item {j+1}/{len(non_labour)}: {item_name}..."
+                )
+                call_data = {
+                    "call_name":      NON_LABOUR_CALL_NAME,  # select = "Other"
+                    "call_name_free": item_name,             # free-text name → call_name_hidden
+                    "start_date":     nl_start_date,         # booking date (form needs a value)
+                    "start_time":     "00:00:00",            # sentinel — not a real shift time
+                    "duration_hours": 0,                     # length 0
+                    "crew_required":  0,
+                    "notes":          nl_compose_notes(nl),
+                }
+                call_id, call_err = ss_create_call(ss, booking_id, call_data)
+                log_entry = {
+                    "line_id":   lid,
+                    "call_name": f"Other: {item_name}",
+                    "date":      earliest_date or "",
+                    "success":   call_err is None,
+                    "call_id":   call_id,
+                    "error":     call_err,
+                }
+                _import_progress["call_log"].append(log_entry)
+                if call_err:
+                    _import_progress["errors"].append(f"Non-labour {lid} ({item_name}): {call_err}")
+                _import_progress["done"] += 1
+                time.sleep(1.2)
 
             # Step 3: record in import log
             import_log = load_import_log()
