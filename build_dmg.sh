@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 
-APP_NAME="Crew Finder"
+APP_NAME="The GOAT"
 BUNDLE="dist/${APP_NAME}.app"
-DMG_OUT="dist/CrewFinder.dmg"
+DMG_OUT="dist/TheGOAT.dmg"
 BACKGROUND="static/dmg-background.png"
 VENV="venv"
 
@@ -49,6 +49,7 @@ fi
 
 rm -f "$DMG_OUT"
 
+cp config.json "dist/${APP_NAME}.app/Contents/MacOS/config.json"
 echo "▶ Creating DMG..."
 create-dmg \
   --volname "${APP_NAME}" \

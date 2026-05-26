@@ -829,9 +829,15 @@ tr.skipped{opacity:.6}
         <!-- RIGHT: preview + matching + actions + progress -->
         <div class="import-right" id="import-right">
           <div class="import-empty" id="import-placeholder">
-            <div class="import-empty-icon">📋</div>
-            <div class="import-empty-text">Import from Estimator</div>
-            <div class="import-empty-sub">Drop a GigPower Estimator JSON file to create a SmartStaff booking and calls automatically.</div>
+            <div id="import-placeholder-idle">
+              <div class="import-empty-icon">📋</div>
+              <div class="import-empty-text">Import from Estimator</div>
+              <div class="import-empty-sub">Drop a GigPower Estimator JSON file to create a SmartStaff booking and calls automatically.</div>
+            </div>
+            <div id="import-placeholder-loading" style="display:none;flex-direction:column;align-items:center;gap:12px">
+              <img src="/static/running-goat.gif" alt="Loading..." class="loading-goat">
+              <div class="import-empty-text" id="import-loading-text">Validating...</div>
+            </div>
           </div>
           <!-- Preview section — hidden until file loaded -->
           <div id="import-preview-wrap" style="display:none;flex-direction:column;gap:16px">
@@ -1944,7 +1950,10 @@ async function handleImportFile(file){
     hideImportErrors();
     document.getElementById('import-preview-wrap').style.display = 'none';
     document.getElementById('import-placeholder').style.display = 'flex';
-    document.getElementById('import-action-note').textContent = 'Validating...';
+    document.getElementById('import-placeholder-idle').style.display = 'none';
+    document.getElementById('import-placeholder-loading').style.display = 'flex';
+    document.getElementById('import-loading-text').textContent = 'Validating...';
+    document.getElementById('import-action-note').textContent = '';
 
     // Validate server-side
     try{
@@ -1958,6 +1967,8 @@ async function handleImportFile(file){
       if(!data.valid){
         showImportErrors(data.errors || ['Validation failed']);
         document.getElementById('import-action-note').textContent = '';
+        document.getElementById('import-placeholder-idle').style.display = '';
+        document.getElementById('import-placeholder-loading').style.display = 'none';
         return;
       }
 
@@ -1965,6 +1976,8 @@ async function handleImportFile(file){
       renderImportPreview(data);
     } catch(err){
       showImportErrors(['Error communicating with server: ' + err.message]);
+      document.getElementById('import-placeholder-idle').style.display = '';
+      document.getElementById('import-placeholder-loading').style.display = 'none';
     }
   };
   reader.readAsText(file);
@@ -2076,8 +2089,11 @@ function renderImportPreview(data){
   // Calls table — one dropdown per line
   const tbody = document.getElementById('import-calls-tbody');
   tbody.innerHTML = p.calls.map(c => {
+    // Include the JSON call_name as an extra option if it's not in VALID_CALL_NAMES
+    const extraOpt = c.call_name && !CALL_NAMES.includes(c.call_name)
+      ? `<option value="${c.call_name}" selected>${c.call_name}</option>` : '';
     const opts = CALL_NAMES.map(n =>
-      `<option value="${n}"${n === c.call_name ? ' selected' : ''}>${n}</option>`
+      `<option value="${n}"${!extraOpt && n === c.call_name ? ' selected' : ''}>${n}</option>`
     ).join('');
     return `
     <tr>
@@ -2089,6 +2105,7 @@ function renderImportPreview(data){
                        font-family:'Share Tech Mono',monospace;outline:none;cursor:pointer;width:120px"
                 onchange="updateImportReadiness()">
           <option value="">-- select --</option>
+          ${extraOpt}
           ${opts}
         </select>
       </td>
@@ -2298,6 +2315,8 @@ function resetImport(){
   hideImportErrors();
   document.getElementById('import-preview-wrap').style.display = 'none';
   document.getElementById('import-placeholder').style.display = 'flex';
+  document.getElementById('import-placeholder-idle').style.display = '';
+  document.getElementById('import-placeholder-loading').style.display = 'none';
 }
 
 async function loadImportHistory(){

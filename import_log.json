@@ -1,0 +1,110 @@
+[
+  {
+    "estimate_id": "a04b2a3c-89c0-410e-ad8d-f9a8c7f0adeb",
+    "quote_number": "GP-000087",
+    "version": 10,
+    "imported_at": "2026-05-18T15:27:37.945013",
+    "smartstaff_booking_id": "11777",
+    "calls_created": 4,
+    "errors": 4
+  },
+  {
+    "estimate_id": "06a8d5cf-1886-4a6a-b14b-b36f3626c294",
+    "quote_number": "GP-000087",
+    "version": 1,
+    "imported_at": "2026-05-18T15:40:04.212164",
+    "smartstaff_booking_id": "11778",
+    "calls_created": 4,
+    "errors": 4
+  },
+  {
+    "estimate_id": "d61b9cba-ed99-43cf-84bf-e6810fde2ec1",
+    "quote_number": "GP-000089",
+    "version": 2,
+    "imported_at": "2026-05-18T16:01:31.313451",
+    "smartstaff_booking_id": "11779",
+    "calls_created": 4,
+    "errors": 4
+  },
+  {
+    "estimate_id": "1081c359-8dc8-459e-a014-a3a808b849ae",
+    "quote_number": "GP-000091",
+    "version": 1,
+    "imported_at": "2026-05-20T09:59:07.070828",
+    "smartstaff_booking_id": "11782",
+    "calls_created": 4,
+    "errors": 4
+  },
+  {
+    "estimate_id": "22aca6c1-0a74-495a-b321-f38b3db6beeb",
+    "quote_number": "GP-000092",
+    "version": 1,
+    "imported_at": "2026-05-20T10:09:28.243658",
+    "smartstaff_booking_id": "11783",
+    "calls_created": 4,
+    "errors": 0
+  },
+  {
+    "estimate_id": "aba29a62-b437-452c-83d5-dc91545252cd",
+    "quote_number": "GP-000094",
+    "version": 1,
+    "imported_at": "2026-05-21T12:12:14.116511",
+    "smartstaff_booking_id": "11787",
+    "calls_created": 4,
+    "errors": 0
+  },
+  {
+    "estimate_id": "aac75bf5-ba66-4ae7-a294-eedadd077cbd",
+    "quote_number": "GP-000099",
+    "version": 5,
+    "imported_at": "2026-05-22T15:20:04.268123",
+    "smartstaff_booking_id": "11791",
+    "calls_created": 4,
+    "errors": 0
+  },
+  {
+    "estimate_id": "7efd36ff-e563-4c57-813a-c81e176f3143",
+    "quote_number": "GP-000102",
+    "version": 2,
+    "imported_at": "2026-05-25T16:37:59.783868",
+    "smartstaff_booking_id": "11798",
+    "calls_created": 5,
+    "errors": 0
+  },
+  {
+    "estimate_id": "6bd07818-ba5c-4ef7-8929-b44b21dc0afc",
+    "quote_number": "GP-000103",
+    "version": 1,
+    "imported_at": "2026-05-25T16:49:03.597261",
+    "smartstaff_booking_id": "11799",
+    "calls_created": 5,
+    "errors": 0
+  },
+  {
+    "estimate_id": "72c99588-acc3-48ea-9abc-20e5984938a3",
+    "quote_number": "GP-000108",
+    "version": 1,
+    "imported_at": "2026-05-27T09:27:03.677699",
+    "smartstaff_booking_id": "11806",
+    "calls_created": 5,
+    "errors": 0
+  },
+  {
+    "estimate_id": "4dd0dfa6-6f5c-4089-8538-a5519ec9d4a4",
+    "quote_number": "GP-000109",
+    "version": 1,
+    "imported_at": "2026-05-27T09:37:19.691516",
+    "smartstaff_booking_id": "11807",
+    "calls_created": 5,
+    "errors": 0
+  },
+  {
+    "estimate_id": "574ef285-63ba-4e1b-9ddd-8bf451ee7bf8",
+    "quote_number": "GP-000110",
+    "version": 1,
+    "imported_at": "2026-05-27T09:48:39.941059",
+    "smartstaff_booking_id": "11808",
+    "calls_created": 5,
+    "errors": 0
+  }
+]

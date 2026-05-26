@@ -68,7 +68,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.3.0"
+APP_VERSION    = "3.3.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
@@ -3189,16 +3189,21 @@ def api_import_start():
         return jsonify({"error": "Missing payload, customer_id, or venue_id"}), 400
 
     # Resolve final call name per line: operator selection → JSON field → missing
+    # JSON call_name values are always accepted even if not in VALID_CALL_NAMES
     resolved_call_names = {}
     missing_names = []
     invalid_names = []
     for ll in payload.get("labour_lines", []):
-        lid = ll.get("line_id", "?")
-        cn  = call_names.get(lid) or ll.get("call_name") or ""
+        lid     = ll.get("line_id", "?")
+        json_cn = ll.get("call_name") or ""
+        op_cn   = call_names.get(lid) or ""
+        cn      = op_cn or json_cn
         resolved_call_names[lid] = cn
         if not cn:
             missing_names.append(lid)
-        elif cn not in VALID_CALL_NAMES:
+        elif cn not in VALID_CALL_NAMES and cn != json_cn:
+            # Only reject operator-entered names not in VALID_CALL_NAMES
+            # JSON-sourced call names pass through regardless
             invalid_names.append(f"{lid}: '{cn}'")
 
     if missing_names:
@@ -3305,11 +3310,14 @@ def api_import_start():
                     f"Creating non-labour item {j+1}/{len(non_labour)}: {item_name}..."
                 )
                 call_data = {
-                    "call_name":      NON_LABOUR_CALL_NAME,  # select = "Other"
-                    "call_name_free": item_name,             # free-text name → call_name_hidden
-                    "start_date":     nl_start_date,         # booking date (form needs a value)
-                    "start_time":     "00:00:00",            # sentinel — not a real shift time
-                    "duration_hours": 0,                     # length 0
+                    # SmartStaff uses call_name_hidden as the actual displayed call name.
+                    # Post the item name for both fields — the select value doesn't
+                    # matter since call_name_hidden always takes precedence.
+                    "call_name":      item_name,
+                    "call_name_free": item_name,  # → call_name_hidden in ss_create_call
+                    "start_date":     nl_start_date,
+                    "start_time":     "00:00:00",
+                    "duration_hours": 0,
                     "crew_required":  0,
                     "notes":          nl_compose_notes(nl),
                 }

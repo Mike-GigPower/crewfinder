@@ -1,0 +1,3710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THE GOAT — Gig Power Operations Platform</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b0b0b;
+  --surface:#111111;
+  --surface2:#1a1a1a;
+  --border:#2a2a2a;
+  --border-gold:#d4af37;
+  --text:#f2f2f2;
+  --muted:#666;
+  --accent:#d4af37;
+  --accent-bg:rgba(212,175,55,0.08);
+  --accent2:#e31e24;
+  --accent2-bg:rgba(227,30,36,0.08);
+  --available:#d4af37;
+  --avail-bg:rgba(212,175,55,0.1);
+  --conflict:#e31e24;
+  --conf-bg:rgba(227,30,36,0.1);
+  --warn:#f59e0b;
+  --shift-bar:#d4af37;
+  --target-green:#d4af37;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+nav{display:flex;align-items:center;gap:16px;padding:0 20px;height:58px;background:var(--surface);border-bottom:1px solid var(--border-gold);flex-shrink:0;box-shadow:0 1px 20px rgba(212,175,55,0.08);position:relative}
+.nav-logo{display:flex;align-items:center;gap:12px}
+.nav-logo img{height:36px;width:36px;object-fit:contain;background:#000;border-radius:4px;padding:2px}
+.nav-goat-wordmark{display:flex;flex-direction:column;line-height:1}
+.nav-goat-title{font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--accent);letter-spacing:.12em;line-height:1}
+.nav-goat-sub{font-family:'Share Tech Mono',monospace;font-size:8px;color:var(--muted);letter-spacing:.2em;text-transform:uppercase}
+.nav-appname{font-family:'Bebas Neue',sans-serif;font-size:15px;font-weight:800;color:var(--accent)}
+.nav-div{width:1px;height:24px;background:var(--border-gold);opacity:.3}
+.nav-title{font-size:12px;color:var(--muted)}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.cache-badge{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--border);color:var(--muted);cursor:pointer;background:var(--surface2);transition:all .15s}
+.cache-badge:hover{border-color:var(--accent);color:var(--accent)}
+.cache-badge.fresh{border-color:#a8d5b5;color:var(--available);background:var(--avail-bg)}
+.btn-logout{font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-family:'Share Tech Mono',monospace;text-decoration:none;transition:all .15s;letter-spacing:.05em}
+.btn-logout:hover{border-color:var(--accent2);color:var(--accent2)}
+.main{display:flex;flex:1;overflow:hidden;height:0}
+.sidebar{width:320px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface);overflow:hidden;height:100%}
+.sidebar-top{padding:16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.sidebar-calls{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.section-label{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;font-weight:600}
+.groups-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:12px}
+.group-chip{padding:5px 6px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px;cursor:pointer;text-align:center;transition:all .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.group-chip:hover,.group-chip.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.group-chip.active{font-weight:500}
+.rating-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.rating-label{font-size:10px;color:var(--muted);white-space:nowrap}
+input[type=range]{flex:1;accent-color:var(--accent)}
+.rating-val{font-size:13px;font-weight:600;color:var(--accent);min-width:18px;text-align:right}
+.btn-search{width:100%;background:var(--accent);color:#000;border:none;border-radius:4px;padding:10px;font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn-search:hover{background:#c9a227;box-shadow:0 0 12px rgba(212,175,55,0.3)}
+.btn-search:disabled{opacity:.4;cursor:not-allowed}
+.spinner{width:13px;height:13px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes stampede{0%{left:-120px;transform:scaleX(1)}49%{transform:scaleX(1)}50%{transform:scaleX(-1)}100%{left:calc(100vw + 120px);transform:scaleX(-1)}}
+@keyframes confettiFall{0%{transform:translateY(-20px) rotate(0deg);opacity:1}100%{transform:translateY(100vh) rotate(720deg);opacity:0}}
+@keyframes goldPulse{0%,100%{box-shadow:none}50%{box-shadow:inset 0 0 0 1px rgba(212,175,55,0.4),0 0 12px rgba(212,175,55,0.2)}}
+.stampede-goat{position:fixed;top:40%;font-size:64px;z-index:99998;pointer-events:none;animation:stampede linear forwards}
+.confetti-piece{position:fixed;top:-20px;width:10px;height:10px;border-radius:2px;z-index:99997;pointer-events:none;animation:confettiFall ease-in forwards}
+.fc-table tr.gold-row td{animation:goldPulse 2s ease-in-out infinite}
+.calls-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px;border-bottom:1px solid var(--border)}
+.btn-refresh{font-size:10px;padding:3px 8px;border-radius:5px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-family:'Share Tech Mono',monospace;transition:all .12s}
+.btn-refresh:hover{border-color:var(--accent);color:var(--accent)}
+.calls-list{flex:1;overflow-y:auto;padding:8px}
+.booking-group{margin-bottom:10px}
+.booking-group-header{display:flex;align-items:center;gap:7px;padding:6px 10px;border-radius:3px 3px 0 0;background:var(--surface2);border:1px solid var(--border);border-bottom:none;border-left:2px solid var(--border-gold);cursor:pointer;user-select:none}
+.booking-group-header:hover{border-left-color:var(--accent)}
+.booking-group-name{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.booking-group-venue{background:var(--accent-bg);color:var(--accent);padding:1px 6px;border-radius:4px;font-size:9px;font-weight:500;flex-shrink:0}
+.booking-group-calls{border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;overflow:hidden}
+.call-card{padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer;transition:all .12s;background:var(--surface2)}
+.booking-group-calls .call-card:last-child{border-bottom:none}
+.call-card:hover,.call-card.selected{background:var(--accent-bg);border-bottom-color:var(--accent)}
+.call-card.selected{background:var(--accent-bg);border-bottom-color:var(--accent);border-left:3px solid var(--accent)}
+.call-card.selected .call-num{color:var(--accent)}
+.call-select-hint{font-size:9px;color:var(--muted);padding:4px 12px 6px;text-align:center;border-bottom:1px solid var(--border)}
+.selected-calls-bar{display:none;padding:6px 12px;background:var(--accent-bg);border-bottom:1px solid var(--accent);font-size:10px;color:var(--accent);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.selected-calls-bar .sc-chip{background:var(--surface2);border:1px solid var(--accent);color:var(--accent);padding:1px 7px;border-radius:10px;font-size:10px;display:flex;align-items:center;gap:4px}
+.selected-calls-bar .sc-chip button{background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;line-height:1;padding:0}
+.sc-label{font-weight:600;white-space:nowrap}
+.sc-clear{margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:10px;font-family:'Share Tech Mono',monospace;padding:0}
+.sc-clear:hover{color:var(--conflict)}
+.status-partial{font-size:10px;font-weight:600;color:var(--warn);background:rgba(245,158,11,0.1);padding:2px 7px;border-radius:4px}
+.induction-warn{font-size:10px;font-weight:600;color:var(--muted);background:var(--surface2);border:1px solid var(--border);padding:2px 7px;border-radius:3px;margin-left:4px;white-space:nowrap}
+.induction-warn.amber{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
+.induction-warn.red{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
+.induction-expired{font-size:10px;font-weight:600;color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
+.induction-expiring{font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
+tr.partial .name-cell{border-left-color:var(--warn)}
+.call-breakdown{display:flex;gap:3px;flex-wrap:wrap}
+.cb-pill{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600}
+.cb-pill.ok{color:var(--available);background:var(--avail-bg)}
+.cb-pill.no{color:var(--conflict);background:var(--conf-bg)}
+.call-card-top{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+.call-num{font-size:10px;color:var(--muted)}
+.call-name{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.unfilled-dot{width:7px;height:7px;border-radius:50%;background:var(--warn);flex-shrink:0}
+.call-venue-tag{background:var(--accent-bg);color:var(--accent);padding:1px 6px;border-radius:4px;font-size:9px;font-weight:500}
+.call-meta{font-size:10px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap}
+.call-booked{font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px}
+.call-booked.ok{color:var(--available);background:var(--avail-bg)}
+.call-booked.warn{color:var(--warn);background:rgba(245,158,11,0.1)}
+.call-notes{font-size:10px;color:var(--muted);margin-top:4px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.results-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+.results-header{display:flex;align-items:center;gap:16px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.stat{display:flex;align-items:baseline;gap:5px}
+.stat-num{font-size:20px;font-weight:700}
+.stat-num.green{color:var(--available)}
+.stat-num.red{color:var(--conflict)}
+.stat-num.grey{color:var(--muted)}
+.stat-label{font-size:10px;color:var(--muted)}
+.results-actions{margin-left:auto;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.sel-count{font-size:11px;color:var(--muted)}
+.btn{font-family:'Share Tech Mono',monospace;font-size:11px;padding:6px 12px;border-radius:6px;border:1px solid var(--border);cursor:pointer;transition:all .12s;white-space:nowrap;background:var(--surface);color:var(--text)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn:not(:disabled):hover{border-color:var(--accent);color:var(--accent)}
+.btn-add{background:#e8f4fd;color:#1a6fa8;border-color:#a8d4f0}
+.btn-confirm{background:var(--avail-bg);color:var(--available);border-color:#a8d5b5}
+.btn-sms{background:#f0ebff;color:#5b21b6;border-color:#c4b5fd}
+.btn-view-active{background:var(--accent-bg);color:var(--accent);border-color:var(--accent)}
+.results-table-wrap{flex:1;overflow:auto}
+/* TABLE VIEW */
+table{width:100%;border-collapse:collapse;min-width:700px}
+thead th{background:var(--surface);padding:8px 12px;text-align:left;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:10;white-space:nowrap}
+tbody tr{border-bottom:1px solid var(--border);transition:background .08s}
+tbody tr:hover{background:var(--surface2)}
+tbody tr.row-selected{background:var(--accent-bg)!important}
+td{padding:8px 12px;vertical-align:middle;white-space:nowrap}
+td.cb-cell{width:36px;text-align:center;padding:8px}
+td.cb-cell input{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
+.name-cell{font-weight:500;border-left:3px solid transparent;padding-left:10px;color:var(--text)}
+tr.available .name-cell{border-left-color:var(--available)}
+tr.conflict .name-cell{border-left-color:var(--conflict)}
+tr.skipped .name-cell{border-left-color:var(--border);color:var(--muted)}
+tr.skipped{opacity:.6}
+.status-available{font-size:10px;font-weight:600;color:var(--available);background:var(--avail-bg);padding:2px 7px;border-radius:4px}
+.status-conflict{font-size:10px;font-weight:600;color:var(--conflict);background:var(--conf-bg);padding:2px 7px;border-radius:4px}
+.status-skipped{font-size:10px;color:var(--muted);padding:2px 7px}
+.phone-cell a{color:var(--muted);text-decoration:none}
+.phone-cell a:hover{color:var(--accent)}
+.groups-cell{color:var(--muted);font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis}
+.detail-cell{color:var(--conflict);font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis}
+.detail-cell.skip{color:var(--muted)}
+.rating-cell{text-align:center;font-weight:500}
+.section-row td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
+/* TIMELINE VIEW */
+.timeline-wrap{flex:1;overflow:auto;padding:0}
+.tl-table{width:100%;border-collapse:collapse;min-width:900px}
+.tl-table thead th{background:var(--surface);padding:8px 12px;text-align:left;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:10;white-space:nowrap}
+.tl-table tbody tr{border-bottom:1px solid var(--border);transition:background .08s}
+.tl-table tbody tr:hover{background:var(--surface2)}
+.tl-table tbody tr.row-selected{background:var(--accent-bg)!important}
+.tl-table td{padding:5px 12px;vertical-align:middle;white-space:nowrap}
+.tl-cell{padding:3px 0!important;width:600px;min-width:600px}
+.tl-inner{position:relative;height:24px;width:100%}
+.tl-target{position:absolute;top:0;bottom:0;background:rgba(10,124,62,.08);border-left:2px dashed rgba(10,124,62,.4);border-right:2px dashed rgba(10,124,62,.4);pointer-events:none}
+.tl-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border);pointer-events:none}
+.tl-bar{position:absolute;top:4px;bottom:4px;border-radius:3px;opacity:.85;cursor:default;transition:opacity .15s}
+.tl-bar:hover{opacity:1}
+.tl-bar.bar-available{background:var(--shift-bar)}
+.tl-bar.bar-conflict{background:var(--conflict)}
+.tl-bar.bar-unavail{background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)}
+.tl-bar[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:#1a1d23;color:#fff;font-size:10px;padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:200;pointer-events:none}
+.tl-time-header{position:relative;height:20px}
+.tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%)}
+.section-row-tl td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
+/* EMPTY */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:10px;color:var(--muted);padding:60px;text-align:center}
+.empty-icon{font-size:36px;opacity:.4}
+.empty-text{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:600;color:var(--muted)}
+.empty-sub{font-size:11px;max-width:260px;line-height:1.6}
+/* SEL PANEL */
+#sel-panel{display:none;border-top:2px solid var(--accent);background:var(--surface);padding:10px 16px;flex-shrink:0;box-shadow:0 -2px 8px rgba(0,0,0,.06)}
+#sel-panel h4{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin-bottom:8px;font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+.chip{background:var(--accent-bg);border:1px solid #a8c8f0;color:var(--accent);padding:3px 10px;border-radius:20px;font-size:11px;display:flex;align-items:center;gap:5px}
+.chip button{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0}
+.panel-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.feedback{font-size:10px;color:var(--available);margin-left:6px}
+/* LOADING */
+#loading-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:100;flex-direction:column;align-items:center;justify-content:center;gap:16px;backdrop-filter:blur(4px)}
+#loading-overlay.show{display:flex}
+.loading-goat{width:120px;height:auto;image-rendering:auto}
+.loading-text{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:var(--text)}
+.loading-sub{font-size:11px;color:var(--muted)}
+/* ── TABS ── */
+.update-banner{display:none;background:#1a1500;border-bottom:1px solid var(--border-gold);padding:6px 20px;font-size:11px;color:#d4af37;align-items:center;gap:12px;flex-shrink:0}
+.update-banner.show{display:flex}
+.update-banner a{color:var(--accent);font-weight:600;text-decoration:none;font-family:'Rajdhani',sans-serif}
+.update-banner a:hover{text-decoration:underline}
+.update-banner-close{margin-left:auto;background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;line-height:1;padding:0}
+.tab-bar{display:flex;gap:0;padding:0;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.tab-btn{padding:0 20px;height:40px;font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+.tab-btn:hover{color:var(--text);background:rgba(212,175,55,0.04)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);background:rgba(212,175,55,0.05)}
+.tab-panel{display:none;flex:1;overflow:hidden;flex-direction:row;min-height:0}
+.tab-panel.active{display:flex}
+/* ── CALLS SEARCH ── */
+.calls-search{padding:6px 10px;border-bottom:1px solid var(--border);flex-shrink:0}
+.calls-search input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:5px 9px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none;transition:border-color .15s}
+.calls-search input:focus{border-color:var(--accent)}
+.calls-search input::placeholder{color:var(--muted)}
+/* ── BOOKING GROUP COLLAPSE ── */
+.booking-group-toggle{font-size:9px;color:var(--muted);margin-left:2px;transition:transform .15s;display:inline-block}
+.booking-group.collapsed .booking-group-calls{display:none}
+.booking-group.collapsed .booking-group-toggle{transform:rotate(-90deg)}
+/* ── INDUCTION CHECKER ── */
+.ind-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;background:var(--bg)}
+.ind-toolbar{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
+.ind-search{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none;width:120px;transition:border-color .15s}
+.ind-search:focus{border-color:var(--accent)}
+.ind-search::placeholder{color:var(--muted)}
+.ind-filter-label{font-size:10px;color:var(--muted);white-space:nowrap}
+.ind-group-chips{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+.ind-chip{padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px;cursor:pointer;transition:all .12s}
+.ind-chip:hover,.ind-chip.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.ind-actions{display:flex;gap:6px;margin-left:auto;flex-shrink:0}
+.ind-table-wrap{flex:1;overflow:auto;display:flex;align-items:flex-start}
+.ind-table{border-collapse:collapse;width:auto;font-size:11px;margin-right:auto}
+.ind-table th{position:sticky;top:0;background:var(--surface);padding:6px 8px;text-align:left;border-bottom:2px solid var(--border);color:var(--muted);font-weight:500;white-space:nowrap;z-index:2}
+.ind-table th.venue-th{text-align:center;font-size:11px;writing-mode:vertical-rl;transform:rotate(180deg);height:140px;padding:4px;min-width:32px;max-width:40px}
+.ind-table th:first-child{position:sticky;left:0;z-index:3;background:var(--surface);min-width:160px}
+.ind-table td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.ind-table td:first-child{position:sticky;left:0;background:var(--surface2);z-index:1;font-weight:500;white-space:nowrap}
+.ind-table tr:hover td{background:var(--surface)}
+.ind-table tr:hover td:first-child{background:var(--surface)}
+.ind-cell{display:flex;align-items:center;justify-content:center}
+.ind-dot{width:14px;height:14px;border-radius:50%;flex-shrink:0;cursor:default}
+.ind-dot.complete{background:#22c55e}
+.ind-dot.expired{background:#ef4444}
+.ind-dot.incomplete{background:var(--border)}
+.ind-dot.none{background:var(--border)}
+.ind-dot.expiring{background:#f59e0b}
+.ind-legend{display:flex;gap:12px;align-items:center;font-size:10px;color:var(--muted)}
+.ind-legend span{display:flex;align-items:center;gap:4px}
+
+/* ── VENUE SELECTOR ── */
+.venue-selector{position:relative;display:inline-block}
+.venue-selector-btn{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:5px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.venue-selector-btn:hover{border-color:var(--accent)}
+.venue-selector-btn .badge{background:var(--accent);color:#000;border-radius:3px;padding:0 5px;font-size:10px;font-weight:700}
+.venue-dropdown{display:none;position:absolute;top:calc(100% + 4px);left:0;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);z-index:100;min-width:220px;max-height:360px;overflow-y:auto}
+.venue-dropdown.open{display:block}
+.venue-dropdown-header{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface)}
+.venue-dropdown-header button{font-family:'Share Tech Mono',monospace;font-size:10px;padding:2px 7px;border-radius:3px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer}
+.venue-dropdown-header button:hover{border-color:var(--accent);color:var(--accent)}
+.venue-dropdown label{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;font-size:11px;transition:background .1s}
+.venue-dropdown label:hover{background:var(--surface2)}
+.venue-dropdown label input{accent-color:var(--accent)}
+
+.ind-summary{font-size:10px;color:var(--muted);padding:6px 16px;border-top:1px solid var(--border);flex-shrink:0;background:var(--surface)}
+/* ── IMPORT TAB ── */
+.import-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;background:var(--bg)}
+.import-toolbar{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.import-body{display:flex;flex:1;overflow:hidden;min-height:0;gap:0}
+.import-left{width:340px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;background:var(--surface)}
+.import-right{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.import-drop-zone{border:2px dashed var(--border);border-radius:10px;padding:40px 24px;text-align:center;cursor:pointer;transition:all .2s;background:var(--surface2);flex-shrink:0;margin:16px}
+.import-drop-zone:hover,.import-drop-zone.drag-over{border-color:var(--accent);background:var(--accent-bg)}
+.import-drop-icon{font-size:32px;opacity:.5;margin-bottom:10px}
+.import-drop-text{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px}
+.import-drop-sub{font-size:10px;color:var(--muted)}
+.import-file-info{padding:12px 16px;border-top:1px solid var(--border);flex-shrink:0;display:none}
+.import-file-name{font-size:11px;color:var(--accent);font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.import-file-meta{font-size:10px;color:var(--muted)}
+.import-errors{margin:12px 16px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:6px;padding:10px 12px;display:none}
+.import-errors-title{font-size:10px;font-weight:600;color:var(--conflict);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em}
+.import-error-item{font-size:10px;color:#fca5a5;margin-bottom:3px;display:flex;gap:6px}
+.import-error-item::before{content:'×';font-weight:700;color:var(--conflict);flex-shrink:0}
+.import-section{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.import-section-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;background:var(--surface2)}
+.import-section-title{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;color:var(--text);flex:1}
+.import-section-body{padding:14px}
+.import-field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.import-field:last-child{margin-bottom:0}
+.import-field label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.import-field-val{font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;min-height:28px}
+.import-field select{font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;font-family:'Share Tech Mono',monospace;outline:none;cursor:pointer;width:100%}
+.import-field select:focus{border-color:var(--accent)}
+.import-match-ok{font-size:10px;color:var(--available);display:flex;align-items:center;gap:4px}
+.import-match-warn{font-size:10px;color:var(--warn);display:flex;align-items:center;gap:4px}
+.import-field-shadow{font-size:10px;color:var(--muted);margin-top:3px;padding-left:2px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.import-calls-table{width:100%;border-collapse:collapse;font-size:11px}
+.import-calls-table th{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface2)}
+.import-calls-table td{padding:7px 10px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
+.import-calls-table tr:last-child td{border-bottom:none}
+.import-calls-table .td-notes{font-size:10px;color:var(--muted);font-style:italic}
+.import-actions{display:flex;gap:8px;align-items:center;flex-shrink:0;margin-top:4px}
+.btn-import{background:var(--accent);color:#000;border:none;border-radius:4px;padding:9px 20px;font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;transition:all .15s;white-space:nowrap}
+.btn-import:hover{background:#c9a227;box-shadow:0 0 12px rgba(212,175,55,0.3)}
+.btn-import:disabled{opacity:.35;cursor:not-allowed}
+.import-progress{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.import-progress-bar-wrap{height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;margin:10px 14px 0}
+.import-progress-bar{height:100%;background:var(--accent);border-radius:2px;transition:width .4s ease;width:0%}
+.import-progress-body{padding:14px}
+.import-progress-step{font-size:12px;color:var(--text);margin-bottom:8px}
+.import-call-log{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.icl-item{display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 8px;border-radius:4px}
+.icl-item.ok{background:var(--avail-bg);color:var(--available)}
+.icl-item.fail{background:var(--conf-bg);color:var(--conflict)}
+.icl-item.pending{background:var(--surface2);color:var(--muted)}
+.import-history{display:flex;flex-direction:column;gap:3px}
+.import-hist-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:5px;background:var(--surface2);font-size:11px}
+.import-hist-quote{font-weight:600;color:var(--accent)}
+.import-hist-date{color:var(--muted);font-size:10px}
+.import-hist-booking{font-size:10px;color:var(--muted)}
+.import-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px;gap:10px;color:var(--muted);text-align:center;flex:1}
+.import-empty-icon{font-size:36px;opacity:.35}
+.import-empty-text{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600}
+.import-empty-sub{font-size:11px;max-width:240px;line-height:1.6}
+/* ── FORECAST TAB ── */
+.forecast-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;background:var(--bg)}
+.forecast-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
+.forecast-toolbar .section-label{margin:0}
+.fc-date-input{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:5px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none}
+.fc-date-input:focus{border-color:var(--accent)}
+.fc-search{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:5px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none;width:160px}
+.fc-search:focus{border-color:var(--accent)}
+.fc-sort-btn{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:5px 10px;color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px;cursor:pointer;transition:all .15s;white-space:nowrap}
+.fc-sort-btn.active{border-color:var(--accent);color:var(--accent)}
+.fc-sort-btn:hover{color:var(--text)}
+.forecast-body{flex:1;overflow:auto;min-height:0}
+.fc-table{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed}
+.fc-table thead{position:sticky;top:0;z-index:10;background:var(--surface)}
+.fc-table th{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;white-space:nowrap;background:var(--surface)}
+.fc-table td{padding:6px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+.fc-table tr:hover td{background:var(--surface2)}
+.fc-col-name{width:180px}
+.fc-col-phone{width:120px}
+.fc-col-stars{width:80px;white-space:nowrap;overflow:hidden}
+.fc-col-id{width:70px}
+.fc-col-hours{width:64px}
+.fc-col-bar{width:auto}
+.fc-name{font-weight:600;color:var(--text)}
+.fc-phone{color:var(--muted);font-size:10px}
+.fc-id{color:var(--muted);font-size:10px}
+.fc-stars{color:#f59e0b;font-size:10px;letter-spacing:1px}
+.fc-hours{font-weight:700;color:var(--accent);font-size:12px;text-align:right}
+.fc-bar-wrap{display:flex;gap:1px;height:22px;align-items:stretch}
+.fc-day{flex:1;border-radius:2px;min-width:4px;position:relative;cursor:default;transition:opacity .1s}
+.fc-day:hover{opacity:.8}
+.fc-day.weekend{background:rgba(255,255,255,0.03);outline:1px solid rgba(255,255,255,0.06)}
+.fc-day-label-row th{padding:3px 0;font-size:8px;text-align:center;letter-spacing:0;text-transform:none;color:var(--muted)}
+.fc-day-label{flex:1;text-align:center;font-size:8px;color:var(--muted);padding-top:2px}
+.fc-legend{display:flex;align-items:center;gap:8px;margin-left:auto;font-size:9px;color:var(--muted)}
+.fc-legend-swatch{width:24px;height:10px;border-radius:2px}
+.fc-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:12px;color:var(--muted)}
+.fc-loading-text{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600}
+.fc-group-chip{padding:3px 8px;border-radius:12px;font-size:9px;font-weight:600;cursor:pointer;border:1px solid var(--border);color:var(--muted);background:var(--surface2);transition:all .15s;white-space:nowrap}
+.fc-group-chip.active{background:var(--accent);color:#000;border-color:var(--accent)}
+.fc-stars-slider{width:80px}
+/* ── ASK GOAT DRAWER ── */
+.btn-ask-goat{
+  display:flex;align-items:center;gap:7px;
+  background:rgba(212,175,55,0.1);
+  border:1px solid rgba(212,175,55,0.3);
+  color:var(--accent);
+  font-family:'Rajdhani',sans-serif;
+  font-size:12px;font-weight:700;
+  letter-spacing:.08em;text-transform:uppercase;
+  padding:5px 12px;border-radius:3px;
+  cursor:pointer;transition:all .2s;white-space:nowrap;
+}
+.btn-ask-goat:hover{background:rgba(212,175,55,0.18);border-color:var(--accent);box-shadow:0 0 12px rgba(212,175,55,0.2)}
+.btn-ask-goat.active{background:rgba(212,175,55,0.2);border-color:var(--accent);box-shadow:0 0 16px rgba(212,175,55,0.3)}
+
+.goat-drawer{
+  position:fixed;top:0;right:0;bottom:0;
+  width:380px;
+  background:#0e0e0e;
+  border-left:1px solid rgba(212,175,55,0.25);
+  box-shadow:-4px 0 40px rgba(0,0,0,0.6);
+  display:flex;flex-direction:column;
+  z-index:1000;
+  transform:translateX(100%);
+  transition:transform .3s cubic-bezier(.16,1,.3,1);
+}
+.goat-drawer.open{transform:translateX(0)}
+
+.goat-drawer-head{
+  display:flex;align-items:center;gap:10px;
+  padding:14px 16px;
+  border-bottom:1px solid rgba(212,175,55,0.15);
+  flex-shrink:0;
+  background:#0a0a0a;
+}
+.goat-drawer-logo{
+  height:32px;width:32px;object-fit:contain;
+  filter:drop-shadow(0 0 8px rgba(212,175,55,0.5));
+}
+.goat-drawer-title{
+  font-family:'Bebas Neue',sans-serif;
+  font-size:20px;letter-spacing:.15em;
+  color:var(--accent);line-height:1;
+}
+.goat-drawer-sub{
+  font-family:'Share Tech Mono',monospace;
+  font-size:8px;color:var(--muted);
+  letter-spacing:.15em;text-transform:uppercase;
+}
+.goat-drawer-close{
+  margin-left:auto;background:none;border:none;
+  color:var(--muted);cursor:pointer;font-size:18px;
+  line-height:1;padding:4px;transition:color .15s;
+}
+.goat-drawer-close:hover{color:var(--accent2)}
+
+.goat-messages{
+  flex:1;overflow-y:auto;
+  padding:16px;
+  display:flex;flex-direction:column;
+  gap:14px;
+  scroll-behavior:smooth;
+}
+.goat-messages::-webkit-scrollbar{width:3px}
+.goat-messages::-webkit-scrollbar-track{background:transparent}
+.goat-messages::-webkit-scrollbar-thumb{background:rgba(212,175,55,0.2);border-radius:2px}
+
+/* Message bubbles */
+.gm{display:flex;flex-direction:column;gap:4px;animation:gmFadeIn .25s ease forwards}
+@keyframes gmFadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+.gm-user{align-items:flex-end}
+.gm-goat{align-items:flex-start}
+
+.gm-bubble{
+  max-width:88%;
+  padding:10px 13px;
+  font-family:'Rajdhani',sans-serif;
+  font-size:13px;font-weight:500;
+  line-height:1.5;
+  border-radius:3px;
+}
+.gm-user .gm-bubble{
+  background:rgba(212,175,55,0.1);
+  border:1px solid rgba(212,175,55,0.2);
+  color:var(--text);
+  border-bottom-right-radius:0;
+}
+.gm-goat .gm-bubble{
+  background:#1a1a1a;
+  border:1px solid #2a2a2a;
+  border-left:2px solid var(--accent);
+  color:var(--text);
+  border-bottom-left-radius:0;
+}
+.gm-goat .gm-bubble.error{
+  border-left-color:var(--accent2);
+  background:rgba(227,30,36,0.06);
+}
+.gm-label{
+  font-family:'Share Tech Mono',monospace;
+  font-size:8px;letter-spacing:.15em;
+  color:var(--muted);text-transform:uppercase;
+  padding:0 3px;
+}
+
+/* Typing indicator */
+.gm-typing .gm-bubble{
+  display:flex;align-items:center;gap:5px;
+  padding:12px 16px;
+}
+.typing-dot{
+  width:5px;height:5px;border-radius:50%;
+  background:var(--accent);opacity:.4;
+  animation:typingBounce .9s ease-in-out infinite;
+}
+.typing-dot:nth-child(2){animation-delay:.15s}
+.typing-dot:nth-child(3){animation-delay:.3s}
+@keyframes typingBounce{
+  0%,60%,100%{transform:translateY(0);opacity:.4}
+  30%{transform:translateY(-4px);opacity:1}
+}
+
+/* Streamed text cursor */
+.gm-cursor{
+  display:inline-block;width:7px;height:13px;
+  background:var(--accent);opacity:.8;
+  animation:cursorBlink .7s step-end infinite;
+  vertical-align:text-bottom;margin-left:2px;
+  border-radius:1px;
+}
+@keyframes cursorBlink{0%,100%{opacity:.8}50%{opacity:0}}
+
+/* Suggestion chips */
+.goat-suggestions{
+  padding:10px 16px;
+  display:flex;flex-wrap:wrap;gap:6px;
+  border-top:1px solid rgba(212,175,55,0.08);
+  flex-shrink:0;
+}
+.goat-sug{
+  font-family:'Rajdhani',sans-serif;font-size:11px;
+  font-weight:600;letter-spacing:.04em;
+  padding:4px 10px;border-radius:12px;
+  border:1px solid rgba(212,175,55,0.2);
+  color:rgba(212,175,55,0.7);
+  background:rgba(212,175,55,0.04);
+  cursor:pointer;transition:all .15s;white-space:nowrap;
+}
+.goat-sug:hover{border-color:var(--accent);color:var(--accent);background:rgba(212,175,55,0.1)}
+
+/* Input area */
+.goat-input-area{
+  padding:12px 14px;
+  border-top:1px solid rgba(212,175,55,0.15);
+  display:flex;align-items:flex-end;gap:8px;
+  flex-shrink:0;background:#0a0a0a;
+}
+.goat-input{
+  flex:1;
+  background:rgba(255,255,255,0.04);
+  border:1px solid #2a2a2a;
+  border-bottom-color:rgba(212,175,55,0.3);
+  color:var(--text);
+  font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:500;
+  padding:9px 12px;
+  resize:none;outline:none;
+  border-radius:3px;
+  max-height:120px;
+  line-height:1.4;
+  transition:border-color .2s;
+}
+.goat-input:focus{border-color:rgba(212,175,55,0.5)}
+.goat-input::placeholder{color:#444}
+.goat-send{
+  background:var(--accent);color:#000;
+  border:none;border-radius:3px;
+  width:36px;height:36px;
+  font-size:16px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .15s;flex-shrink:0;
+}
+.goat-send:hover{background:#c9a227;box-shadow:0 0 10px rgba(212,175,55,0.3)}
+.goat-send:disabled{opacity:.3;cursor:not-allowed}
+/* ── SCHEDULE TAB ── */
+.schedule-panel{display:flex;flex-direction:column;flex:1;overflow:hidden;background:var(--bg)}
+.schedule-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
+.schedule-body{display:flex;flex:1;overflow:hidden;min-height:0}
+.schedule-left{width:300px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;background:var(--surface)}
+.schedule-right{flex:1;overflow:auto;position:relative}
+.sched-booking{border-bottom:1px solid var(--border)}
+.sched-booking-head{padding:8px 12px;background:var(--surface2);border-left:2px solid var(--border-gold);cursor:pointer;transition:background .15s}
+.sched-booking-head:hover{background:rgba(212,175,55,0.06)}
+.sched-booking-name{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sched-booking-meta{font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;letter-spacing:.05em;margin-top:2px}
+.sched-call{display:flex;align-items:center;gap:8px;padding:6px 12px 6px 20px;border-top:1px solid var(--border);cursor:pointer;transition:background .15s}
+.sched-call:hover{background:rgba(212,175,55,0.04)}
+.sched-call.selected{background:var(--accent-bg);border-left:3px solid var(--accent)}
+.sched-call-name{font-size:11px;font-weight:600;color:var(--text);min-width:70px}
+.sched-call-time{font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);white-space:nowrap}
+.sched-call-status{font-family:'Share Tech Mono',monospace;font-size:10px;font-weight:700;margin-left:auto;white-space:nowrap}
+.sched-call-status.full{color:var(--available)}
+.sched-call-status.partial{color:var(--warn)}
+.sched-call-status.empty{color:var(--conflict)}
+
+/* Timeline right panel */
+.sched-timeline-wrap{min-width:max-content}
+.sched-header-row{display:flex;position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--border)}
+.sched-header-spacer{width:300px;flex-shrink:0;border-right:1px solid var(--border);padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;display:flex;align-items:center}
+.sched-day-col{flex:0 0 52px;text-align:center;padding:6px 2px;border-right:1px solid var(--border);font-size:9px;color:var(--muted)}
+.sched-day-col.today{color:var(--accent);font-weight:700}
+.sched-day-col.weekend{color:rgba(212,175,55,0.5)}
+.sched-booking-row{display:flex;border-bottom:1px solid var(--border)}
+.sched-booking-label{width:300px;flex-shrink:0;border-right:1px solid var(--border);background:var(--surface2);padding:6px 12px;display:flex;flex-direction:column;justify-content:center}
+.sched-timeline-row{display:flex;flex:1}
+.sched-day-cell{flex:0 0 52px;border-right:1px solid var(--border);padding:2px;display:flex;flex-direction:column;gap:1px;min-height:36px}
+.sched-call-block{border-radius:2px;padding:2px 4px;font-size:9px;font-weight:700;font-family:'Share Tech Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;transition:opacity .15s}
+.sched-call-block:hover{opacity:.8}
+.sched-call-block.full{background:rgba(34,197,94,0.2);border-left:2px solid #22c55e;color:#22c55e}
+.sched-call-block.partial{background:rgba(245,158,11,0.15);border-left:2px solid var(--warn);color:var(--warn)}
+.sched-call-block.empty{background:rgba(227,30,36,0.1);border-left:2px solid var(--accent2);color:var(--accent2)}
+.sched-call-block.clash{background:rgba(249,115,22,0.2);border-left:2px solid #f97316;color:#f97316;animation:clashPulse 2s ease-in-out infinite}
+@keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
+.crew-clash{color:#ef4444!important;font-weight:700}
+.crew-clash::before{content:'⚠ '}
+.sched-clash-badge{background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.4);color:#f97316;font-size:8px;font-family:'Share Tech Mono',monospace;padding:1px 5px;border-radius:3px;white-space:nowrap}
+.sched-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:10px;color:var(--muted);text-align:center;padding:60px}
+</style>
+</head>
+<body>
+<div id="loading-overlay">
+  <img src="/static/running-goat.gif" alt="Loading..." class="loading-goat">
+  <div class="loading-text" id="loading-overlay-text">Checking availability...</div>
+  <div class="loading-sub">This may take a minute</div>
+</div>
+<nav>
+  <div class="nav-logo">
+    <img src="/static/logo.png" alt="Gig Power" style="height:36px;width:auto;object-fit:contain">
+  </div>
+  <div style="position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px">
+    <img src="/static/goat-logo.png" alt="THE GOAT"
+         style="height:46px;width:46px;object-fit:contain;
+                filter:drop-shadow(0 0 10px rgba(212,175,55,0.5))">
+    <div class="nav-goat-wordmark">
+      <span class="nav-goat-title">THE GOAT</span>
+      <span class="nav-goat-sub">Gig Power Operations Platform</span>
+    </div>
+    <span id="nav-version" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;align-self:flex-end;padding-bottom:2px"></span>
+  </div>
+  <div class="nav-right">
+    <div class="cache-badge" id="cache-badge" onclick="refreshCache()">Loading cache...</div>
+    <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat">
+      <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
+      Ask THE GOAT
+    </button>
+    <a href="/logout" class="btn-logout">Sign out</a>
+  </div>
+</nav>
+<div class="update-banner" id="update-banner">
+  <span>⚡ THE GOAT <span id="update-version"></span> is available</span>
+  <span id="update-notes" style="color:var(--muted)"></span>
+  <a id="update-link" href="#" target="_blank">Download update</a>
+  <button class="update-banner-close" onclick="document.getElementById('update-banner').classList.remove('show')">&#215;</button>
+</div>
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('schedule')">📅 Schedule</button>
+  <button class="tab-btn" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
+  <button class="tab-btn" onclick="switchTab('forecast')">📊 Crew Utilization</button>
+  <button class="tab-btn" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
+  <button class="tab-btn" onclick="switchTab('import')" id="import-tab-btn">⬆ Estimate Import</button>
+</div>
+<div class="main">
+  <!-- ── CREW FINDER TAB ── -->
+  <div class="tab-panel" id="tab-crew-finder">
+  <div class="sidebar">
+    <div class="sidebar-top">
+      <div class="section-label">Filters</div>
+      <div class="groups-grid" id="groups-grid"></div>
+      <div class="rating-row">
+        <span class="rating-label">Min Rating</span>
+        <input type="range" id="rating-slider" min="1" max="10" value="3" oninput="document.getElementById('rating-val').textContent=this.value">
+        <span class="rating-val" id="rating-val">3</span>
+      </div>
+      <button class="btn-search" id="search-btn" onclick="runSearch()" disabled>
+        <div class="spinner" id="search-spinner"></div>
+        <span id="search-btn-text">Select a call first</span>
+      </button>
+    </div>
+    <div class="sidebar-calls">
+    <div class="calls-header">
+      <div class="section-label" style="margin:0">Unfilled Calls</div>
+      <button class="btn-refresh" onclick="loadCalls(true)">&#8635; Refresh</button>
+    </div>
+    <div class="calls-search">
+      <input type="text" id="calls-search-input" placeholder="Search bookings..." oninput="filterCalls(this.value)">
+    </div>
+    <div class="call-select-hint" id="call-select-hint">Click to select &bull; Cmd/Shift+click for multi</div>
+    <div class="selected-calls-bar" id="selected-calls-bar" style="display:none">
+      <span class="sc-label" id="sc-label">0 calls</span>
+      <div id="sc-chips" style="display:flex;gap:4px;flex-wrap:wrap;flex:1"></div>
+      <button class="sc-clear" onclick="clearCallSelection()">Clear</button>
+    </div>
+    <div class="calls-list" id="calls-list">
+      <div class="empty-state" style="height:160px"><div class="empty-sub">Loading...</div></div>
+    </div>
+    </div>
+  </div>
+  <div class="results-panel">
+    <div class="results-header" id="results-header" style="display:none">
+      <div class="stat"><span class="stat-num green" id="cnt-avail">0</span><span class="stat-label">available</span></div>
+      <div class="stat"><span class="stat-num red" id="cnt-conf">0</span><span class="stat-label">conflicts</span></div>
+      <div class="stat"><span class="stat-num grey" id="cnt-skip">0</span><span class="stat-label">skipped</span></div>
+      <div class="results-actions">
+        <button class="btn" id="view-table-btn" onclick="setView('table')">&#9776; Table</button>
+        <button class="btn btn-view-active" id="view-tl-btn" onclick="setView('timeline')">&#9632; Timeline</button>
+        <span style="width:1px;height:20px;background:var(--border);display:inline-block"></span>
+        <button class="btn" onclick="selectAll()">Select All</button>
+        <button class="btn" onclick="clearAll()">Clear</button>
+        <span class="sel-count" id="sel-count">0 selected</span>
+        <button class="btn btn-add" id="btn-add" disabled onclick="addSelected(false)">+ Add</button>
+        <button class="btn btn-confirm" id="btn-confirm" disabled onclick="addSelected(true)">&#10003; Add &amp; Confirm</button>
+        <button class="btn btn-sms" id="btn-sms" disabled onclick="sendSMS()">&#9993; Send SMS</button>
+      </div>
+    </div>
+    <div class="results-table-wrap" id="results-wrap">
+      <div class="empty-state">
+        <div class="empty-icon">&#127919;</div>
+        <div class="empty-text">Select a call</div>
+        <div class="empty-sub">Choose an unfilled call from the sidebar, set your filters, then click Search.</div>
+      </div>
+    </div>
+    <div id="sel-panel">
+      <h4>Selected &mdash; <span id="panel-call-label"></span></h4>
+      <div class="chips" id="sel-chips"></div>
+      <div class="panel-actions">
+        <button class="btn" onclick="copyNames()">Copy Names</button>
+        <button class="btn" onclick="copyPhones()">Copy + Phones</button>
+        <button class="btn btn-add" onclick="addSelected(false)">+ Add</button>
+        <button class="btn btn-confirm" onclick="addSelected(true)">&#10003; Add &amp; Confirm</button>
+        <button class="btn btn-sms" onclick="sendSMS()">&#9993; Send SMS</button>
+        <span class="feedback" id="feedback"></span>
+      </div>
+    </div>
+  </div>
+  </div><!-- end tab-crew-finder -->
+
+  <!-- ── SCHEDULE TAB ── -->
+  <div class="tab-panel active" id="tab-schedule">
+    <div class="schedule-panel">
+
+      <div class="schedule-toolbar">
+        <span class="section-label">NEXT</span>
+        <input type="number" id="sched-days" value="14" min="1" max="28"
+               style="width:44px;background:var(--surface2);border:1px solid var(--border);
+                      border-radius:4px;padding:4px 8px;color:var(--text);
+                      font-family:'Share Tech Mono',monospace;font-size:11px;
+                      outline:none;text-align:center"
+               oninput="this.value=Math.min(28,Math.max(1,this.value||1))">
+        <span style="font-size:10px;color:var(--muted)">days</span>
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+        <input type="text" id="sched-search" placeholder="Search bookings..."
+               style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
+                      padding:5px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;
+                      font-size:11px;outline:none;width:160px"
+               oninput="renderSchedule()">
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+        <span class="section-label">SHOW</span>
+        <span class="fc-group-chip active" id="sched-filter-all"  onclick="setSchedFilter('all')">All</span>
+        <span class="fc-group-chip"        id="sched-filter-open" onclick="setSchedFilter('open')">Open</span>
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.3);border-left:2px solid #22c55e;display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Full</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(245,158,11,0.2);border-left:2px solid var(--warn);display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Partial</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(227,30,36,0.15);border-left:2px solid var(--accent2);display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Unfilled</span>
+        </div>
+        <button class="btn" onclick="loadSchedule(true)" style="margin-left:auto">⟳ Refresh</button>
+        <span id="sched-summary" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+
+      <div class="schedule-body" id="schedule-body">
+        <div class="sched-empty" id="sched-placeholder">
+          <div style="font-size:32px;opacity:.4">📅</div>
+          <div style="font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600">Schedule</div>
+          <div style="font-size:11px;max-width:240px;line-height:1.6">Shows all bookings and calls for the next 14 days with staffing status.</div>
+          <button class="btn-search" onclick="loadSchedule()" style="width:auto;padding:8px 20px">Load Schedule</button>
+        </div>
+        <div id="sched-loading" style="display:none" class="sched-empty">
+          <div style="font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;color:var(--muted)">Loading schedule...</div>
+        </div>
+        <div id="sched-timeline" style="display:none;flex:1;overflow:auto"></div>
+      </div>
+
+    </div>
+  </div><!-- end tab-schedule -->
+
+  <!-- ── INDUCTION CHECKER TAB ── -->
+  <div class="tab-panel" id="tab-induction-checker">
+    <div class="ind-panel">
+      <div class="ind-toolbar">
+        <span class="ind-filter-label">Name:</span><input class="ind-search" id="ind-name-search" type="text" placeholder="Search..." oninput="renderInductionTable()"><span class="ind-filter-label">Group:</span>
+        <div class="ind-group-chips" id="ind-group-chips"></div>
+        <div class="venue-selector" id="venue-selector">
+          <button class="venue-selector-btn" onclick="toggleVenueDropdown()">
+            &#9660; Venues <span class="badge" id="venue-badge">All</span>
+          </button>
+          <div class="venue-dropdown" id="venue-dropdown">
+            <div class="venue-dropdown-header">
+              <button onclick="selectAllVenues()">All</button>
+              <button onclick="selectNoVenues()">None</button>
+            </div>
+            <div id="venue-checklist"></div>
+          </div>
+        </div>
+        <div class="ind-actions">
+          <div class="ind-legend">
+            <span><div class="ind-dot complete" style="display:inline-block"></div> Valid</span>
+            <span><div class="ind-dot expiring" style="display:inline-block"></div> Expiring Soon</span>
+            <span><div class="ind-dot expired" style="display:inline-block"></div> Expired</span>
+            <span><div class="ind-dot incomplete" style="display:inline-block"></div> Incomplete</span>
+            <span><div class="ind-dot none" style="display:inline-block"></div> N/A</span>
+          </div>
+          <button class="btn" onclick="exportInductionCSV()">&#8659; Export CSV</button>
+          <button class="btn" onclick="loadInductions(true)">&#8635; Refresh</button>
+        </div>
+      </div>
+      <div class="ind-table-wrap" id="ind-table-wrap">
+        <div class="empty-state"><div class="empty-sub">Loading inductions...</div></div>
+      </div>
+      <div class="ind-summary" id="ind-summary"></div>
+    </div>
+  </div><!-- end tab-induction-checker -->
+
+  <!-- ── IMPORT TAB ── -->
+  <div class="tab-panel" id="tab-import">
+    <div class="import-panel">
+      <div class="import-body">
+        <!-- LEFT: drop zone + file info + errors -->
+        <div class="import-left">
+          <div class="import-drop-zone" id="import-drop-zone"
+               onclick="document.getElementById('import-file-input').click()"
+               ondragover="event.preventDefault();this.classList.add('drag-over')"
+               ondragleave="this.classList.remove('drag-over')"
+               ondrop="handleImportDrop(event)">
+            <div class="import-drop-icon">📂</div>
+            <div class="import-drop-text">Drop JSON file here</div>
+            <div class="import-drop-sub">or click to browse</div>
+            <input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImportFile(this.files[0])">
+          </div>
+          <div class="import-file-info" id="import-file-info">
+            <div class="import-file-name" id="import-file-name"></div>
+            <div class="import-file-meta" id="import-file-meta"></div>
+          </div>
+          <div class="import-errors" id="import-errors">
+            <div class="import-errors-title">Validation errors</div>
+            <div id="import-error-list"></div>
+          </div>
+          <!-- Import log history at bottom of left panel -->
+          <div style="flex:1;overflow-y:auto;padding:12px 16px;border-top:1px solid var(--border)">
+            <div class="section-label" style="margin-bottom:8px">Import History</div>
+            <div id="import-history-list">
+              <div style="font-size:10px;color:var(--muted)">Loading...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: preview + matching + actions + progress -->
+        <div class="import-right" id="import-right">
+          <div class="import-empty" id="import-placeholder">
+            <div class="import-empty-icon">📋</div>
+            <div class="import-empty-text">Import from Estimator</div>
+            <div class="import-empty-sub">Drop a GigPower Estimator JSON file to create a SmartStaff booking and calls automatically.</div>
+          </div>
+          <!-- Preview section — hidden until file loaded -->
+          <div id="import-preview-wrap" style="display:none;flex-direction:column;gap:16px">
+
+            <!-- Booking summary -->
+            <div class="import-section">
+              <div class="import-section-head">
+                <span class="import-section-title">📋 Booking Details</span>
+                <span id="import-quote-badge" style="font-size:10px;color:var(--muted)"></span>
+              </div>
+              <div class="import-section-body">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                  <div class="import-field">
+                    <label>Booking Name</label>
+                    <div class="import-field-val" id="prev-booking-name"></div>
+                  </div>
+                  <div class="import-field">
+                    <label>Booking Date</label>
+                    <div class="import-field-val" id="prev-booking-date"></div>
+                  </div>
+                  <div class="import-field">
+                    <label>Invoice Reference</label>
+                    <div class="import-field-val" id="prev-invoice-ref"></div>
+                  </div>
+                  <div class="import-field">
+                    <label>Calls to Create</label>
+                    <div class="import-field-val" id="prev-call-count"></div>
+                  </div>
+                </div>
+                <div class="import-field" id="prev-notes-row" style="display:none">
+                  <label>Booking Notes</label>
+                  <div class="import-field-val" id="prev-notes" style="white-space:pre-wrap;font-size:11px;max-height:80px;overflow-y:auto"></div>
+                </div>
+                <div class="import-field" id="prev-onsite-row" style="display:none">
+                  <label>Onsite Contact</label>
+                  <div class="import-field-val" id="prev-onsite"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Customer / Venue matching -->
+            <div class="import-section">
+              <div class="import-section-head">
+                <span class="import-section-title">🔗 SmartStaff Matching</span>
+              </div>
+              <div class="import-section-body">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
+                  <div class="import-field">
+                    <label>Customer <span id="cust-match-status"></span></label>
+                    <select id="match-customer" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="cust-shadow"></div>
+                  </div>
+                  <div class="import-field">
+                    <label>Contact <span id="contact-match-status"></span></label>
+                    <select id="match-contact" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="contact-shadow"></div>
+                  </div>
+                  <div class="import-field">
+                    <label>Onsite Contact <span id="onsite-contact-match-status"></span></label>
+                    <select id="match-onsite-contact" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="onsite-contact-shadow"></div>
+                  </div>
+                  <div class="import-field">
+                    <label>Venue <span id="venue-match-status"></span></label>
+                    <select id="match-venue" onchange="updateImportReadiness()"></select>
+                    <div class="import-field-shadow" id="venue-shadow"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Calls table -->
+            <div class="import-section">
+              <div class="import-section-head">
+                <span class="import-section-title">📞 Calls</span>
+                <span id="prev-calls-summary" style="font-size:10px;color:var(--muted)"></span>
+              </div>
+              <div class="import-section-body" style="padding:0;overflow-x:auto">
+                <table class="import-calls-table">
+                  <thead>
+                    <tr>
+                      <th>Crew Type</th>
+                      <th>Call Name</th>
+                      <th>Date</th>
+                      <th>Start</th>
+                      <th>Duration</th>
+                      <th>Qty</th>
+                      <th>Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="import-calls-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Non-labour items table (schema 1.1) -->
+            <div class="import-section" id="import-non-labour-section" style="display:none">
+              <div class="import-section-head">
+                <span class="import-section-title">📦 Non-labour Items</span>
+                <span id="prev-non-labour-summary" style="font-size:10px;color:var(--muted)"></span>
+              </div>
+              <div class="import-section-body" style="padding:0;overflow-x:auto">
+                <table class="import-calls-table">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Qty</th>
+                      <th>Unit (ex GST)</th>
+                      <th>Line (ex GST)</th>
+                      <th>SmartStaff Call</th>
+                      <th>Notes → SmartStaff</th>
+                    </tr>
+                  </thead>
+                  <tbody id="import-non-labour-tbody"></tbody>
+                </table>
+                <div style="font-size:10px;color:var(--muted);padding:8px 12px">
+                  Each item is created as an <b>"Other"</b> call. Date, time &amp; length are left blank — SmartStaff defaults them to the booking date / 00:00 / 0. Crew required is 0.
+                </div>
+              </div>
+            </div>
+
+            <!-- Action row -->
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <button class="btn-import" id="btn-start-import" disabled onclick="startImport()">
+                ⬆ Create in SmartStaff
+              </button>
+              <button class="btn" onclick="resetImport()">✕ Clear</button>
+              <span id="import-action-note" style="font-size:10px;color:var(--muted)"></span>
+            </div>
+
+            <!-- Progress section -->
+            <div class="import-progress" id="import-progress-panel" style="display:none">
+              <div class="import-section-head">
+                <span class="import-section-title" id="import-progress-title">Creating...</span>
+              </div>
+              <div class="import-progress-bar-wrap">
+                <div class="import-progress-bar" id="import-progress-bar"></div>
+              </div>
+              <div class="import-progress-body">
+                <div class="import-progress-step" id="import-progress-step"></div>
+                <div class="import-call-log" id="import-call-log"></div>
+                <div id="import-done-link" style="display:none;margin-top:10px">
+                  <a id="import-booking-link" href="#" target="_blank"
+                     style="font-size:11px;color:var(--accent);text-decoration:none">
+                    → View booking in SmartStaff
+                  </a>
+                </div>
+              </div>
+            </div>
+
+          </div><!-- end import-preview-wrap -->
+        </div>
+      </div>
+    </div>
+  </div><!-- end tab-import -->
+
+  <!-- ── FORECAST TAB ── -->
+  <div class="tab-panel" id="tab-forecast">
+    <div class="forecast-panel">
+
+      <!-- Toolbar -->
+      <div class="forecast-toolbar">
+        <span class="section-label">FROM</span>
+        <input type="date" class="fc-date-input" id="fc-start-date" onchange="loadForecast()">
+        <input type="number" id="fc-days" value="28" min="1" max="28"
+               style="width:48px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;
+                      padding:5px 8px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;
+                      outline:none;text-align:center"
+               title="Number of days (max 28)"
+               oninput="this.value=Math.min(28,Math.max(1,this.value||1))">
+        <span style="font-size:10px;color:var(--muted)">days</span>
+
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+
+        <input type="text" class="fc-search" id="fc-search" placeholder="Search name..." oninput="renderForecastTable()">
+
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+
+        <span class="section-label">MIN ★</span>
+        <input type="range" class="fc-stars-slider" id="fc-min-stars" min="0" max="10" value="0" oninput="document.getElementById('fc-stars-val').textContent=this.value;renderForecastTable()">
+        <span id="fc-stars-val" style="font-size:11px;color:var(--accent);min-width:12px">0</span>
+
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+
+        <span class="section-label">SORT</span>
+        <button class="fc-sort-btn active" id="fc-sort-name"    onclick="setFcSort('name')">Name</button>
+        <button class="fc-sort-btn"        id="fc-sort-rating"  onclick="setFcSort('rating')">Stars</button>
+        <button class="fc-sort-btn"        id="fc-sort-id"      onclick="setFcSort('id')">EIN</button>
+        <button class="fc-sort-btn"        id="fc-sort-hours"   onclick="setFcSort('hours')">Hours</button>
+
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+
+        <button class="btn" onclick="loadForecast(true)">⟳ Refresh</button>
+        <span id="fc-cache-status" style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace"></span>
+
+        <div class="fc-legend">
+          <div class="fc-legend-swatch" style="background:var(--surface2);border:1px solid var(--border)"></div><span>0h</span>
+          <div class="fc-legend-swatch" style="background:rgba(16,185,129,0.35)"></div><span>1–4h</span>
+          <div class="fc-legend-swatch" style="background:rgba(16,185,129,0.65)"></div><span>4–8h</span>
+          <div class="fc-legend-swatch" style="background:rgba(16,185,129,1)"></div><span>8h+</span>
+          <div class="fc-legend-swatch" style="background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)"></div><span>Unavailable</span>
+        </div>
+      </div>
+
+      <!-- Group chips -->
+      <div id="fc-group-chips" style="display:flex;gap:6px;padding:8px 16px;flex-wrap:wrap;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0"></div>
+
+      <!-- Body -->
+      <div class="forecast-body" id="forecast-body">
+        <div class="fc-loading" id="fc-placeholder">
+          <div style="font-size:32px;opacity:.4">📊</div>
+          <div class="fc-loading-text">Resource Forecaster</div>
+          <div style="font-size:11px;max-width:260px;text-align:center;line-height:1.6">Shows crew bookings over a 28-day window. Select a date range and click Refresh to load.</div>
+          <button class="btn-search" onclick="loadForecast()">Load Forecast</button>
+        </div>
+        <div id="fc-loading-indicator" style="display:none" class="fc-loading">
+          <img src="/static/running-goat.gif" alt="Loading..." class="loading-goat">
+          <div class="fc-loading-text" id="fc-loading-sub">Fetching from SmartStaff...</div>
+        </div>
+        <table class="fc-table" id="fc-table" style="display:none">
+          <thead id="fc-thead"></thead>
+          <tbody id="fc-tbody"></tbody>
+        </table>
+      </div>
+
+    </div>
+  </div><!-- end tab-forecast -->
+</div>
+<script>
+// ── STATE ──
+let selectedCalls=new Map(), // call_id → call object
+    allGroups=[],activeGroups=new Set(),
+    selected=new Map(),  // crew name → crew entry (for adding to SmartStaff)
+    currentResult=null,currentView='timeline';
+
+// ── TIMELINE CONFIG ──
+const TL_START_H=0,TL_END_H=30,TL_TOTAL_H=30,TL_TICKS=[0,4,8,12,16,20,24,28];
+function pct(h){return((h-TL_START_H)/TL_TOTAL_H)*100}
+function dtToH(iso,targetDate){
+  const[dp,tp]=iso.split('T');const[th,tm]=tp.split(':').map(Number);
+  const tDate=new Date(targetDate+'T00:00'),sDate=new Date(dp+'T00:00');
+  const dayDiff=(sDate-tDate)/86400000;
+  return dayDiff*24+th+tm/60;
+}
+function hToLabel(h,targetDate){
+  const d=new Date(targetDate+'T00:00');
+  d.setHours(Math.floor(h),Math.round((h%1)*60));
+  return d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+}
+
+document.addEventListener('DOMContentLoaded',()=>{
+  Promise.all([loadGroups(), loadCalls(), loadCacheStatus(), checkForUpdates()]);
+  loadSchedule();
+});
+
+async function loadGroups(){
+  const resp=await fetch('/api/groups'),data=await resp.json();
+  allGroups=data.groups;
+  document.getElementById('groups-grid').innerHTML=allGroups.map(g=>`<button class="group-chip" onclick="toggleGroup(this,'${g}')">${g}</button>`).join('');
+}
+function toggleGroup(el,group){
+  if(activeGroups.has(group)){activeGroups.delete(group);el.classList.remove('active')}
+  else{activeGroups.add(group);el.classList.add('active')}
+}
+
+async function loadCalls(force=false){
+  const list=document.getElementById('calls-list');
+  list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-sub">Loading...</div></div>';
+  try{
+    const url='/api/calls'+(force?'?force=1':'');
+    const resp=await fetch(url);
+    if(resp.status===401){window.location='/login';return}
+    const data=await resp.json();
+    if(!data.calls?.length){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-icon">&#128235;</div><div class="empty-sub">No unfilled calls on dashboard</div></div>';return}
+    const bookingOrder=[];const bookingMap={};
+    data.calls.forEach(c=>{
+      if(!bookingMap[c.booking_id]){bookingMap[c.booking_id]={booking_id:c.booking_id,booking_name:c.booking_name||('Booking #'+c.booking_id),venue:c.venue||'',calls:[]};bookingOrder.push(c.booking_id)}
+      bookingMap[c.booking_id].calls.push(c);
+    });
+    list.innerHTML=bookingOrder.map(bid=>{
+      const b=bookingMap[bid];
+      const callsHtml=b.calls.map(c=>{
+        const bookedOk=c.booked>=c.required;
+        const safeNotes=(c.notes||'').replace(/"/g,'&quot;');
+        const notesHtml=c.notes?('<div class="call-notes" title="'+safeNotes+'">&#9998; '+c.notes+'</div>'):'';
+        const callJson=JSON.stringify(c).replace(/'/g,'&#39;');
+        return '<div class="call-card" onclick=\'handleCallClick(event,'+callJson+')\' data-call-id="'+c.call_id+'">'
+          +'<div class="call-card-top">'
+          +(c.unfilled?'<div class="unfilled-dot"></div>':'')
+          +'<span class="call-num">#'+c.call_num+'</span>'
+          +'<span class="call-name">'+(c.call_name||'Call')+'</span>'
+          +'</div>'
+          +'<div class="call-meta">'
+          +'<span>'+c.date+'</span><span>'+c.time+'</span><span>'+c.length+'h</span>'
+          +'<span class="call-booked '+(bookedOk?'ok':'warn')+'">'+(c.booked+'/'+c.required)+' booked</span>'
+          +'</div>'
+          +notesHtml
+          +'</div>';
+      }).join('');
+      const venueTag=b.venue?('<span class="booking-group-venue">'+b.venue+'</span>'):'';
+      return '<div class="booking-group" id="bg-'+bid+'">'
+        +'<div class="booking-group-header" onclick="toggleBookingGroup(this)">'
+        +'<span class="booking-group-toggle">&#9660;</span>'
+        +'<span class="booking-group-name">'+b.booking_name+'</span>'
+        +venueTag
+        +'</div>'
+        +'<div class="booking-group-calls">'+callsHtml+'</div>'
+        +'</div>';
+    }).join('');
+    setTimeout(checkAllBooked, 100);
+  }catch(e){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-sub">Error loading calls</div></div>'}
+}
+
+// ── CALL SELECTION (click / cmd+click / shift+click) ──
+function handleCallClick(event, call){
+  const multi = event.metaKey || event.ctrlKey || event.shiftKey;
+  if(!multi){
+    // Single click: replace selection
+    selectedCalls.clear();
+    document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('selected'));
+  }
+  const card = event.currentTarget;
+  if(multi && selectedCalls.has(call.call_id)){
+    // Cmd+click on already-selected: deselect
+    selectedCalls.delete(call.call_id);
+    card.classList.remove('selected');
+  } else {
+    selectedCalls.set(call.call_id, call);
+    card.classList.add('selected');
+  }
+  updateCallSelectionUI();
+  greyOutResults();
+}
+
+function clearCallSelection(){
+  selectedCalls.clear();
+  document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('selected'));
+  updateCallSelectionUI();
+}
+
+function updateCallSelectionUI(){
+  const n = selectedCalls.size;
+  const bar = document.getElementById('selected-calls-bar');
+  const hint = document.getElementById('call-select-hint');
+  const searchBtn = document.getElementById('search-btn');
+  const searchText = document.getElementById('search-btn-text');
+
+  if(n===0){
+    bar.style.display='none';
+    hint.style.display='';
+    searchBtn.disabled=true;
+    searchText.textContent='Select a call first';
+    document.getElementById('panel-call-label').textContent='';
+    return;
+  }
+
+  hint.style.display='none';
+  bar.style.display='flex';
+  searchBtn.disabled=false;
+
+  const calls=[...selectedCalls.values()];
+  document.getElementById('sc-label').textContent=n+' call'+(n>1?'s':'')+' selected';
+  document.getElementById('sc-chips').innerHTML=calls.map(c=>
+    '<span class="sc-chip"><span>#'+c.call_num+' '+c.call_name+'</span>'
+    +'<button onclick="deselectCall(\''+c.call_id+'\')">&#215;</button></span>'
+  ).join('');
+
+  if(n===1){
+    searchText.textContent='Search #'+calls[0].call_num;
+    document.getElementById('panel-call-label').textContent='#'+calls[0].call_num+' '+calls[0].call_name;
+  } else {
+    searchText.textContent='Search '+n+' calls';
+    document.getElementById('panel-call-label').textContent=n+' calls';
+  }
+}
+
+function deselectCall(callId){
+  selectedCalls.delete(callId);
+  const card=document.querySelector('.call-card[data-call-id="'+callId+'"]');
+  if(card)card.classList.remove('selected');
+  updateCallSelectionUI();
+  greyOutResults();
+}
+
+function greyOutResults(){
+  const wrap   = document.getElementById('results-wrap');
+  const header = document.getElementById('results-header');
+  const booked = document.getElementById('booked-crew-section');
+  if(header && header.style.display !== 'none'){
+    if(wrap){ wrap.style.opacity='0.25'; wrap.style.pointerEvents='none'; }
+    if(booked){ booked.style.opacity='0.25'; booked.style.pointerEvents='none'; }
+  }
+}
+
+function restoreResults(){
+  const wrap   = document.getElementById('results-wrap');
+  const booked = document.getElementById('booked-crew-section');
+  if(wrap){ wrap.style.opacity=''; wrap.style.pointerEvents=''; }
+  if(booked){ booked.style.opacity=''; booked.style.pointerEvents=''; }
+}
+
+// ── SEARCH ──
+async function runSearch(){
+  if(!selectedCalls.size)return;
+  showOverlay('Checking Availability...', 'This may take a minute');
+  try{
+    const calls=[...selectedCalls.values()];
+    // Fetch details for all selected calls in parallel
+    const detailsArr=await Promise.all(calls.map(c=>
+      fetch('/api/call/'+c.booking_id+'/'+c.call_id).then(r=>r.json())
+    ));
+    // Check for errors
+    for(const d of detailsArr){if(d.error){alert('Error: '+d.error);return}}
+
+    const callPayload=calls.map((c,i)=>({
+      booking_id: c.booking_id,
+      call_id:    c.call_id,
+      call_num:   c.call_num,
+      call_name:  c.call_name,
+      start_dt:   detailsArr[i].start_dt,
+      end_dt:     detailsArr[i].end_dt,
+      venue:      c.venue || detailsArr[i].venue,  // prefer dashboard venue, fall back to callsheet
+    }));
+
+    const resp=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        calls: callPayload,
+        required_groups:[...activeGroups],
+        min_rating:parseInt(document.getElementById('rating-slider').value)
+      })});
+    const result=await resp.json();
+
+    // Fetch already-booked crew for the first call (if single call search)
+    let bookedCrew = [];
+    if(calls.length === 1){
+      try{
+        const bc = await fetch(`/api/booked-crew/${calls[0].booking_id}/${calls[0].call_id}`);
+        const bcData = await bc.json();
+        bookedCrew = bcData.crew || [];
+      } catch(e){}
+    }
+    result.bookedCrew = bookedCrew;
+
+    // Use first call's details as reference for timeline date
+    currentResult={...result, details:detailsArr[0], calls:calls};
+    renderResults(result, detailsArr[0], result.targets);
+  }catch(e){alert('Search error: '+e)}
+  finally{
+    hideOverlay();
+    restoreResults();
+  }
+}
+
+function setView(view){
+  currentView=view;
+  document.getElementById('view-table-btn').classList.toggle('btn-view-active',view==='table');
+  document.getElementById('view-tl-btn').classList.toggle('btn-view-active',view==='timeline');
+  if(currentResult)renderResults(currentResult,currentResult.details,currentResult.targets);
+}
+
+function renderResults(result,details,targets){
+  const{available,conflicts,skipped}=result;
+  const bookedCrew = result.bookedCrew || [];
+  document.getElementById('cnt-avail').textContent=available.length;
+  document.getElementById('cnt-conf').textContent=conflicts.length;
+  document.getElementById('cnt-skip').textContent=skipped.length;
+  document.getElementById('results-header').style.display='flex';
+  selected.clear();updateSelCount();
+
+  // Build booked crew section
+  const existingBooked = document.getElementById('booked-crew-section');
+  if(existingBooked) existingBooked.remove();
+
+  let bookedSection = null;
+  if(bookedCrew.length > 0){
+    const statusConfig = {
+      confirmed:   {label:'Confirmed',   color:'#22c55e', bg:'rgba(34,197,94,0.08)'},
+      unconfirmed: {label:'Unconfirmed', color:'var(--warn)', bg:'rgba(245,158,11,0.08)'},
+      waiting:     {label:'Waiting',     color:'var(--warn)', bg:'rgba(245,158,11,0.08)'},
+      declined:    {label:'Declined',    color:'var(--accent2)', bg:'rgba(227,30,36,0.08)'},
+    };
+    const grouped = {confirmed:[], unconfirmed:[], waiting:[], declined:[]};
+    bookedCrew.forEach(c => (grouped[c.status]||grouped.waiting).push(c.name));
+
+    const chips = Object.entries(grouped)
+      .filter(([,names]) => names.length > 0)
+      .map(([status, names]) => {
+        const cfg = statusConfig[status];
+        return `<div style="margin-bottom:6px">
+          <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+                      color:${cfg.color};font-family:'Share Tech Mono',monospace;margin-bottom:4px">
+            ${cfg.label} (${names.length})
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${names.map(n=>`<span style="background:${cfg.bg};border:1px solid ${cfg.color};
+              color:${cfg.color};padding:2px 8px;border-radius:3px;font-size:10px;
+              font-family:'Rajdhani',sans-serif;font-weight:600">${n}</span>`).join('')}
+          </div>
+        </div>`;
+      }).join('');
+
+    bookedSection = document.createElement('div');
+    bookedSection.id = 'booked-crew-section';
+    bookedSection.style.cssText = 'padding:12px 16px;border-bottom:1px solid var(--border-gold);background:var(--surface2);flex-shrink:0';
+    bookedSection.innerHTML = `
+      <div style="font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;
+                  color:var(--accent);letter-spacing:.08em;margin-bottom:8px">
+        ⚡ ALREADY BOOKED (${bookedCrew.length})
+      </div>
+      ${chips}`;
+  }
+
+  if(currentView==='timeline')renderTimeline(result,details,targets||[]);
+  else renderTable(result,targets||[]);
+
+  // Insert booked crew section after render (results-wrap now exists)
+  const existingBooked2 = document.getElementById('booked-crew-section');
+  if(existingBooked2) existingBooked2.remove();
+  if(bookedCrew.length > 0){
+    const resultsWrap = document.getElementById('results-wrap');
+    if(resultsWrap) resultsWrap.before(bookedSection);
+  }
+}
+
+// ── STATUS HELPERS ──
+function statusLabel(crew, targets){
+  if(!targets||targets.length<=1){
+    return crew.partial
+      ? '<span class="status-partial">'+(crew.avail_count)+'/'+crew.total_calls+' calls</span>'
+      : '<span class="status-available">AVAILABLE</span>';
+  }
+  if(crew.partial){
+    return '<span class="status-partial">'+crew.avail_count+'/'+crew.total_calls+' calls</span>';
+  }
+  return '<span class="status-available">ALL '+targets.length+' CALLS</span>';
+}
+
+function inductionWarnHtml(crew){
+  if(!crew.induction_warnings||!crew.induction_warnings.length)return '';
+  return crew.induction_warnings.map(w=>{
+    const expired=w.startsWith('Expired');
+    const expiring=w.startsWith('Expiring');
+    const cls=expired?'induction-expired':expiring?'induction-expiring':'induction-warn';
+    const icon=expired?'⊘':expiring?'◈':'⚠';
+    return '<span class="'+cls+'" title="'+w+'">'+icon+' '+w+'</span>';
+  }).join('');
+}
+function breakdownHtml(crew){
+  if(!crew.call_results||crew.call_results.length<=1)return '';
+  return '<div class="call-breakdown">'+crew.call_results.map(r=>
+    '<span class="cb-pill '+(r.available?'ok':'no')+'" title="'+(r.available?'Available':'Conflict: '+r.detail)+'">#'+r.call_num+'</span>'
+  ).join('')+'</div>';
+}
+
+// ── TABLE VIEW ──
+function renderTable(result,targets){
+  const{available,conflicts,skipped}=result;
+  const multiCall=targets.length>1;
+  const wrap=document.getElementById('results-wrap');
+  const table=document.createElement('table');
+  const cols=multiCall?'<th></th><th>Name</th><th>Availability</th><th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>'
+                       :'<th></th><th>Name</th><th>Status</th><th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>';
+  table.innerHTML='<thead><tr>'+cols+'</tr></thead><tbody id="results-tbody"></tbody>';
+  wrap.innerHTML='';wrap.appendChild(table);
+  const tbody=document.getElementById('results-tbody');
+  const addSec=label=>{const tr=document.createElement('tr');tr.className='section-row';tr.innerHTML='<td colspan="7">'+label+'</td>';tbody.appendChild(tr)};
+
+  // Easter egg: searching for "goat" adds the GOAT to the available list
+  const goatInput = document.getElementById('calls-search-input');
+  const goatSummoned = goatInput && goatInput.value.toLowerCase().includes('goat');
+  const theGoat = goatSummoned ? [{
+    name: 'G.O.A.T, The',
+    phone: '0400 BAAA AA',
+    rating: 10,
+    groups: ['All Disciplines'],
+    call_results: targets.map(t => ({available: true, call_num: t.call_num || '', detail: ''})),
+    avail_count: targets.length,
+    total_calls: targets.length,
+    detail: '',
+    induction_warnings: [],
+    shifts: [],
+    unavails: [],
+    _isGoat: true,
+  }] : [];
+
+  // Separate partial from full available
+  const fullAvail=[...theGoat, ...available.filter(c=>!c.partial)];
+  const partial=available.filter(c=>c.partial);
+
+  addSec('&#9656; AVAILABLE FOR ALL ('+fullAvail.length+')');
+  fullAvail.forEach(c=>addTableRow(tbody,c,'available',targets));
+  if(partial.length){
+    addSec('&#9656; PARTIAL — SOME CALLS ('+partial.length+')');
+    partial.forEach(c=>addTableRow(tbody,c,'partial',targets));
+  }
+  addSec('&#9656; CONFLICTS ('+conflicts.length+')');
+  conflicts.forEach(c=>addTableRow(tbody,c,'conflict',targets));
+  addSec('&#9656; SKIPPED ('+skipped.length+')');
+  skipped.forEach(c=>addTableRow(tbody,c,'skipped',targets));
+}
+
+function addTableRow(tbody,crew,status,targets){
+  const isSelectable=status==='available'||status==='partial';
+  const isGoat = crew._isGoat === true;
+  const tr=document.createElement('tr');
+  tr.className=status==='partial'?'partial available':status;
+  if(isGoat) tr.style.cssText='background:rgba(212,175,55,0.08);box-shadow:inset 0 0 0 1px rgba(212,175,55,0.3)';
+  const cbTd=document.createElement('td');cbTd.className='cb-cell';
+  if(isSelectable){
+    const cb=document.createElement('input');cb.type='checkbox';
+    cb.addEventListener('change',e=>{
+      tr.classList.toggle('row-selected',e.target.checked);
+      if(e.target.checked)selected.set(crew.name,{name:crew.name,phone:crew.phone||'',crewId:crew.id});
+      else selected.delete(crew.name);
+      updateSelCount();
+    });
+    cbTd.appendChild(cb);
+  }
+  tr.appendChild(cbTd);
+  function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
+  const ph=phoneLink(crew.phone);
+  const nameHtml=(isGoat?'🐐 ':'')+crew.name+inductionWarnHtml(crew);
+  const nameTd=mkTd('name-cell',nameHtml);
+  if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
+  tr.appendChild(nameTd);
+  tr.appendChild(mkTd('',statusLabel(crew,targets)+breakdownHtml(crew)));
+  tr.appendChild(mkTd('phone-cell',ph));
+  tr.appendChild(mkTd('rating-cell',crew.rating));
+  tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
+  const detailParts=(crew.call_results||[]).filter(r=>r.detail).map(r=>'#'+r.call_num+': '+r.detail);
+  const indParts=(crew.induction_warnings||[]);
+  const detail=[...detailParts,...indParts].join(' | ')||(crew.detail||crew.reason||'');
+  tr.appendChild(mkTd('detail-cell'+(status==='skipped'?' skip':''),detail,detail));
+  tbody.appendChild(tr);
+}
+
+// ── TIMELINE VIEW ──
+function renderTimeline(result,details,targets){
+  const{available,conflicts,skipped}=result;
+  const targetDate=details.start_dt.split('T')[0];
+
+  // Build target windows from all selected calls
+  const targetWindows=(targets&&targets.length?targets:[{start_dt:details.start_dt,end_dt:details.end_dt}]).map(t=>({
+    startH:dtToH(t.start_dt,targetDate),
+    endH:dtToH(t.end_dt,targetDate),
+    label:'#'+(t.call_num||'')+(t.call_name?' '+t.call_name:''),
+  }));
+
+  // Timeline bounds: 8h before first call start, 8h after last call end
+  // Shifts render within this window; window is not expanded to fit shifts
+  const tlMin=Math.min(...targetWindows.map(t=>t.startH))-8;
+  const tlMax=Math.max(...targetWindows.map(t=>t.endH))+8;
+  const tlTotal=tlMax-tlMin||1;
+  function pctD(h){return((h-tlMin)/tlTotal)*100}
+  const dynTicks=[];
+  for(let h=Math.ceil(tlMin/4)*4;h<=tlMax;h+=4)dynTicks.push(h);
+
+  const wrap=document.getElementById('results-wrap');
+  wrap.innerHTML='';
+  const table=document.createElement('table');
+  table.className='tl-table';
+  const thead=document.createElement('thead');
+  const hrow=document.createElement('tr');
+  ['','Name','Availability','Phone','Rating','Groups','Timeline'].forEach((h,i)=>{
+    const th=document.createElement('th');
+    if(i===0)th.style.width='36px';
+    if(i===6){
+      th.style.minWidth='600px';
+      const tDiv=document.createElement('div');tDiv.className='tl-time-header';
+      dynTicks.forEach(h2=>{
+        if(pctD(h2)>99||pctD(h2)<0)return;
+        const span=document.createElement('span');span.className='tl-time-label';
+        span.style.left=pctD(h2)+'%';span.textContent=hToLabel(h2,targetDate);
+        tDiv.appendChild(span);
+      });
+      th.appendChild(tDiv);
+    } else {th.textContent=h}
+    hrow.appendChild(th);
+  });
+  thead.appendChild(hrow);table.appendChild(thead);
+  const tbody=document.createElement('tbody');
+
+  function addSecRow(label){
+    const tr=document.createElement('tr');tr.className='section-row-tl';
+    const td=document.createElement('td');td.colSpan=7;td.textContent=label;
+    tr.appendChild(td);tbody.appendChild(tr);
+  }
+
+  function addTlRow(crew,status){
+    const isSelectable=status==='available'||status==='partial';
+    const tr=document.createElement('tr');tr.className=status==='partial'?'partial available':status;
+    const cbTd=document.createElement('td');cbTd.className='cb-cell';
+    if(isSelectable){
+      const cb=document.createElement('input');cb.type='checkbox';
+      cb.addEventListener('change',e=>{
+        tr.classList.toggle('row-selected',e.target.checked);
+        if(e.target.checked)selected.set(crew.name,{name:crew.name,phone:crew.phone||'',crewId:crew.id});
+        else selected.delete(crew.name);
+        updateSelCount();
+      });
+      cbTd.appendChild(cb);
+    }
+    tr.appendChild(cbTd);
+    function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
+    const ph=phoneLink(crew.phone);
+    tr.appendChild(mkTd('name-cell',crew.name+inductionWarnHtml(crew)));
+    tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null)+breakdownHtml(crew)));
+    tr.appendChild(mkTd('phone-cell',ph));
+    tr.appendChild(mkTd('rating-cell',crew.rating));
+    tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
+
+    // Timeline cell
+    const tlTd=document.createElement('td');tlTd.className='tl-cell';
+    const inner=document.createElement('div');inner.className='tl-inner';
+    dynTicks.forEach(h=>{const line=document.createElement('div');line.className='tl-grid';line.style.left=pctD(h)+'%';inner.appendChild(line)});
+
+    // One highlight band per selected call
+    targetWindows.forEach(tw=>{
+      const bg=document.createElement('div');bg.className='tl-target';
+      bg.style.left=pctD(tw.startH)+'%';
+      bg.style.width=(pctD(tw.endH)-pctD(tw.startH))+'%';
+      bg.title=tw.label;
+      inner.appendChild(bg);
+    });
+
+    // Shift bars
+    if(status!=='skipped'){
+      (crew.shifts||[]).forEach(s=>{
+        const sh=dtToH(s.start,targetDate),eh=dtToH(s.end,targetDate);
+        if(eh<tlMin||sh>tlMax)return;
+        const bar=document.createElement('div');
+        const barStatus=status==='partial'?'conflict':status;
+        bar.className='tl-bar bar-'+barStatus;
+        bar.style.left=pctD(Math.max(sh,tlMin))+'%';
+        bar.style.width=(pctD(Math.min(eh,tlMax))-pctD(Math.max(sh,tlMin)))+'%';
+        bar.dataset.tip=hToLabel(sh,targetDate)+'-'+hToLabel(eh,targetDate)+' @ '+(s.venue||'?');
+        inner.appendChild(bar);
+      });
+      (crew.unavails||[]).forEach(u=>{
+        const sh=dtToH(u.start,targetDate),eh=dtToH(u.end,targetDate);
+        if(eh<tlMin||sh>tlMax)return;
+        const bar=document.createElement('div');
+        bar.className='tl-bar bar-unavail';
+        bar.style.left=pctD(Math.max(sh,tlMin))+'%';
+        bar.style.width=(pctD(Math.min(eh,tlMax))-pctD(Math.max(sh,tlMin)))+'%';
+        bar.style.top='0'; bar.style.bottom='0'; bar.style.opacity='0.5';
+        bar.dataset.tip='Unavailable: '+(u.reason||'Leave');
+        inner.appendChild(bar);
+      });
+    }
+    tlTd.appendChild(inner);tr.appendChild(tlTd);
+
+    const detailParts=(crew.call_results||[]).filter(r=>r.detail).map(r=>'#'+r.call_num+': '+r.detail);
+    const indParts=(crew.induction_warnings||[]);
+    const detail=[...detailParts,...indParts].join(' | ')||(crew.detail||crew.reason||'');
+    const dtd=document.createElement('td');
+    dtd.className='detail-cell'+(status==='skipped'?' skip':'');
+    dtd.title=detail;dtd.textContent=detail;
+    dtd.style.maxWidth='260px';dtd.style.overflow='hidden';dtd.style.textOverflow='ellipsis';
+    tr.appendChild(dtd);
+
+    tbody.appendChild(tr);
+  }
+
+  const fullAvail=available.filter(c=>!c.partial);
+  const partial=available.filter(c=>c.partial);
+  addSecRow('AVAILABLE FOR ALL ('+fullAvail.length+')');fullAvail.forEach(c=>addTlRow(c,'available'));
+  if(partial.length){addSecRow('PARTIAL — SOME CALLS ('+partial.length+')');partial.forEach(c=>addTlRow(c,'partial'))}
+  addSecRow('CONFLICTS ('+conflicts.length+')');conflicts.forEach(c=>addTlRow(c,'conflict'));
+  addSecRow('SKIPPED ('+skipped.length+')');skipped.forEach(c=>addTlRow(c,'skipped'));
+
+  table.appendChild(tbody);wrap.appendChild(table);
+}
+
+// ── CREW SELECTION ──
+function updateSelCount(){
+  const n=selected.size;
+  document.getElementById('sel-count').textContent=n+' selected';
+  ['btn-add','btn-confirm','btn-sms'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=n===0});
+  const panel=document.getElementById('sel-panel'),chips=document.getElementById('sel-chips');
+  if(n===0){panel.style.display='none';return}
+  panel.style.display='block';
+  chips.innerHTML=[...selected.values()].map(c=>'<div class="chip"><span>'+c.name+'</span><button onclick="removeChip(\''+c.name.replace(/'/g,"\\'")+'\')">\u00d7</button></div>').join('');
+  // Easter egg: 666 crew selected
+  if(n===666) triggerDevilGoat();
+}
+function removeChip(name){
+  selected.delete(name);
+  document.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    if(cb.closest('tr')?.querySelector('.name-cell')?.textContent===name){cb.checked=false;cb.closest('tr').classList.remove('row-selected')}
+  });
+  updateSelCount();
+}
+function selectAll(){document.querySelectorAll('tr.available input[type=checkbox], tr.partial input[type=checkbox]').forEach(cb=>{if(!cb.checked){cb.checked=true;cb.dispatchEvent(new Event('change'))}})}
+function clearAll(){document.querySelectorAll('input[type=checkbox]').forEach(cb=>{cb.checked=false;cb.closest('tr')?.classList.remove('row-selected')});selected.clear();updateSelCount()}
+function copyNames(){navigator.clipboard.writeText([...selected.keys()].join('\n'));showFeedback('Copied')}
+function copyPhones(){navigator.clipboard.writeText([...selected.values()].map(c=>c.name+'\t'+c.phone).join('\n'));showFeedback('Copied with phones')}
+function showFeedback(msg){const el=document.getElementById('feedback');el.textContent=msg;setTimeout(()=>el.textContent='',2500)}
+
+// ── SMARTSTAFF ACTIONS ──
+async function addSelected(confirm){
+  const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
+  const targets=currentResult?.targets||[];
+  const action=confirm?'confcrew':'addcrew';
+  const btnId=confirm?'btn-confirm':'btn-add';
+  const btn=document.getElementById(btnId);const orig=btn.textContent;btn.disabled=true;
+
+  // Build all URLs: every crew member × every call
+  const urls=[];
+  targets.forEach(t=>{
+    crew.forEach(c=>{
+      urls.push({url:'https://smartstaffsolutions.com/add-call.php?action='+action+'&id='+t.call_id+'&userID='+c.crewId,callId:t.call_id,bookingId:t.booking_id});
+    });
+  });
+
+  const tab=window.open(urls[0].url,'gp_add');
+  if(!tab){alert('Please allow popups.');btn.textContent=orig;btn.disabled=false;return}
+  for(let i=1;i<urls.length;i++){
+    btn.textContent=(i+1)+'/'+urls.length+'...';
+    await new Promise(r=>setTimeout(r,1200));
+    try{tab.location.href=urls[i].url}catch(e){break}
+  }
+  await new Promise(r=>setTimeout(r,1200));
+  // Navigate to first call's callsheet when done
+  const last=urls[urls.length-1];
+  try{tab.location.href='https://smartstaffsolutions.com/bookings/'+last.bookingId+'/callsheet/'+last.callId}catch(e){}
+  const total=crew.length*targets.length;
+  btn.textContent='Done - '+total+' added ('+(targets.length>1?crew.length+' crew × '+targets.length+' calls':crew.length+' crew')+')';
+  setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},4000);
+}
+
+async function sendSMS(){
+  const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
+  const targets=currentResult?.targets||[];
+  const btn=document.getElementById('btn-sms');const orig=btn.textContent;btn.disabled=true;
+
+  // Step 1: add crew to all calls
+  const addUrls=[];
+  targets.forEach(t=>{
+    crew.forEach(c=>{
+      addUrls.push({url:'https://smartstaffsolutions.com/add-call.php?action=addcrew&id='+t.call_id+'&userID='+c.crewId});
+    });
+  });
+
+  const tab=window.open(addUrls[0].url,'gp_sms');
+  if(!tab){alert('Please allow popups.');btn.textContent=orig;btn.disabled=false;return}
+  for(let i=1;i<addUrls.length;i++){
+    btn.textContent='Adding '+(i+1)+'/'+addUrls.length+'...';
+    await new Promise(r=>setTimeout(r,1200));
+    try{tab.location.href=addUrls[i].url}catch(e){break}
+  }
+
+  // Step 2: send SMS for each call in sequence
+  const params=crew.map(c=>'crewSelectList='+c.crewId).join('&');
+  for(let i=0;i<targets.length;i++){
+    const t=targets[i];
+    btn.textContent='SMS '+(i+1)+'/'+targets.length+'...';
+    await new Promise(r=>setTimeout(r,1200));
+    try{tab.location.href='https://smartstaffsolutions.com/add-call.php?action=sendsms&id='+t.call_id+'&bookingID='+t.booking_id+'&'+params}catch(e){break}
+  }
+  await new Promise(r=>setTimeout(r,800));
+
+  btn.textContent='SMS sent ('+targets.length+' call'+(targets.length>1?'s':'')+', '+crew.length+' crew)';
+  setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},3500);
+}
+
+// ── TABS ──
+function switchTab(tab){
+  const tabNames = ['schedule','crew-finder','forecast','induction-checker','import'];
+  document.querySelectorAll('.tab-btn').forEach((b,i)=>{
+    b.classList.toggle('active', tabNames[i]===tab);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p=>{
+    p.classList.toggle('active', p.id==='tab-'+tab);
+  });
+  if(tab==='induction-checker' && !_indData) loadInductions();
+  if(tab==='import') loadImportHistory();
+  if(tab==='forecast') initForecast();
+  if(tab==='schedule') { initSchedule(); if(!_schedData) loadSchedule(); }
+}
+
+// ── CALL SEARCH & COLLAPSE ──
+function filterCalls(query){
+  const q=query.toLowerCase().trim();
+  document.querySelectorAll('.booking-group').forEach(grp=>{
+    const name=grp.querySelector('.booking-group-name')?.textContent.toLowerCase()||'';
+    grp.style.display=(!q||name.includes(q))?'':'none';
+  });
+}
+
+function toggleBookingGroup(el){
+  const grp=el.closest('.booking-group');
+  if(grp) grp.classList.toggle('collapsed');
+}
+
+
+let _indData=null, _indActiveGroup=null, _selectedVenues=new Set();
+
+async function loadInductions(force=false){
+  if(_indData && !force) return;
+  document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">Loading inductions...</div></div>';
+  showOverlay('Loading Inductions...', 'Reading crew induction records');
+  try{
+    const resp=await fetch('/api/inductions'), data=await resp.json();
+    _indData=data;
+    const groups=new Set();
+    data.crew.forEach(c=>(c.groups||[]).forEach(g=>groups.add(g)));
+    document.getElementById('ind-group-chips').innerHTML=[...groups].sort().map(g=>
+      '<button class="ind-chip" onclick="toggleIndGroup(this,\''+g+'\')">'+g+'</button>'
+    ).join('');
+    _selectedVenues=new Set(data.venues);
+    buildVenueChecklist(data.venues);
+    renderInductionTable();
+  }catch(e){
+    document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">Error loading inductions</div></div>';
+  } finally{
+    hideOverlay();
+  }
+}
+
+function buildVenueChecklist(venues){
+  document.getElementById('venue-checklist').innerHTML=venues.map(v=>
+    '<label><input type="checkbox" checked onchange="onVenueCheck(this)" data-venue="'+v.replace(/"/g,'&quot;')+'"> '+v+'</label>'
+  ).join('');
+  updateVenueBadge();
+}
+
+function onVenueCheck(cb){
+  const venue=cb.dataset.venue;
+  if(cb.checked)_selectedVenues.add(venue);
+  else _selectedVenues.delete(venue);
+  updateVenueBadge();
+  renderInductionTable();
+}
+
+function selectAllVenues(){
+  _selectedVenues=new Set(_indData?.venues||[]);
+  document.querySelectorAll('#venue-checklist input').forEach(cb=>cb.checked=true);
+  updateVenueBadge();
+  renderInductionTable();
+}
+
+function selectNoVenues(){
+  _selectedVenues.clear();
+  document.querySelectorAll('#venue-checklist input').forEach(cb=>cb.checked=false);
+  updateVenueBadge();
+  renderInductionTable();
+}
+
+function updateVenueBadge(){
+  const total=_indData?.venues?.length||0;
+  const sel=_selectedVenues.size;
+  document.getElementById('venue-badge').textContent=sel===total?'All':sel===0?'None':sel+'/'+total;
+}
+
+function toggleVenueDropdown(){
+  const dd=document.getElementById('venue-dropdown');
+  dd.classList.toggle('open');
+  if(dd.classList.contains('open')){
+    setTimeout(()=>{
+      document.addEventListener('click',function handler(e){
+        if(!document.getElementById('venue-selector').contains(e.target)){
+          dd.classList.remove('open');
+          document.removeEventListener('click',handler);
+        }
+      });
+    },10);
+  }
+}
+
+function toggleIndGroup(el, group){
+  if(_indActiveGroup===group){_indActiveGroup=null;el.classList.remove('active')}
+  else{
+    document.querySelectorAll('#ind-group-chips .ind-chip').forEach(c=>c.classList.remove('active'));
+    _indActiveGroup=group; el.classList.add('active');
+  }
+  renderInductionTable();
+}
+
+function renderInductionTable(){
+  if(!_indData) return;
+  const nameQ=(document.getElementById('ind-name-search').value||'').toLowerCase().trim();
+  const venues=(_indData.venues||[]).filter(v=>_selectedVenues.size===0||_selectedVenues.has(v));
+
+  // Filter crew
+  let crew=_indData.crew.filter(c=>{
+    if(nameQ && !(c.name||'').toLowerCase().includes(nameQ)) return false;
+    if(_indActiveGroup && !(c.groups||[]).includes(_indActiveGroup)) return false;
+    return true;
+  });
+
+  if(!crew.length){
+    document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">No matching resources</div></div>';
+    document.getElementById('ind-summary').textContent='';
+    return;
+  }
+
+  // Count issues
+  let totalIncomplete=0, totalExpired=0;
+  crew.forEach(c=>venues.forEach(v=>{
+    const s=c.venue_status[v]?.status;
+    if(s==='Incomplete')totalIncomplete++;
+    if(s==='Expired')totalExpired++;
+  }));
+
+  const table=document.createElement('table');
+  table.className='ind-table';
+
+  // Header
+  const thead=document.createElement('thead');
+  const hrow=document.createElement('tr');
+  const nameTh=document.createElement('th');
+  nameTh.textContent='Resource';
+  hrow.appendChild(nameTh);
+  venues.forEach(v=>{
+    const th=document.createElement('th');
+    th.className='venue-th';
+    th.textContent=v;
+    th.title=v;
+    hrow.appendChild(th);
+  });
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+
+  // Body
+  const tbody=document.createElement('tbody');
+  crew.forEach(c=>{
+    const tr=document.createElement('tr');
+    const nameTd=document.createElement('td');
+    nameTd.textContent=c.name||c.ein||c.id;
+    tr.appendChild(nameTd);
+    venues.forEach(v=>{
+      const td=document.createElement('td');
+      const vs=c.venue_status[v];
+      if(!vs){
+        td.innerHTML='<div class="ind-cell"><div class="ind-dot none" title="Not in induction list"></div></div>';
+      } else {
+        const st=vs.status;
+        const cls=st==='Complete'?'complete':st==='Expired'?'expired':st==='Expiring Soon'?'expiring':'incomplete';
+        const tip=st==='Complete'?'Valid until '+vs.expiry:st==='Expired'?'Expired '+vs.expiry+' (completed '+vs.completed+')':'Incomplete';
+        td.innerHTML='<div class="ind-cell"><div class="ind-dot '+cls+'" title="'+tip+'"></div></div>';
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  const wrap=document.getElementById('ind-table-wrap');
+  wrap.innerHTML='';
+  wrap.appendChild(table);
+  document.getElementById('ind-summary').textContent=
+    crew.length+' resources | '+totalExpired+' expired | '+totalIncomplete+' incomplete';
+}
+
+function exportInductionCSV(){
+  if(!_indData) return;
+  const venues=(_indData.venues||[]).filter(v=>_selectedVenues.size===0||_selectedVenues.has(v));
+  const rows=[['Resource',...venues]];
+  _indData.crew.forEach(c=>{
+    rows.push([c.name||c.ein||c.id,...venues.map(v=>{
+      const vs=c.venue_status[v];
+      if(!vs) return '';
+      if(vs.status==='Complete') return 'Valid ('+vs.expiry+')';
+      if(vs.status==='Expired') return 'Expired ('+vs.expiry+')';
+      return 'Incomplete';
+    })]);
+  });
+  const csv=rows.map(r=>r.map(cell=>'"'+String(cell).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
+  a.download='inductions-'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();
+}
+
+// ── IMPORT TAB ──────────────────────────────────────────────────────────────
+
+let _importPayload = null;   // raw parsed JSON
+let _importPreview = null;   // validated preview from server
+let _importPollInterval = null;
+
+function handleImportDrop(e){
+  e.preventDefault();
+  document.getElementById('import-drop-zone').classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if(file) handleImportFile(file);
+}
+
+async function handleImportFile(file){
+  if(!file || !file.name.endsWith('.json')){
+    showImportErrors(['File must be a .json file']);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = async e => {
+    let payload;
+    try{ payload = JSON.parse(e.target.result); }
+    catch(err){ showImportErrors(['Invalid JSON: ' + err.message]); return; }
+
+    _importPayload = payload;
+
+    // Update file info panel
+    document.getElementById('import-file-info').style.display = '';
+    document.getElementById('import-file-name').textContent = file.name;
+    document.getElementById('import-file-meta').textContent =
+      (file.size/1024).toFixed(1) + ' KB · ' +
+      (payload.labour_lines?.length || 0) + ' labour lines';
+
+    // Clear previous errors + preview
+    hideImportErrors();
+    document.getElementById('import-preview-wrap').style.display = 'none';
+    document.getElementById('import-placeholder').style.display = 'flex';
+    document.getElementById('import-action-note').textContent = 'Validating...';
+
+    // Validate server-side
+    try{
+      const resp = await fetch('/api/import/validate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+
+      if(!data.valid){
+        showImportErrors(data.errors || ['Validation failed']);
+        document.getElementById('import-action-note').textContent = '';
+        return;
+      }
+
+      _importPreview = data;
+      renderImportPreview(data);
+    } catch(err){
+      showImportErrors(['Error communicating with server: ' + err.message]);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function renderImportPreview(data){
+  const p = data.preview;
+  const m = data.matching;
+
+  document.getElementById('import-placeholder').style.display = 'none';
+  const wrap = document.getElementById('import-preview-wrap');
+  wrap.style.display = 'flex';
+
+  // Booking details
+  document.getElementById('import-quote-badge').textContent =
+    p.quote_number + ' v' + p.version;
+  document.getElementById('prev-booking-name').textContent = p.booking_name;
+  document.getElementById('prev-booking-date').textContent = p.booking_date;
+  document.getElementById('prev-invoice-ref').textContent  = p.invoice_ref;
+  document.getElementById('prev-call-count').textContent   = p.call_count + ' calls';
+
+  if(p.booking_notes){
+    document.getElementById('prev-notes-row').style.display = '';
+    document.getElementById('prev-notes').textContent = p.booking_notes;
+  } else {
+    document.getElementById('prev-notes-row').style.display = 'none';
+  }
+
+  // Onsite contact — read-only display (name + phone from JSON)
+  const onsiteName  = p.onsite_contact || '';
+  const onsitePhone = p.onsite_contact_phone || '';
+  const onsiteRow   = document.getElementById('prev-onsite-row');
+  const onsiteEl    = document.getElementById('prev-onsite');
+  if(onsiteName || onsitePhone){
+    onsiteEl.textContent = [onsiteName, onsitePhone].filter(Boolean).join(' · ');
+    onsiteRow.style.display = '';
+  } else {
+    onsiteRow.style.display = 'none';
+  }
+
+  // Shared contacts list (used by both Contact and Onsite Contact dropdowns)
+  const contactOptions = '<option value="">-- Select contact --</option>' +
+    m.contacts.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+
+  // Customer dropdown
+  const custSel = document.getElementById('match-customer');
+  custSel.innerHTML = '<option value="">-- Select customer --</option>' +
+    m.customers.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  document.getElementById('cust-shadow').textContent =
+    m.customer_name ? `From file: ${m.customer_name}` : '';
+  if(m.customer_matched && m.customer_id){
+    custSel.value = m.customer_id;
+    document.getElementById('cust-match-status').innerHTML =
+      '<span class="import-match-ok">✓ matched</span>';
+  } else {
+    document.getElementById('cust-match-status').innerHTML =
+      '<span class="import-match-warn">⚠ select manually</span>';
+  }
+
+  // Contact dropdown (billing contact — from customer.contact_name)
+  const contactSel = document.getElementById('match-contact');
+  contactSel.innerHTML = contactOptions;
+  document.getElementById('contact-shadow').textContent =
+    m.contact_name ? `From file: ${m.contact_name}` : '';
+  if(m.contact_matched && m.contact_id){
+    contactSel.value = m.contact_id;
+    document.getElementById('contact-match-status').innerHTML =
+      '<span class="import-match-ok">✓ matched</span>';
+  } else {
+    document.getElementById('contact-match-status').innerHTML =
+      '<span class="import-match-warn">⚠ select manually</span>';
+  }
+
+  // Onsite Contact dropdown (from event.onsite_contact — same contacts list)
+  const onsiteContactSel = document.getElementById('match-onsite-contact');
+  onsiteContactSel.innerHTML = contactOptions;
+  document.getElementById('onsite-contact-shadow').textContent =
+    m.onsite_contact_name ? `From file: ${m.onsite_contact_name}` : '';
+  if(m.onsite_contact_matched && m.onsite_contact_id){
+    onsiteContactSel.value = m.onsite_contact_id;
+    document.getElementById('onsite-contact-match-status').innerHTML =
+      '<span class="import-match-ok">✓ matched</span>';
+  } else {
+    document.getElementById('onsite-contact-match-status').innerHTML =
+      '<span class="import-match-warn">⚠ select manually</span>';
+  }
+
+  // Venue dropdown
+  const venueSel = document.getElementById('match-venue');
+  venueSel.innerHTML = '<option value="">-- Select venue --</option>' +
+    m.venues.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+  document.getElementById('venue-shadow').textContent =
+    m.venue_name ? `From file: ${m.venue_name}` : '';
+  if(m.venue_matched && m.venue_id){
+    venueSel.value = m.venue_id;
+    document.getElementById('venue-match-status').innerHTML =
+      '<span class="import-match-ok">✓ matched</span>';
+  } else {
+    document.getElementById('venue-match-status').innerHTML =
+      '<span class="import-match-warn">⚠ select manually</span>';
+  }
+
+  const CALL_NAMES = [
+    'Load In','Load Out','LX','SX','VX','Backline','Show Call',
+    'FOH Spot','Truss Spot','Wardrobe','Steel','Fork','Truck','EWP',
+    'Crown Hand','Crew Boss','Site','Utility','General','Other'
+  ];
+
+  // Calls table — one dropdown per line
+  const tbody = document.getElementById('import-calls-tbody');
+  tbody.innerHTML = p.calls.map(c => {
+    const opts = CALL_NAMES.map(n =>
+      `<option value="${n}"${n === c.call_name ? ' selected' : ''}>${n}</option>`
+    ).join('');
+    return `
+    <tr>
+      <td style="color:var(--muted);font-size:10px">${c.crew_type}</td>
+      <td>
+        <select class="call-name-select" data-line-id="${c.line_id}"
+                style="font-size:11px;background:var(--surface2);border:1px solid var(--border);
+                       border-radius:4px;padding:4px 6px;color:var(--text);
+                       font-family:'Share Tech Mono',monospace;outline:none;cursor:pointer;width:120px"
+                onchange="updateImportReadiness()">
+          <option value="">-- select --</option>
+          ${opts}
+        </select>
+      </td>
+      <td>${formatDisplayDate(c.date)}</td>
+      <td>${c.start_time}</td>
+      <td>${c.duration_hours}h</td>
+      <td>${c.quantity}</td>
+      <td class="td-notes">${c.shift_notes || '<span style="opacity:.4">—</span>'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('prev-calls-summary').textContent =
+    p.call_count + ' call' + (p.call_count!==1?'s':'') + ' · ' +
+    [...new Set(p.calls.map(c=>c.date))].length + ' date' +
+    ([...new Set(p.calls.map(c=>c.date))].length!==1?'s':'');
+
+  // Non-labour items table (schema 1.1)
+  const nlSection = document.getElementById('import-non-labour-section');
+  const nlBody    = document.getElementById('import-non-labour-tbody');
+  const nlItems   = p.non_labour || [];
+  const escHtml = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const money = n => (n == null) ? '—'
+    : '$' + Number(n).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if(nlItems.length){
+    nlSection.style.display = '';
+    nlBody.innerHTML = nlItems.map(n => `
+      <tr>
+        <td>${escHtml(n.item_name)}</td>
+        <td>${n.quantity == null ? '—' : n.quantity}</td>
+        <td>${money(n.unit_cost_ex_gst)}</td>
+        <td>${money(n.line_total_ex_gst)}</td>
+        <td style="color:var(--muted);font-size:10px">Other</td>
+        <td class="td-notes" style="white-space:pre-wrap">${escHtml(n.notes) || '<span style="opacity:.4">—</span>'}</td>
+      </tr>`).join('');
+    const nlTotal = nlItems.reduce((s,n)=> s + (n.line_total_ex_gst || 0), 0);
+    document.getElementById('prev-non-labour-summary').textContent =
+      nlItems.length + ' item' + (nlItems.length!==1?'s':'') +
+      (nlTotal ? ' · ' + money(nlTotal) + ' ex GST' : '');
+    const totalCalls = p.call_count + nlItems.length;
+    document.getElementById('prev-call-count').textContent =
+      totalCalls + ' call' + (totalCalls!==1?'s':'') +
+      ' (' + p.call_count + ' labour + ' + nlItems.length + ' non-labour)';
+  } else {
+    nlSection.style.display = 'none';
+    nlBody.innerHTML = '';
+  }
+
+  // Reset progress panel
+  document.getElementById('import-progress-panel').style.display = 'none';
+  document.getElementById('import-action-note').textContent = '';
+
+  updateImportReadiness();
+}
+
+function formatDisplayDate(d){
+  // YYYY-MM-DD → Fri 21 May
+  try{
+    const dt = new Date(d + 'T12:00:00');
+    return dt.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'});
+  }catch(e){ return d; }
+}
+
+function updateImportReadiness(){
+  const custOk  = !!document.getElementById('match-customer')?.value;
+  const venueOk = !!document.getElementById('match-venue')?.value;
+  const selects = document.querySelectorAll('.call-name-select');
+  // Labour calls each need a name. A booking may legitimately have zero labour
+  // calls (non-labour only), in which case there's nothing to name.
+  const hasNonLabour = (_importPreview?.preview?.non_labour_count || 0) > 0;
+  const allCallsNamed = selects.length === 0
+    ? hasNonLabour
+    : [...selects].every(s => s.value);
+  const btn = document.getElementById('btn-start-import');
+  if(!btn) return;
+  btn.disabled = !(custOk && venueOk && allCallsNamed && _importPayload);
+  if(!custOk || !venueOk){
+    document.getElementById('import-action-note').textContent = 'Select customer and venue to continue';
+  } else if(selects.length > 0 && ![...selects].every(s => s.value)){
+    const missing = [...selects].filter(s=>!s.value).length;
+    document.getElementById('import-action-note').textContent =
+      `Select a call name for all lines (${missing} remaining)`;
+  } else {
+    document.getElementById('import-action-note').textContent = '';
+  }
+}
+
+async function startImport(){
+  if(!_importPayload || !_importPreview) return;
+  const customerId       = document.getElementById('match-customer').value;
+  const contactId        = document.getElementById('match-contact').value;
+  const onsiteContactId  = document.getElementById('match-onsite-contact').value;
+  const venueId          = document.getElementById('match-venue').value;
+  if(!customerId || !venueId){ alert('Select customer and venue first'); return; }
+
+  // Collect operator-selected call names — only send non-blank values
+  // (server falls back to JSON call_name for any line not present here)
+  const callNames = {};
+  document.querySelectorAll('.call-name-select').forEach(s => {
+    if(s.dataset.lineId && s.value) callNames[s.dataset.lineId] = s.value;
+  });
+
+  document.getElementById('btn-start-import').disabled = true;
+  document.getElementById('import-progress-panel').style.display = '';
+  document.getElementById('import-done-link').style.display = 'none';
+  document.getElementById('import-call-log').innerHTML = '';
+  document.getElementById('import-progress-step').textContent = 'Starting...';
+  document.getElementById('import-progress-bar').style.width = '0%';
+  document.getElementById('import-progress-title').textContent = 'Creating in SmartStaff...';
+
+  try{
+    const resp = await fetch('/api/import/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        payload:           _importPayload,
+        customer_id:       customerId,
+        contact_id:        contactId,
+        onsite_contact_id: onsiteContactId,
+        venue_id:          venueId,
+        call_names:        callNames,
+      })
+    });
+    const data = await resp.json();
+    if(data.error){ alert('Import error: ' + data.error); return; }
+    pollImportProgress();
+  } catch(err){
+    alert('Error starting import: ' + err.message);
+    document.getElementById('btn-start-import').disabled = false;
+  }
+}
+
+function pollImportProgress(){
+  if(_importPollInterval) clearInterval(_importPollInterval);
+  _importPollInterval = setInterval(async () => {
+    try{
+      const resp = await fetch('/api/import/progress');
+      const data = await resp.json();
+      updateImportProgressUI(data);
+      if(!data.running){
+        clearInterval(_importPollInterval);
+        _importPollInterval = null;
+        loadImportHistory();
+      }
+    }catch(e){ clearInterval(_importPollInterval); }
+  }, 800);
+}
+
+function updateImportProgressUI(data){
+  const total = data.total || 1;
+  const done  = data.done  || 0;
+  // Progress bar: booking creation counts as 1 step before calls
+  const pct = data.booking_id
+    ? Math.round(((done + 1) / (total + 1)) * 100)
+    : (data.running ? 5 : 0);
+  document.getElementById('import-progress-bar').style.width = pct + '%';
+  document.getElementById('import-progress-step').textContent = data.step || '';
+
+  if(!data.running && data.step === 'Complete'){
+    document.getElementById('import-progress-title').textContent =
+      data.errors?.length ? '⚠ Import complete with errors' : '✓ Import complete';
+    if(data.booking_id){
+      const link = document.getElementById('import-booking-link');
+      link.href = 'https://smartstaffsolutions.com/bookings/' + data.booking_id;
+      link.textContent = '→ View Booking #' + data.booking_id + ' in SmartStaff';
+      document.getElementById('import-done-link').style.display = '';
+      if(!data.errors?.length){const a=document.getElementById('cha-ching');if(a){a.currentTime=0;a.play().catch(()=>{})}}
+    }
+  }
+
+  // Call log
+  const log = data.call_log || [];
+  const logEl = document.getElementById('import-call-log');
+  logEl.innerHTML = log.map(item => {
+    const cls = item.success ? 'ok' : 'fail';
+    const icon = item.success ? '✓' : '✗';
+    const err = item.error ? ` — ${item.error}` : '';
+    return `<div class="icl-item ${cls}">${icon} ${item.call_name} · ${formatDisplayDate(item.date)}${err}</div>`;
+  }).join('');
+
+  // Show pending future calls as grey
+  const pendingCount = (data.total || 0) - log.length;
+  if(pendingCount > 0 && data.running){
+    logEl.innerHTML += Array(pendingCount).fill(
+      '<div class="icl-item pending">· pending</div>'
+    ).join('');
+  }
+}
+
+function showImportErrors(errors){
+  const el = document.getElementById('import-errors');
+  document.getElementById('import-error-list').innerHTML =
+    errors.map(e => `<div class="import-error-item">${e}</div>`).join('');
+  el.style.display = '';
+}
+
+function hideImportErrors(){
+  document.getElementById('import-errors').style.display = 'none';
+}
+
+function resetImport(){
+  _importPayload = null;
+  _importPreview = null;
+  if(_importPollInterval){ clearInterval(_importPollInterval); _importPollInterval = null; }
+  document.getElementById('import-file-input').value = '';
+  document.getElementById('import-file-info').style.display = 'none';
+  hideImportErrors();
+  document.getElementById('import-preview-wrap').style.display = 'none';
+  document.getElementById('import-placeholder').style.display = 'flex';
+}
+
+async function loadImportHistory(){
+  try{
+    const resp = await fetch('/api/import/log');
+    const data = await resp.json();
+    const log  = (data.log || []).slice().reverse(); // newest first
+    const el   = document.getElementById('import-history-list');
+    if(!log.length){
+      el.innerHTML = '<div style="font-size:10px;color:var(--muted)">No imports yet</div>';
+      return;
+    }
+    el.innerHTML = log.map(entry => {
+      const d = entry.imported_at
+        ? new Date(entry.imported_at).toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'})
+        : '';
+      const errBadge = entry.errors
+        ? `<span style="color:var(--warn);font-size:9px">${entry.errors} err</span>` : '';
+      return `<div class="import-hist-item">
+        <span class="import-hist-quote">${entry.quote_number}</span>
+        <span class="import-hist-booking">Booking #${entry.smartstaff_booking_id||'?'}</span>
+        ${errBadge}
+        <span class="import-hist-date" style="margin-left:auto">${d}</span>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
+
+
+// ── FORECAST TAB ────────────────────────────────────────────────────────────
+
+let _fcData       = null;   // full API response
+let _fcSort       = 'name'; // current sort field
+let _fcSortDir    = 1;      // 1=asc, -1=desc
+let _fcLastSort   = null;   // track double-click for direction toggle
+let _fcInitDone   = false;
+let _fcGroups     = [];
+let _fcActiveGrp  = null;
+
+function phoneLink(phone){
+  if(!phone) return '<span style="color:var(--muted);font-size:10px">—</span>';
+  return `<a href="tel:${phone}" style="color:var(--muted);font-size:10px;text-decoration:none" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'" title="Call">${phone}</a>`;
+}
+
+function initForecast(){
+  if(_fcInitDone) return;
+  _fcInitDone = true;
+  // Default date = today
+  const today = new Date();
+  const pad   = n => String(n).padStart(2,'0');
+  document.getElementById('fc-start-date').value =
+    `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
+}
+
+async function loadForecast(force=false){
+  const startDate = document.getElementById('fc-start-date').value;
+  const days      = document.getElementById('fc-days').value || 28;
+  if(!startDate) return;
+
+  document.getElementById('fc-placeholder').style.display        = 'none';
+  document.getElementById('fc-loading-indicator').style.display  = 'flex';
+  document.getElementById('fc-table').style.display              = 'none';
+  showOverlay('Loading Utilization...', 'Fetching crew shifts from SmartStaff');
+  updateFcCacheStatus();
+
+  try{
+    const url = `/api/forecast?start_date=${startDate}&days=${days}` + (force ? '&force=1' : '');
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if(data.error){ alert('Forecast error: ' + data.error); return; }
+    _fcData = data;
+
+    // Build group list from all crew
+    const grpSet = new Set();
+    data.crew.forEach(c => (c.groups||[]).forEach(g => grpSet.add(g)));
+    _fcGroups = [...grpSet].sort();
+    renderFcGroupChips();
+    renderForecastTable();
+
+  } catch(e){
+    alert('Error loading forecast: ' + e.message);
+  } finally{
+    document.getElementById('fc-loading-indicator').style.display = 'none';
+    hideOverlay();
+    updateFcCacheStatus();
+  }
+}
+
+async function updateFcCacheStatus(){
+  try{
+    const resp = await fetch('/api/forecast/preload-status');
+    const d    = await resp.json();
+    const el   = document.getElementById('fc-cache-status');
+    if(!el) return;
+    const fc = d.forecast, uc = d.unavail;
+    if(fc.running){
+      el.textContent = `⟳ shifts ${fc.done}/${fc.total}`;
+      el.style.color = 'var(--accent)';
+    } else if(uc && uc.running){
+      el.textContent = `⟳ unavail ${uc.done}/${uc.total}`;
+      el.style.color = 'var(--accent)';
+    } else if(fc.fresh){
+      const mins = Math.round((fc.cache_age||0)*60);
+      el.textContent = `● cached ${mins}m ago`;
+      el.style.color = 'var(--available)';
+    } else {
+      el.textContent = fc.cache_age ? `● cache ${Math.round(fc.cache_age)}h old` : '● no cache';
+      el.style.color = 'var(--warn)';
+    }
+  } catch(e){}
+}
+
+function renderFcGroupChips(){
+  const el = document.getElementById('fc-group-chips');
+  el.innerHTML = _fcGroups.map(g =>
+    `<span class="fc-group-chip${_fcActiveGrp===g?' active':''}"
+           onclick="toggleFcGroup('${g}')">${g}</span>`
+  ).join('');
+}
+
+function toggleFcGroup(g){
+  _fcActiveGrp = _fcActiveGrp === g ? null : g;
+  renderFcGroupChips();
+  renderForecastTable();
+}
+
+function setFcSort(field){
+  if(_fcLastSort === field){
+    _fcSortDir *= -1;
+  } else {
+    _fcSortDir = field === 'hours' || field === 'rating' ? -1 : 1;
+  }
+  _fcLastSort = field;
+  _fcSort = field;
+  document.querySelectorAll('.fc-sort-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('fc-sort-' + field)?.classList.add('active');
+  renderForecastTable();
+}
+
+function renderForecastTable(){
+  if(!_fcData) return;
+
+  const search   = document.getElementById('fc-search').value.toLowerCase().trim();
+  const minStars = parseInt(document.getElementById('fc-min-stars').value) || 0;
+  const dates    = _fcData.dates; // 28 YYYY-MM-DD strings
+
+  // Filter
+  let crew = _fcData.crew.filter(c => {
+    if(search && !c.name.toLowerCase().includes(search)) return false;
+    if(minStars && (c.rating||0) < minStars) return false;
+    if(_fcActiveGrp && !(c.groups||[]).includes(_fcActiveGrp)) return false;
+    return true;
+  });
+
+  // Sort
+  crew.sort((a,b) => {
+    let av, bv;
+    switch(_fcSort){
+      case 'name':   av = a.name.toLowerCase(); bv = b.name.toLowerCase(); break;
+      case 'rating': av = a.rating||0;          bv = b.rating||0;          break;
+      case 'id':     av = parseInt(a.ein||a.id)||0; bv = parseInt(b.ein||b.id)||0; break;
+      case 'hours':  av = a.total_hours||0;     bv = b.total_hours||0;     break;
+      default:       av = a.name.toLowerCase(); bv = b.name.toLowerCase();
+    }
+    if(av < bv) return -1 * _fcSortDir;
+    if(av > bv) return  1 * _fcSortDir;
+    return 0;
+  });
+
+  // Build header
+  const startDt   = new Date(_fcData.start_date + 'T00:00:00');
+  const today_str = new Date().toISOString().slice(0,10);
+  const dayLabels  = dates.map((d,i) => {
+    const dt        = new Date(d + 'T12:00:00');
+    const dow       = dt.toLocaleDateString('en-AU',{weekday:'short'});
+    const day       = dt.getDate();
+    const mon       = dt.toLocaleDateString('en-AU',{month:'short'});
+    const isToday   = d === today_str;
+    const isWeekend = dt.getDay()===0 || dt.getDay()===6;
+    const showMon   = day === 1 || i === 0;
+    const accent    = isToday ? 'var(--accent)' : isWeekend ? 'rgba(212,175,55,0.6)' : 'var(--muted)';
+    const bg        = isToday ? 'background:rgba(212,175,55,0.08);border-top:2px solid var(--accent);' : '';
+    return `<th style="padding:2px 0;text-align:center;min-width:28px;${bg}">
+      <div style="font-size:8px;color:${accent};font-weight:${isWeekend||isToday?'700':'400'};letter-spacing:.02em">${dow}</div>
+      <div style="font-size:11px;color:${isToday?'var(--accent)':'var(--text)'};font-weight:${isToday?'700':'500'}">${day}</div>
+      <div style="font-size:7px;color:var(--muted)">${showMon ? mon : ''}</div>
+      ${isToday?'<div style="font-size:6px;color:var(--accent);font-weight:700;letter-spacing:.05em">TODAY</div>':''}
+    </th>`;
+  }).join('');
+
+  document.getElementById('fc-thead').innerHTML = `
+    <tr>
+      <th class="fc-col-name">Name</th>
+      <th class="fc-col-phone">Phone</th>
+      <th class="fc-col-stars">★</th>
+      <th class="fc-col-id">EIN</th>
+      <th class="fc-col-hours" style="text-align:right">Hours</th>
+      ${dayLabels}
+    </tr>`;
+
+  // Build rows
+  const tbody = document.getElementById('fc-tbody');
+  tbody.innerHTML = crew.map(c => {
+    const stars   = '★'.repeat(Math.min(c.rating||0,10));
+    const noStars = '★'.repeat(Math.max(0,10-(c.rating||0)));
+    const dayCells = dates.map(d => {
+      const hrs     = c.day_hours?.[d] || 0;
+      const unavail = c.day_unavail?.[d] || '';
+      const dt      = new Date(d + 'T00:00:00');
+      const isWeekend = dt.getDay()===0 || dt.getDay()===6;
+      let bg, title;
+      if(hrs > 0){
+        if(hrs < 1)       bg = 'rgba(16,185,129,0.15)';
+        else if(hrs < 4)  bg = 'rgba(16,185,129,0.35)';
+        else if(hrs < 8)  bg = 'rgba(16,185,129,0.65)';
+        else              bg = 'rgba(16,185,129,1.0)';
+        title = `${d}: ${hrs.toFixed(1)}h booked`;
+        if(unavail) title += ` · also unavail: ${unavail}`;
+      } else if(unavail){
+        bg = 'rgba(168,85,247,0.55)'; title = `${d}: Unavailable — ${unavail}`;
+      } else {
+        bg = isWeekend ? 'rgba(255,255,255,0.04)' : 'transparent'; title = d;
+      }
+      return `<td style="padding:3px 2px;border-bottom:1px solid var(--border)">
+        <div style="height:22px;border-radius:2px;background:${bg}" title="${title}"></div>
+      </td>`;
+    }).join('');
+
+    return `<tr>
+      <td class="fc-col-name"><span class="fc-name">${c.name}</span></td>
+      <td class="fc-col-phone">${phoneLink(c.phone)}</td>
+      <td class="fc-col-stars"><span style="color:#f59e0b;font-size:8px;letter-spacing:0">${stars}</span><span style="color:var(--border);font-size:8px;letter-spacing:0">${noStars}</span></td>
+      <td class="fc-col-id"><span class="fc-id">${c.ein||c.id}</span></td>
+      <td class="fc-col-hours"><span class="fc-hours">${c.total_hours > 0 ? c.total_hours + 'h' : '—'}</span></td>
+      ${dayCells}
+    </tr>`;
+  }).join('');
+
+  const table = document.getElementById('fc-table');
+  table.style.display = crew.length ? '' : 'none';
+  if(!crew.length){
+    document.getElementById('fc-placeholder').style.display = 'flex';
+  } else {
+    document.getElementById('fc-placeholder').style.display = 'none';
+  }
+  // Easter egg: gold glow for 10-star available crew
+  setTimeout(applyGoldRows, 50);
+}
+
+
+// ── ASK GOAT ────────────────────────────────────────────────────────────────
+
+let _goatOpen    = false;
+let _goatBusy    = false;
+let _goatHistory = []; // {role, content} for conversation context
+
+function toggleGoatDrawer(){
+  _goatOpen = !_goatOpen;
+  document.getElementById('goat-drawer').classList.toggle('open', _goatOpen);
+  document.getElementById('btn-ask-goat').classList.toggle('active', _goatOpen);
+  if(_goatOpen){
+    if(_goatHistory.length === 0) loadGoatHistory();
+    setTimeout(() => document.getElementById('goat-input').focus(), 320);
+  }
+}
+
+async function loadGoatHistory(){
+  try{
+    const resp = await fetch('/api/goat/history');
+    const data = await resp.json();
+    const history = data.history || [];
+    if(history.length > 0){
+      // Restore messages from server
+      _goatHistory = history;
+      history.forEach(m => appendGoatMessage(m.role === 'user' ? 'user' : 'goat', m.content));
+      // Scroll to bottom
+      const wrap = document.getElementById('goat-messages');
+      wrap.scrollTop = wrap.scrollHeight;
+    } else {
+      goatWelcome();
+    }
+  } catch(e){
+    goatWelcome();
+  }
+}
+
+async function clearGoatHistory(){
+  try{ await fetch('/api/goat/history/clear', {method:'POST'}); }catch(e){}
+  _goatHistory = [];
+  document.getElementById('goat-messages').innerHTML = '';
+  goatWelcome();
+}
+
+function goatWelcome(){
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Morning' : hour < 17 ? 'Afternoon' : 'Evening';
+  const msgs = [
+    `${greeting}, the GOAT is in the yard. 🐐`,
+    `I've got eyes on Crew Finder, Utilization, Inductions, and Estimate Import. What do you need?`,
+  ];
+  msgs.forEach((m, i) => setTimeout(() => appendGoatMessage('goat', m), i * 600));
+}
+
+function goatEasterEgg(){
+  const overlay = document.getElementById('goat-easter-egg');
+  const audio   = document.getElementById('goat-bray');
+  overlay.style.display = 'flex';
+
+  // Play the bray
+  audio.currentTime = 0;
+  audio.play().catch(()=>{});
+
+  const dismiss = () => {
+    overlay.style.display = 'none';
+    audio.pause();
+    audio.currentTime = 0;
+    appendGoatMessage('goat', `Pants. The answer is pants. You're welcome. 🐐`);
+    overlay.onclick = null;
+  };
+
+  setTimeout(dismiss, 5000);
+  overlay.onclick = dismiss;
+}
+
+function goatEggFallback(){}
+
+function goatSuggest(el){
+  document.getElementById('goat-input').value = el.textContent;
+  autoResizeGoatInput(document.getElementById('goat-input'));
+  goatSend();
+}
+
+function goatKeyDown(e){
+  if(e.key === 'Enter' && !e.shiftKey){
+    e.preventDefault();
+    goatSend();
+  }
+}
+
+function autoResizeGoatInput(el){
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// ── GOAT EASTER EGG INTERCEPTS ───────────────────────────────────────────────
+
+const _SWEAR_WORDS = /\b(fuck|shit|cunt|bastard|asshole|dick|piss|damn|hell|crap|bloody hell|bugger)\b/i;
+
+function checkGoatEasterEgg(text){
+  const t = text.toLowerCase().trim();
+  if(/\bwho\s+is\s+(the\s+)?goat\b/.test(t))
+    return {type:'text', text:'The GOAT is you. You built this. You run the crew. You make the calls. THE GOAT is just here to help. 🐐'};
+  if(/^m+o+o+[?!.\s]*$/.test(t) || t==='moo')
+    return {type:'image', text:"I\'m a GOAT. Not a cow. 🐐", img:'/static/goat-smile.gif'};
+  if(/what\s+time\s+is\s+it/.test(t))
+    return {type:'text', text:'Time to book some crew. 🐐'};
+  if(_SWEAR_WORDS.test(text))
+    return {type:'image', text:'Language. 🐐', img:'/static/goat-smile.gif'};
+  return null;
+}
+
+function appendGoatEasterEggResponse(egg){
+  const wrap=document.getElementById('goat-messages');
+  const row=document.createElement('div'); row.className='gm-row gm-goat';
+  if(egg.img){
+    row.innerHTML=`<div class="gm-avatar">🐐</div><div class="gm-bubble"><div class="goat-silly-wrap"><div style="font-size:15px;margin-bottom:6px">${egg.text}</div><img src="${egg.img}" alt="" class="goat-silly-img"></div></div>`;
+  } else {
+    row.innerHTML=`<div class="gm-avatar">🐐</div><div class="gm-bubble">${egg.text}</div>`;
+  }
+  wrap.appendChild(row); wrap.scrollTop=9999;
+}
+
+function isSillyGoatQuestion(text){
+  const t=text.toLowerCase();
+  const w=[/\b(book(ing)?|call|crew|staff|worker|shift|venue|event|show|gig|tour|concert|festival)\b/,
+    /\b(load\s*(in|out)|bump.?(in|out)|show\s*call|lx|sx|vx|backline|wardrobe|rigger|fork|ewp)\b/,
+    /\b(customer|client|contact|invoice|quote|estimat|import|schedule|roster|availab)\b/,
+    /\b(smartstaff|gigpower|crewfinder|induction|certif|licence|whs|ohs|safety)\b/,
+    /\b(date|time|start|finish|duration|hour|week|tomorrow|today|tonight|weekend)\b/,
+    /\b(sms|message|notif|send|confirm|cancel|assign|add|remov|creat|updat|delet)\b/,
+    /\b(who|which|when|where|how many|how long|list|find|show me|search|check)\b/];
+  return !w.some(p=>p.test(t));
+}
+
+function appendGoatSillyResponse(){
+  const wrap=document.getElementById('goat-messages');
+  const row=document.createElement('div'); row.className='gm-row gm-goat';
+  row.innerHTML=`<div class="gm-avatar">🐐</div><div class="gm-bubble"><div class="goat-silly-wrap"><div class="goat-silly-really">REALLY?</div><img src="/static/goat-smile.gif" alt="Really?" class="goat-silly-img"></div></div>`;
+  wrap.appendChild(row); wrap.scrollTop=9999;
+}
+
+async function goatSend(){
+  const input=document.getElementById('goat-input');
+  const text=input.value.trim();
+  if(!text||_goatBusy) return;
+  input.value=''; input.style.height='auto';
+  const egg=checkGoatEasterEgg(text);
+  if(egg){
+    _goatBusy=true; document.getElementById('goat-send').disabled=true;
+    appendGoatMessage('user',text); _goatHistory.push({role:'user',content:text});
+    appendGoatEasterEggResponse(egg); _goatHistory.push({role:'assistant',content:egg.text});
+    _goatBusy=false; document.getElementById('goat-send').disabled=false;
+    document.getElementById('goat-input').focus(); return;
+  }
+  if(isSillyGoatQuestion(text)){
+    _goatBusy=true; document.getElementById('goat-send').disabled=true;
+    appendGoatMessage('user',text); _goatHistory.push({role:'user',content:text});
+    appendGoatSillyResponse(); _goatHistory.push({role:'assistant',content:'REALLY?'});
+    _goatBusy=false; document.getElementById('goat-send').disabled=false;
+    document.getElementById('goat-input').focus(); return;
+  }
+  _goatBusy=true; document.getElementById('goat-send').disabled=true;
+
+  appendGoatMessage('user', text);
+  _goatHistory.push({role: 'user', content: text});
+
+  const typingId = showGoatTyping();
+
+  try{
+    const resp = await fetch('/api/goat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({messages: _goatHistory})
+    });
+
+    removeGoatTyping(typingId);
+
+    if(!resp.ok){
+      const err = await resp.json().catch(()=>({}));
+      appendGoatMessage('goat', `Comms issue — ${err.error || resp.status}. Try again.`, true);
+    } else {
+      const reader  = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let msgEl = null;
+      let full  = '';
+
+      while(true){
+        const {done, value} = await reader.read();
+        if(done) break;
+        const lines = decoder.decode(value).split('\n');
+        for(const line of lines){
+          if(!line.startsWith('data: ')) continue;
+          try{
+            const ev = JSON.parse(line.slice(6));
+
+            if(ev.type === 'tool_start'){
+              showGoatToolBadge(ev.tool);
+            }
+            else if(ev.type === 'confirm_request'){
+              renderGoatConfirmCard(ev.payload);
+            }
+            else if(ev.type === 'text'){
+              if(!msgEl){
+                msgEl = appendGoatStreamingMessage();
+                full  = '';
+              }
+              full += ev.text;
+              updateGoatStreamingMessage(msgEl, full);
+            }
+            else if(ev.type === 'done'){
+              if(msgEl) finaliseGoatStreamingMessage(msgEl, full);
+              if(full) _goatHistory.push({role:'assistant', content: full});
+            }
+            else if(ev.type === 'error'){
+              appendGoatMessage('goat', `Error: ${ev.error}`, true);
+            }
+          }catch(e){}
+        }
+      }
+    }
+  } catch(e){
+    removeGoatTyping(typingId);
+    appendGoatMessage('goat', `Network error — ${e.message}.`, true);
+  }
+
+  _goatBusy = false;
+  document.getElementById('goat-send').disabled = false;
+  document.getElementById('goat-input').focus();
+}
+
+function appendGoatMessage(role, text, isError=false){
+  const wrap = document.getElementById('goat-messages');
+  const gm   = document.createElement('div');
+  gm.className = `gm gm-${role}`;
+
+  const label = document.createElement('div');
+  label.className = 'gm-label';
+  label.textContent = role === 'user' ? 'YOU' : 'THE GOAT';
+
+  const bubble = document.createElement('div');
+  bubble.className = `gm-bubble${isError ? ' error' : ''}`;
+  bubble.textContent = text;
+
+  gm.appendChild(label);
+  gm.appendChild(bubble);
+  wrap.appendChild(gm);
+  wrap.scrollTop = wrap.scrollHeight;
+  return gm;
+}
+
+function appendGoatStreamingMessage(){
+  const wrap = document.getElementById('goat-messages');
+  const gm   = document.createElement('div');
+  gm.className = 'gm gm-goat';
+
+  const label = document.createElement('div');
+  label.className = 'gm-label';
+  label.textContent = 'THE GOAT';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'gm-bubble';
+  bubble.innerHTML = '<span class="gm-cursor"></span>';
+
+  gm.appendChild(label);
+  gm.appendChild(bubble);
+  wrap.appendChild(gm);
+  wrap.scrollTop = wrap.scrollHeight;
+  return bubble;
+}
+
+function updateGoatStreamingMessage(bubbleEl, text){
+  // Render with trailing cursor
+  bubbleEl.textContent = text;
+  const cursor = document.createElement('span');
+  cursor.className = 'gm-cursor';
+  bubbleEl.appendChild(cursor);
+  document.getElementById('goat-messages').scrollTop = 9999;
+}
+
+function finaliseGoatStreamingMessage(bubbleEl, text){
+  bubbleEl.textContent = text; // remove cursor
+}
+
+function showGoatTyping(){
+  const wrap = document.getElementById('goat-messages');
+  const id   = 'typing-' + Date.now();
+  const gm   = document.createElement('div');
+  gm.className = 'gm gm-goat gm-typing';
+  gm.id = id;
+
+  const label = document.createElement('div');
+  label.className = 'gm-label';
+  label.textContent = 'THE GOAT';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'gm-bubble';
+  bubble.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+
+  gm.appendChild(label);
+  gm.appendChild(bubble);
+  wrap.appendChild(gm);
+  wrap.scrollTop = wrap.scrollHeight;
+  return id;
+}
+
+function removeGoatTyping(id){
+  document.getElementById(id)?.remove();
+}
+
+// Tool activity badge
+const TOOL_LABELS = {
+  get_calls:           '📋 Checking calls...',
+  search_availability: '🔍 Searching availability...',
+  get_inductions:      '✓ Checking inductions...',
+  get_forecast:        '📊 Loading forecast...',
+  get_cache_status:    '💾 Checking cache...',
+  get_import_log:      '📥 Reading import log...',
+  lookup_crew_id:      '🔎 Verifying crew ID...',
+  add_crew_to_call:    '⚡ Preparing add crew...',
+  send_sms_to_crew:    '📱 Preparing SMS...',
+};
+
+function showGoatToolBadge(toolName){
+  const wrap = document.getElementById('goat-messages');
+  const el   = document.createElement('div');
+  el.className = 'gm gm-goat';
+  el.innerHTML = `
+    <div class="gm-label">GOAT</div>
+    <div class="gm-bubble" style="background:rgba(212,175,55,0.06);border-left-color:rgba(212,175,55,0.4);
+         font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);padding:7px 12px;
+         display:flex;align-items:center;gap:8px">
+      <span style="animation:typingBounce .9s ease-in-out infinite;display:inline-block">⚙</span>
+      ${TOOL_LABELS[toolName] || toolName}
+    </div>`;
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// Confirmation card for write actions
+// Store confirm payloads by card ID to avoid HTML encoding issues
+const _goatConfirmPayloads = {};
+
+function renderGoatConfirmCard(payload){
+  const wrap   = document.getElementById('goat-messages');
+  const action = payload.action;
+  const crew   = payload.crew || [];
+  const calls  = payload.calls || [];
+
+  const actionLabel = action === 'add_crew_to_call'
+    ? (payload.confirm ? 'Add & Confirm Crew' : 'Add Crew')
+    : 'Send SMS';
+  const actionIcon = action === 'add_crew_to_call' ? '⚡' : '📱';
+
+  const crewList  = crew.map(c => c.name).join(', ');
+  const callsList = calls.map(c => `${c.call_name||'Call'} ${c.date||''}`).join(', ');
+
+  const cardId = 'confirm-' + Date.now();
+  _goatConfirmPayloads[cardId] = payload;  // store payload safely
+
+  const el = document.createElement('div');
+  el.className = 'gm gm-goat';
+  el.id = cardId;
+  el.innerHTML = `
+    <div class="gm-label">THE GOAT — ACTION REQUIRED</div>
+    <div class="gm-bubble" style="border-left-color:var(--accent);background:rgba(212,175,55,0.05);max-width:100%;width:100%">
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:.1em;
+                  color:var(--accent);margin-bottom:8px">${actionIcon} ${actionLabel.toUpperCase()}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-family:'Share Tech Mono',monospace">CREW</div>
+      <div style="font-size:12px;margin-bottom:10px">${crewList}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-family:'Share Tech Mono',monospace">CALLS</div>
+      <div style="font-size:12px;margin-bottom:14px">${callsList || '—'}</div>
+      <div style="display:flex;gap:8px">
+        <button data-card-id="${cardId}" onclick="executeGoatAction(this.dataset.cardId)"
+                style="background:var(--accent);color:#000;border:none;border-radius:3px;
+                       padding:7px 16px;font-family:'Rajdhani',sans-serif;font-size:13px;
+                       font-weight:700;cursor:pointer;letter-spacing:.08em;text-transform:uppercase">
+          ✓ Confirm
+        </button>
+        <button data-card-id="${cardId}" onclick="cancelGoatAction(this.dataset.cardId)"
+                style="background:none;border:1px solid #444;border-radius:3px;
+                       padding:7px 16px;font-family:'Rajdhani',sans-serif;font-size:13px;
+                       font-weight:600;cursor:pointer;color:var(--muted);letter-spacing:.08em;text-transform:uppercase">
+          ✕ Cancel
+        </button>
+      </div>
+    </div>`;
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function executeGoatAction(cardId){
+  const payload = _goatConfirmPayloads[cardId];
+  if(!payload){ appendGoatMessage('goat', 'Could not find the action details — try again.', true); return; }
+
+  const card = document.getElementById(cardId);
+  const btns = card?.querySelectorAll('button');
+  if(btns) btns.forEach(b => b.disabled = true);
+  if(card) card.querySelector('button').textContent = 'Executing...';
+
+  const action = payload.action;
+  const crew   = payload.crew || [];
+  const calls  = payload.calls || [];
+
+  try{
+    let endpoint, body;
+    if(action === 'add_crew_to_call'){
+      endpoint = '/api/goat/add-crew';
+      body = {crew, calls, confirm: payload.confirm || false};
+    } else {
+      endpoint = '/api/goat/send-sms';
+      body = {crew, calls};
+    }
+
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+
+    const allOk = (data.results || []).every(r => r.success);
+    const label = allOk ? '✓ Done' : '⚠ Partial — check SmartStaff';
+    delete _goatConfirmPayloads[cardId];
+
+    if(card){
+      card.querySelector('.gm-bubble').innerHTML =
+        `<span style="color:${allOk?'var(--accent)':'var(--warn)'};font-size:12px">${label}</span>`;
+    }
+    appendGoatMessage('goat', allOk
+      ? `Done — ${crew.map(c=>c.name).join(', ')} added to the call. That's how the GOAT operates. 🐐`
+      : `Partial success — some actions may not have gone through. Worth checking SmartStaff directly.`
+    );
+  } catch(e){
+    if(card){
+      card.querySelector('.gm-bubble').innerHTML =
+        `<span style="color:var(--accent2);font-size:12px">✗ Error: ${e.message}</span>`;
+    }
+    appendGoatMessage('goat', `Hit a snag — ${e.message}. Try it manually in SmartStaff.`, true);
+  }
+}
+
+function cancelGoatAction(cardId){
+  delete _goatConfirmPayloads[cardId];
+  const card = document.getElementById(cardId);
+  if(card){
+    card.querySelector('.gm-bubble').innerHTML =
+      `<span style="color:var(--muted);font-size:12px">✕ Action cancelled.</span>`;
+  }
+  appendGoatMessage('goat', `No worries — cancelled. Just say the word when you're ready.`);
+}
+
+
+
+// ── SCHEDULE TAB ────────────────────────────────────────────────────────────
+
+let _schedData    = null;
+let _schedInitDone = false;
+let _schedFilter   = 'all'; // 'all' | 'full' | 'partial' | 'empty'
+
+function setSchedFilter(f){
+  _schedFilter = f;
+  ['all','open'].forEach(s => {
+    const el = document.getElementById('sched-filter-' + s);
+    if(el) el.classList.toggle('active', s === f);
+  });
+  renderSchedule();
+}
+
+function showOverlay(text='Loading...', sub=''){
+  document.getElementById('loading-overlay-text').textContent = text;
+  document.querySelector('.loading-sub').textContent = sub;
+  document.getElementById('loading-overlay').classList.add('show');
+}
+function hideOverlay(){
+  document.getElementById('loading-overlay').classList.remove('show');
+}
+
+function initSchedule(){
+  if(_schedInitDone) return;
+  _schedInitDone = true;
+}
+
+async function loadSchedule(force=false){
+  const days = document.getElementById('sched-days').value || 14;
+  document.getElementById('sched-placeholder').style.display = 'none';
+  document.getElementById('sched-loading').style.display     = 'flex';
+  document.getElementById('sched-timeline').style.display    = 'none';
+  showOverlay('Loading Schedule...', 'Fetching bookings from SmartStaff');
+
+  try{
+    const url  = `/api/schedule?days=${days}` + (force ? '&force=1' : '');
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if(data.error){ alert('Schedule error: ' + data.error); return; }
+    _schedData = data;
+    _schedCrewIndex = {};  // reset clash index for fresh data
+    renderSchedule();
+  } catch(e){
+    alert('Error loading schedule: ' + e.message);
+  } finally{
+    document.getElementById('sched-loading').style.display = 'none';
+    hideOverlay();
+  }
+}
+
+function renderSchedule(){
+  if(!_schedData) return;
+
+  const search   = document.getElementById('sched-search').value.toLowerCase().trim();
+  const dates    = _schedData.dates;
+  const today    = dates[0];
+
+  // Filter bookings by search and status
+  let bookings = _schedData.bookings.filter(b => {
+    if(search && !b.booking_name.toLowerCase().includes(search) && !b.venue.toLowerCase().includes(search))
+      return false;
+    if(_schedFilter === 'all') return true;
+    // 'open' = any call that is partial or unfilled
+    return b.calls.some(c => !c.full);
+  });
+
+  const totalRequired = bookings.reduce((sum, b) => sum + b.calls.reduce((s, c) => s + (c.required||0), 0), 0);
+  const totalBooked   = bookings.reduce((sum, b) => sum + b.calls.reduce((s, c) => s + (c.booked||0), 0), 0);
+
+  document.getElementById('sched-summary').textContent =
+    `${bookings.length} booking${bookings.length!==1?'s':''} · ${_schedData.total_calls} calls · ${totalBooked}/${totalRequired} resources`;
+
+  if(!bookings.length){
+    document.getElementById('sched-timeline').style.display = 'none';
+    document.getElementById('sched-placeholder').style.display = 'flex';
+    return;
+  }
+
+  document.getElementById('sched-placeholder').style.display = 'none';
+  const wrap = document.getElementById('sched-timeline');
+  wrap.style.display = 'flex';
+  wrap.style.flexDirection = 'column';
+  wrap.style.overflow = 'auto';
+
+  // Build day headers
+  const dayHeaders = dates.map(d => {
+    const dt  = new Date(d + 'T12:00:00');
+    const dow = dt.toLocaleDateString('en-AU',{weekday:'short'});
+    const day = dt.getDate();
+    const mon = dt.toLocaleDateString('en-AU',{month:'short'});
+    const isToday   = d === today;
+    const isWeekend = dt.getDay()===0 || dt.getDay()===6;
+    const cls = isToday ? 'today' : isWeekend ? 'weekend' : '';
+    const colWidth = isToday ? '70px' : '52px';
+    return `<div class="sched-day-col ${cls}" style="flex:0 0 ${colWidth};${isToday?'background:rgba(212,175,55,0.08);border-top:2px solid var(--accent)':''}">
+      <div style="font-weight:${isToday?'700':'400'}">${dow}</div>
+      <div style="font-size:11px;color:${isToday?'var(--accent)':'var(--text)'}">${day}</div>
+      <div style="font-size:8px">${mon}</div>
+      ${isToday?'<div style="font-size:7px;color:var(--accent);font-weight:700;letter-spacing:.05em">TODAY</div>':''}
+    </div>`;
+  }).join('');
+
+  let html = `
+    <div style="display:flex;position:sticky;top:0;z-index:10;background:var(--surface);border-bottom:1px solid var(--border);min-width:max-content">
+        <div style="width:300px;flex-shrink:0;border-right:1px solid var(--border);
+                    padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:9px;
+                    color:var(--muted);letter-spacing:.1em;display:flex;align-items:center;
+                    position:sticky;left:0;z-index:11;background:var(--surface)">BOOKING / CALL</div>
+      ${dayHeaders}
+    </div>`;
+
+  // Build booking rows
+  let bookingIdx = 0;
+  for(const booking of bookings){
+    const bid = `sched-b-${bookingIdx++}`;
+    const callsByDay = {};
+    dates.forEach(d => callsByDay[d] = []);
+    for(const call of booking.calls){
+      if(callsByDay[call.date_iso] !== undefined){
+        callsByDay[call.date_iso].push(call);
+      }
+    }
+
+    // Booking header row
+    const dayCells = dates.map(d => {
+      const dayCalls  = callsByDay[d];
+      const isToday   = d === today;
+      const blocks = dayCalls.map(c => {
+        const cls    = c.full ? 'full' : c.booked > 0 ? 'partial' : 'empty';
+        const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
+        const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        return `<div class="sched-call-block ${cls}" title="${safeTitle}"
+                     data-call-id-block="${c.call_id}"
+                     onclick="schedJumpToCrewFinder('${c.booking_id}','${c.call_id}')"
+                     style="font-size:8px;padding:2px 3px;${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}">
+          <div style="font-size:7px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.time}</div>
+          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
+          ${c.notes ? `<div style="font-size:7px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px;font-style:italic">${c.notes}</div>` : ''}
+        </div>`;
+      }).join('');
+      const dt = new Date(d + 'T12:00:00');
+      const isWeekend = dt.getDay()===0||dt.getDay()===6;
+      return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
+                          min-height:${booking.calls.length>0?'36':'28'}px;
+                          overflow:hidden;min-width:0;
+                          background:${isToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'};
+                          ${isToday?'border-top:1px solid rgba(212,175,55,0.3)':''}
+                          display:flex;flex-direction:column;gap:1px">${blocks}</div>`;
+    }).join('');
+
+    // Date range across all calls in this booking
+    const callDates  = booking.calls.map(c => c.date_iso).sort();
+    const firstDate  = callDates[0];
+    const lastDate   = callDates[callDates.length - 1];
+    const fmtDate    = d => {
+      const dt = new Date(d + 'T12:00:00');
+      return dt.toLocaleDateString('en-AU',{day:'numeric',month:'short'});
+    };
+    const dateRange  = firstDate === lastDate
+      ? fmtDate(firstDate)
+      : `${fmtDate(firstDate)} – ${fmtDate(lastDate)}`;
+    const totalCalls   = booking.calls.length;
+    const fullCalls    = booking.calls.filter(c=>c.full).length;
+    const partialCalls = booking.calls.filter(c=>!c.full && c.booked>0).length;
+    const emptyCalls   = booking.calls.filter(c=>c.booked===0).length;
+
+    const hasNotes = booking.calls.some(c => c.notes);
+
+    html += `
+      <div style="display:flex;border-bottom:1px solid var(--border-gold);min-width:max-content;
+                  background:var(--surface2);cursor:pointer"
+           onclick="toggleSchedBooking('${bid}')">
+        <div style="width:300px;flex-shrink:0;border-right:1px solid var(--border);
+                    padding:6px 12px;border-left:2px solid var(--border-gold);display:flex;align-items:center;gap:8px;
+                    position:sticky;left:0;z-index:2;background:var(--surface2)">
+          <span id="${bid}-arrow" style="font-size:10px;color:var(--accent);transition:transform .2s;display:inline-block">▶</span>
+          <div style="min-width:0">
+            <div style="font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;
+                        color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px"
+                 title="${booking.booking_name}">${booking.booking_name}
+              ${hasNotes ? `<span title="Some calls have notes" style="font-size:9px;color:var(--muted);opacity:.7">📝</span>` : ''}
+            </div>
+            <div style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-top:1px">
+              <span style="color:rgba(212,175,55,0.6)">${dateRange}</span>
+              ${booking.venue ? ' · ' + booking.venue : ''}
+              · ${totalCalls} call${totalCalls!==1?'s':''}
+              ${fullCalls ? `<span style="color:#22c55e"> · ${fullCalls} full</span>` : ''}
+              ${partialCalls ? `<span style="color:var(--warn)"> · ${partialCalls} partial</span>` : ''}
+              ${emptyCalls ? `<span style="color:var(--accent2)"> · ${emptyCalls} empty</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;flex:1">${dayCells}</div>
+      </div>`;
+
+    // Individual call rows — wrapped in collapsible container, hidden by default
+    html += `<div id="${bid}-calls" style="display:none">`;
+
+    for(const call of booking.calls){
+      const cls    = call.full ? 'full' : call.booked > 0 ? 'partial' : 'empty';
+      const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)'};
+      const statusColor = colors[cls];
+
+      const isToday = call.date_iso === today;
+
+      const callDayCells = dates.map(d => {
+        const dt = new Date(d + 'T12:00:00');
+        const isWeekend = dt.getDay()===0||dt.getDay()===6;
+        if(d === call.date_iso){
+          return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
+                              background:${isToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
+            <div class="sched-call-block ${cls}" style="font-size:8px;padding:2px 3px;cursor:pointer;
+                 ${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
+                 data-call-id-block="${call.call_id}"
+                 onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
+                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}">
+              <div style="font-size:7px;opacity:.7">${call.time}</div>
+              ${call.booked}/${call.required}
+            </div>
+          </div>`;
+        }
+        return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);
+                            background:${isWeekend?'rgba(255,255,255,0.015)':'transparent'}"></div>`;
+      }).join('');
+
+      html += `
+        <div style="display:flex;border-bottom:1px solid var(--border);min-width:max-content;
+                    ${isToday?'background:rgba(212,175,55,0.03);border-left:2px solid rgba(212,175,55,0.4)':''}">
+          <div style="width:300px;flex-shrink:0;border-right:1px solid var(--border);
+                      padding:5px 12px 5px 36px;cursor:pointer;transition:background .15s;
+                      position:sticky;left:0;z-index:2;
+                      background:${isToday?'rgba(212,175,55,0.06)':'var(--bg)'}"
+               onclick="schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
+               onmouseover="this.style.background='rgba(212,175,55,0.08)'"
+               onmouseout="this.style.background='${isToday?'rgba(212,175,55,0.06)':'var(--bg)'}'">
+            <div style="display:flex;align-items:center;gap:8px">
+              ${isToday?'<span style="font-size:8px;background:var(--accent);color:#000;padding:1px 5px;border-radius:2px;font-family:\'Share Tech Mono\',monospace;letter-spacing:.05em;flex-shrink:0">TODAY</span>':''}
+              <span style="font-size:11px;font-weight:600;color:${isToday?'var(--accent)':'var(--text)'}">${call.call_name}</span>
+              <span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted)">
+                ${call.time} · ${call.length}h
+              </span>
+              <span style="font-family:'Share Tech Mono',monospace;font-size:10px;
+                           font-weight:700;color:${statusColor};margin-left:auto">
+                ${call.booked}/${call.required}
+              </span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+              <span data-call-status="${call.booking_id}/${call.call_id}"
+                    data-call-meta="${call.call_id}|${call.booking_id}|${call.start_iso||''}|${call.end_iso||''}|${call.call_name||''}"
+                    style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;flex:1">
+                <span style="opacity:.4">loading...</span>
+              </span>
+              <span data-crew-list="${call.call_id}" style="display:none;font-size:9px;margin-top:2px;flex-basis:100%"></span>
+              <button onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
+                      title="Find available crew for this call"
+                      style="background:rgba(212,175,55,0.1);border:1px solid rgba(212,175,55,0.25);
+                             color:var(--accent);border-radius:3px;padding:2px 7px;
+                             font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:600;
+                             cursor:pointer;transition:all .15s;white-space:nowrap"
+                      onmouseover="this.style.background='rgba(212,175,55,0.2)'"
+                      onmouseout="this.style.background='rgba(212,175,55,0.1)'">
+                🔍 Find Crew
+              </button>
+              <button onclick="event.stopPropagation();schedOpenSMS('${call.booking_id}','${call.call_id}')"
+                      title="Send SMS for this call"
+                      style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);
+                             color:#22c55e;border-radius:3px;padding:2px 7px;
+                             font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:600;
+                             cursor:pointer;transition:all .15s;white-space:nowrap"
+                      onmouseover="this.style.background='rgba(34,197,94,0.18)'"
+                      onmouseout="this.style.background='rgba(34,197,94,0.08)'">
+                📱 SMS
+              </button>
+              <a href="https://smartstaffsolutions.com/bookings/${call.booking_id}/callsheet/${call.call_id}"
+                 target="_blank"
+                 onclick="event.stopPropagation()"
+                 title="Open callsheet in SmartStaff"
+                 style="background:rgba(255,255,255,0.04);border:1px solid var(--border);
+                        color:var(--muted);border-radius:3px;padding:2px 7px;
+                        font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:600;
+                        text-decoration:none;transition:all .15s;white-space:nowrap"
+                 onmouseover="this.style.color='var(--text)'"
+                 onmouseout="this.style.color='var(--muted)'">
+                ↗ SmartStaff
+              </a>
+            </div>
+            ${call.notes ? `<div style="font-size:9px;color:var(--muted);margin-top:1px;
+                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${call.notes}</div>` : ''}
+          </div>
+          <div style="display:flex;flex:1">${callDayCells}</div>
+        </div>`;
+    }
+
+    html += `</div>`; // end collapsible calls
+  }
+
+  wrap.innerHTML = html;
+}
+
+// ── SCHEDULING CLASH DETECTION ───────────────────────────────────────────────
+// _schedCrewIndex: {crewName: [{call_id, booking_id, start_iso, end_iso, call_name}]}
+// Built lazily as crew are loaded; used to detect double-bookings.
+let _schedCrewIndex = {};
+
+function schedIndexCrew(callMeta, crewList){
+  // callMeta: {call_id, booking_id, start_iso, end_iso, call_name}
+  crewList.forEach(c => {
+    const name = c.name;
+    if(!_schedCrewIndex[name]) _schedCrewIndex[name] = [];
+    // Only add if not already indexed for this call
+    if(!_schedCrewIndex[name].some(e => e.call_id === callMeta.call_id)){
+      _schedCrewIndex[name].push(callMeta);
+    }
+  });
+}
+
+function schedFindClashes(callMeta, crewList){
+  // Returns set of crew names that are double-booked during this call
+  const clashing = new Set();
+  const s1 = new Date(callMeta.start_iso).getTime();
+  const e1 = new Date(callMeta.end_iso).getTime();
+  if(!s1 || !e1) return clashing;
+
+  crewList.forEach(c => {
+    const otherCalls = (_schedCrewIndex[c.name] || []).filter(e => e.call_id !== callMeta.call_id);
+    for(const other of otherCalls){
+      const s2 = new Date(other.start_iso).getTime();
+      const e2 = new Date(other.end_iso).getTime();
+      if(s2 < e1 && e2 > s1){
+        clashing.add(c.name);
+        break;
+      }
+    }
+  });
+  return clashing;
+}
+
+function schedMarkCallClash(callId, hasClash){
+  // Update all rendered blocks for this call in the schedule grid
+  document.querySelectorAll(`[data-call-id-block="${callId}"]`).forEach(el => {
+    if(hasClash){
+      el.classList.remove('full','partial','empty');
+      el.classList.add('clash');
+    }
+  });
+}
+
+function renderCallStatusBadge(el, data, callMeta){
+  const { confirmed, waiting, declined, required, crew } = data;
+  const unfilled = Math.max(0, required - confirmed - waiting - declined);
+  let html = '';
+
+  // Detect clashes if crew list and call meta provided
+  let clashing = new Set();
+  if(crew && callMeta){
+    schedIndexCrew(callMeta, crew);
+    clashing = schedFindClashes(callMeta, crew);
+    if(clashing.size > 0) schedMarkCallClash(callMeta.call_id, true);
+  }
+
+  if(confirmed > 0)
+    html += `<span style="color:#22c55e;font-size:9px;font-family:'Share Tech Mono',monospace">✓${confirmed}</span>`;
+  if(waiting > 0)
+    html += `<span style="color:var(--warn);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">⏳${waiting}</span>`;
+  if(declined > 0)
+    html += `<span style="color:var(--accent2);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">✗${declined}</span>`;
+  if(unfilled > 0 && required > 0)
+    html += `<span style="color:var(--muted);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">○${unfilled}</span>`;
+  if(clashing.size > 0)
+    html += ` <span class="sched-clash-badge">⚡ ${clashing.size} clash${clashing.size>1?'es':''}</span>`;
+
+  el.innerHTML = html || '—';
+
+  // Render clashing crew names only — hidden when no clashes
+  const crewEl = el.nextElementSibling;
+  if(crewEl && crewEl.dataset.crewList !== undefined){
+    if(clashing.size > 0){
+      crewEl.innerHTML = [...clashing].map(name =>
+        `<span class="crew-clash" style="font-size:9px;margin-right:6px">${name}</span>`
+      ).join('');
+      crewEl.style.display = '';
+    } else {
+      crewEl.innerHTML = '';
+      crewEl.style.display = 'none';
+    }
+  }
+}
+
+function toggleSchedBooking(bid){
+  const calls  = document.getElementById(bid + '-calls');
+  const arrow  = document.getElementById(bid + '-arrow');
+  if(!calls) return;
+  const open = calls.style.display === 'none';
+  calls.style.display = open ? '' : 'none';
+  arrow.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+
+  // Lazy-load call status on first expand
+  if(open && !calls.dataset.statusLoaded){
+    calls.dataset.statusLoaded = '1';
+    calls.querySelectorAll('[data-call-status]').forEach(async el => {
+      const [bookingId, callId] = el.dataset.callStatus.split('/');
+      const metaParts = (el.dataset.callMeta || '').split('|');
+      const callMeta = metaParts.length >= 4 ? {
+        call_id:    metaParts[0],
+        booking_id: metaParts[1],
+        start_iso:  metaParts[2],
+        end_iso:    metaParts[3],
+        call_name:  metaParts[4] || '',
+      } : null;
+      try{
+        // Fetch status counts and booked crew in parallel
+        const [statusResp, crewResp] = await Promise.all([
+          fetch(`/api/call-status/${bookingId}/${callId}`),
+          fetch(`/api/booked-crew/${bookingId}/${callId}`),
+        ]);
+        const statusData = await statusResp.json();
+        const crewData   = await crewResp.json();
+        renderCallStatusBadge(el, {...statusData, crew: crewData.crew || []}, callMeta);
+      } catch(e){ renderCallStatusBadge(el, {confirmed:0,waiting:0,declined:0,required:0,crew:[]}, null); }
+    });
+  }
+}
+
+function schedOpenSMS(bookingId, callId){
+  // Open SmartStaff SMS page for this call in a new tab
+  window.open(
+    `https://smartstaffsolutions.com/bookings/${bookingId}/callsheet/${callId}`,
+    'goat_sms'
+  );
+}
+
+async function schedJumpToCrewFinder(bookingId, callId){
+  // Switch to Crew Finder tab and pre-select the call
+  switchTab('crew-finder');
+
+  // Wait for calls to load then select the call
+  const trySelect = (attempts=0) => {
+    const callCard = document.querySelector(`.call-card[data-call-id="${callId}"]`);
+    if(callCard){
+      callCard.click();
+    } else if(attempts < 20){
+      setTimeout(() => trySelect(attempts+1), 300);
+    }
+  };
+  // Ensure calls are loaded
+  if(!document.querySelector('.call-card')){
+    await loadCalls();
+  }
+  setTimeout(() => trySelect(), 400);
+}
+
+// ── SESSION MONITORING ──────────────────────────────────────────────────────
+
+let _sessionToastShown = false;
+
+function showSessionToast(msg){
+  if(_sessionToastShown) return;
+  _sessionToastShown = true;
+  const toast = document.createElement('div');
+  toast.id = 'session-toast';
+  toast.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+    background:rgba(227,30,36,0.95);color:#fff;padding:10px 20px;border-radius:4px;
+    font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;z-index:9999;
+    letter-spacing:.05em;box-shadow:0 4px 12px rgba(0,0,0,.4);transition:opacity .3s`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => { toast.style.opacity='0'; setTimeout(()=>toast.remove(),300); _sessionToastShown=false; }, 5000);
+}
+
+async function pingSession(){
+  try{
+    const resp = await fetch('/api/session/ping');
+    if(resp.status === 401){
+      const data = await resp.json();
+      if(data.reason === 'expired'){
+        showSessionToast('⚠ SmartStaff session expired — reconnecting...');
+      }
+    } else {
+      const data = await resp.json();
+      if(data.reauthed){
+        showSessionToast('✓ Reconnected to SmartStaff');
+      }
+    }
+  } catch(e){}
+}
+
+// Ping every 9 minutes (keepalive runs every 8, this catches any gaps)
+setInterval(pingSession, 9 * 60 * 1000);
+
+async function checkForUpdates(){
+  try{
+    const resp=await fetch('/api/version');
+    if(!resp.ok)return;
+    const data=await resp.json();
+    const verEl = document.getElementById('nav-version');
+    if(verEl && data.current) verEl.textContent = 'v' + data.current;
+    if(data.update_available){
+      document.getElementById('update-version').textContent=data.latest;
+      document.getElementById('update-notes').textContent=data.release_notes?'— '+data.release_notes:'';
+      document.getElementById('update-link').href=data.dmg_url||'#';
+      document.getElementById('update-banner').classList.add('show');
+    }
+  }catch(e){}
+}
+
+async function loadCacheStatus(){
+  try{
+    const resp=await fetch('/api/cache/status');
+    if(!resp.ok)return;
+    const data=await resp.json();
+    const badge=document.getElementById('cache-badge');
+    if(data.fresh){badge.textContent='Cache: '+data.profiles+' profiles ('+data.age+')';badge.classList.add('fresh')}
+    else{badge.textContent='Cache stale ('+data.age+') — click to refresh';badge.classList.remove('fresh')}
+  }catch(e){}
+}
+
+async function refreshCache(){
+  await fetch('/api/cache/refresh',{method:'POST'});
+  pollRefreshProgress();
+}
+
+async function pollRefreshProgress(){
+  const badge=document.getElementById('cache-badge');
+  badge.classList.remove('fresh');
+  const interval=setInterval(async()=>{
+    try{
+      const resp=await fetch('/api/cache/progress');
+      const data=await resp.json();
+      if(data.running){
+        const pct=data.total?Math.round(data.done/data.total*100):0;
+        badge.textContent='Refreshing... '+data.done+'/'+(data.total||'?')+' ('+pct+'%)';
+      } else {
+        clearInterval(interval);
+        if(data.elapsed){
+          badge.textContent='Refresh complete in '+data.elapsed+'s'+(data.errors?' ('+data.errors+' errors)':'');
+          setTimeout(loadCacheStatus, 3000);
+        } else {
+          loadCacheStatus();
+        }
+      }
+    }catch(e){ clearInterval(interval); loadCacheStatus(); }
+  }, 1000);
+}
+
+// ── EASTER EGGS ──────────────────────────────────────────────────────────────
+
+// 1. Konami Code → goat stampede
+(function(){
+  const KONAMI = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+  let _seq = [];
+  document.addEventListener('keydown', e => {
+    _seq.push(e.key);
+    if(_seq.length > KONAMI.length) _seq.shift();
+    if(_seq.join(',') === KONAMI.join(',')){ _seq = []; triggerStampede(); }
+  });
+})();
+
+function triggerStampede(){
+  const count = 8;
+  const goats = ['🐐','🐐','🐐','🐐','🐐','🐐','🐐','🐐'];
+  goats.forEach((g, i) => {
+    const el = document.createElement('div');
+    el.className = 'stampede-goat';
+    el.textContent = g;
+    const dur = 1800 + Math.random() * 800;
+    const top  = 20 + Math.random() * 60;
+    el.style.top = top + '%';
+    el.style.animationDuration = dur + 'ms';
+    el.style.animationDelay   = (i * 180) + 'ms';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), dur + i * 180 + 100);
+  });
+}
+
+// 2. Typing "baaa" anywhere (not in an input) → bleat
+(function(){
+  let _buf = '';
+  document.addEventListener('keydown', e => {
+    if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    _buf += e.key.toLowerCase();
+    if(_buf.length > 6) _buf = _buf.slice(-6);
+    if(_buf.includes('baaa')){
+      _buf = '';
+      const audio = document.getElementById('goat-bray');
+      if(audio){ audio.currentTime = 0; audio.play().catch(()=>{}); }
+      // Flash a little goat emoji centre screen
+      const el = document.createElement('div');
+      el.textContent = '🐐';
+      el.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-size:80px;z-index:99999;pointer-events:none;transition:opacity .5s';
+      document.body.appendChild(el);
+      setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 500); }, 800);
+    }
+  });
+})();
+
+// 3. 666 crew selected → devil goat flash (hook is in updateSelCount directly)
+function triggerDevilGoat(){
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;flex-direction:column;pointer-events:none;background:rgba(180,0,0,0.15)';
+  el.innerHTML = '<div style="font-size:100px;animation:spin 1s linear infinite">😈</div>'
+    + '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:48px;color:#ff4444;letter-spacing:.2em;text-shadow:0 0 20px #ff0000;margin-top:16px">THE GOAT OF DARKNESS</div>';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2000);
+}
+
+// 4. All calls fully booked → confetti burst with 🐐
+function checkAllBooked(){
+  const cards = document.querySelectorAll('.call-booked');
+  if(!cards.length) return;
+  const allFull = [...cards].every(c => c.classList.contains('ok'));
+  if(allFull) triggerConfetti();
+}
+function triggerConfetti(){
+  const colours = ['#d4af37','#10b981','#8b5cf6','#f59e0b','#ef4444','#fff'];
+  for(let i = 0; i < 80; i++){
+    const el = document.createElement('div');
+    el.className = 'confetti-piece';
+    el.style.left = Math.random() * 100 + 'vw';
+    el.style.background = colours[Math.floor(Math.random() * colours.length)];
+    el.style.width  = (6 + Math.random() * 8) + 'px';
+    el.style.height = (6 + Math.random() * 8) + 'px';
+    el.style.animationDuration = (1.5 + Math.random() * 2) + 's';
+    el.style.animationDelay   = (Math.random() * 0.8) + 's';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+  // And a big 🐐 in the middle
+  const goat = document.createElement('div');
+  goat.style.cssText = 'position:fixed;top:40%;left:50%;transform:translate(-50%,-50%);font-size:72px;z-index:99999;pointer-events:none;transition:all 1s';
+  goat.textContent = '🐐';
+  document.body.appendChild(goat);
+  setTimeout(() => { goat.style.opacity='0'; goat.style.transform='translate(-50%,-150%)'; setTimeout(()=>goat.remove(),1000); }, 1500);
+}
+
+// 5. 10-star available crew → gold glow row in forecast table
+// Applied during renderForecastTable (hooked below via wrapper)
+function applyGoldRows(){
+  document.querySelectorAll('#fc-tbody tr').forEach(tr => {
+    const starsEl = tr.querySelector('.fc-stars');
+    if(!starsEl) return;
+    const stars = (starsEl.textContent.match(/★/g)||[]).length;
+    if(stars >= 10) tr.classList.add('gold-row');
+    else tr.classList.remove('gold-row');
+  });
+}
+</script>
+<!-- ── ASK GOAT DRAWER ── -->
+<div class="goat-drawer" id="goat-drawer">
+
+  <div class="goat-drawer-head">
+    <img src="/static/goat-logo.png" class="goat-drawer-logo" alt="GOAT">
+    <div>
+      <div class="goat-drawer-title">ASK THE GOAT</div>
+      <div class="goat-drawer-sub">Gig Power Operations Platform</div>
+    </div>
+    <button class="goat-drawer-close" onclick="toggleGoatDrawer()" title="Close">✕</button>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:flex-end;padding:6px 14px;
+              border-bottom:1px solid rgba(212,175,55,0.08);flex-shrink:0;background:#0a0a0a">
+    <button onclick="clearGoatHistory()"
+            style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:.12em;
+                   text-transform:uppercase;color:var(--muted);background:none;border:none;
+                   cursor:pointer;padding:2px 0;transition:color .15s"
+            onmouseover="this.style.color='var(--accent2)'" onmouseout="this.style.color='var(--muted)'">
+      + New conversation
+    </button>
+  </div>
+
+  <div class="goat-messages" id="goat-messages"></div>
+
+  <div class="goat-suggestions" id="goat-suggestions">
+    <span class="goat-sug" onclick="goatSuggest(this)">Show unfilled calls</span>
+    <span class="goat-sug" onclick="goatSuggest(this)">Who's available Friday?</span>
+    <span class="goat-sug" onclick="goatSuggest(this)">Induction alerts</span>
+    <span class="goat-sug" onclick="goatSuggest(this)">Crew utilization this week</span>
+    <span class="goat-sug" onclick="goatSuggest(this)">Recent imports</span>
+    <span class="goat-sug" onclick="goatEasterEgg()">What do goats eat? 🐐</span>
+  </div>
+
+  <!-- Easter egg fullscreen overlay -->
+  <div id="goat-easter-egg" style="display:none;position:fixed;inset:0;z-index:99999;
+       background:#000;align-items:center;justify-content:center;flex-direction:column">
+    <audio id="goat-bray" src="/static/goat-bray.mp3" preload="auto"></audio>
+    <audio id="cha-ching" src="/static/cha-ching.mp3" preload="auto"></audio>
+    <img src="/static/eating-goat.png" alt="🐐"
+         style="max-width:100%;max-height:90vh;object-fit:contain">
+    <div style="position:absolute;bottom:40px;font-family:'Bebas Neue',sans-serif;
+                font-size:32px;color:var(--accent);letter-spacing:.2em;
+                text-shadow:0 0 20px rgba(212,175,55,0.8);animation:eyeGlow 1s ease-in-out infinite">
+      APPARENTLY... PANTS. 🐐
+    </div>
+  </div>
+
+  <div class="goat-input-area">
+    <textarea class="goat-input" id="goat-input" rows="1"
+      placeholder="Ask anything..."
+      onkeydown="goatKeyDown(event)"
+      oninput="autoResizeGoatInput(this)"></textarea>
+    <button class="goat-send" id="goat-send" onclick="goatSend()" title="Send">▶</button>
+  </div>
+
+</div>
+
+</body>
+</html>
