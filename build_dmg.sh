@@ -49,7 +49,30 @@ fi
 
 rm -f "$DMG_OUT"
 
-cp config.json "dist/${APP_NAME}.app/Contents/MacOS/config.json"
+# ─── Compose bundle config from template + build secrets ─────────────────
+# Template is committed (safe to be public). Secrets are gitignored.
+# Both must exist or the build aborts — we never want to ship a DMG
+# with an empty Anthropic key.
+if [ ! -f "config.template.json" ]; then
+  echo "✗ config.template.json not found. This file is committed to the repo and should be present."
+  exit 1
+fi
+if [ ! -f "build_secrets.json" ]; then
+  echo "✗ build_secrets.json not found. Create it locally with your Anthropic key:"
+  echo "    { \"anthropic_api_key\": \"sk-ant-...\" }"
+  echo "  (gitignored, never committed.)"
+  exit 1
+fi
+
+echo "▶ Composing bundle config (template + build secrets)..."
+python3 -c "
+import json
+with open('config.template.json') as f: cfg = json.load(f)
+with open('build_secrets.json') as f: cfg.update(json.load(f))
+with open('dist/${APP_NAME}.app/Contents/MacOS/config.json', 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+"
 echo "▶ Creating DMG..."
 create-dmg \
   --volname "${APP_NAME}" \

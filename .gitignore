@@ -14,3 +14,6 @@ dist/
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Build-time secrets (Anthropic key baked into DMG)
+build_secrets.json
