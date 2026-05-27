@@ -66,6 +66,10 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 @keyframes goldPulse{0%,100%{box-shadow:none}50%{box-shadow:inset 0 0 0 1px rgba(212,175,55,0.4),0 0 12px rgba(212,175,55,0.2)}}
 .stampede-goat{position:fixed;top:40%;font-size:64px;z-index:99998;pointer-events:none;animation:stampede linear forwards}
 .confetti-piece{position:fixed;top:-20px;width:10px;height:10px;border-radius:2px;z-index:99997;pointer-events:none;animation:confettiFall ease-in forwards}
+@keyframes starBurst{0%{transform:translate(-50%,-50%) scale(0) rotate(0deg);opacity:1}70%{opacity:1}100%{transform:translate(calc(-50% + var(--bx)),calc(-50% + var(--by))) scale(var(--bs)) rotate(var(--br));opacity:0}}
+@keyframes starFlash{0%{transform:translate(-50%,-50%) scale(0);opacity:0}25%{transform:translate(-50%,-50%) scale(1.25);opacity:1}60%{transform:translate(-50%,-50%) scale(1);opacity:1}100%{transform:translate(-50%,-50%) scale(1.1);opacity:0}}
+.star-piece{position:fixed;top:50%;left:50%;z-index:99997;pointer-events:none;will-change:transform,opacity;animation:starBurst cubic-bezier(.16,.84,.44,1) forwards}
+.star-flash{position:fixed;top:50%;left:50%;z-index:99998;pointer-events:none;font-family:'Bebas Neue',sans-serif;color:var(--accent);text-shadow:0 0 30px rgba(212,175,55,.9),0 0 60px rgba(212,175,55,.5);letter-spacing:.18em;white-space:nowrap;animation:starFlash 2.4s ease-in-out forwards}
 .fc-table tr.gold-row td{animation:goldPulse 2s ease-in-out infinite}
 .calls-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px 8px;border-bottom:1px solid var(--border)}
 .btn-refresh{font-size:10px;padding:3px 8px;border-radius:5px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-family:'Share Tech Mono',monospace;transition:all .12s}
@@ -1039,6 +1043,7 @@ tr.skipped{opacity:.6}
           <div class="fc-legend-swatch" style="background:rgba(16,185,129,0.65)"></div><span>4–8h</span>
           <div class="fc-legend-swatch" style="background:rgba(16,185,129,1)"></div><span>8h+</span>
           <div class="fc-legend-swatch" style="background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)"></div><span>Unavailable</span>
+          <div class="fc-legend-swatch" style="background:linear-gradient(135deg,rgba(168,85,247,0.75) 0%,rgba(168,85,247,0.75) 50%,transparent 50%);border:1px solid rgba(168,85,247,0.5)"></div><span>Part-day</span>
         </div>
       </div>
 
@@ -2525,28 +2530,42 @@ function renderForecastTable(){
     const dayCells = dates.map(d => {
       const hrs     = c.day_hours?.[d] || 0;
       const unavail = c.day_unavail?.[d] || '';
+      const partial = c.day_unavail_partial?.[d] || false;
+      const uHours  = c.day_unavail_hours?.[d] || '';
       const dt      = new Date(d + 'T00:00:00');
       const isWeekend = dt.getDay()===0 || dt.getDay()===6;
-      let bg, title;
+      let bg, title, extraStyle = '';
       if(hrs > 0){
+        // green (booked) takes priority over unavailable
         if(hrs < 1)       bg = 'rgba(16,185,129,0.15)';
         else if(hrs < 4)  bg = 'rgba(16,185,129,0.35)';
         else if(hrs < 8)  bg = 'rgba(16,185,129,0.65)';
         else              bg = 'rgba(16,185,129,1.0)';
         title = `${d}: ${hrs.toFixed(1)}h booked`;
-        if(unavail) title += ` · also unavail: ${unavail}`;
+        if(unavail) title += ` · also unavail: ${unavail}${uHours?' ('+uHours+')':''}`;
       } else if(unavail){
-        bg = 'rgba(168,85,247,0.55)'; title = `${d}: Unavailable — ${unavail}`;
+        const purple = 'rgba(168,85,247,0.55)';
+        if(partial){
+          // diagonally-halved blob: filled top-left, transparent bottom-right
+          bg = 'transparent';
+          extraStyle = `background:linear-gradient(135deg, ${purple} 0%, ${purple} 50%, transparent 50%, transparent 100%);`;
+          title = `${d}: Partially unavailable${uHours?' '+uHours:''} — ${unavail}`;
+        } else {
+          bg = purple;
+          title = `${d}: Unavailable — ${unavail}`;
+        }
       } else {
         bg = isWeekend ? 'rgba(255,255,255,0.04)' : 'transparent'; title = d;
       }
       return `<td style="padding:3px 2px;border-bottom:1px solid var(--border)">
-        <div style="height:22px;border-radius:2px;background:${bg}" title="${title}"></div>
+        <div style="height:22px;border-radius:2px;background:${bg};${extraStyle}" title="${title}"></div>
       </td>`;
     }).join('');
 
     return `<tr>
-      <td class="fc-col-name"><span class="fc-name">${c.name}</span></td>
+      <td class="fc-col-name"><span class="fc-name" style="cursor:pointer;text-decoration:underline;text-decoration-color:rgba(212,175,55,0.3);text-underline-offset:2px"
+            title="Manage unavailability"
+            onclick="openUnavailManager('${(c.id||'').toString().replace(/'/g,'')}', ${JSON.stringify(c.name).replace(/"/g,'&quot;')})">${c.name}</span></td>
       <td class="fc-col-phone">${phoneLink(c.phone)}</td>
       <td class="fc-col-stars"><span style="color:#f59e0b;font-size:8px;letter-spacing:0">${stars}</span><span style="color:var(--border);font-size:8px;letter-spacing:0">${noStars}</span></td>
       <td class="fc-col-id"><span class="fc-id">${c.ein||c.id}</span></td>
@@ -2887,6 +2906,9 @@ const TOOL_LABELS = {
   lookup_crew_id:      '🔎 Verifying crew ID...',
   add_crew_to_call:    '⚡ Preparing add crew...',
   send_sms_to_crew:    '📱 Preparing SMS...',
+  get_unavailabilities:'🗓 Checking unavailability...',
+  add_unavailability:  '🗓 Preparing unavailability...',
+  delete_unavailability:'🗑 Preparing removal...',
 };
 
 function showGoatToolBadge(toolName){
@@ -2912,6 +2934,12 @@ const _goatConfirmPayloads = {};
 function renderGoatConfirmCard(payload){
   const wrap   = document.getElementById('goat-messages');
   const action = payload.action;
+
+  // Unavailability actions have a different shape (no crew/calls arrays)
+  if(action === 'add_unavailability' || action === 'delete_unavailability'){
+    return renderUnavailConfirmCard(payload);
+  }
+
   const crew   = payload.crew || [];
   const calls  = payload.calls || [];
 
@@ -3018,11 +3046,250 @@ function cancelGoatAction(cardId){
   appendGoatMessage('goat', `No worries — cancelled. Just say the word when you're ready.`);
 }
 
+// Confirmation card for unavailability add/delete (conversational)
+function renderUnavailConfirmCard(payload){
+  const wrap   = document.getElementById('goat-messages');
+  const action = payload.action;
+  const isAdd  = action === 'add_unavailability';
+  const cardId = 'confirm-' + Date.now();
+  _goatConfirmPayloads[cardId] = payload;
+
+  const fmtT = (h,m) => String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+  let detail;
+  if(isAdd){
+    const sameDay = payload.start_date === payload.end_date;
+    const range = sameDay
+      ? `${payload.start_date}  ${fmtT(payload.start_hour,payload.start_min)}–${fmtT(payload.end_hour,payload.end_min)}`
+      : `${payload.start_date} ${fmtT(payload.start_hour,payload.start_min)} → ${payload.end_date} ${fmtT(payload.end_hour,payload.end_min)}`;
+    detail = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-family:'Share Tech Mono',monospace">PERIOD</div>
+      <div style="font-size:12px;margin-bottom:8px">${range}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-family:'Share Tech Mono',monospace">REASON</div>
+      <div style="font-size:12px;margin-bottom:14px">${payload.reason||'—'}</div>`;
+  } else {
+    detail = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-family:'Share Tech Mono',monospace">REMOVING</div>
+      <div style="font-size:12px;margin-bottom:14px">${payload.summary || ('Period #'+payload.event_id)}</div>`;
+  }
+
+  const icon  = isAdd ? '🗓' : '🗑';
+  const label = isAdd ? 'MARK UNAVAILABLE' : 'REMOVE UNAVAILABILITY';
+
+  const el = document.createElement('div');
+  el.className = 'gm gm-goat';
+  el.id = cardId;
+  el.innerHTML = `
+    <div class="gm-label">THE GOAT — ACTION REQUIRED</div>
+    <div class="gm-bubble" style="border-left-color:var(--accent);background:rgba(212,175,55,0.05);max-width:100%;width:100%">
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:.1em;
+                  color:var(--accent);margin-bottom:8px">${icon} ${label}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-family:'Share Tech Mono',monospace">CREW</div>
+      <div style="font-size:12px;margin-bottom:10px">${payload.name || payload.crew_id}</div>
+      ${detail}
+      <div style="display:flex;gap:8px">
+        <button data-card-id="${cardId}" onclick="executeUnavailAction(this.dataset.cardId)"
+                style="background:var(--accent);color:#000;border:none;border-radius:3px;
+                       padding:7px 16px;font-family:'Rajdhani',sans-serif;font-size:13px;
+                       font-weight:700;cursor:pointer;letter-spacing:.08em;text-transform:uppercase">
+          ✓ Confirm
+        </button>
+        <button data-card-id="${cardId}" onclick="cancelGoatAction(this.dataset.cardId)"
+                style="background:none;border:1px solid #444;border-radius:3px;
+                       padding:7px 16px;font-family:'Rajdhani',sans-serif;font-size:13px;
+                       font-weight:600;cursor:pointer;color:var(--muted);letter-spacing:.08em;text-transform:uppercase">
+          ✕ Cancel
+        </button>
+      </div>
+    </div>`;
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function executeUnavailAction(cardId){
+  const payload = _goatConfirmPayloads[cardId];
+  if(!payload){ appendGoatMessage('goat', 'Could not find the action details — try again.', true); return; }
+  const card = document.getElementById(cardId);
+  const btns = card?.querySelectorAll('button');
+  if(btns) btns.forEach(b => b.disabled = true);
+  if(card){ const b = card.querySelector('button'); if(b) b.textContent = 'Working...'; }
+
+  const isAdd = payload.action === 'add_unavailability';
+  try{
+    const endpoint = isAdd ? '/api/unavailability/add' : '/api/unavailability/delete';
+    const body = isAdd ? {
+      crew_id: payload.crew_id, start_date: payload.start_date,
+      start_hour: payload.start_hour, start_min: payload.start_min,
+      end_date: payload.end_date, end_hour: payload.end_hour, end_min: payload.end_min,
+      reason: payload.reason
+    } : { crew_id: payload.crew_id, event_id: payload.event_id };
+
+    const resp = await fetch(endpoint, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    delete _goatConfirmPayloads[cardId];
+
+    if(data.success){
+      if(card) card.querySelector('.gm-bubble').innerHTML =
+        `<span style="color:var(--accent);font-size:12px">✓ Done</span>`;
+      appendGoatMessage('goat', isAdd
+        ? `Done — ${payload.name||'crew'} marked unavailable. Locked in. 🐐`
+        : `Done — that period's cleared. ${payload.name||'They'} are free again.`);
+      // refresh forecast view if it's loaded so the change shows
+      if(typeof loadForecast === 'function' && document.getElementById('tab-forecast')?.classList.contains('active')) {
+        try{ loadForecast(true); }catch(e){}
+      }
+    } else {
+      const msg = data.error || 'Unknown error';
+      if(card) card.querySelector('.gm-bubble').innerHTML =
+        `<span style="color:var(--accent2);font-size:12px">✗ ${msg}</span>`;
+      appendGoatMessage('goat', `Couldn't complete that — ${msg}. Worth checking in SmartStaff.`, true);
+    }
+  } catch(e){
+    if(card) card.querySelector('.gm-bubble').innerHTML =
+      `<span style="color:var(--accent2);font-size:12px">✗ Error: ${e.message}</span>`;
+    appendGoatMessage('goat', `Hit a snag — ${e.message}.`, true);
+  }
+}
 
 
-// ── SCHEDULE TAB ────────────────────────────────────────────────────────────
 
-let _schedData    = null;
+// ── UNAVAILABILITY MANAGER (Crew Utilization) ───────────────────────────────
+let _unavailCrewId = null;
+let _unavailCrewName = null;
+
+function _populateUnavailSelects(){
+  const hsel = document.querySelectorAll('.unavail-hsel');
+  const msel = document.querySelectorAll('.unavail-msel');
+  if(hsel[0] && hsel[0].options.length) return; // already populated
+  hsel.forEach(sel => {
+    sel.innerHTML = Array.from({length:24}, (_,h) =>
+      `<option value="${h}">${String(h).padStart(2,'0')}</option>`).join('');
+    sel.style.cssText = 'background:#0a0a0a;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:5px;font-size:12px';
+  });
+  msel.forEach(sel => {
+    sel.innerHTML = [0,15,30,45].map(m =>
+      `<option value="${m}">${String(m).padStart(2,'0')}</option>`).join('');
+    sel.style.cssText = 'background:#0a0a0a;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:5px;font-size:12px';
+  });
+}
+
+async function openUnavailManager(crewId, crewName){
+  if(!crewId){ alert('No crew ID available for this person.'); return; }
+  _unavailCrewId = crewId;
+  _unavailCrewName = crewName;
+  _populateUnavailSelects();
+  document.getElementById('unavail-modal-crew').textContent = crewName + ' · ID ' + crewId;
+  document.getElementById('unavail-msg').textContent = '';
+  // sensible defaults: today
+  const today = new Date().toISOString().slice(0,10);
+  document.getElementById('unavail-start-date').value = today;
+  document.getElementById('unavail-end-date').value = today;
+  document.getElementById('unavail-reason').value = '';
+  document.getElementById('unavail-modal').style.display = 'flex';
+  await loadUnavailList();
+}
+
+function closeUnavailManager(){
+  document.getElementById('unavail-modal').style.display = 'none';
+  _unavailCrewId = null;
+}
+
+async function loadUnavailList(){
+  const box = document.getElementById('unavail-list');
+  box.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading…</div>';
+  try{
+    const resp = await fetch('/api/unavailability/' + encodeURIComponent(_unavailCrewId));
+    const data = await resp.json();
+    if(data.error){ box.innerHTML = `<div style="color:var(--accent2);font-size:12px">${data.error}</div>`; return; }
+    const list = data.unavailabilities || [];
+    if(!list.length){ box.innerHTML = '<div style="color:var(--muted);font-size:12px">No unavailability periods.</div>'; return; }
+    const fmt = iso => {
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short'}) + ' ' +
+             d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+    };
+    box.innerHTML = list.map(p => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;
+                  padding:7px 9px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;
+                  background:rgba(168,85,247,0.06)">
+        <div style="min-width:0">
+          <div style="font-size:12px;color:var(--text)">${p.reason||'Unavailable'}</div>
+          <div style="font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace">${fmt(p.start)} → ${fmt(p.end)}</div>
+        </div>
+        <button onclick="submitUnavailDelete(${JSON.stringify(p.id)})"
+                style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);
+                       color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;
+                       font-family:'Rajdhani',sans-serif;font-weight:600">✕ Remove</button>
+      </div>`).join('');
+  }catch(e){
+    box.innerHTML = `<div style="color:var(--accent2);font-size:12px">Error: ${e.message}</div>`;
+  }
+}
+
+function _unavailMsg(text, ok){
+  const el = document.getElementById('unavail-msg');
+  el.textContent = text;
+  el.style.color = ok ? 'var(--accent)' : 'var(--accent2)';
+}
+
+async function submitUnavailAdd(){
+  const sd = document.getElementById('unavail-start-date').value;
+  const ed = document.getElementById('unavail-end-date').value;
+  const sh = document.getElementById('unavail-start-hour').value;
+  const sm = document.getElementById('unavail-start-min').value;
+  const eh = document.getElementById('unavail-end-hour').value;
+  const em = document.getElementById('unavail-end-min').value;
+  const reason = document.getElementById('unavail-reason').value.trim();
+  if(!sd || !ed){ _unavailMsg('Pick start and end dates.', false); return; }
+  if(!reason){ _unavailMsg('A reason is required.', false); return; }
+  // basic ordering guard
+  const startTs = new Date(`${sd}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}`);
+  const endTs   = new Date(`${ed}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}`);
+  if(endTs <= startTs){ _unavailMsg('End must be after start.', false); return; }
+
+  const btn = document.getElementById('unavail-add-btn');
+  btn.disabled = true; btn.textContent = 'Adding…';
+  _unavailMsg('', true);
+  try{
+    const resp = await fetch('/api/unavailability/add', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        crew_id:_unavailCrewId, start_date:sd, start_hour:+sh, start_min:+sm,
+        end_date:ed, end_hour:+eh, end_min:+em, reason
+      })
+    });
+    const data = await resp.json();
+    if(data.success){
+      _unavailMsg('✓ Added.', true);
+      document.getElementById('unavail-reason').value = '';
+      await loadUnavailList();
+      if(typeof loadForecast==='function'){ try{ loadForecast(true); }catch(e){} }
+    } else {
+      _unavailMsg('✗ ' + (data.error||'Failed to add.'), false);
+    }
+  }catch(e){ _unavailMsg('✗ ' + e.message, false); }
+  finally{ btn.disabled = false; btn.textContent = '+ Add Unavailability'; }
+}
+
+async function submitUnavailDelete(eventId){
+  if(!confirm('Remove this unavailability period?')) return;
+  _unavailMsg('', true);
+  try{
+    const resp = await fetch('/api/unavailability/delete', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ crew_id:_unavailCrewId, event_id:eventId })
+    });
+    const data = await resp.json();
+    if(data.success){
+      await loadUnavailList();
+      if(typeof loadForecast==='function'){ try{ loadForecast(true); }catch(e){} }
+    } else {
+      _unavailMsg('✗ ' + (data.error||'Failed to remove.'), false);
+    }
+  }catch(e){ _unavailMsg('✗ ' + e.message, false); }
+}
+
+
 let _schedInitDone = false;
 let _schedFilter   = 'all'; // 'all' | 'full' | 'partial' | 'empty'
 
@@ -3063,6 +3330,14 @@ async function loadSchedule(force=false){
     if(data.error){ alert('Schedule error: ' + data.error); return; }
     _schedData = data;
     _schedCrewIndex = {};  // reset clash index for fresh data
+    // Seed the all-full baseline from this freshly loaded data so the starburst
+    // egg fires only when a *subsequent* change tips the schedule into fully crewed,
+    // not when an already-full schedule is first displayed.
+    {
+      const _calls = (_schedData.bookings || []).reduce((a,b)=>a.concat(b.calls||[]),[]);
+      const _staffable = _calls.filter(c => (c.required||0) > 0);
+      _schedAllFull = _staffable.length > 0 && _staffable.every(c => c.full);
+    }
     renderSchedule();
   } catch(e){
     alert('Error loading schedule: ' + e.message);
@@ -3319,6 +3594,9 @@ function renderSchedule(){
   }
 
   wrap.innerHTML = html;
+
+  // Easter egg: celebrate when a change tips the schedule into fully crewed
+  checkSchedAllBooked();
 }
 
 // ── SCHEDULING CLASH DETECTION ───────────────────────────────────────────────
@@ -3656,7 +3934,53 @@ function triggerConfetti(){
   setTimeout(() => { goat.style.opacity='0'; goat.style.transform='translate(-50%,-150%)'; setTimeout(()=>goat.remove(),1000); }, 1500);
 }
 
-// 5. 10-star available crew → gold glow row in forecast table
+// 5. Schedule: a change resulting in ALL calls full → starburst + triumphant sound
+// Fires only on the transition into all-full (not on every render while already full).
+let _schedAllFull = false;
+function checkSchedAllBooked(){
+  if(!_schedData || !Array.isArray(_schedData.bookings)) return;
+  // Gather every call across all bookings (unfiltered — this is about the real schedule state)
+  const calls = _schedData.bookings.reduce((arr, b) => arr.concat(b.calls || []), []);
+  // Only meaningful when there are calls that actually require crew
+  const staffable = calls.filter(c => (c.required || 0) > 0);
+  const allFull = staffable.length > 0 && staffable.every(c => c.full);
+  if(allFull && !_schedAllFull) triggerStarburst();  // false → true edge only
+  _schedAllFull = allFull;
+}
+
+function triggerStarburst(){
+  const colours = ['#d4af37','#ffe9a8','#fff7df','#f0c64b','#ffffff'];
+  for(let i = 0; i < 70; i++){
+    const el = document.createElement('div');
+    el.className = 'star-piece';
+    el.textContent = '★';
+    const angle = Math.random() * Math.PI * 2;
+    const dist  = 180 + Math.random() * 320;
+    el.style.setProperty('--bx', Math.cos(angle) * dist + 'px');
+    el.style.setProperty('--by', Math.sin(angle) * dist + 'px');
+    el.style.setProperty('--bs', (0.4 + Math.random() * 1.4).toFixed(2));
+    el.style.setProperty('--br', (Math.random() * 720 - 360) + 'deg');
+    el.style.fontSize = (10 + Math.random() * 26) + 'px';
+    el.style.color = colours[Math.floor(Math.random() * colours.length)];
+    el.style.textShadow = '0 0 8px rgba(212,175,55,0.8)';
+    el.style.animationDuration = (1.1 + Math.random() * 1.1) + 's';
+    el.style.animationDelay = (Math.random() * 0.25) + 's';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2600);
+  }
+  // Centre triumphant flash
+  const flash = document.createElement('div');
+  flash.className = 'star-flash';
+  flash.style.fontSize = 'clamp(28px,6vw,72px)';
+  flash.innerHTML = 'FULLY CREWED 🐐';
+  document.body.appendChild(flash);
+  setTimeout(() => flash.remove(), 2500);
+  // Triumphant sound
+  const a = document.getElementById('goat-fanfare');
+  if(a){ a.currentTime = 0; a.play().catch(()=>{}); }
+}
+
+// 6. 10-star available crew → gold glow row in forecast table
 // Applied during renderForecastTable (hooked below via wrapper)
 function applyGoldRows(){
   document.querySelectorAll('#fc-tbody tr').forEach(tr => {
@@ -3668,6 +3992,77 @@ function applyGoldRows(){
   });
 }
 </script>
+<!-- ── UNAVAILABILITY MANAGER MODAL ── -->
+<div id="unavail-modal" style="display:none;position:fixed;inset:0;z-index:99990;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+              width:520px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+                border-bottom:1px solid var(--border);background:#0a0a0a">
+      <div>
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.1em;color:var(--accent)">UNAVAILABILITY</div>
+        <div id="unavail-modal-crew" style="font-size:12px;color:var(--muted);font-family:'Share Tech Mono',monospace"></div>
+      </div>
+      <button onclick="closeUnavailManager()" style="background:none;border:none;color:var(--muted);
+              font-size:20px;cursor:pointer;line-height:1">✕</button>
+    </div>
+
+    <div style="padding:16px 18px">
+      <!-- existing periods -->
+      <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace;
+                  letter-spacing:.1em;margin-bottom:8px">CURRENT PERIODS</div>
+      <div id="unavail-list" style="margin-bottom:18px">
+        <div style="color:var(--muted);font-size:12px">Loading…</div>
+      </div>
+
+      <!-- add form -->
+      <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace;
+                  letter-spacing:.1em;margin-bottom:8px;border-top:1px solid var(--border);padding-top:14px">ADD A PERIOD</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+        <div>
+          <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">Start date</label>
+          <input type="date" id="unavail-start-date" style="background:#0a0a0a;border:1px solid var(--border);
+                 color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px">
+        </div>
+        <div>
+          <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">Start time</label>
+          <div style="display:flex;gap:3px">
+            <select id="unavail-start-hour" class="unavail-hsel"></select>
+            <select id="unavail-start-min"  class="unavail-msel"></select>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px">
+        <div>
+          <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">End date</label>
+          <input type="date" id="unavail-end-date" style="background:#0a0a0a;border:1px solid var(--border);
+                 color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px">
+        </div>
+        <div>
+          <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">End time</label>
+          <div style="display:flex;gap:3px">
+            <select id="unavail-end-hour" class="unavail-hsel"></select>
+            <select id="unavail-end-min"  class="unavail-msel"></select>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">Reason</label>
+        <input type="text" id="unavail-reason" placeholder="e.g. Uni lectures, On leave"
+               style="width:100%;background:#0a0a0a;border:1px solid var(--border);color:var(--text);
+                      border-radius:3px;padding:6px 8px;font-size:12px;box-sizing:border-box">
+      </div>
+      <div id="unavail-msg" style="font-size:11px;margin-top:8px;min-height:14px"></div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button id="unavail-add-btn" onclick="submitUnavailAdd()"
+                style="background:var(--accent);color:#000;border:none;border-radius:3px;padding:7px 16px;
+                       font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;
+                       letter-spacing:.08em;text-transform:uppercase">+ Add Unavailability</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── ASK GOAT DRAWER ── -->
 <div class="goat-drawer" id="goat-drawer">
 
@@ -3706,6 +4101,7 @@ function applyGoldRows(){
        background:#000;align-items:center;justify-content:center;flex-direction:column">
     <audio id="goat-bray" src="/static/goat-bray.mp3" preload="auto"></audio>
     <audio id="cha-ching" src="/static/cha-ching.mp3" preload="auto"></audio>
+    <audio id="goat-fanfare" src="/static/fanfare.mp3" preload="auto"></audio>
     <img src="/static/eating-goat.png" alt="🐐"
          style="max-width:100%;max-height:90vh;object-fit:contain">
     <div style="position:absolute;bottom:40px;font-family:'Bebas Neue',sans-serif;

@@ -32,9 +32,19 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 CACHE_FILE  = os.path.join(BASE_DIR, "crew_cache.json")
 FORECAST_CACHE_FILE        = os.path.join(BASE_DIR, "forecast_cache.json")
 UNAVAIL_CACHE_FILE         = os.path.join(BASE_DIR, "unavail_cache.json")
+UNAVAIL_TIMES_FILE         = os.path.join(BASE_DIR, "unavail_times.json")
 FORECAST_CACHE_MAX_AGE_HRS = 1
 UNAVAIL_CACHE_MAX_AGE_HRS  = 4
 BASE_URL    = "https://smartstaffsolutions.com"
+# Allow pointing at a duplicate/staging SmartStaff for testing without editing
+# code: set "base_url" in config.json. Falls back to production above.
+try:
+    _cfg_url = (json.load(open(CONFIG_FILE)).get("base_url", "").strip()
+                if os.path.exists(CONFIG_FILE) else "")
+    if _cfg_url:
+        BASE_URL = _cfg_url.rstrip("/")
+except Exception:
+    pass
 CACHE_MAX_AGE_HRS = 24
 IMPORT_LOG_FILE = os.path.join(BASE_DIR, "import_log.json")
 
@@ -203,6 +213,138 @@ def create_ss_session(username, password):
         return None, "Invalid credentials"
     return ss, None
 
+# ─── UNAVAILABILITY WRITE/READ (impersonated) ──────────────────────────────────
+# SmartStaff stores unavailabilities in the `calendars` table (type=1), keyed to
+# the *logged-in* user. To act on a specific crew member, an admin session must
+# "acquire" that crew member's identity (/aquire-id/<userID>), perform the
+# calendar action, then release. We do this on a DEDICATED throwaway admin
+# session so the operator's interactive session is never re-identified.
+#
+# Endpoints (all keyed on $_SESSION userID, i.e. the acquired crew member):
+#   GET /aquire-id/<uid>                         -> become crew member (admin only)
+#   GET /release-id                              -> revert to admin
+#   GET /ajax/calendar/add-event.php?...&type=1  -> create unavailability
+#   GET /ajax/calendar/delete-event.php?id=<id>  -> delete by calendars.id
+#   GET /ajax/calendar/get-unavailabilities.php  -> list {id,title,start,end} (new endpoint)
+
+_unavail_write_lock = threading.Lock()
+
+def _make_admin_ss():
+    """Create a fresh throwaway SmartStaff session logged in with the saved
+    admin credentials. Returns (ss, error)."""
+    cfg = load_config()
+    username = cfg.get("username", "")
+    password = cfg.get("password", "")
+    if not username or not password:
+        return None, "No saved SmartStaff credentials"
+    return create_ss_session(username, password)
+
+def _impersonate(ss, crew_id):
+    """Acquire a crew member's identity on the given session. Returns error str
+    or None on success."""
+    try:
+        resp = ss.get(f"{BASE_URL}/aquire-id/{int(crew_id)}", allow_redirects=True)
+    except Exception as e:
+        return f"Acquire failed: {e}"
+    body = (resp.text or "")[:200].lower()
+    # login.php rejects non-admins with "Nice try..." and bad uids with "Error:"
+    if "nice try" in body:
+        return "Saved SmartStaff login is not an admin account"
+    if body.startswith("error"):
+        return f"Acquire rejected: {resp.text[:120]}"
+    return None
+
+def _release(ss):
+    """Revert impersonation. Best-effort; the session is discarded anyway."""
+    try:
+        ss.get(f"{BASE_URL}/release-id", allow_redirects=True)
+    except Exception:
+        pass
+
+def _in_impersonated_session(crew_id):
+    """Context-manager-like helper: returns (ss, error). Caller MUST call
+    _release(ss) when done. Use via the with_impersonation() wrapper below."""
+    ss, err = _make_admin_ss()
+    if err:
+        return None, err
+    err = _impersonate(ss, crew_id)
+    if err:
+        _release(ss)
+        return None, err
+    return ss, None
+
+def add_unavailability(crew_id, start_date, start_hour, start_min,
+                       end_date, end_hour, end_min, reason):
+    """Create an unavailability for a crew member in SmartStaff.
+    Dates are 'YYYY-MM-DD'; hours/mins are ints. Returns (ok, error)."""
+    from urllib.parse import quote
+    with _unavail_write_lock:
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return False, err
+        try:
+            url = (f"{BASE_URL}/ajax/calendar/add-event.php"
+                   f"?start_date={start_date}&start_hour={int(start_hour)}"
+                   f"&start_min={int(start_min)}&end_date={end_date}"
+                   f"&end_hour={int(end_hour)}&end_min={int(end_min)}"
+                   f"&title={quote(reason)}&type=1")
+            resp = ss.get(url, allow_redirects=True)
+            body = (resp.text or "").strip()
+            # add-event.php returns empty on success, "ERROR: ..." on failure
+            if body.upper().startswith("ERROR"):
+                return False, body
+            return True, None
+        except Exception as e:
+            return False, str(e)
+        finally:
+            _release(ss)
+
+def delete_unavailability(crew_id, event_id):
+    """Delete an unavailability by its calendars.id. delete-event.php scopes the
+    DELETE to the acquired user, so impersonation also enforces ownership.
+    Returns (ok, error)."""
+    with _unavail_write_lock:
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return False, err
+        try:
+            url = f"{BASE_URL}/ajax/calendar/delete-event.php?id={int(event_id)}"
+            resp = ss.get(url, allow_redirects=True)
+            body = (resp.text or "").strip()
+            if body.upper().startswith("ERROR"):
+                return False, body
+            return True, None
+        except Exception as e:
+            return False, str(e)
+        finally:
+            _release(ss)
+
+def fetch_unavailabilities(crew_id):
+    """Read a crew member's unavailability periods (with ids + real times) from
+    the new get-unavailabilities.php endpoint, via brief impersonation.
+    Returns (list_of_{id,start,end,reason}, error)."""
+    with _unavail_write_lock:
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return None, err
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/calendar/get-unavailabilities.php",
+                          allow_redirects=True)
+            data = json.loads(resp.text or "[]")
+            out = []
+            for ev in data:
+                out.append({
+                    "id":     ev.get("id"),
+                    "start":  ev.get("start"),
+                    "end":    ev.get("end"),
+                    "reason": ev.get("title", "") or "Unavailable",
+                })
+            return out, None
+        except Exception as e:
+            return None, str(e)
+        finally:
+            _release(ss)
+
 # ─── CACHE ────────────────────────────────────────────────────────────────────
 
 def load_cache():
@@ -244,6 +386,130 @@ def save_unavail_cache(unavails):
     try:
         with open(UNAVAIL_CACHE_FILE,"w") as f: json.dump({"saved_at":datetime.now().isoformat(),"unavails":unavails},f)
     except: pass
+
+# ── Option X: time sidecar ───────────────────────────────────────────────────
+# The 4-hourly bulk rebuild scrapes the admin Unavailabilities tab, which is
+# DATE-ONLY (it flattens every period to 00:00–23:59). That would wipe the
+# real hours for partial-day entries (e.g. a uni student free in the afternoon).
+# To preserve hour granularity, we keep a sidecar of time-rich periods sourced
+# from get-unavailabilities.php (which returns real start/end + id), and
+# re-overlay those times onto the date-only cache after each bulk rebuild.
+# Match key: crew_id + calendar date + reason.
+
+def load_unavail_times():
+    if not os.path.exists(UNAVAIL_TIMES_FILE): return {}
+    try:
+        with open(UNAVAIL_TIMES_FILE) as f: return json.load(f).get("times", {})
+    except: return {}
+
+def save_unavail_times(times):
+    try:
+        with open(UNAVAIL_TIMES_FILE,"w") as f:
+            json.dump({"saved_at": datetime.now().isoformat(), "times": times}, f)
+    except: pass
+
+def _unavail_match_key(start_iso, reason):
+    """Date (YYYY-MM-DD) + reason — used to match a date-only scraped entry to a
+    time-rich sidecar entry for the same period."""
+    try:
+        d = datetime.fromisoformat(start_iso).date().isoformat()
+    except Exception:
+        d = str(start_iso)[:10]
+    return f"{d}|{(reason or '').strip().lower()}"
+
+def overlay_unavail_times(cache):
+    """Given a date-only unavail cache {crew_id: [{start,end,reason}]}, overlay
+    real times + ids from the sidecar wherever a period matches by date+reason.
+    Returns the same dict, mutated. Sidecar entries whose date is still in range
+    but missing from the scrape are also kept (write may not have hit the admin
+    tab yet)."""
+    sidecar = load_unavail_times()
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    for cid, periods in list(cache.items()):
+        sc = sidecar.get(str(cid))
+        if not sc:
+            continue
+        sc_by_key = {_unavail_match_key(s["start"], s.get("reason","")): s for s in sc}
+        seen = set()
+        for p in periods:
+            k = _unavail_match_key(p.get("start",""), p.get("reason",""))
+            if k in sc_by_key:
+                p["start"] = sc_by_key[k]["start"]
+                p["end"]   = sc_by_key[k]["end"]
+                if sc_by_key[k].get("id") is not None:
+                    p["id"] = sc_by_key[k]["id"]
+                seen.add(k)
+        # Re-add any future sidecar periods the scrape didn't include yet
+        for k, s in sc_by_key.items():
+            if k in seen:
+                continue
+            try:
+                if datetime.fromisoformat(s["end"]).replace(tzinfo=None) < today:
+                    continue
+            except Exception:
+                pass
+            cache[cid].append(dict(s))
+    return cache
+
+def _resolve_crew_keys(crew_id):
+    """Given a userID (what the unavailability endpoints use), return the set of
+    cache keys this crew is stored under. The crew cache is keyed by manage_id,
+    but different readers look up by user_id vs manage_id, and the two are
+    usually-but-not-always equal. We key under every variant we can find so the
+    single-crew refresh is visible to forecast AND availability regardless."""
+    keys = {str(crew_id)}
+    try:
+        cache, _ = load_cache()
+        for mgr_id, info in cache.items():
+            if str(info.get("user_id", "")) == str(crew_id) or str(mgr_id) == str(crew_id):
+                keys.add(str(mgr_id))
+                if info.get("user_id"):
+                    keys.add(str(info["user_id"]))
+    except Exception:
+        pass
+    return keys
+
+def refresh_crew_unavail_cache(crew_id):
+    """After a write, re-read one crew member's unavailabilities (with real
+    times via the new endpoint) and merge into unavail_cache.json so the change
+    is reflected immediately, without waiting for the 4-hourly bulk rebuild.
+    Also updates the time sidecar so the hours survive the next bulk rebuild.
+    Cache entries keep the same {start, end, reason} shape used elsewhere, plus
+    an 'id' so the UI can offer per-period delete. Returns (ok, error)."""
+    periods, err = fetch_unavailabilities(crew_id)
+    if err:
+        return False, err
+    cache, _ = load_unavail_cache()
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    entries = []
+    for p in periods:
+        try:
+            end_dt = datetime.fromisoformat(p["end"])
+        except Exception:
+            continue
+        # drop tz for naive comparison consistency with existing cache parsing
+        end_naive = end_dt.replace(tzinfo=None)
+        if end_naive < today:
+            continue
+        entries.append({
+            "id":     p.get("id"),
+            "start":  datetime.fromisoformat(p["start"]).replace(tzinfo=None).isoformat(),
+            "end":    end_naive.isoformat(),
+            "reason": p.get("reason", "Unavailable"),
+        })
+    # Write under every key variant this crew is known by (user_id / manage_id),
+    # so both the forecast (keyed by manage_id) and availability (keyed by id)
+    # readers see the update.
+    keys = _resolve_crew_keys(crew_id)
+    for k in keys:
+        cache[k] = entries
+    save_unavail_cache(cache)
+    # Update the time sidecar (same keys) so the bulk rebuild can re-overlay hours
+    sidecar = load_unavail_times()
+    for k in keys:
+        sidecar[k] = [dict(e) for e in entries]
+    save_unavail_times(sidecar)
+    return True, None
 
 # ─── SMARTSTAFF SCRAPERS ──────────────────────────────────────────────────────
 
@@ -837,18 +1103,44 @@ def trigger_forecast_preload(ss, force=False):
                         ds=cur.strftime("%Y-%m-%d")
                         day_hours[ds]=day_hours.get(ds,0)+(min(ce,cur+timedelta(days=1))-max(cs,cur)).total_seconds()/3600
                         cur+=timedelta(days=1)
-                day_unavail={}
+                day_unavail={}; day_unavail_partial={}; day_unavail_hours={}
                 for u in wu:
-                    us=max(datetime.fromisoformat(u["start"]),start_dt); ue=min(datetime.fromisoformat(u["end"]),end_dt)
+                    u_start = datetime.fromisoformat(u["start"])
+                    u_end   = datetime.fromisoformat(u["end"])
+                    us=max(u_start,start_dt); ue=min(u_end,end_dt)
                     cur=us.replace(hour=0,minute=0,second=0,microsecond=0)
                     while cur<=ue:
                         ds=cur.strftime("%Y-%m-%d")
-                        if ds not in day_unavail: day_unavail[ds]=u.get("reason","Unavailable")
-                        cur+=timedelta(days=1)
+                        day_start = cur
+                        day_end   = cur + timedelta(days=1)
+                        # portion of THIS calendar day the period actually covers
+                        cov_start = max(u_start, day_start)
+                        cov_end   = min(u_end,   day_end)
+                        if cov_end > cov_start:
+                            # "full" if it spans essentially the whole day. The date-only
+                            # scraper stores whole days as 00:00–23:59:59, so allow a
+                            # ~2-minute tolerance at the end and start.
+                            starts_at_midnight = (cov_start - day_start).total_seconds() <= 60
+                            ends_at_midnight   = (day_end - cov_end).total_seconds() <= 120
+                            covers_full = starts_at_midnight and ends_at_midnight
+                            if ds not in day_unavail:
+                                day_unavail[ds]=u.get("reason","Unavailable")
+                                day_unavail_partial[ds] = not covers_full
+                                if not covers_full:
+                                    day_unavail_hours[ds] = (cov_start.strftime("%H:%M")
+                                                             + "–" + cov_end.strftime("%H:%M"))
+                            else:
+                                # another period also touches this day; only stays
+                                # "partial" if every covering period is partial
+                                if covers_full:
+                                    day_unavail_partial[ds] = False
+                                    day_unavail_hours.pop(ds, None)
+                        cur=cur+timedelta(days=1)
                 results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
                     "manage_id":cid,"name":name,"phone":info.get("phone",""),
                     "rating":info.get("rating",0),"groups":info.get("groups",[]),
-                    "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail})
+                    "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail,
+                    "day_unavail_partial":day_unavail_partial,"day_unavail_hours":day_unavail_hours})
                 _forecast_preload_progress["done"]=i+1
             dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
             save_forecast_cache({"start_date":start_dt.strftime("%Y-%m-%d"),"end_date":end_dt.strftime("%Y-%m-%d"),
@@ -869,7 +1161,9 @@ def trigger_unavail_preload(ss, force=False):
         _unavail_preload_progress.update({"running":True,"started":_time.time(),"done":0,"total":0,"error":None})
         try:
             crew_data,_=load_cache()
-            if not crew_data: return
+            if not crew_data:
+                _unavail_preload_progress["error"]="crew cache empty — rebuild crew cache first"
+                return
             items=list(crew_data.items()); _unavail_preload_progress["total"]=len(items)
             today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -881,6 +1175,11 @@ def trigger_unavail_preload(ss, force=False):
                     try: unavail_map[cid]=future.result()
                     except: unavail_map[cid]=[]
                     _unavail_preload_progress["done"]+=1
+            # Overlay GOAT-written hour-level times, but never let it sink the save
+            try:
+                unavail_map = overlay_unavail_times(unavail_map)
+            except Exception as _oe:
+                app.logger.warning(f"overlay_unavail_times failed: {_oe}")
             save_unavail_cache(unavail_map)
             _unavail_preload_progress["elapsed"]=round(_time.time()-_unavail_preload_progress["started"],1)
             trigger_forecast_preload(ss,force=True)
@@ -1961,18 +2260,34 @@ def api_forecast():
                 ds=cur.strftime("%Y-%m-%d")
                 day_hours[ds]=day_hours.get(ds,0)+(min(ce,cur+timedelta(days=1))-max(cs,cur)).total_seconds()/3600
                 cur+=timedelta(days=1)
-        day_unavail={}
+        day_unavail={}; day_unavail_partial={}; day_unavail_hours={}
         for u in wu:
-            us=max(datetime.fromisoformat(u["start"]),start_dt); ue=min(datetime.fromisoformat(u["end"]),end_dt)
+            u_start = datetime.fromisoformat(u["start"])
+            u_end   = datetime.fromisoformat(u["end"])
+            us=max(u_start,start_dt); ue=min(u_end,end_dt)
             cur=us.replace(hour=0,minute=0,second=0,microsecond=0)
             while cur<=ue:
                 ds=cur.strftime("%Y-%m-%d")
-                if ds not in day_unavail: day_unavail[ds]=u.get("reason","Unavailable")
-                cur+=timedelta(days=1)
+                day_start = cur; day_end = cur + timedelta(days=1)
+                cov_start = max(u_start, day_start); cov_end = min(u_end, day_end)
+                if cov_end > cov_start:
+                    starts_at_midnight = (cov_start - day_start).total_seconds() <= 60
+                    ends_at_midnight   = (day_end - cov_end).total_seconds() <= 120
+                    covers_full = starts_at_midnight and ends_at_midnight
+                    if ds not in day_unavail:
+                        day_unavail[ds]=u.get("reason","Unavailable")
+                        day_unavail_partial[ds] = not covers_full
+                        if not covers_full:
+                            day_unavail_hours[ds] = cov_start.strftime("%H:%M")+"–"+cov_end.strftime("%H:%M")
+                    elif covers_full:
+                        day_unavail_partial[ds] = False
+                        day_unavail_hours.pop(ds, None)
+                cur=cur+timedelta(days=1)
         results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
             "manage_id":cid,"name":name,"phone":info.get("phone",""),
             "rating":info.get("rating",0),"groups":info.get("groups",[]),
-            "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail})
+            "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail,
+            "day_unavail_partial":day_unavail_partial,"day_unavail_hours":day_unavail_hours})
     dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
     payload={"start_date":start_str,"end_date":end_dt.strftime("%Y-%m-%d"),"dates":dates,"crew":results}
     _forecast_cache[cache_key]={"data":payload,"at":datetime.now()}; save_forecast_cache(payload)
@@ -2629,6 +2944,51 @@ GOAT_TOOLS = [
             },
             "required": ["crew", "calls"]
         }
+    },
+    {
+        "name": "get_unavailabilities",
+        "description": "Read a crew member's current unavailability periods from SmartStaff, including each period's id and exact start/end times. Use this to show someone their unavailability, or to find the event_id needed before calling delete_unavailability. Always call lookup_crew_id first to get the crew_id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "crew_id": {"type": "string", "description": "The crew member's operational userID"}
+            },
+            "required": ["crew_id"]
+        }
+    },
+    {
+        "name": "add_unavailability",
+        "description": "WRITE ACTION — Mark a crew member as unavailable in SmartStaff for a date/time range (supports partial days, e.g. unavailable mornings only). Requires confirmation before execution. Always call lookup_crew_id first to get the correct crew_id. Dates must be YYYY-MM-DD; hours 0-23; minutes one of 0,15,30,45.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "crew_id":    {"type": "string", "description": "The crew member's operational userID (from lookup_crew_id)"},
+                "name":       {"type": "string", "description": "The crew member's name, for the confirmation card"},
+                "start_date": {"type": "string", "description": "Start date, YYYY-MM-DD"},
+                "start_hour": {"type": "integer", "description": "Start hour, 0-23"},
+                "start_min":  {"type": "integer", "description": "Start minute: 0, 15, 30 or 45"},
+                "end_date":   {"type": "string", "description": "End date, YYYY-MM-DD"},
+                "end_hour":   {"type": "integer", "description": "End hour, 0-23"},
+                "end_min":    {"type": "integer", "description": "End minute: 0, 15, 30 or 45"},
+                "reason":     {"type": "string", "description": "Reason for unavailability, e.g. 'Uni lectures', 'On leave'"}
+            },
+            "required": ["crew_id", "name", "start_date", "start_hour", "start_min",
+                         "end_date", "end_hour", "end_min", "reason"]
+        }
+    },
+    {
+        "name": "delete_unavailability",
+        "description": "WRITE ACTION — Remove an existing unavailability period for a crew member in SmartStaff. Requires confirmation before execution. You need the event_id of the period — get it by checking the crew member's current unavailabilities (these come with ids). Always include the crew_id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "crew_id":  {"type": "string", "description": "The crew member's operational userID"},
+                "name":     {"type": "string", "description": "The crew member's name, for the confirmation card"},
+                "event_id": {"type": "string", "description": "The id of the unavailability period to delete"},
+                "summary":  {"type": "string", "description": "Human-readable description of the period being deleted, e.g. '1 Jul 05:00–10:00 Lectures', for the confirmation card"}
+            },
+            "required": ["crew_id", "name", "event_id"]
+        }
     }
 ]
 
@@ -2639,12 +2999,14 @@ Your personality: confident, sharp, occasionally cocky (you are, after all, The 
 You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data.
 
 CRITICAL — WRITE ACTION RULES:
-- ALWAYS call lookup_crew_id for each crew member before calling add_crew_to_call or send_sms_to_crew. Never use an ID from a previous search result without verifying it first — name formats differ between SmartStaff and what the operator types.
-- When you call add_crew_to_call or send_sms_to_crew, this generates a CONFIRMATION CARD in the UI for the operator to approve.
+- ALWAYS call lookup_crew_id for each crew member before calling add_crew_to_call, send_sms_to_crew, add_unavailability, delete_unavailability, or get_unavailabilities. Never use an ID from a previous search result without verifying it first — name formats differ between SmartStaff and what the operator types.
+- For delete_unavailability, first call get_unavailabilities to find the exact period and its event_id — never guess an id.
+- When you call add_crew_to_call, send_sms_to_crew, add_unavailability or delete_unavailability, this generates a CONFIRMATION CARD in the UI for the operator to approve.
 - You must NEVER claim the action was completed after calling the tool. The action has NOT happened yet.
 - After calling the tool, tell the operator you have prepared the action and they need to confirm it using the card above.
 - Only after the operator clicks Confirm will the action actually execute in SmartStaff.
 - Example: after calling add_crew_to_call, say something like "I've set that up — confirm it using the card above and I'll get them added."
+- Unavailability supports partial days. "Free in the afternoon" means unavailable in the morning — e.g. a uni student with morning lectures is unavailable 09:00–13:00, available after. Translate natural language to explicit start/end times.
 
 Keep responses concise but warm. Occasional GOAT pun or dry humour is encouraged — never at the expense of being useful."""
 
@@ -2826,6 +3188,21 @@ def execute_goat_tool(tool_name, tool_input, ss):
             "calls":   tool_input.get("calls", []),
             "confirm": tool_input.get("confirm", False),
         })
+
+    elif tool_name == "get_unavailabilities":
+        periods, err = fetch_unavailabilities(tool_input.get("crew_id"))
+        if err:
+            return _json.dumps({"error": err})
+        return _json.dumps({"unavailabilities": periods})
+
+    elif tool_name in ("add_unavailability", "delete_unavailability"):
+        # Return a confirmation request — actual execution happens client-side
+        payload = {
+            "requires_confirmation": True,
+            "action":  tool_name,
+        }
+        payload.update(tool_input)
+        return _json.dumps(payload)
 
     return f"Unknown tool: {tool_name}"
 
@@ -3033,6 +3410,67 @@ def api_goat_send_sms():
         time.sleep(0.8)
 
     return jsonify({"results": results})
+
+
+
+# ── UNAVAILABILITY ENDPOINTS ─────────────────────────────────────────────────
+
+@app.route("/api/unavailability/<crew_id>", methods=["GET"])
+def api_unavailability_list(crew_id):
+    """List a crew member's unavailability periods (id + real times + reason)."""
+    if not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+    periods, err = fetch_unavailabilities(crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"unavailabilities": periods})
+
+
+@app.route("/api/unavailability/add", methods=["POST"])
+def api_unavailability_add():
+    """Create an unavailability for a crew member in SmartStaff.
+    Body: {crew_id, start_date 'YYYY-MM-DD', start_hour, start_min,
+           end_date, end_hour, end_min, reason}."""
+    if not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+    b = request.get_json(force=True)
+    required = ["crew_id", "start_date", "start_hour", "start_min",
+                "end_date", "end_hour", "end_min", "reason"]
+    missing = [k for k in required if b.get(k) in (None, "")]
+    if missing:
+        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+    if not str(b.get("reason")).strip():
+        return jsonify({"error": "A reason is required"}), 400
+
+    ok, err = add_unavailability(
+        b["crew_id"], b["start_date"], b["start_hour"], b["start_min"],
+        b["end_date"], b["end_hour"], b["end_min"], str(b["reason"]).strip())
+    if not ok:
+        return jsonify({"error": err or "Failed to add unavailability"}), 502
+
+    # Reflect immediately in the cache (best-effort)
+    refresh_crew_unavail_cache(b["crew_id"])
+    return jsonify({"success": True})
+
+
+@app.route("/api/unavailability/delete", methods=["POST"])
+def api_unavailability_delete():
+    """Delete an unavailability by calendars.id.
+    Body: {crew_id, event_id}."""
+    if not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+    b = request.get_json(force=True)
+    crew_id  = b.get("crew_id")
+    event_id = b.get("event_id")
+    if crew_id in (None, "") or event_id in (None, ""):
+        return jsonify({"error": "crew_id and event_id are required"}), 400
+
+    ok, err = delete_unavailability(crew_id, event_id)
+    if not ok:
+        return jsonify({"error": err or "Failed to delete unavailability"}), 502
+
+    refresh_crew_unavail_cache(crew_id)
+    return jsonify({"success": True})
 
 
 
