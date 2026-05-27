@@ -10,3 +10,7 @@ unavail_times.json
 # Build artifacts
 build/
 dist/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
