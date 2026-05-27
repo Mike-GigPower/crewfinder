@@ -1,1 +1,12 @@
 config.json
+
+# Runtime caches (contain crew PII)
+*_cache.json
+unavail_times.json
+
+# macOS
+.DS_Store
+
+# Build artifacts
+build/
+dist/
