@@ -1,5 +1,5 @@
 {
   "version": "3.4.0",
-  "release_notes": "Enhancement to Unavailability",
+  "release_notes": "Unavailability management — add/delete crew unavailability (hour-level) via Crew Utilization and ASK THE GOAT, written directly to SmartStaff. Schedule starburst easter egg.",
   "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.0/TheGOAT.dmg"
 }
