@@ -129,8 +129,8 @@
 			'user_id'  => (int) $row->user_id,
 			'user'     => $display_name,
 			'title'    => $row->title,
-			'start'    => date('c', strtotime($row->start_dt)),
-			'end'      => date('c', strtotime($row->end_dt)),
+			'start'    => date('Y-m-d\TH:i:s', strtotime($row->start_dt)),
+			'end'      => date('Y-m-d\TH:i:s', strtotime($row->end_dt)),
 		);
 
 		if ($row->event_type == 2)
