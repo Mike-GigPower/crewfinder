@@ -78,7 +78,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.4.0"
+APP_VERSION    = "3.4.2"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 
@@ -3250,7 +3250,11 @@ def api_goat_send_sms():
             time.sleep(0.8)
 
     # Step 2: send SMS per call
-    crew_params = "&".join(f"crewSelectList={c['crew_id']}" for c in crew)
+    # SmartStaff's add-call.php sendsms handler splices crewSelectList into a
+    # SQL IN(...) clause, so it must be a single comma-separated value, not
+    # repeated query params. With repeated params, PHP keeps only the last
+    # one and only the last crew member gets the SMS.
+    crew_params = "crewSelectList=" + ",".join(c["crew_id"] for c in crew)
     for call in calls:
         url = f"{BASE_URL}/add-call.php?action=sendsms&id={call['call_id']}&bookingID={call['booking_id']}&{crew_params}"
         try:

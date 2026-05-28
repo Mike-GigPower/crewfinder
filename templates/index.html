@@ -1696,7 +1696,10 @@ async function sendSMS(){
   }
 
   // Step 2: send SMS for each call in sequence
-  const params=crew.map(c=>'crewSelectList='+c.crewId).join('&');
+  // SmartStaff expects crewSelectList as a single comma-separated value
+  // (it splices into a SQL IN(...) clause). Repeated params don't work —
+  // PHP keeps only the last value so only one crew member gets the SMS.
+  const params='crewSelectList='+crew.map(c=>c.crewId).join(',');
   for(let i=0;i<targets.length;i++){
     const t=targets[i];
     btn.textContent='SMS '+(i+1)+'/'+targets.length+'...';
