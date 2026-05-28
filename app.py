@@ -2692,17 +2692,6 @@ def api_booked_crew(booking_id, call_id):
     resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/{call_id}")
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Debug: return all table info
-    debug = request.args.get("debug") == "1"
-    if debug:
-        tables = []
-        for t in soup.find_all("table"):
-            rows = []
-            for tr in t.find_all("tr")[:8]:
-                tds = [td.get_text(strip=True)[:40] for td in tr.find_all("td")]
-                rows.append(tds)
-            tables.append({"class": str(t.get("class","")), "rows": rows})
-        return jsonify({"url": resp.url, "tables": tables})
 
     crew = []
     status_keywords = {"confirmed", "unconfirmed", "declined", "waiting", "sent"}
