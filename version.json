@@ -1,5 +1,6 @@
 {
-  "version": "3.4.2",
-  "release_notes": "Bug fix \u2014 Send SMS now reaches all selected crew, not just one. SmartStaff expects crewSelectList as a comma-separated value; the GOAT was sending repeated params which PHP collapses to a single value.",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.2/TheGOAT.dmg"
+    "version": "3.4.3",
+    "release_date": "2026-05-28",
+    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.3/TheGOAT.dmg",
+    "release_notes": "Scrollable Crew Finder timeline (24h centred on shift, scrolls 24h either side). Bulk SmartStaff endpoints for shifts and crew profiles - dramatically faster forecast preload and cache refresh, with HTML scraping retained as automatic fallback. Admin-only guard added to calendar resize/relocate endpoints."
 }

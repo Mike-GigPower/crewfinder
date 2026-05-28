@@ -164,8 +164,11 @@ tr.skipped{opacity:.6}
 .tl-table tbody tr:hover{background:var(--surface2)}
 .tl-table tbody tr.row-selected{background:var(--accent-bg)!important}
 .tl-table td{padding:5px 12px;vertical-align:middle;white-space:nowrap}
-.tl-cell{padding:3px 0!important;width:600px;min-width:600px}
-.tl-inner{position:relative;height:24px;width:100%}
+/* Scrollable timeline column: 600px viewport, wide inner content. */
+.tl-cell{padding:3px 0!important;width:600px;min-width:600px;max-width:600px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.tl-cell::-webkit-scrollbar{display:none}
+.tl-inner{position:relative;height:24px}
+.tl-th-scroll{padding:0!important;width:600px;min-width:600px;max-width:600px;overflow-x:auto;overflow-y:hidden}
 .tl-target{position:absolute;top:0;bottom:0;background:rgba(10,124,62,.08);border-left:2px dashed rgba(10,124,62,.4);border-right:2px dashed rgba(10,124,62,.4);pointer-events:none}
 .tl-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border);pointer-events:none}
 .tl-bar{position:absolute;top:4px;bottom:4px;border-radius:3px;opacity:.85;cursor:default;transition:opacity .15s}
@@ -175,7 +178,7 @@ tr.skipped{opacity:.6}
 .tl-bar.bar-unavail{background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)}
 .tl-bar[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:#1a1d23;color:#fff;font-size:10px;padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:200;pointer-events:none}
 .tl-time-header{position:relative;height:20px}
-.tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%)}
+.tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%);white-space:nowrap}
 .section-row-tl td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
 /* EMPTY */
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:10px;color:var(--muted);padding:60px;text-align:center}
@@ -1491,14 +1494,21 @@ function renderTimeline(result,details,targets){
     label:'#'+(t.call_num||'')+(t.call_name?' '+t.call_name:''),
   }));
 
-  // Timeline bounds: 8h before first call start, 8h after last call end
-  // Shifts render within this window; window is not expanded to fit shifts
-  const tlMin=Math.min(...targetWindows.map(t=>t.startH))-8;
-  const tlMax=Math.max(...targetWindows.map(t=>t.endH))+8;
+  // Scrollable bounds: 24h before earliest call start, 24h after latest call end.
+  // Default viewport (600px @ 25 px/h) shows a 24h window centred on shift midpoint.
+  const callStart=Math.min(...targetWindows.map(t=>t.startH));
+  const callEnd  =Math.max(...targetWindows.map(t=>t.endH));
+  const tlMin=callStart-24;
+  const tlMax=callEnd  +24;
   const tlTotal=tlMax-tlMin||1;
-  function pctD(h){return((h-tlMin)/tlTotal)*100}
+  const PX_PER_HOUR=25;
+  const VIEWPORT_W=600;
+  const innerWidth=tlTotal*PX_PER_HOUR;
+  function pxD(h){return(h-tlMin)*PX_PER_HOUR}
+  // Tick lines every 2h; time labels every 4h
   const dynTicks=[];
-  for(let h=Math.ceil(tlMin/4)*4;h<=tlMax;h+=4)dynTicks.push(h);
+  for(let h=Math.ceil(tlMin/2)*2;h<=tlMax;h+=2)dynTicks.push(h);
+  const LABEL_EVERY=4;
 
   const wrap=document.getElementById('results-wrap');
   wrap.innerHTML='';
@@ -1510,12 +1520,13 @@ function renderTimeline(result,details,targets){
     const th=document.createElement('th');
     if(i===0)th.style.width='36px';
     if(i===6){
-      th.style.minWidth='600px';
+      th.className='tl-th-scroll';
       const tDiv=document.createElement('div');tDiv.className='tl-time-header';
+      tDiv.style.width=innerWidth+'px';
       dynTicks.forEach(h2=>{
-        if(pctD(h2)>99||pctD(h2)<0)return;
+        if(h2%LABEL_EVERY!==0)return;
         const span=document.createElement('span');span.className='tl-time-label';
-        span.style.left=pctD(h2)+'%';span.textContent=hToLabel(h2,targetDate);
+        span.style.left=pxD(h2)+'px';span.textContent=hToLabel(h2,targetDate);
         tDiv.appendChild(span);
       });
       th.appendChild(tDiv);
@@ -1524,6 +1535,9 @@ function renderTimeline(result,details,targets){
   });
   thead.appendChild(hrow);table.appendChild(thead);
   const tbody=document.createElement('tbody');
+
+  // Collect every scrollable timeline element so we can keep them in sync
+  const scrollEls=[hrow.children[6]]; // header scroll container
 
   function addSecRow(label){
     const tr=document.createElement('tr');tr.className='section-row-tl';
@@ -1554,16 +1568,17 @@ function renderTimeline(result,details,targets){
     tr.appendChild(mkTd('rating-cell',crew.rating));
     tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
 
-    // Timeline cell
+    // Timeline cell — px-based, scrollable
     const tlTd=document.createElement('td');tlTd.className='tl-cell';
     const inner=document.createElement('div');inner.className='tl-inner';
-    dynTicks.forEach(h=>{const line=document.createElement('div');line.className='tl-grid';line.style.left=pctD(h)+'%';inner.appendChild(line)});
+    inner.style.width=innerWidth+'px';
+    dynTicks.forEach(h=>{const line=document.createElement('div');line.className='tl-grid';line.style.left=pxD(h)+'px';inner.appendChild(line)});
 
     // One highlight band per selected call
     targetWindows.forEach(tw=>{
       const bg=document.createElement('div');bg.className='tl-target';
-      bg.style.left=pctD(tw.startH)+'%';
-      bg.style.width=(pctD(tw.endH)-pctD(tw.startH))+'%';
+      bg.style.left=pxD(tw.startH)+'px';
+      bg.style.width=(pxD(tw.endH)-pxD(tw.startH))+'px';
       bg.title=tw.label;
       inner.appendChild(bg);
     });
@@ -1576,8 +1591,9 @@ function renderTimeline(result,details,targets){
         const bar=document.createElement('div');
         const barStatus=status==='partial'?'conflict':status;
         bar.className='tl-bar bar-'+barStatus;
-        bar.style.left=pctD(Math.max(sh,tlMin))+'%';
-        bar.style.width=(pctD(Math.min(eh,tlMax))-pctD(Math.max(sh,tlMin)))+'%';
+        const lp=pxD(Math.max(sh,tlMin)),rp=pxD(Math.min(eh,tlMax));
+        bar.style.left=lp+'px';
+        bar.style.width=(rp-lp)+'px';
         bar.dataset.tip=hToLabel(sh,targetDate)+'-'+hToLabel(eh,targetDate)+' @ '+(s.venue||'?');
         inner.appendChild(bar);
       });
@@ -1586,14 +1602,16 @@ function renderTimeline(result,details,targets){
         if(eh<tlMin||sh>tlMax)return;
         const bar=document.createElement('div');
         bar.className='tl-bar bar-unavail';
-        bar.style.left=pctD(Math.max(sh,tlMin))+'%';
-        bar.style.width=(pctD(Math.min(eh,tlMax))-pctD(Math.max(sh,tlMin)))+'%';
+        const lp=pxD(Math.max(sh,tlMin)),rp=pxD(Math.min(eh,tlMax));
+        bar.style.left=lp+'px';
+        bar.style.width=(rp-lp)+'px';
         bar.style.top='0'; bar.style.bottom='0'; bar.style.opacity='0.5';
         bar.dataset.tip='Unavailable: '+(u.reason||'Leave');
         inner.appendChild(bar);
       });
     }
     tlTd.appendChild(inner);tr.appendChild(tlTd);
+    scrollEls.push(tlTd);
 
     const detailParts=(crew.call_results||[]).filter(r=>r.detail).map(r=>'#'+r.call_num+': '+r.detail);
     const indParts=(crew.induction_warnings||[]);
@@ -1615,6 +1633,23 @@ function renderTimeline(result,details,targets){
   addSecRow('SKIPPED ('+skipped.length+')');skipped.forEach(c=>addTlRow(c,'skipped'));
 
   table.appendChild(tbody);wrap.appendChild(table);
+
+  // Centre the shift midpoint in the 600px viewport, then sync horizontal scroll
+  // across the header + every body row so they move as one.
+  const midH=(callStart+callEnd)/2;
+  let initialScroll=pxD(midH)-VIEWPORT_W/2;
+  initialScroll=Math.max(0,Math.min(initialScroll,innerWidth-VIEWPORT_W));
+  let syncing=false;
+  scrollEls.forEach(el=>{
+    el.scrollLeft=initialScroll;
+    el.addEventListener('scroll',()=>{
+      if(syncing)return;
+      syncing=true;
+      const x=el.scrollLeft;
+      for(const other of scrollEls){if(other!==el)other.scrollLeft=x}
+      syncing=false;
+    },{passive:true});
+  });
 }
 
 // ── CREW SELECTION ──

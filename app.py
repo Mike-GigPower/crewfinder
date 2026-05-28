@@ -78,8 +78,23 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.4.2"
+APP_VERSION    = "3.4.3"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
+
+# ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
+# When True, the app will try the new bulk SmartStaff endpoints first and fall
+# back to HTML scraping on any failure. Safe to leave True even before the
+# endpoints are deployed — the fallback handles 404s transparently.
+# Set to False in config.json (key: "use_bulk_endpoints": false) to force the
+# legacy scraper path for A/B comparison.
+USE_BULK_ENDPOINTS = True
+try:
+    if os.path.exists(CONFIG_FILE):
+        _cfg = json.load(open(CONFIG_FILE))
+        if "use_bulk_endpoints" in _cfg:
+            USE_BULK_ENDPOINTS = bool(_cfg["use_bulk_endpoints"])
+except Exception:
+    pass
 
 
 _ss_sessions     = {}  # per-user SmartStaff sessions keyed by app session id
@@ -808,6 +823,33 @@ def scrape_call_details(ss, booking_id, call_id):
         "end_str":       end_dt.strftime("%H:%M"),
     }, None
 
+def _get_all_crew(ss):
+    """Unified crew-list fetcher: tries the bulk endpoint when enabled, falls
+    back to scrape_all_crew on failure. Same return shape either way:
+    a list of dicts with id, manage_id, name, phone, etc."""
+    if USE_BULK_ENDPOINTS:
+        crew, err = fetch_crew_bulk(ss)
+        if err is None and crew is not None:
+            return crew
+        print(f"[bulk-crew] endpoint failed ({err}); falling back to scraper")
+    return scrape_all_crew(ss)
+
+
+def _get_crew_profile(ss, cid, bulk_lookup=None):
+    """Returns (groups, rating, inductions) for one crew member.
+
+    If bulk_lookup (a dict {id_str: crew_dict from fetch_crew_bulk}) is
+    provided and has data for cid, uses that. Otherwise falls back to the
+    per-crew scrapers. Pass a bulk_lookup to avoid N HTTP calls in loops."""
+    if bulk_lookup is not None:
+        entry = bulk_lookup.get(str(cid))
+        if entry is not None:
+            return entry.get("groups", []), entry.get("rating", 0), entry.get("inductions", {})
+    groups, rating = scrape_crew_profile(ss, cid)
+    inductions     = scrape_crew_inductions(ss, cid)
+    return groups, rating, inductions
+
+
 def scrape_all_crew(ss):
     """Get all crew from all pages."""
     all_crew = []
@@ -977,6 +1019,122 @@ def get_crew_unavailabilities(ss, crew_id, today):
     return unavails
 
 
+def fetch_shifts_bulk(ss, start_dt, end_dt):
+    """Bulk fetch of every confirmed shift + every unavailability in the window,
+    in one HTTP call, via the SmartStaff /ajax/crew/get-shifts-bulk.php endpoint.
+
+    Returns (shifts_by_name, unavails_by_user_id, error):
+        shifts_by_name      : {name: [{start, end, venue, call_id, ...}]}
+        unavails_by_user_id : {user_id_str: [{id, start, end, reason}]}
+        error               : str or None
+
+    On any failure returns ({}, {}, err) so the caller can fall back to the
+    HTML scraper.
+    """
+    start_s = start_dt.strftime("%Y-%m-%d")
+    end_s   = end_dt.strftime("%Y-%m-%d")
+    url = f"{BASE_URL}/ajax/crew/get-shifts-bulk.php?start={start_s}&end={end_s}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return {}, {}, f"request failed: {e}"
+    if resp.status_code != 200:
+        return {}, {}, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return {}, {}, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return {}, {}, data["error"]
+
+    shifts_by_name = {}
+    for s in data.get("shifts", []):
+        name = s.get("user", "")
+        if not name:
+            continue
+        shifts_by_name.setdefault(name, []).append({
+            "start":        s["start"],
+            "end":          s["end"],
+            "venue":        s.get("venue", "") or "",
+            "call_id":      s.get("call_id"),
+            "booking_id":   s.get("booking_id"),
+            "call_name":    s.get("call_name", ""),
+            "booking_name": s.get("booking_name", ""),
+        })
+
+    unavails_by_user_id = {}
+    for u in data.get("unavails", []):
+        uid = str(u.get("user_id", ""))
+        if not uid:
+            continue
+        unavails_by_user_id.setdefault(uid, []).append({
+            "id":     u.get("event_id"),
+            "start":  u["start"],
+            "end":    u["end"],
+            "reason": u.get("reason", "") or "Unavailable",
+        })
+
+    return shifts_by_name, unavails_by_user_id, None
+
+
+def fetch_crew_bulk(ss, include_inactive=False):
+    """Bulk fetch every crew member with name, mobile, rating, groups, and
+    inductions in one HTTP call, via /ajax/crew/list-crew-bulk.php.
+
+    Returns (crew_list, error):
+        crew_list: [{id, name, phone, email, rating, paygradeID, active,
+                     groups: [...], inductions: {venue: {status, completed}}}]
+        error: str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/list-crew-bulk.php"
+    if include_inactive:
+        url += "?active=0"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+
+    out = []
+    for c in data.get("crew", []):
+        out.append({
+            "id":         str(c["id"]),
+            "manage_id":  str(c["id"]),
+            "name":       c.get("name", ""),
+            "phone":      c.get("mobile", "") or "",
+            "email":      c.get("email", "") or "",
+            "rating":     int(c.get("rating") or 0),
+            "paygradeID": int(c.get("paygradeID") or 0),
+            "active":     int(c.get("active") or 0),
+            "groups":     c.get("groups", []) or [],
+            "inductions": c.get("inductions", {}) or {},
+            "ein":        c.get("id"),  # bulk endpoint doesn't yet expose EIN separately
+        })
+    return out, None
+
+
+def _get_shifts_for_window(ss, start_dt, end_dt):
+    """Unified shifts fetcher: tries the bulk endpoint when enabled, falls back
+    to scrape_shifts_from_bookings on failure. Returns just shifts_by_name to
+    match the legacy signature; unavailabilities from the bulk call are
+    discarded here (callers that need them should call fetch_shifts_bulk
+    directly)."""
+    if USE_BULK_ENDPOINTS:
+        shifts, _unavails, err = fetch_shifts_bulk(ss, start_dt, end_dt)
+        if err is None:
+            return shifts
+        # log to stderr but don't crash — fall through to scraper
+        print(f"[bulk-shifts] endpoint failed ({err}); falling back to scraper")
+    return scrape_shifts_from_bookings(ss, start_dt, end_dt)
+
+
 def scrape_shifts_from_bookings(ss, start_dt, end_dt):
     """Build a crew→shifts map by scraping all bookings in the date window.
     Uses scrape_schedule which covers ALL bookings (including fully booked ones).
@@ -1083,8 +1241,8 @@ def trigger_forecast_preload(ss, force=False):
             if not crew_data: _forecast_preload_progress["error"]="No crew cache"; return
             items=list(crew_data.items()); _forecast_preload_progress["total"]=len(items)
 
-            # Build shifts from bookings (more reliable than crew profile pages)
-            shifts_by_name = scrape_shifts_from_bookings(ss, start_dt, end_dt)
+            # Build shifts from bookings (prefers bulk endpoint, falls back to scraper)
+            shifts_by_name = _get_shifts_for_window(ss, start_dt, end_dt)
 
             unavail_cache,_=load_unavail_cache()
             results=[]
@@ -1826,10 +1984,14 @@ def api_availability():
     # Reference time for nearby-shift window (earliest call start)
     ref_start = min(t["start"] for t in targets)
 
-    # Load crew list and cache
-    all_crew      = scrape_all_crew(ss)
+    # Load crew list and cache (prefers bulk endpoint, falls back to scraper)
+    all_crew      = _get_all_crew(ss)
     cache, _      = load_cache()
     updated_cache = dict(cache)
+
+    # Build a lookup from the bulk fetch (if used) so per-crew profile lookups
+    # avoid an extra HTTP request per cache miss.
+    _bulk_lookup = {str(c["id"]): c for c in all_crew} if USE_BULK_ENDPOINTS else None
 
     available = []
     conflicts  = []
@@ -1844,8 +2006,7 @@ def api_availability():
             rating     = cache[cid]["rating"]
             inductions = cache[cid].get("inductions", {})
         else:
-            groups, rating = scrape_crew_profile(ss, cid)
-            inductions     = scrape_crew_inductions(ss, cid)
+            groups, rating, inductions = _get_crew_profile(ss, cid, bulk_lookup=_bulk_lookup)
             updated_cache[crew.get("manage_id", cid)] = {
                 "name":      crew["name"],
                 "phone":     crew.get("phone", ""),
@@ -2048,7 +2209,7 @@ def api_cache_refresh():
         _refresh_progress["started"]   = time.time()
 
         try:
-            all_crew = scrape_all_crew(ss)
+            all_crew = _get_all_crew(ss)
             total = len(all_crew)
             _refresh_progress["total"] = total
 
@@ -2057,10 +2218,15 @@ def api_cache_refresh():
             new_cache = dict(cache)
             lock = threading.Lock()
 
+            # If the bulk endpoint succeeded, every crew row already carries
+            # groups, rating, and inductions — no per-crew HTTP needed.
+            _bulk_lookup = {str(c["id"]): c for c in all_crew} if USE_BULK_ENDPOINTS else None
+
             def fetch_one(crew):
                 try:
-                    groups, rating = scrape_crew_profile(ss, crew["id"])
-                    inductions     = scrape_crew_inductions(ss, crew["id"])
+                    groups, rating, inductions = _get_crew_profile(
+                        ss, crew["id"], bulk_lookup=_bulk_lookup
+                    )
                     return crew["manage_id"], {
                         "name":      crew["name"],
                         "phone":     crew.get("phone", ""),
@@ -2073,7 +2239,9 @@ def api_cache_refresh():
                 except Exception as e:
                     return crew["id"], None, str(e)
 
-            # 10 parallel workers — enough to be fast, not enough to get rate-limited
+            # 10 parallel workers — enough to be fast, not enough to get rate-limited.
+            # When _bulk_lookup is populated, fetch_one is in-memory only and finishes
+            # near-instantly; the worker pool is then just iterating a list.
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {executor.submit(fetch_one, c): c for c in all_crew}
                 for future in as_completed(futures):
@@ -2241,8 +2409,8 @@ def api_forecast():
     today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
     items=list(crew_data.items()); unavail_cache,_=load_unavail_cache()
 
-    # Build shifts from bookings (reliable — not from crew profile pages)
-    shifts_by_name = scrape_shifts_from_bookings(ss, start_dt, end_dt)
+    # Build shifts from bookings (prefers bulk endpoint, falls back to scraper)
+    shifts_by_name = _get_shifts_for_window(ss, start_dt, end_dt)
 
     results=[]
     for cid,info in items:
@@ -2916,7 +3084,7 @@ def execute_goat_tool(tool_name, tool_input, ss):
             groups  = tool_input.get("required_groups", [])
             rating  = tool_input.get("min_rating", 1)
             today   = datetime.now()
-            all_crew = scrape_all_crew(ss)
+            all_crew = _get_all_crew(ss)
             cache, _ = load_cache()
             results = {"available": [], "conflicts": [], "skipped": []}
             targets = []
