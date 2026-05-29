@@ -76,7 +76,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.4.5"
+APP_VERSION    = "3.4.6"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -87,6 +87,7 @@ VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/mai
 # legacy scraper path for A/B comparison.
 USE_BULK_ENDPOINTS = True
 USE_BULK_UNAVAILS_ENDPOINT = True
+USE_BULK_BOOKED_CREW_ENDPOINT = True
 try:
     if os.path.exists(CONFIG_FILE):
         _cfg = json.load(open(CONFIG_FILE))
@@ -94,6 +95,8 @@ try:
             USE_BULK_ENDPOINTS = bool(_cfg["use_bulk_endpoints"])
         if "use_bulk_unavails_endpoint" in _cfg:
             USE_BULK_UNAVAILS_ENDPOINT = bool(_cfg["use_bulk_unavails_endpoint"])
+        if "use_bulk_booked_crew_endpoint" in _cfg:
+            USE_BULK_BOOKED_CREW_ENDPOINT = bool(_cfg["use_bulk_booked_crew_endpoint"])
 except Exception:
     pass
 
@@ -1072,6 +1075,51 @@ def fetch_unavails_bulk(ss, start_dt, end_dt):
         })
 
     return unavails_by_user_id, None
+
+
+def fetch_booked_crew_bulk(ss, start_dt, end_dt):
+    """Bulk fetch of every confirmed (status=5) crew-call assignment in the
+    window via the SmartStaff /ajax/crew/get-booked-crew-bulk.php endpoint.
+
+    Returns (assignments, error):
+        assignments : list of {call_id, user_id, name, start, end, venue}
+                      start/end are ISO strings (datetime conversion happens
+                      at the consumer); venue may be empty string.
+        error       : str or None
+
+    On any failure returns ([], err) so the caller can fall back gracefully
+    (or, for the schedule clash detection, simply skip the feature).
+    """
+    start_s = start_dt.strftime("%Y-%m-%d")
+    end_s   = end_dt.strftime("%Y-%m-%d")
+    url = f"{BASE_URL}/ajax/crew/get-booked-crew-bulk.php?start={start_s}&end={end_s}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return [], f"request failed: {e}"
+    if resp.status_code != 200:
+        return [], f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return [], f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return [], data["error"]
+
+    assignments = []
+    for a in data.get("assignments", []):
+        # Decode HTML entities in names (the endpoint emits things like "O&#39;Brien")
+        from html import unescape
+        assignments.append({
+            "call_id": a.get("call_id"),
+            "user_id": a.get("user_id"),
+            "name":    unescape(a.get("user", "")),
+            "start":   a["start"],
+            "end":     a["end"],
+            "venue":   a.get("venue", "") or "",
+        })
+
+    return assignments, None
 
 
 def _get_unavails_for_window(ss, start_dt, end_dt):
@@ -2589,7 +2637,15 @@ _schedule_cache = {}  # {sid: {data, at}}
 
 @app.route("/api/schedule")
 def api_schedule():
-    """Return all calls for the next 14 days grouped by booking."""
+    """Return all calls for the next 14 days grouped by booking, with
+    server-side clash detection per call (3.4.6).
+
+    A call is "clashed" if any of its confirmed crew has another confirmed
+    assignment in the same window that triggers check_conflict — i.e. an
+    overlap (Rule 1), a long-shift gap violation (Rule 2), or a venue
+    change without enough buffer (Rule 3). Single source of truth with
+    Crew Finder; the front-end just renders what we deliver.
+    """
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
@@ -2620,14 +2676,98 @@ def api_schedule():
         bookings[bid]["calls"].append(c)
 
     # Build date axis
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    today  = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    dates  = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    end_dt = today + timedelta(days=days)
+
+    # ── Server-side clash detection (3.4.6) ────────────────────────────────
+    # Fetch every confirmed crew-call assignment in the window via the bulk
+    # endpoint. For each crew member, walk every pair of their assignments
+    # and run check_conflict. Attach clashes to each affected call so the
+    # front-end can render orange "clash" cells without re-deriving.
+    #
+    # Feature-flagged: if the endpoint isn't deployed yet, schedule still
+    # works, just without clash detection.
+    clashes_by_call = {}  # {call_id_str: [{name, against_call, reason}]}
+    crew_by_call    = {}  # {call_id_str: [{user_id, name}]}
+    if USE_BULK_BOOKED_CREW_ENDPOINT:
+        assignments, err = fetch_booked_crew_bulk(ss, today, end_dt)
+        if err is None:
+            # Group assignments by user_id so each crew's calls are together
+            by_user = {}
+            for a in assignments:
+                uid = a.get("user_id")
+                if uid is None:
+                    continue
+                by_user.setdefault(uid, []).append(a)
+                # Also build the per-call crew roster for the response
+                cid = str(a.get("call_id", ""))
+                if cid:
+                    crew_by_call.setdefault(cid, []).append({
+                        "user_id": uid,
+                        "name":    a.get("name", ""),
+                    })
+
+            # For each user with 2+ assignments, check every pair against
+            # check_conflict. If a pair clashes, BOTH calls get a clash entry.
+            for uid, user_assignments in by_user.items():
+                if len(user_assignments) < 2:
+                    continue
+                # Parse each assignment's datetimes once
+                parsed = []
+                for a in user_assignments:
+                    try:
+                        parsed.append({
+                            "call_id": a.get("call_id"),
+                            "name":    a.get("name", ""),
+                            "start":   datetime.fromisoformat(a["start"]),
+                            "end":     datetime.fromisoformat(a["end"]),
+                            "venue":   a.get("venue", "") or "",
+                            "raw":     a,  # for check_conflict shape
+                        })
+                    except (KeyError, ValueError):
+                        continue
+                # Pairwise: for each call A, check_conflict against every other
+                # call B's shift as if B were the "existing shift" and A the
+                # "target". If conflict, record on call A (and symmetrically
+                # the same will be detected when A is the "other" for B).
+                for i, a_call in enumerate(parsed):
+                    other_shifts = [
+                        {"start": p["raw"]["start"], "end": p["raw"]["end"],
+                         "venue": p["venue"]}
+                        for j, p in enumerate(parsed) if j != i
+                    ]
+                    if not other_shifts:
+                        continue
+                    conflict, reason = check_conflict(
+                        other_shifts,
+                        a_call["start"],
+                        a_call["end"],
+                        a_call["venue"],
+                    )
+                    if conflict:
+                        cid = str(a_call["call_id"])
+                        clashes_by_call.setdefault(cid, []).append({
+                            "user_id": uid,
+                            "name":    a_call["name"],
+                            "reason":  reason,
+                        })
+        # else: endpoint failed — proceed with no clash detection (silent fallback)
+
+    # Attach crew + clashes to each call in the payload
+    bookings_list = list(bookings.values())
+    for b in bookings_list:
+        for c in b["calls"]:
+            cid_str = str(c.get("call_id", ""))
+            c["crew"]    = crew_by_call.get(cid_str, [])
+            c["clashes"] = clashes_by_call.get(cid_str, [])
 
     payload = {
-        "days":     days,
-        "dates":    dates,
-        "bookings": list(bookings.values()),
+        "days":        days,
+        "dates":       dates,
+        "bookings":    bookings_list,
         "total_calls": len(calls),
+        "total_clashes": sum(len(v) for v in clashes_by_call.values()),
     }
     _schedule_cache[key] = {"data": payload, "at": datetime.now()}
     return jsonify(payload)

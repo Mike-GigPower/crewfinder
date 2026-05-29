@@ -743,6 +743,8 @@ tr.skipped{opacity:.6}
           <span style="font-size:9px;color:var(--muted)">Partial</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(227,30,36,0.15);border-left:2px solid var(--accent2);display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Unfilled</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(249,115,22,0.2);border-left:2px solid #f97316;display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Clash</span>
         </div>
         <button class="btn" onclick="loadSchedule(true)" style="margin-left:auto">⟳ Refresh</button>
         <span id="sched-summary" style="font-size:10px;color:var(--muted)"></span>
@@ -3367,7 +3369,16 @@ async function loadSchedule(force=false){
     const data = await resp.json();
     if(data.error){ alert('Schedule error: ' + data.error); return; }
     _schedData = data;
-    _schedCrewIndex = {};  // reset clash index for fresh data
+    _schedCrewIndex   = {};  // reset clash index for fresh data
+    _schedClashesByCall = {};  // server-side clashes from /api/schedule, keyed by call_id (3.4.6)
+    // Populate from the schedule payload so expanded-call rendering can find clashes
+    (_schedData.bookings || []).forEach(b => {
+      (b.calls || []).forEach(c => {
+        if(c.clashes && c.clashes.length > 0){
+          _schedClashesByCall[String(c.call_id)] = c.clashes;
+        }
+      });
+    });
     // Seed the all-full baseline from this freshly loaded data so the starburst
     // egg fires only when a *subsequent* change tips the schedule into fully crewed,
     // not when an already-full schedule is first displayed.
@@ -3463,9 +3474,20 @@ function renderSchedule(){
       const dayCalls  = callsByDay[d];
       const isToday   = d === today;
       const blocks = dayCalls.map(c => {
-        const cls    = c.full ? 'full' : c.booked > 0 ? 'partial' : 'empty';
+        // Clash (3.4.6) — server-detected confirmed-crew double-booking.
+        // Takes precedence over staffing colour: even a 4/4 booked call
+        // gets the orange clash marker if any of its crew clashes elsewhere.
+        const hasClash = (c.clashes && c.clashes.length > 0);
+        const cls    = hasClash ? 'clash' : (c.full ? 'full' : c.booked > 0 ? 'partial' : 'empty');
         const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
-        const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        let clashLabel = '';
+        if(hasClash){
+          const names = c.clashes.map(x => x.name);
+          const shown = names.slice(0, 3).join(', ');
+          const more  = names.length > 3 ? ` +${names.length - 3} more` : '';
+          clashLabel  = ` · ⚡ Clash: ${shown}${more}`;
+        }
+        const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h${clashLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         return `<div class="sched-call-block ${cls}" title="${safeTitle}"
                      data-call-id-block="${c.call_id}"
                      onclick="schedJumpToCrewFinder('${c.booking_id}','${c.call_id}')"
@@ -3534,7 +3556,8 @@ function renderSchedule(){
     html += `<div id="${bid}-calls" style="display:none">`;
 
     for(const call of booking.calls){
-      const cls    = call.full ? 'full' : call.booked > 0 ? 'partial' : 'empty';
+      const hasClash = (call.clashes && call.clashes.length > 0);
+      const cls    = hasClash ? 'clash' : (call.full ? 'full' : call.booked > 0 ? 'partial' : 'empty');
       const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)'};
       const statusColor = colors[cls];
 
@@ -3550,7 +3573,7 @@ function renderSchedule(){
                  ${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
                  data-call-id-block="${call.call_id}"
                  onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
-                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}">
+                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?' · ⚡ '+call.clashes.length+' clash'+(call.clashes.length>1?'es':'')+': '+call.clashes.slice(0,3).map(x=>x.name).join(', ')+(call.clashes.length>3?' +'+(call.clashes.length-3)+' more':''):''}">
               <div style="font-size:7px;opacity:.7">${call.time}</div>
               ${call.booked}/${call.required}
             </div>
@@ -3641,6 +3664,7 @@ function renderSchedule(){
 // _schedCrewIndex: {crewName: [{call_id, booking_id, start_iso, end_iso, call_name}]}
 // Built lazily as crew are loaded; used to detect double-bookings.
 let _schedCrewIndex = {};
+let _schedClashesByCall = {};
 
 function schedIndexCrew(callMeta, crewList){
   // callMeta: {call_id, booking_id, start_iso, end_iso, call_name}
@@ -3690,9 +3714,17 @@ function renderCallStatusBadge(el, data, callMeta){
   const unfilled = Math.max(0, required - confirmed - waiting - declined);
   let html = '';
 
-  // Detect clashes if crew list and call meta provided
+  // Clash detection now happens server-side (3.4.6) — see /api/schedule's
+  // clashes_by_call. The expanded call detail still shows the per-crew
+  // breakdown of which crew clash, which we read from callMeta.clashes if
+  // present (an array of {user_id, name, reason}). Falls back to the
+  // legacy client-side detection if the server didn't supply clashes —
+  // ensures the schedule still works when talking to an older app.
   let clashing = new Set();
-  if(crew && callMeta){
+  if(callMeta && Array.isArray(callMeta.clashes) && callMeta.clashes.length > 0){
+    callMeta.clashes.forEach(c => clashing.add(c.name));
+  } else if(crew && callMeta){
+    // Fallback path
     schedIndexCrew(callMeta, crew);
     clashing = schedFindClashes(callMeta, crew);
     if(clashing.size > 0) schedMarkCallClash(callMeta.call_id, true);
@@ -3734,6 +3766,25 @@ function toggleSchedBooking(bid){
   calls.style.display = open ? '' : 'none';
   arrow.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
 
+  // On expand, immediately render any server-detected clashes (3.4.6) from
+  // the global lookup — no need to wait for the lazy crew fetch. Sets the
+  // <span data-crew-list> inline so the operator sees clashing crew names
+  // right away when expanding a booking.
+  if(open){
+    calls.querySelectorAll('[data-crew-list]').forEach(crewEl => {
+      const callId = crewEl.dataset.crewList;
+      const clashes = _schedClashesByCall[String(callId)] || [];
+      if(clashes.length > 0){
+        crewEl.innerHTML = '<span style="font-size:9px;color:#f97316;font-weight:700;margin-right:6px">⚡ Clashing:</span>'
+          + clashes.map(c => '<span class="crew-clash" style="font-size:9px;margin-right:6px" title="'+(c.reason||'')+'">' + c.name + '</span>').join('');
+        crewEl.style.display = '';
+      } else {
+        crewEl.innerHTML = '';
+        crewEl.style.display = 'none';
+      }
+    });
+  }
+
   // Lazy-load call status on first expand
   if(open && !calls.dataset.statusLoaded){
     calls.dataset.statusLoaded = '1';
@@ -3746,6 +3797,7 @@ function toggleSchedBooking(bid){
         start_iso:  metaParts[2],
         end_iso:    metaParts[3],
         call_name:  metaParts[4] || '',
+        clashes:    _schedClashesByCall[String(metaParts[0])] || [],
       } : null;
       try{
         // Fetch status counts and booked crew in parallel

@@ -1,6 +1,6 @@
 {
-    "version": "3.4.5",
+    "version": "3.4.6",
     "release_date": "2026-05-29",
-    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.5/TheGOAT.dmg",
-    "release_notes": "Crew Utilization unavailabilities are now hour-accurate (Option Y): the bulk SmartStaff endpoint preserves partial-day periods that the previous date-only scrape collapsed to whole days or dropped entirely. Forecast and unavailability disk caches removed in favour of sub-second live reads via the bulk endpoints. Auto-refresh background thread retired. Header indicator renamed 'Roster' to clarify it now refers only to the crew roster cache."
+    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.6/TheGOAT.dmg",
+    "release_notes": "Schedule tab now detects and surfaces crew clashes — calls where a confirmed crew member is also booked on an overlapping or otherwise conflicting call. Detection runs server-side using the same check_conflict rules as Crew Finder (Rule 1 overlap, Rule 2 long-shift gap, Rule 3 venue change), so the schedule and Crew Finder always agree about what's a conflict. Clashing cells render orange with a pulsing border; hovering a cell or expanding a booking shows the clashing crew member names and the specific rule violation."
 }
