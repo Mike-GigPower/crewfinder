@@ -1,6 +1,6 @@
 {
-    "version": "3.4.3",
-    "release_date": "2026-05-28",
-    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.3/TheGOAT.dmg",
-    "release_notes": "Scrollable Crew Finder timeline (24h centred on shift, scrolls 24h either side). Bulk SmartStaff endpoints for shifts and crew profiles - dramatically faster forecast preload and cache refresh, with HTML scraping retained as automatic fallback. Admin-only guard added to calendar resize/relocate endpoints."
+    "version": "3.4.4",
+    "release_date": "2026-05-29",
+    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.4/TheGOAT.dmg",
+    "release_notes": "Crew Finder availability now uses the bulk shifts endpoint end-to-end, filtered to confirmed-only commitments for conflict detection. Non-confirmed shifts (declined/pending/no-show) are surfaced informationally on the timeline as blue bars so the operator has context. Forecast utilisation hours now correctly exclude non-confirmed shifts. Already-booked crew no longer self-conflict with their target call. CONFLICTED label now renders correctly in the availability cell."
 }
