@@ -88,11 +88,14 @@ VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/mai
 # Set to False in config.json (key: "use_bulk_endpoints": false) to force the
 # legacy scraper path for A/B comparison.
 USE_BULK_ENDPOINTS = True
+USE_BULK_UNAVAILS_ENDPOINT = True
 try:
     if os.path.exists(CONFIG_FILE):
         _cfg = json.load(open(CONFIG_FILE))
         if "use_bulk_endpoints" in _cfg:
             USE_BULK_ENDPOINTS = bool(_cfg["use_bulk_endpoints"])
+        if "use_bulk_unavails_endpoint" in _cfg:
+            USE_BULK_UNAVAILS_ENDPOINT = bool(_cfg["use_bulk_unavails_endpoint"])
 except Exception:
     pass
 
@@ -1083,6 +1086,85 @@ def fetch_shifts_bulk(ss, start_dt, end_dt):
     return shifts_by_name, unavails_by_user_id, None
 
 
+def fetch_unavails_bulk(ss, start_dt, end_dt):
+    """Bulk fetch of every unavailability (type=1) in the window via the
+    SmartStaff /ajax/crew/get-unavailabilities-bulk.php endpoint.
+
+    Replaces the per-crew HTML scrape (get_crew_unavailabilities) which lost
+    hour-level data and dropped same-day entries shorter than a full day.
+
+    Returns (unavails_by_user_id, error):
+        unavails_by_user_id : {user_id_str: [{id, start, end, reason}]}
+        error               : str or None
+
+    On any failure returns ({}, err) so the caller can fall back to the
+    legacy per-crew HTML scrape.
+    """
+    start_s = start_dt.strftime("%Y-%m-%d")
+    end_s   = end_dt.strftime("%Y-%m-%d")
+    url = f"{BASE_URL}/ajax/crew/get-unavailabilities-bulk.php?start={start_s}&end={end_s}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return {}, f"request failed: {e}"
+    if resp.status_code != 200:
+        return {}, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return {}, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return {}, data["error"]
+
+    unavails_by_user_id = {}
+    for u in data.get("unavails", []):
+        uid = str(u.get("user_id", ""))
+        if not uid:
+            continue
+        unavails_by_user_id.setdefault(uid, []).append({
+            "id":     u.get("event_id"),
+            "start":  u["start"],
+            "end":    u["end"],
+            "reason": u.get("reason", "") or u.get("title", "") or "Unavailable",
+        })
+
+    return unavails_by_user_id, None
+
+
+def _get_unavails_for_window(ss, start_dt, end_dt):
+    """Unified unavailability fetcher: tries the bulk endpoint when enabled,
+    falls back to per-crew HTML scrape on failure. Returns
+    unavails_by_user_id keyed by str(crew_id), matching the legacy
+    unavail_cache shape so callers can drop in the result without coercion.
+
+    Fallback iterates all crew via the existing get_crew_unavailabilities
+    scrape; this is slow (~2 min for 392 crew) but covers the case where the
+    new endpoint is not yet deployed on a given SmartStaff instance.
+    """
+    if USE_BULK_UNAVAILS_ENDPOINT:
+        unavails, err = fetch_unavails_bulk(ss, start_dt, end_dt)
+        if err is None:
+            return unavails
+        print(f"[bulk-unavails] endpoint failed ({err}); falling back to per-crew scrape")
+    # Fallback: per-crew HTML scrape. Threaded to match the legacy preload's
+    # behaviour. `today` is the search-from date so the scraper drops past
+    # unavails consistent with its existing filter.
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    crew_data, _ = load_cache()
+    if not crew_data:
+        return {}
+    today = start_dt
+    out = {}
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        uf = {executor.submit(get_crew_unavailabilities, ss, cid, today): cid
+              for cid, _ in crew_data.items()}
+        for future in _as_completed(uf):
+            cid = uf[future]
+            try:    out[str(cid)] = future.result()
+            except: out[str(cid)] = []
+    return out
+
+
 def fetch_crew_bulk(ss, include_inactive=False):
     """Bulk fetch every crew member with name, mobile, rating, groups, and
     inductions in one HTTP call, via /ajax/crew/list-crew-bulk.php.
@@ -1330,18 +1412,18 @@ def trigger_unavail_preload(ss, force=False):
             if not crew_data:
                 _unavail_preload_progress["error"]="crew cache empty — rebuild crew cache first"
                 return
-            items=list(crew_data.items()); _unavail_preload_progress["total"]=len(items)
-            today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            unavail_map={}
-            with ThreadPoolExecutor(max_workers=15) as executor:
-                uf={executor.submit(get_crew_unavailabilities,ss,cid,today):cid for cid,_ in items}
-                for future in as_completed(uf):
-                    cid=uf[future]
-                    try: unavail_map[cid]=future.result()
-                    except: unavail_map[cid]=[]
-                    _unavail_preload_progress["done"]+=1
-            # Overlay GOAT-written hour-level times, but never let it sink the save
+            _unavail_preload_progress["total"]=len(crew_data)
+            today  = datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
+            # 90-day forward window — wide enough for forecast (28d) plus future
+            # holidays/leave that operators care about, well under the 120-day
+            # endpoint cap. Hour-accurate times preserved (Option Y).
+            end_dt = today + timedelta(days=90)
+            unavail_map = _get_unavails_for_window(ss, today, end_dt)
+            _unavail_preload_progress["done"] = len(unavail_map)
+            # Overlay GOAT-written hour-level times, but never let it sink the save.
+            # Still relevant for any entries written via the in-app modal before a
+            # SmartStaff sync; the overlay merges hour data from unavail_times.json
+            # on top of whatever the bulk endpoint returned.
             try:
                 unavail_map = overlay_unavail_times(unavail_map)
             except Exception as _oe:
