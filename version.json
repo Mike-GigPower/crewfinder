@@ -1,6 +1,6 @@
 {
-    "version": "3.4.4",
+    "version": "3.4.5",
     "release_date": "2026-05-29",
-    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.4/TheGOAT.dmg",
-    "release_notes": "Crew Finder availability now uses the bulk shifts endpoint end-to-end, filtered to confirmed-only commitments for conflict detection. Non-confirmed shifts (declined/pending/no-show) are surfaced informationally on the timeline as blue bars so the operator has context. Forecast utilisation hours now correctly exclude non-confirmed shifts. Already-booked crew no longer self-conflict with their target call. CONFLICTED label now renders correctly in the availability cell."
+    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.5/TheGOAT.dmg",
+    "release_notes": "Crew Utilization unavailabilities are now hour-accurate (Option Y): the bulk SmartStaff endpoint preserves partial-day periods that the previous date-only scrape collapsed to whole days or dropped entirely. Forecast and unavailability disk caches removed in favour of sub-second live reads via the bulk endpoints. Auto-refresh background thread retired. Header indicator renamed 'Roster' to clarify it now refers only to the crew roster cache."
 }
