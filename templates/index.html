@@ -175,6 +175,7 @@ tr.skipped{opacity:.6}
 .tl-bar:hover{opacity:1}
 .tl-bar.bar-available{background:var(--shift-bar)}
 .tl-bar.bar-conflict{background:var(--conflict)}
+.tl-bar.bar-info{background:rgba(59,130,246,0.65);border:1px solid rgba(59,130,246,0.85)}
 .tl-bar.bar-unavail{background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)}
 .tl-bar[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:#1a1d23;color:#fff;font-size:10px;padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:200;pointer-events:none}
 .tl-time-header{position:relative;height:20px}
@@ -1371,7 +1372,15 @@ function renderResults(result,details,targets){
 }
 
 // ── STATUS HELPERS ──
-function statusLabel(crew, targets){
+function statusLabel(crew, targets, rowStatus){
+  // CONFLICTED/SKIPPED take precedence — if the row landed in a non-available
+  // bucket, say so regardless of how many calls were searched.
+  if(rowStatus==='conflict'){
+    return '<span class="status-conflict">CONFLICTED</span>';
+  }
+  if(rowStatus==='skipped'){
+    return '<span class="status-skipped">SKIPPED</span>';
+  }
   if(!targets||targets.length<=1){
     return crew.partial
       ? '<span class="status-partial">'+(crew.avail_count)+'/'+crew.total_calls+' calls</span>'
@@ -1471,7 +1480,7 @@ function addTableRow(tbody,crew,status,targets){
   const nameTd=mkTd('name-cell',nameHtml);
   if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
   tr.appendChild(nameTd);
-  tr.appendChild(mkTd('',statusLabel(crew,targets)+breakdownHtml(crew)));
+  tr.appendChild(mkTd('',statusLabel(crew,targets,status)+breakdownHtml(crew)));
   tr.appendChild(mkTd('phone-cell',ph));
   tr.appendChild(mkTd('rating-cell',crew.rating));
   tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
@@ -1563,7 +1572,7 @@ function renderTimeline(result,details,targets){
     function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
     const ph=phoneLink(crew.phone);
     tr.appendChild(mkTd('name-cell',crew.name+inductionWarnHtml(crew)));
-    tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null)+breakdownHtml(crew)));
+    tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
     tr.appendChild(mkTd('phone-cell',ph));
     tr.appendChild(mkTd('rating-cell',crew.rating));
     tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
@@ -1583,18 +1592,23 @@ function renderTimeline(result,details,targets){
       inner.appendChild(bg);
     });
 
-    // Shift bars
+    // Shift bars — colour by per-shift status, not by row status:
+    //   confirmed (status==5)  → red  (bar-conflict)  — a real commitment
+    //   anything else          → blue (bar-info)      — informational only
+    // A declined/pending/noshow shift doesn't block the crew member from new
+    // work, but the operator should see it on the timeline for context.
     if(status!=='skipped'){
       (crew.shifts||[]).forEach(s=>{
         const sh=dtToH(s.start,targetDate),eh=dtToH(s.end,targetDate);
         if(eh<tlMin||sh>tlMax)return;
         const bar=document.createElement('div');
-        const barStatus=status==='partial'?'conflict':status;
+        const barStatus=(s.status===5)?'conflict':'info';
         bar.className='tl-bar bar-'+barStatus;
         const lp=pxD(Math.max(sh,tlMin)),rp=pxD(Math.min(eh,tlMax));
         bar.style.left=lp+'px';
         bar.style.width=(rp-lp)+'px';
-        bar.dataset.tip=hToLabel(sh,targetDate)+'-'+hToLabel(eh,targetDate)+' @ '+(s.venue||'?');
+        const statusLabel=(s.status===5)?'Confirmed':(s.status===6)?'Declined':(s.status===1)?'Pending':(s.status===8)?'No Show':'Unconfirmed';
+        bar.dataset.tip=hToLabel(sh,targetDate)+'-'+hToLabel(eh,targetDate)+' @ '+(s.venue||'?')+' ('+statusLabel+')';
         inner.appendChild(bar);
       });
       (crew.unavails||[]).forEach(u=>{

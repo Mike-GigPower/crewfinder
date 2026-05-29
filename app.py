@@ -940,7 +940,12 @@ def scrape_crew_inductions(ss, crew_id):
     return inductions
 
 def get_crew_shifts(ss, crew_id, today):
-    """Get confirmed future shifts for a crew member, paginating through all pages.
+    """DEPRECATED (Crew Finder migration): superseded by fetch_shifts_bulk /
+    _get_shifts_for_window. No longer called by availability search or the GOAT
+    tools; retained as reference and pending removal once the bulk path has
+    proven stable in production.
+
+    Get confirmed future shifts for a crew member, paginating through all pages.
 
     The plain HTTP response wraps data in <b> tags:
       <b>May 24, 2026 - 22:00 Hrs</b><br /><b>Length:</b> 4 Hours ... Confirmed
@@ -1060,6 +1065,7 @@ def fetch_shifts_bulk(ss, start_dt, end_dt):
             "booking_id":   s.get("booking_id"),
             "call_name":    s.get("call_name", ""),
             "booking_name": s.get("booking_name", ""),
+            "status":       s.get("status"),   # 5=confirmed, 1=pending, 6=declined, 8=noshow, 0=unset, None=orphan
         })
 
     unavails_by_user_id = {}
@@ -1241,14 +1247,16 @@ def trigger_forecast_preload(ss, force=False):
             if not crew_data: _forecast_preload_progress["error"]="No crew cache"; return
             items=list(crew_data.items()); _forecast_preload_progress["total"]=len(items)
 
-            # Build shifts from bookings (prefers bulk endpoint, falls back to scraper)
+            # Build shifts from bookings (prefers bulk endpoint, falls back to scraper).
+            # Filtered to confirmed-only (status==5) so utilisation hours reflect
+            # committed work, not declined/pending/orphan entries.
             shifts_by_name = _get_shifts_for_window(ss, start_dt, end_dt)
 
             unavail_cache,_=load_unavail_cache()
             results=[]
             for i,(cid,info) in enumerate(items):
                 name = info.get("name","")
-                shifts  = shifts_by_name.get(name, [])
+                shifts  = [s for s in shifts_by_name.get(name, []) if s.get("status") == 5]
                 unavails= unavail_cache.get(cid,[])
                 ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
                 wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
@@ -2040,28 +2048,36 @@ def api_availability():
         else:
             candidates.append(crew)
 
-    # Step 2: fetch shifts; unavailabilities from disk cache (instant)
-    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    # Step 2: fetch shifts; unavailabilities from disk cache (instant).
+    # Single bulk fetch over the target window (prefers the bulk endpoint, falls
+    # back to the bookings scraper). Replaces the former per-crew get_crew_shifts
+    # thread pool, which under-reported upcoming bookings. Keyed by crew NAME.
+    #
+    # Each shift carries a status from call_crew_map (5=confirmed, 6=declined,
+    # 1=pending, 8=noshow, 0=unset, None=orphan). Only status==5 represents a
+    # commitment that should cause a conflict; other statuses pass through to
+    # the timeline as informational so the operator has context.
     unavail_cache, _ = load_unavail_cache()
-    shift_map = {}
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        sf = {executor.submit(get_crew_shifts, ss, c["id"], today): c["id"] for c in candidates}
-        for future in _as_completed(sf):
-            cid = sf[future]
-            try:    shift_map[cid] = future.result()
-            except: shift_map[cid] = []
+    win_start = min(t["start"] for t in targets) - timedelta(days=2)
+    win_end   = max(t["end"]   for t in targets) + timedelta(days=2)
+    shifts_by_name = _get_shifts_for_window(ss, win_start, win_end)
 
     # Step 3: check conflicts using shifts + cached unavailabilities
     for crew in candidates:
-        cid      = crew["id"]
-        shifts   = shift_map.get(cid, [])
-        unavails = unavail_cache.get(cid, [])
+        cid          = crew["id"]
+        all_shifts   = shifts_by_name.get(crew["name"], [])
+        shifts       = [s for s in all_shifts if s.get("status") == 5]  # conflict checks: confirmed only
+        unavails     = unavail_cache.get(cid, [])
         inductions = crew["inductions"]
 
         call_results = []
         any_conflict = False
         for t in targets:
-            conflict, reason = check_conflict(shifts, t["start"], t["end"], t["venue"])
+            # Exclude this target call's own shifts so a crew member already
+            # booked on this call doesn't trigger a self-conflict (they're
+            # already surfaced in the "Already Booked" section at the top).
+            shifts_for_target = [s for s in shifts if str(s.get("call_id")) != str(t["call_id"])]
+            conflict, reason = check_conflict(shifts_for_target, t["start"], t["end"], t["venue"])
             if not conflict:
                 for u in unavails:
                     if datetime.fromisoformat(u["start"]) <= t["end"] and datetime.fromisoformat(u["end"]) >= t["start"]:
@@ -2100,10 +2116,12 @@ def api_availability():
         ))
 
         # Nearby shifts for timeline — include shifts within 3 days of ANY target call,
-        # plus any shift explicitly cited in a conflict reason (may be further away)
+        # plus any shift explicitly cited in a conflict reason (may be further away).
+        # NOTE: iterate all_shifts (not the confirmed-only `shifts`) so the timeline
+        # can render non-confirmed entries informationally — see status filter above.
         nearby_set = set()
         nearby = []
-        for s in shifts:
+        for s in all_shifts:
             s_start = datetime.fromisoformat(s["start"])
             in_window = any(
                 abs((s_start - t["start"]).total_seconds()) <= 3 * 86400
@@ -2409,13 +2427,15 @@ def api_forecast():
     today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
     items=list(crew_data.items()); unavail_cache,_=load_unavail_cache()
 
-    # Build shifts from bookings (prefers bulk endpoint, falls back to scraper)
+    # Build shifts from bookings (prefers bulk endpoint, falls back to scraper).
+    # Filtered to confirmed-only (status==5) so utilisation hours reflect
+    # committed work, not declined/pending/orphan entries.
     shifts_by_name = _get_shifts_for_window(ss, start_dt, end_dt)
 
     results=[]
     for cid,info in items:
         name    = info.get("name","")
-        shifts  = shifts_by_name.get(name, [])
+        shifts  = [s for s in shifts_by_name.get(name, []) if s.get("status") == 5]
         unavails= unavail_cache.get(cid,[])
         ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
         wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
@@ -3087,6 +3107,16 @@ def execute_goat_tool(tool_name, tool_input, ss):
             if not targets:
                 return "No valid calls provided"
 
+            # Single bulk fetch over the target window (prefers bulk endpoint,
+            # falls back to bookings scraper). Keyed by crew NAME. Replaces the
+            # former per-crew get_crew_shifts call that under-reported bookings.
+            # Filtered to confirmed-only (status==5) for conflict checks; the
+            # GOAT search_availability tool has no timeline UI so we don't need
+            # to surface non-confirmed entries here.
+            win_start = min(t["start"] for t in targets) - timedelta(days=2)
+            win_end   = max(t["end"]   for t in targets) + timedelta(days=2)
+            shifts_by_name = _get_shifts_for_window(ss, win_start, win_end)
+
             count = 0
             for crew in all_crew[:50]:  # cap at 50 for speed
                 cid = crew["id"]
@@ -3099,10 +3129,13 @@ def execute_goat_tool(tool_name, tool_input, ss):
                 if crew_rating < rating:
                     results["skipped"].append(crew["name"])
                     continue
-                shifts = get_crew_shifts(ss, cid, today)
+                shifts = [s for s in shifts_by_name.get(crew["name"], []) if s.get("status") == 5]
                 conflict = False
                 for t in targets:
-                    c_flag, reason = check_conflict(shifts, t["start"], t["end"], t.get("venue",""))
+                    # Exclude this target call's own shifts so a crew member already
+                    # booked on this call doesn't trigger a self-conflict.
+                    shifts_for_target = [s for s in shifts if str(s.get("call_id")) != str(t.get("call_id"))]
+                    c_flag, reason = check_conflict(shifts_for_target, t["start"], t["end"], t.get("venue",""))
                     if c_flag:
                         results["conflicts"].append({"name": crew["name"], "reason": reason})
                         conflict = True
@@ -3159,9 +3192,15 @@ def execute_goat_tool(tool_name, tool_input, ss):
             end_dt    = start_dt + timedelta(days=days)
             crew_data, _ = load_cache()
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            # Single bulk fetch over the forecast window (prefers bulk endpoint,
+            # falls back to bookings scraper). Keyed by crew NAME. Replaces the
+            # former per-crew get_crew_shifts call that under-reported bookings.
+            # Filtered to confirmed-only (status==5) so total_hours reflects
+            # committed work, not declined/pending entries.
+            shifts_by_name = _get_shifts_for_window(ss, start_dt, end_dt)
             summary = []
             for cid, info in list(crew_data.items())[:30]:  # cap for speed
-                shifts = get_crew_shifts(ss, cid, today)
+                shifts = [s for s in shifts_by_name.get(info.get("name", ""), []) if s.get("status") == 5]
                 total = sum(
                     (min(datetime.fromisoformat(s["end"]), end_dt) -
                      max(datetime.fromisoformat(s["start"]), start_dt)).total_seconds() / 3600
