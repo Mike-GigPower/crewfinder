@@ -2463,27 +2463,13 @@ async function loadForecast(force=false){
 }
 
 async function updateFcCacheStatus(){
-  try{
-    const resp = await fetch('/api/forecast/preload-status');
-    const d    = await resp.json();
-    const el   = document.getElementById('fc-cache-status');
-    if(!el) return;
-    const fc = d.forecast, uc = d.unavail;
-    if(fc.running){
-      el.textContent = `⟳ shifts ${fc.done}/${fc.total}`;
-      el.style.color = 'var(--accent)';
-    } else if(uc && uc.running){
-      el.textContent = `⟳ unavail ${uc.done}/${uc.total}`;
-      el.style.color = 'var(--accent)';
-    } else if(fc.fresh){
-      const mins = Math.round((fc.cache_age||0)*60);
-      el.textContent = `● cached ${mins}m ago`;
-      el.style.color = 'var(--available)';
-    } else {
-      el.textContent = fc.cache_age ? `● cache ${Math.round(fc.cache_age)}h old` : '● no cache';
-      el.style.color = 'var(--warn)';
-    }
-  } catch(e){}
+  // Forecast and unavail caches were removed in 3.4.5 — every grid view is a
+  // live read of the bulk SmartStaff endpoints. The indicator shows "live" so
+  // the operator knows the data on screen is current as of the last refresh.
+  const el = document.getElementById('fc-cache-status');
+  if(!el) return;
+  el.textContent = '● live';
+  el.style.color = 'var(--available)';
 }
 
 function renderFcGroupChips(){
@@ -3863,8 +3849,8 @@ async function loadCacheStatus(){
     if(!resp.ok)return;
     const data=await resp.json();
     const badge=document.getElementById('cache-badge');
-    if(data.fresh){badge.textContent='Cache: '+data.profiles+' profiles ('+data.age+')';badge.classList.add('fresh')}
-    else{badge.textContent='Cache stale ('+data.age+') — click to refresh';badge.classList.remove('fresh')}
+    if(data.fresh){badge.textContent='Roster: '+data.profiles+' ('+data.age+')';badge.classList.add('fresh')}
+    else{badge.textContent='Roster stale ('+data.age+') — click to refresh';badge.classList.remove('fresh')}
   }catch(e){}
 }
 

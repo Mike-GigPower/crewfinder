@@ -30,11 +30,9 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 CACHE_FILE  = os.path.join(BASE_DIR, "crew_cache.json")
-FORECAST_CACHE_FILE        = os.path.join(BASE_DIR, "forecast_cache.json")
-UNAVAIL_CACHE_FILE         = os.path.join(BASE_DIR, "unavail_cache.json")
+# FORECAST_CACHE_FILE and UNAVAIL_CACHE_FILE removed in 3.4.5 (live reads).
 UNAVAIL_TIMES_FILE         = os.path.join(BASE_DIR, "unavail_times.json")
-FORECAST_CACHE_MAX_AGE_HRS = 1
-UNAVAIL_CACHE_MAX_AGE_HRS  = 4
+# FORECAST_CACHE_MAX_AGE_HRS and UNAVAIL_CACHE_MAX_AGE_HRS removed in 3.4.5.
 BASE_URL    = "https://smartstaffsolutions.com"
 # Allow pointing at a duplicate/staging SmartStaff for testing without editing
 # code: set "base_url" in config.json. Falls back to production above.
@@ -102,35 +100,9 @@ except Exception:
 
 _ss_sessions     = {}  # per-user SmartStaff sessions keyed by app session id
 _keepalive_thread    = None
-_auto_refresh_thread = None
-
-def start_auto_refresh():
-    """Background thread that proactively refreshes caches when stale.
-    Checks every 30 minutes — rebuilds forecast if >1hr old, unavails if >4hrs old.
-    Only runs when an active SS session exists.
-    """
-    global _auto_refresh_thread
-    if _auto_refresh_thread and _auto_refresh_thread.is_alive():
-        return
-    def _loop():
-        import time as _time
-        while True:
-            _time.sleep(1800)  # check every 30 minutes
-            try:
-                ss = get_ss_session()
-                if not ss:
-                    continue
-                _, fc_age = load_forecast_cache()
-                _, uc_age = load_unavail_cache()
-                # Rebuild unavails first (triggers forecast rebuild on completion)
-                if uc_age is None or uc_age >= UNAVAIL_CACHE_MAX_AGE_HRS:
-                    trigger_unavail_preload(ss, force=True)
-                elif fc_age is None or fc_age >= FORECAST_CACHE_MAX_AGE_HRS:
-                    trigger_forecast_preload(ss, force=True)
-            except Exception:
-                pass
-    _auto_refresh_thread = threading.Thread(target=_loop, daemon=True)
-    _auto_refresh_thread.start()
+# Auto-refresh thread removed in 3.4.5 — forecast and unavail caches no longer
+# exist. The crew cache is the only persistent cache and is refreshed
+# explicitly via the in-UI refresh button.
 
 def is_ss_session_valid(ss):
     """Check if a SmartStaff session is still active by hitting a lightweight endpoint."""
@@ -184,8 +156,7 @@ def start_keepalive():
 
 _calls_cache      = {}  # in-memory cache for calls list, keyed by session id
 _refresh_progress          = {}
-_forecast_preload_progress = {}
-_unavail_preload_progress  = {}
+# Preload progress dicts removed in 3.4.5 — no preloads to track.
 
 def get_ss_session():
     """Get SmartStaff session for current user. Auto re-auths if session expired."""
@@ -381,29 +352,8 @@ def save_cache(crew_profiles):
     with open(CACHE_FILE, "w") as f:
         json.dump({"saved_at": datetime.now().isoformat(), "crew": crew_profiles}, f)
 
-def load_forecast_cache():
-    if not os.path.exists(FORECAST_CACHE_FILE): return None, None
-    try:
-        with open(FORECAST_CACHE_FILE) as f: data=json.load(f)
-        return data.get("payload"),(datetime.now()-datetime.fromisoformat(data.get("saved_at","2000-01-01"))).total_seconds()/3600
-    except: return None, None
-
-def save_forecast_cache(payload):
-    try:
-        with open(FORECAST_CACHE_FILE,"w") as f: json.dump({"saved_at":datetime.now().isoformat(),"payload":payload},f)
-    except: pass
-
-def load_unavail_cache():
-    if not os.path.exists(UNAVAIL_CACHE_FILE): return {}, None
-    try:
-        with open(UNAVAIL_CACHE_FILE) as f: data=json.load(f)
-        return data.get("unavails",{}),(datetime.now()-datetime.fromisoformat(data.get("saved_at","2000-01-01"))).total_seconds()/3600
-    except: return {}, None
-
-def save_unavail_cache(unavails):
-    try:
-        with open(UNAVAIL_CACHE_FILE,"w") as f: json.dump({"saved_at":datetime.now().isoformat(),"unavails":unavails},f)
-    except: pass
+# Forecast and unavail disk caches removed in 3.4.5. Both are now sub-second
+# live reads via _get_shifts_for_window and _get_unavails_for_window.
 
 # ── Option X: time sidecar ───────────────────────────────────────────────────
 # The 4-hourly bulk rebuild scrapes the admin Unavailabilities tab, which is
@@ -488,16 +438,16 @@ def _resolve_crew_keys(crew_id):
     return keys
 
 def refresh_crew_unavail_cache(crew_id):
-    """After a write, re-read one crew member's unavailabilities (with real
-    times via the new endpoint) and merge into unavail_cache.json so the change
-    is reflected immediately, without waiting for the 4-hourly bulk rebuild.
-    Also updates the time sidecar so the hours survive the next bulk rebuild.
-    Cache entries keep the same {start, end, reason} shape used elsewhere, plus
-    an 'id' so the UI can offer per-period delete. Returns (ok, error)."""
+    """After a modal write, refresh the time-sidecar for this crew so the next
+    live read can overlay correct hours. In 3.4.5 the unavail cache itself was
+    removed (live reads are sub-second via the bulk endpoint), so this function
+    used to also write to unavail_cache.json — that's no longer needed. The
+    sidecar still earns its place: between a write and the next live read,
+    `overlay_unavail_times` uses it to ensure any in-flight forecast queries
+    see the new entry's correct hours."""
     periods, err = fetch_unavailabilities(crew_id)
     if err:
         return False, err
-    cache, _ = load_unavail_cache()
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     entries = []
     for p in periods:
@@ -505,7 +455,6 @@ def refresh_crew_unavail_cache(crew_id):
             end_dt = datetime.fromisoformat(p["end"])
         except Exception:
             continue
-        # drop tz for naive comparison consistency with existing cache parsing
         end_naive = end_dt.replace(tzinfo=None)
         if end_naive < today:
             continue
@@ -515,14 +464,8 @@ def refresh_crew_unavail_cache(crew_id):
             "end":    end_naive.isoformat(),
             "reason": p.get("reason", "Unavailable"),
         })
-    # Write under every key variant this crew is known by (user_id / manage_id),
-    # so both the forecast (keyed by manage_id) and availability (keyed by id)
-    # readers see the update.
+    # Update the time sidecar under every key this crew is known by
     keys = _resolve_crew_keys(crew_id)
-    for k in keys:
-        cache[k] = entries
-    save_unavail_cache(cache)
-    # Update the time sidecar (same keys) so the bulk rebuild can re-overlay hours
     sidecar = load_unavail_times()
     for k in keys:
         sidecar[k] = [dict(e) for e in entries]
@@ -1314,127 +1257,8 @@ def scrape_shifts_from_bookings(ss, start_dt, end_dt):
     return shifts_by_name
 
 
-def trigger_forecast_preload(ss, force=False):
-    if _forecast_preload_progress.get("running"): return
-    if not force:
-        _, age = load_forecast_cache()
-        if age is not None and age < FORECAST_CACHE_MAX_AGE_HRS: return
-    def preload():
-        import time as _time
-        _forecast_preload_progress.update({"running":True,"started":_time.time(),"done":0,"total":0,"error":None})
-        try:
-            start_dt=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
-            days=28; end_dt=start_dt+timedelta(days=days)
-            crew_data,_=load_cache()
-            if not crew_data: _forecast_preload_progress["error"]="No crew cache"; return
-            items=list(crew_data.items()); _forecast_preload_progress["total"]=len(items)
-
-            # Build shifts from bookings (prefers bulk endpoint, falls back to scraper).
-            # Filtered to confirmed-only (status==5) so utilisation hours reflect
-            # committed work, not declined/pending/orphan entries.
-            shifts_by_name = _get_shifts_for_window(ss, start_dt, end_dt)
-
-            unavail_cache,_=load_unavail_cache()
-            results=[]
-            for i,(cid,info) in enumerate(items):
-                name = info.get("name","")
-                shifts  = [s for s in shifts_by_name.get(name, []) if s.get("status") == 5]
-                unavails= unavail_cache.get(cid,[])
-                ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
-                wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
-                day_hours={}; total_hours=0.0
-                for s in ws:
-                    cs=max(datetime.fromisoformat(s["start"]),start_dt); ce=min(datetime.fromisoformat(s["end"]),end_dt)
-                    total_hours+=(ce-cs).total_seconds()/3600
-                    cur=cs.replace(hour=0,minute=0,second=0,microsecond=0)
-                    while cur<ce:
-                        ds=cur.strftime("%Y-%m-%d")
-                        day_hours[ds]=day_hours.get(ds,0)+(min(ce,cur+timedelta(days=1))-max(cs,cur)).total_seconds()/3600
-                        cur+=timedelta(days=1)
-                day_unavail={}; day_unavail_partial={}; day_unavail_hours={}
-                for u in wu:
-                    u_start = datetime.fromisoformat(u["start"])
-                    u_end   = datetime.fromisoformat(u["end"])
-                    us=max(u_start,start_dt); ue=min(u_end,end_dt)
-                    cur=us.replace(hour=0,minute=0,second=0,microsecond=0)
-                    while cur<=ue:
-                        ds=cur.strftime("%Y-%m-%d")
-                        day_start = cur
-                        day_end   = cur + timedelta(days=1)
-                        # portion of THIS calendar day the period actually covers
-                        cov_start = max(u_start, day_start)
-                        cov_end   = min(u_end,   day_end)
-                        if cov_end > cov_start:
-                            # "full" if it spans essentially the whole day. The date-only
-                            # scraper stores whole days as 00:00–23:59:59, so allow a
-                            # ~2-minute tolerance at the end and start.
-                            starts_at_midnight = (cov_start - day_start).total_seconds() <= 60
-                            ends_at_midnight   = (day_end - cov_end).total_seconds() <= 120
-                            covers_full = starts_at_midnight and ends_at_midnight
-                            if ds not in day_unavail:
-                                day_unavail[ds]=u.get("reason","Unavailable")
-                                day_unavail_partial[ds] = not covers_full
-                                if not covers_full:
-                                    day_unavail_hours[ds] = (cov_start.strftime("%H:%M")
-                                                             + "–" + cov_end.strftime("%H:%M"))
-                            else:
-                                # another period also touches this day; only stays
-                                # "partial" if every covering period is partial
-                                if covers_full:
-                                    day_unavail_partial[ds] = False
-                                    day_unavail_hours.pop(ds, None)
-                        cur=cur+timedelta(days=1)
-                results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
-                    "manage_id":cid,"name":name,"phone":info.get("phone",""),
-                    "rating":info.get("rating",0),"groups":info.get("groups",[]),
-                    "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail,
-                    "day_unavail_partial":day_unavail_partial,"day_unavail_hours":day_unavail_hours})
-                _forecast_preload_progress["done"]=i+1
-            dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
-            save_forecast_cache({"start_date":start_dt.strftime("%Y-%m-%d"),"end_date":end_dt.strftime("%Y-%m-%d"),
-                                  "dates":dates,"crew":results})
-            _forecast_preload_progress["elapsed"]=round(_time.time()-_forecast_preload_progress["started"],1)
-        except Exception as e: _forecast_preload_progress["error"]=str(e)
-        finally: _forecast_preload_progress["running"]=False
-    threading.Thread(target=preload,daemon=True).start()
-
-
-def trigger_unavail_preload(ss, force=False):
-    if _unavail_preload_progress.get("running"): return
-    if not force:
-        _,age=load_unavail_cache()
-        if age is not None and age<UNAVAIL_CACHE_MAX_AGE_HRS: return
-    def preload():
-        import time as _time
-        _unavail_preload_progress.update({"running":True,"started":_time.time(),"done":0,"total":0,"error":None})
-        try:
-            crew_data,_=load_cache()
-            if not crew_data:
-                _unavail_preload_progress["error"]="crew cache empty — rebuild crew cache first"
-                return
-            _unavail_preload_progress["total"]=len(crew_data)
-            today  = datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
-            # 90-day forward window — wide enough for forecast (28d) plus future
-            # holidays/leave that operators care about, well under the 120-day
-            # endpoint cap. Hour-accurate times preserved (Option Y).
-            end_dt = today + timedelta(days=90)
-            unavail_map = _get_unavails_for_window(ss, today, end_dt)
-            _unavail_preload_progress["done"] = len(unavail_map)
-            # Overlay GOAT-written hour-level times, but never let it sink the save.
-            # Still relevant for any entries written via the in-app modal before a
-            # SmartStaff sync; the overlay merges hour data from unavail_times.json
-            # on top of whatever the bulk endpoint returned.
-            try:
-                unavail_map = overlay_unavail_times(unavail_map)
-            except Exception as _oe:
-                app.logger.warning(f"overlay_unavail_times failed: {_oe}")
-            save_unavail_cache(unavail_map)
-            _unavail_preload_progress["elapsed"]=round(_time.time()-_unavail_preload_progress["started"],1)
-            trigger_forecast_preload(ss,force=True)
-        except Exception as e: _unavail_preload_progress["error"]=str(e)
-        finally: _unavail_preload_progress["running"]=False
-    threading.Thread(target=preload,daemon=True).start()
-
+# trigger_forecast_preload and trigger_unavail_preload removed in 3.4.5.
+# Forecast computation is now done at request time in /api/forecast.
 
 # ─── CONFLICT RULES ───────────────────────────────────────────────────────────
 
@@ -1960,9 +1784,8 @@ def login():
             session.permanent = remember
             _ss_sessions[sid] = ss
             start_keepalive()  # ensure keepalive thread is running
-            start_auto_refresh()  # proactively refresh caches every 30min
-            trigger_forecast_preload(ss)
-            trigger_unavail_preload(ss)
+            # Cache preloads removed in 3.4.5 — forecast and unavail data
+            # are fetched live on demand via the bulk endpoints.
 
             if remember:
                 cfg = load_config()
@@ -2139,10 +1962,12 @@ def api_availability():
     # 1=pending, 8=noshow, 0=unset, None=orphan). Only status==5 represents a
     # commitment that should cause a conflict; other statuses pass through to
     # the timeline as informational so the operator has context.
-    unavail_cache, _ = load_unavail_cache()
     win_start = min(t["start"] for t in targets) - timedelta(days=2)
     win_end   = max(t["end"]   for t in targets) + timedelta(days=2)
     shifts_by_name = _get_shifts_for_window(ss, win_start, win_end)
+    # Live unavailability read (3.4.5) — sub-second via bulk endpoint, replaces
+    # the cache lookup. Keyed by str(user_id) to match the previous shape.
+    unavail_cache = _get_unavails_for_window(ss, win_start, win_end)
 
     # Step 3: check conflicts using shifts + cached unavailabilities
     for crew in candidates:
@@ -2482,109 +2307,133 @@ def api_groups():
 
 # ─── FORECAST ─────────────────────────────────────────────────────────────────
 
-_forecast_cache = {}
+# _forecast_cache (in-memory) removed in 3.4.5 — no caching layer.
 
 @app.route("/api/forecast")
 def api_forecast():
-    ss=get_ss_session()
-    if not ss: return jsonify({"error":"Not logged in"}),401
-    force=request.args.get("force","0")=="1"
-    start_str=request.args.get("start_date",datetime.now().strftime("%Y-%m-%d"))
-    try:    days=min(28,max(1,int(request.args.get("days",28))))
-    except: days=28
-    try:    start_dt=datetime.strptime(start_str,"%Y-%m-%d").replace(hour=0,minute=0,second=0)
-    except: return jsonify({"error":"Invalid start_date"}),400
-    end_dt=start_dt+timedelta(days=days); cache_key=f"{start_str}_{days}"
-    if not force:
-        c=_forecast_cache.get(cache_key)
-        if c and (datetime.now()-c["at"]).total_seconds()<300: return jsonify(c["data"])
-    if not force:
-        dp,age=load_forecast_cache()
-        if dp is not None and age is not None and dp.get("start_date") == start_str:
-            _forecast_cache[cache_key]={"data":dp,"at":datetime.now()}
-            if age>=FORECAST_CACHE_MAX_AGE_HRS: trigger_forecast_preload(ss,force=True)
-            return jsonify(dp)
-    crew_data,_=load_cache()
-    if not crew_data: return jsonify({"error":"No crew cache. Run a cache refresh first."}),400
-    today=datetime.now().replace(hour=0,minute=0,second=0,microsecond=0)
-    items=list(crew_data.items()); unavail_cache,_=load_unavail_cache()
+    """Compute and return the Crew Utilization forecast grid for a window.
 
-    # Build shifts from bookings (prefers bulk endpoint, falls back to scraper).
-    # Filtered to confirmed-only (status==5) so utilisation hours reflect
-    # committed work, not declined/pending/orphan entries.
+    Live read since 3.4.5 — no disk cache, no in-memory cache. Shifts and
+    unavailabilities come from the bulk SmartStaff endpoints (sub-second).
+    Day-by-day coverage is computed inline. The `force` query param is
+    accepted for backwards compatibility with existing clients but is now
+    a no-op since every response is fresh.
+    """
+    ss = get_ss_session()
+    if not ss: return jsonify({"error":"Not logged in"}), 401
+
+    start_str = request.args.get("start_date", datetime.now().strftime("%Y-%m-%d"))
+    try:    days = min(28, max(1, int(request.args.get("days", 28))))
+    except: days = 28
+    try:    start_dt = datetime.strptime(start_str, "%Y-%m-%d").replace(hour=0, minute=0, second=0)
+    except: return jsonify({"error":"Invalid start_date"}), 400
+    end_dt = start_dt + timedelta(days=days)
+
+    crew_data, _ = load_cache()
+    if not crew_data:
+        return jsonify({"error":"No crew cache. Run a cache refresh first."}), 400
+
+    # Live fetches — both sub-second via the bulk endpoints
     shifts_by_name = _get_shifts_for_window(ss, start_dt, end_dt)
+    unavail_cache  = _get_unavails_for_window(ss, start_dt, end_dt)
 
-    results=[]
-    for cid,info in items:
-        name    = info.get("name","")
-        shifts  = [s for s in shifts_by_name.get(name, []) if s.get("status") == 5]
-        unavails= unavail_cache.get(cid,[])
-        ws=[s for s in shifts if datetime.fromisoformat(s["start"])<end_dt and datetime.fromisoformat(s["end"])>start_dt]
-        wu=[u for u in unavails if datetime.fromisoformat(u["start"])<end_dt and datetime.fromisoformat(u["end"])>start_dt]
-        day_hours={}; total_hours=0.0
+    results = []
+    for cid, info in crew_data.items():
+        name     = info.get("name", "")
+        shifts   = [s for s in shifts_by_name.get(name, []) if s.get("status") == 5]
+        unavails = unavail_cache.get(cid, [])
+        ws = [s for s in shifts   if datetime.fromisoformat(s["start"]) < end_dt and datetime.fromisoformat(s["end"]) > start_dt]
+        wu = [u for u in unavails if datetime.fromisoformat(u["start"]) < end_dt and datetime.fromisoformat(u["end"]) > start_dt]
+
+        day_hours = {}
+        total_hours = 0.0
         for s in ws:
-            cs=max(datetime.fromisoformat(s["start"]),start_dt); ce=min(datetime.fromisoformat(s["end"]),end_dt)
-            total_hours+=(ce-cs).total_seconds()/3600
-            cur=cs.replace(hour=0,minute=0,second=0,microsecond=0)
-            while cur<ce:
-                ds=cur.strftime("%Y-%m-%d")
-                day_hours[ds]=day_hours.get(ds,0)+(min(ce,cur+timedelta(days=1))-max(cs,cur)).total_seconds()/3600
-                cur+=timedelta(days=1)
-        day_unavail={}; day_unavail_partial={}; day_unavail_hours={}
+            cs = max(datetime.fromisoformat(s["start"]), start_dt)
+            ce = min(datetime.fromisoformat(s["end"]),   end_dt)
+            total_hours += (ce - cs).total_seconds() / 3600
+            cur = cs.replace(hour=0, minute=0, second=0, microsecond=0)
+            while cur < ce:
+                ds = cur.strftime("%Y-%m-%d")
+                day_hours[ds] = day_hours.get(ds, 0) + (min(ce, cur + timedelta(days=1)) - max(cs, cur)).total_seconds() / 3600
+                cur += timedelta(days=1)
+
+        day_unavail = {}
+        day_unavail_partial = {}
+        day_unavail_hours = {}
         for u in wu:
             u_start = datetime.fromisoformat(u["start"])
             u_end   = datetime.fromisoformat(u["end"])
-            us=max(u_start,start_dt); ue=min(u_end,end_dt)
-            cur=us.replace(hour=0,minute=0,second=0,microsecond=0)
-            while cur<=ue:
-                ds=cur.strftime("%Y-%m-%d")
-                day_start = cur; day_end = cur + timedelta(days=1)
-                cov_start = max(u_start, day_start); cov_end = min(u_end, day_end)
+            us = max(u_start, start_dt)
+            ue = min(u_end,   end_dt)
+            cur = us.replace(hour=0, minute=0, second=0, microsecond=0)
+            while cur <= ue:
+                ds = cur.strftime("%Y-%m-%d")
+                day_start = cur
+                day_end   = cur + timedelta(days=1)
+                cov_start = max(u_start, day_start)
+                cov_end   = min(u_end,   day_end)
                 if cov_end > cov_start:
                     starts_at_midnight = (cov_start - day_start).total_seconds() <= 60
-                    ends_at_midnight   = (day_end - cov_end).total_seconds() <= 120
+                    ends_at_midnight   = (day_end   - cov_end).total_seconds()   <= 120
                     covers_full = starts_at_midnight and ends_at_midnight
                     if ds not in day_unavail:
-                        day_unavail[ds]=u.get("reason","Unavailable")
+                        day_unavail[ds] = u.get("reason", "Unavailable")
                         day_unavail_partial[ds] = not covers_full
                         if not covers_full:
-                            day_unavail_hours[ds] = cov_start.strftime("%H:%M")+"–"+cov_end.strftime("%H:%M")
+                            day_unavail_hours[ds] = cov_start.strftime("%H:%M") + "–" + cov_end.strftime("%H:%M")
                     elif covers_full:
                         day_unavail_partial[ds] = False
                         day_unavail_hours.pop(ds, None)
-                cur=cur+timedelta(days=1)
-        results.append({"id":info.get("user_id",cid),"ein":info.get("ein",info.get("user_id",cid)),
-            "manage_id":cid,"name":name,"phone":info.get("phone",""),
-            "rating":info.get("rating",0),"groups":info.get("groups",[]),
-            "total_hours":round(total_hours,1),"day_hours":day_hours,"day_unavail":day_unavail,
-            "day_unavail_partial":day_unavail_partial,"day_unavail_hours":day_unavail_hours})
-    dates=[(start_dt+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
-    payload={"start_date":start_str,"end_date":end_dt.strftime("%Y-%m-%d"),"dates":dates,"crew":results}
-    _forecast_cache[cache_key]={"data":payload,"at":datetime.now()}; save_forecast_cache(payload)
-    return jsonify(payload)
+                cur = cur + timedelta(days=1)
+
+        results.append({
+            "id":                 info.get("user_id", cid),
+            "ein":                info.get("ein", info.get("user_id", cid)),
+            "manage_id":          cid,
+            "name":               name,
+            "phone":              info.get("phone", ""),
+            "rating":             info.get("rating", 0),
+            "groups":             info.get("groups", []),
+            "total_hours":        round(total_hours, 1),
+            "day_hours":          day_hours,
+            "day_unavail":        day_unavail,
+            "day_unavail_partial":day_unavail_partial,
+            "day_unavail_hours":  day_unavail_hours,
+        })
+
+    dates = [(start_dt + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    return jsonify({
+        "start_date": start_str,
+        "end_date":   end_dt.strftime("%Y-%m-%d"),
+        "dates":      dates,
+        "crew":       results,
+    })
 
 
 @app.route("/api/forecast/preload-status")
 def api_forecast_preload_status():
-    _,fc_age=load_forecast_cache(); _,uc_age=load_unavail_cache()
+    """Compatibility shim — caches were removed in 3.4.5 so there is nothing
+    to preload. Reports live-mode and always-fresh so existing clients (the
+    cache indicator in the header, the Crew Utilization 'cached Xm ago' label)
+    don't error on missing fields. Will be retired alongside front-end refresh
+    in a future release."""
     return jsonify({
-        "forecast":{"running":_forecast_preload_progress.get("running",False),"done":_forecast_preload_progress.get("done",0),
-            "total":_forecast_preload_progress.get("total",0),"elapsed":_forecast_preload_progress.get("elapsed"),
-            "error":_forecast_preload_progress.get("error"),"cache_age":round(fc_age,2) if fc_age else None,
-            "fresh":fc_age is not None and fc_age<FORECAST_CACHE_MAX_AGE_HRS},
-        "unavail":{"running":_unavail_preload_progress.get("running",False),"done":_unavail_preload_progress.get("done",0),
-            "total":_unavail_preload_progress.get("total",0),"elapsed":_unavail_preload_progress.get("elapsed"),
-            "error":_unavail_preload_progress.get("error"),"cache_age":round(uc_age,2) if uc_age else None,
-            "fresh":uc_age is not None and uc_age<UNAVAIL_CACHE_MAX_AGE_HRS},
-        "auto_refresh":{"running": bool(_auto_refresh_thread and _auto_refresh_thread.is_alive())},
+        "mode":     "live",
+        "forecast": {"running": False, "fresh": True, "cache_age": 0, "elapsed": 0,
+                     "done": 0, "total": 0, "error": None},
+        "unavail":  {"running": False, "fresh": True, "cache_age": 0, "elapsed": 0,
+                     "done": 0, "total": 0, "error": None},
+        "auto_refresh": {"running": False},
     })
 
 @app.route("/api/forecast/preload", methods=["POST"])
 def api_forecast_preload():
-    ss=get_ss_session()
-    if not ss: return jsonify({"error":"Not logged in"}),401
-    trigger_forecast_preload(ss,force=True); trigger_unavail_preload(ss,force=True)
-    return jsonify({"status":"Preloads started"})
+    """Compatibility shim — no-op since 3.4.5. Forecast and unavailability
+    data are fetched live; there is no cache to preload. Returns OK so existing
+    clients don't error."""
+    ss = get_ss_session()
+    if not ss: return jsonify({"error":"Not logged in"}), 401
+    return jsonify({"status":"Live mode — no preload required"})
 
 
 def scrape_schedule(ss, days=14):
