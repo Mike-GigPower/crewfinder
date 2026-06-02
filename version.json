@@ -1,6 +1,6 @@
 {
-    "version": "3.4.6",
-    "release_date": "2026-05-29",
-    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.6/TheGOAT.dmg",
-    "release_notes": "Schedule tab now detects and surfaces crew clashes — calls where a confirmed crew member is also booked on an overlapping or otherwise conflicting call. Detection runs server-side using the same check_conflict rules as Crew Finder (Rule 1 overlap, Rule 2 long-shift gap, Rule 3 venue change), so the schedule and Crew Finder always agree about what's a conflict. Clashing cells render orange with a pulsing border; hovering a cell or expanding a booking shows the clashing crew member names and the specific rule violation."
+    "version": "3.4.7",
+    "release_date": "2026-06-02",
+    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.7/TheGOAT.dmg",
+    "release_notes": "Crew Finder updated to include proximity search. Cache refresh automated"
 }
