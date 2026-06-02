@@ -56,6 +56,17 @@ nav{display:flex;align-items:center;gap:16px;padding:0 20px;height:58px;backgrou
 .rating-label{font-size:10px;color:var(--muted);white-space:nowrap}
 input[type=range]{flex:1;accent-color:var(--accent)}
 .rating-val{font-size:13px;font-weight:600;color:var(--accent);min-width:18px;text-align:right}
+.geo-toggle-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.geo-toggle-row input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
+.geo-toggle-row label{font-size:11px;color:var(--text);cursor:pointer;user-select:none}
+.geo-body{margin-bottom:12px;opacity:.4;pointer-events:none;transition:opacity .15s}
+.geo-body.active{opacity:1;pointer-events:auto}
+.geo-origin-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.geo-mode-btn{padding:4px 10px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px;cursor:pointer;transition:all .12s}
+.geo-mode-btn.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.geo-pc-input{width:60px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:4px 8px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none}
+.geo-pc-input:focus{border-color:var(--accent)}
+.dist-cell{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--accent);white-space:nowrap}
 .btn-search{width:100%;background:var(--accent);color:#000;border:none;border-radius:4px;padding:10px;font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:8px}
 .btn-search:hover{background:#c9a227;box-shadow:0 0 12px rgba(212,175,55,0.3)}
 .btn-search:disabled{opacity:.4;cursor:not-allowed}
@@ -649,6 +660,27 @@ tr.skipped{opacity:.6}
         <input type="range" id="rating-slider" min="1" max="10" value="3" oninput="document.getElementById('rating-val').textContent=this.value">
         <span class="rating-val" id="rating-val">3</span>
       </div>
+      <!-- ── DISTANCE / GEO FILTER ── -->
+      <div class="geo-toggle-row">
+        <input type="checkbox" id="geo-enable" onchange="toggleGeo()">
+        <label for="geo-enable">Filter by distance</label>
+      </div>
+      <div class="geo-body" id="geo-body">
+        <div class="rating-row" style="margin-bottom:8px">
+          <span class="rating-label">Within</span>
+          <input type="range" id="radius-slider" min="5" max="100" step="5" value="25"
+                 oninput="document.getElementById('radius-val').textContent=this.value">
+          <span class="rating-val" id="radius-val">25</span>
+          <span class="rating-label">km</span>
+        </div>
+        <div class="geo-origin-row">
+          <span class="rating-label">Origin</span>
+          <button type="button" class="geo-mode-btn active" id="geo-mode-venue" onclick="setGeoMode('venue')">Venue</button>
+          <button type="button" class="geo-mode-btn" id="geo-mode-postcode" onclick="setGeoMode('postcode')">Postcode</button>
+          <input type="text" id="geo-postcode" class="geo-pc-input" placeholder="3000" maxlength="4"
+                 inputmode="numeric" style="display:none">
+        </div>
+      </div>
       <button class="btn-search" id="search-btn" onclick="runSearch()" disabled>
         <div class="spinner" id="search-spinner"></div>
         <span id="search-btn-text">Select a call first</span>
@@ -678,6 +710,7 @@ tr.skipped{opacity:.6}
       <div class="stat"><span class="stat-num green" id="cnt-avail">0</span><span class="stat-label">available</span></div>
       <div class="stat"><span class="stat-num red" id="cnt-conf">0</span><span class="stat-label">conflicts</span></div>
       <div class="stat"><span class="stat-num grey" id="cnt-skip">0</span><span class="stat-label">skipped</span></div>
+      <div class="stat" id="stat-unknown" style="display:none"><span class="stat-num grey" id="cnt-unknown">0</span><span class="stat-label">no location</span></div>
       <div class="results-actions">
         <button class="btn" id="view-table-btn" onclick="setView('table')">&#9776; Table</button>
         <button class="btn btn-view-active" id="view-tl-btn" onclick="setView('timeline')">&#9632; Timeline</button>
@@ -1083,6 +1116,7 @@ let selectedCalls=new Map(), // call_id → call object
     allGroups=[],activeGroups=new Set(),
     selected=new Map(),  // crew name → crew entry (for adding to SmartStaff)
     currentResult=null,currentView='timeline';
+let geoMode='venue', _geoActive=false;  // distance-filter state
 
 // ── TIMELINE CONFIG ──
 const TL_START_H=0,TL_END_H=30,TL_TOTAL_H=30,TL_TICKS=[0,4,8,12,16,20,24,28];
@@ -1112,6 +1146,16 @@ async function loadGroups(){
 function toggleGroup(el,group){
   if(activeGroups.has(group)){activeGroups.delete(group);el.classList.remove('active')}
   else{activeGroups.add(group);el.classList.add('active')}
+}
+function toggleGeo(){
+  const on=document.getElementById('geo-enable').checked;
+  document.getElementById('geo-body').classList.toggle('active',on);
+}
+function setGeoMode(mode){
+  geoMode=mode;
+  document.getElementById('geo-mode-venue').classList.toggle('active',mode==='venue');
+  document.getElementById('geo-mode-postcode').classList.toggle('active',mode==='postcode');
+  document.getElementById('geo-postcode').style.display = mode==='postcode' ? 'inline-block' : 'none';
 }
 
 async function loadCalls(force=false){
@@ -1253,6 +1297,20 @@ function restoreResults(){
 // ── SEARCH ──
 async function runSearch(){
   if(!selectedCalls.size)return;
+
+  // Distance filter (optional) — read + validate before showing the overlay.
+  let geoFields = {};
+  if(document.getElementById('geo-enable').checked){
+    const radius = parseInt(document.getElementById('radius-slider').value);
+    if(geoMode==='postcode'){
+      const pc=(document.getElementById('geo-postcode').value||'').trim();
+      if(!/^\d{4}$/.test(pc)){alert('Enter a 4-digit postcode for the distance filter, or switch the origin to Venue.');return;}
+      geoFields={radius_km:radius, origin:{mode:'postcode',postcode:pc}};
+    } else {
+      geoFields={radius_km:radius, origin:{mode:'venue'}};
+    }
+  }
+
   showOverlay('Checking Availability...', 'This may take a minute');
   try{
     const calls=[...selectedCalls.values()];
@@ -1277,9 +1335,11 @@ async function runSearch(){
       body:JSON.stringify({
         calls: callPayload,
         required_groups:[...activeGroups],
-        min_rating:parseInt(document.getElementById('rating-slider').value)
+        min_rating:parseInt(document.getElementById('rating-slider').value),
+        ...geoFields
       })});
     const result=await resp.json();
+    if(result.error){alert(result.error);return;}
 
     // Fetch already-booked crew for the first call (if single call search)
     let bookedCrew = [];
@@ -1315,6 +1375,12 @@ function renderResults(result,details,targets){
   document.getElementById('cnt-avail').textContent=available.length;
   document.getElementById('cnt-conf').textContent=conflicts.length;
   document.getElementById('cnt-skip').textContent=skipped.length;
+  const unknown = result.location_unknown || [];
+  const su = document.getElementById('stat-unknown');
+  if(su){
+    if(unknown.length){ document.getElementById('cnt-unknown').textContent=unknown.length; su.style.display=''; }
+    else { su.style.display='none'; }
+  }
   document.getElementById('results-header').style.display='flex';
   selected.clear();updateSelCount();
 
@@ -1415,14 +1481,24 @@ function breakdownHtml(crew){
 function renderTable(result,targets){
   const{available,conflicts,skipped}=result;
   const multiCall=targets.length>1;
+  _geoActive = !!result.origin_label;
+  const distTh = _geoActive ? '<th>Dist</th>' : '';
+  const ncols  = _geoActive ? 8 : 7;
   const wrap=document.getElementById('results-wrap');
   const table=document.createElement('table');
-  const cols=multiCall?'<th></th><th>Name</th><th>Availability</th><th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>'
-                       :'<th></th><th>Name</th><th>Status</th><th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>';
+  const cols=multiCall?'<th></th><th>Name</th><th>Availability</th>'+distTh+'<th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>'
+                       :'<th></th><th>Name</th><th>Status</th>'+distTh+'<th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>';
   table.innerHTML='<thead><tr>'+cols+'</tr></thead><tbody id="results-tbody"></tbody>';
-  wrap.innerHTML='';wrap.appendChild(table);
+  wrap.innerHTML='';
+  if(_geoActive){
+    const cap=document.createElement('div');
+    cap.style.cssText="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);padding:6px 10px 0";
+    cap.innerHTML='Within '+document.getElementById('radius-slider').value+' km of <span style="color:var(--accent)">'+result.origin_label+'</span>';
+    wrap.appendChild(cap);
+  }
+  wrap.appendChild(table);
   const tbody=document.getElementById('results-tbody');
-  const addSec=label=>{const tr=document.createElement('tr');tr.className='section-row';tr.innerHTML='<td colspan="7">'+label+'</td>';tbody.appendChild(tr)};
+  const addSec=label=>{const tr=document.createElement('tr');tr.className='section-row';tr.innerHTML='<td colspan="'+ncols+'">'+label+'</td>';tbody.appendChild(tr)};
 
   // Easter egg: searching for "goat" adds the GOAT to the available list
   const goatInput = document.getElementById('calls-search-input');
@@ -1456,6 +1532,11 @@ function renderTable(result,targets){
   conflicts.forEach(c=>addTableRow(tbody,c,'conflict',targets));
   addSec('&#9656; SKIPPED ('+skipped.length+')');
   skipped.forEach(c=>addTableRow(tbody,c,'skipped',targets));
+  const unknown = result.location_unknown || [];
+  if(unknown.length){
+    addSec('&#9656; LOCATION UNKNOWN \u2014 NO POSTCODE ('+unknown.length+')');
+    unknown.forEach(c=>addTableRow(tbody,c,'skipped',targets));
+  }
 }
 
 function addTableRow(tbody,crew,status,targets){
@@ -1483,6 +1564,10 @@ function addTableRow(tbody,crew,status,targets){
   if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
   tr.appendChild(nameTd);
   tr.appendChild(mkTd('',statusLabel(crew,targets,status)+breakdownHtml(crew)));
+  if(_geoActive){
+    const dkm=(crew.distance_km!=null)?crew.distance_km+' km':'\u2014';
+    tr.appendChild(mkTd('dist-cell',dkm));
+  }
   tr.appendChild(mkTd('phone-cell',ph));
   tr.appendChild(mkTd('rating-cell',crew.rating));
   tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));

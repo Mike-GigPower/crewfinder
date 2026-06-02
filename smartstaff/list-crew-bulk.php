@@ -38,6 +38,7 @@
 		       u.rating,
 		       u.paygradeID,
 		       u.ein,
+		       u.postcode,
 		       u.active
 		FROM users u
 		WHERE u.usergroupID = 3
@@ -72,6 +73,7 @@
 			'rating'     => (int) $row->rating,
 			'paygradeID' => (int) $row->paygradeID,
 			'ein'        => $row->ein,
+			'postcode'   => $row->postcode,
 			'active'     => $row->active,
 			'groups'     => array(),
 			'inductions' => array(),

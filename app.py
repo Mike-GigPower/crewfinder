@@ -10,6 +10,7 @@ Run via menubar.py or directly:
 import json
 import os
 import re
+import math
 import threading
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template, session, redirect, url_for
@@ -76,7 +77,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.4.6"
+APP_VERSION    = "3.4.7"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -160,6 +161,115 @@ def start_keepalive():
 _calls_cache      = {}  # in-memory cache for calls list, keyed by session id
 _refresh_progress          = {}
 # Preload progress dicts removed in 3.4.5 — no preloads to track.
+
+# ── Crew-cache refresh / auto-refresh ───────────────────────────────────────
+# The cache rebuilds from the SmartStaff bulk endpoint (effectively one HTTP
+# call), so it's cheap to refresh often. We rebuild once right after login and
+# then on a fixed interval in the background, mirroring the keepalive pattern.
+CACHE_AUTOREFRESH_SECONDS = 900  # 15 minutes
+_cache_autorefresh_thread = None
+
+def _do_cache_refresh(ss):
+    """Full parallel crew-cache rebuild. Safe to call from any thread; no-ops
+    if a refresh is already in progress (shared guard with the manual route)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+
+    if _refresh_progress.get("running"):
+        return
+    _refresh_progress["running"]   = True
+    _refresh_progress["done"]      = 0
+    _refresh_progress["total"]     = 0
+    _refresh_progress["errors"]    = 0
+    _refresh_progress["started"]   = time.time()
+    _refresh_progress.pop("error", None)
+
+    try:
+        all_crew = _get_all_crew(ss)
+        total = len(all_crew)
+        _refresh_progress["total"] = total
+
+        # Load existing cache so we can merge
+        cache, _ = load_cache()
+        new_cache = dict(cache)
+        lock = threading.Lock()
+
+        # If the bulk endpoint succeeded, every crew row already carries
+        # groups, rating, and inductions — no per-crew HTTP needed.
+        _bulk_lookup = {str(c["id"]): c for c in all_crew} if USE_BULK_ENDPOINTS else None
+
+        def fetch_one(crew):
+            try:
+                groups, rating, inductions = _get_crew_profile(
+                    ss, crew["id"], bulk_lookup=_bulk_lookup
+                )
+                return crew["manage_id"], {
+                    "name":      crew["name"],
+                    "phone":     crew.get("phone", ""),
+                    "user_id":   crew.get("id", crew["manage_id"]),  # userID — operations only
+                    "ein":       crew.get("ein", crew.get("id", crew["manage_id"])),  # EIN — display
+                    "groups":    groups,
+                    "rating":    rating,
+                    "inductions": inductions,
+                    "postcode":  crew.get("postcode", ""),
+                }, None
+            except Exception as e:
+                return crew["id"], None, str(e)
+
+        # 10 parallel workers — enough to be fast, not enough to get rate-limited.
+        # When _bulk_lookup is populated, fetch_one is in-memory only and finishes
+        # near-instantly; the worker pool is then just iterating a list.
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch_one, c): c for c in all_crew}
+            for future in as_completed(futures):
+                cid, data, err = future.result()
+                with lock:
+                    if data:
+                        new_cache[cid] = data
+                    else:
+                        _refresh_progress["errors"] += 1
+                    _refresh_progress["done"] += 1
+                    # Save incrementally every 50 crew
+                    if _refresh_progress["done"] % 50 == 0:
+                        save_cache(new_cache)
+
+        save_cache(new_cache)
+        _refresh_progress["elapsed"] = round(time.time() - _refresh_progress["started"], 1)
+
+    except Exception as e:
+        _refresh_progress["error"] = str(e)
+    finally:
+        _refresh_progress["running"] = False
+
+def trigger_cache_refresh(ss):
+    """Spawn a background cache refresh. Returns False if one is already running."""
+    if _refresh_progress.get("running"):
+        return False
+    threading.Thread(target=_do_cache_refresh, args=(ss,), daemon=True).start()
+    return True
+
+def cache_autorefresh_worker():
+    """Background thread — rebuilds the crew cache every CACHE_AUTOREFRESH_SECONDS
+    using any live SmartStaff session. Skips cycles when nobody is logged in."""
+    import time
+    while True:
+        time.sleep(CACHE_AUTOREFRESH_SECONDS)
+        ss = next(iter(_ss_sessions.values()), None)
+        if not ss:
+            continue  # nobody logged in — nothing to refresh against
+        try:
+            if trigger_cache_refresh(ss):
+                app.logger.info("Crew cache auto-refresh started")
+        except Exception as e:
+            app.logger.warning(f"Cache auto-refresh error: {e}")
+
+def start_cache_autorefresh():
+    """Start the cache auto-refresh thread once."""
+    global _cache_autorefresh_thread
+    if _cache_autorefresh_thread is None or not _cache_autorefresh_thread.is_alive():
+        _cache_autorefresh_thread = threading.Thread(target=cache_autorefresh_worker, daemon=True)
+        _cache_autorefresh_thread.start()
+        app.logger.info(f"Crew cache auto-refresh started (every {CACHE_AUTOREFRESH_SECONDS}s)")
 
 def get_ss_session():
     """Get SmartStaff session for current user. Auto re-auths if session expired."""
@@ -532,6 +642,96 @@ INDUCTION_VENUE_MAP = {
 # Venues with 24-month induction validity (all others are 12 months)
 # Matches against lowercase venue name from SmartStaff
 INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne"}
+
+# ─── GEO / POSTCODE RADIUS SEARCH ─────────────────────────────────────────────
+# Crew home postcodes (from the users table, via list-crew-bulk.php) and venue
+# locations are resolved to lat/lon via a bundled AU postcode-centroid table
+# (au_postcodes.json). Distances are straight-line (Haversine). Postcode-level
+# accuracy by design — see BACKLOG-geo-search.md.
+
+POSTCODE_FILE = os.path.join(BASE_DIR, "au_postcodes.json")
+_postcodes = None
+
+def _load_postcodes():
+    global _postcodes
+    if _postcodes is None:
+        try:
+            with open(POSTCODE_FILE) as f:
+                _postcodes = json.load(f)
+        except Exception:
+            _postcodes = {}
+    return _postcodes
+
+def postcode_to_coords(pc):
+    """'3000' -> {'lat','lon','suburb','state'} or None."""
+    if not pc:
+        return None
+    pc = str(pc).strip().zfill(4)
+    return _load_postcodes().get(pc)
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+# Venue code -> postcode, resolved through the same centroid table as crew.
+# VERIFY the flagged rows before relying on them in production.
+VENUE_POSTCODES = {
+    "RLA":               "3000",   # Melbourne Park precinct — VERIFY
+    "MCA":               "3000",   # Melbourne Park precinct — VERIFY
+    "JCA":               "3000",   # Melbourne Park precinct — VERIFY
+    "AAMI":              "3000",   # AAMI Park — VERIFY
+    "Centrepiece":       "3000",   # Melbourne Park precinct — VERIFY
+    "MOPT":              "3000",   # Melbourne Park precinct — VERIFY
+    "Marvel":            "3008",   # Docklands
+    "Docklands":         "3008",   # Docklands Studios
+    "MCEC":              "3006",   # South Wharf
+    "Hamer Hall":        "3006",   # Southbank
+    "Crown":             "3006",   # Southbank
+    "Palais":            "3182",   # St Kilda
+    "Festival Hall":     "3003",   # West Melbourne — VERIFY
+    "Federation Square": "3000",   # Melbourne CBD
+    "Forum":             "3000",   # Melbourne CBD
+    "Sidney Myer":       "3004",   # Kings Domain — VERIFY
+    "Royal Botanic":     "3004",   # RBG — VERIFY
+    "MCG":               "3002",   # Yarra Park — VERIFY
+    "Hanging Rock":      "3442",   # Newham — VERIFY
+    "GMHBA":             "3220",   # Geelong — VERIFY
+    "Mt Duneed":         "3217",   # Mount Duneed — VERIFY
+}
+
+def venue_to_coords(venue_str):
+    """Free-text SmartStaff venue tag -> (lat, lon, label) via the known-venue
+    postcode table. The tag may be the full induction name ("Festival Hall")
+    or the short code ("Forum", "JCA", "MCA"). Returns None if unrecognised."""
+    vl = (venue_str or "").strip().lower()
+    if not vl:
+        return None
+    for code, keywords in INDUCTION_VENUE_MAP.items():
+        cl = code.lower()
+        if vl == cl or cl in vl or any(k in vl for k in keywords):
+            c = postcode_to_coords(VENUE_POSTCODES.get(code))
+            if c:
+                return c["lat"], c["lon"], f"{code} ({VENUE_POSTCODES.get(code)})"
+    return None
+
+def resolve_origin(origin, targets):
+    """origin = {"mode":"venue"} or {"mode":"postcode","postcode":"3000"}.
+    Returns (lat, lon, label) or None."""
+    if not origin:
+        return None
+    if origin.get("mode") == "postcode":
+        c = postcode_to_coords(origin.get("postcode", ""))
+        if c:
+            return c["lat"], c["lon"], f"postcode {origin.get('postcode')}"
+    elif origin.get("mode") == "venue":
+        vstr = targets[0].get("venue", "") if targets else ""
+        return venue_to_coords(vstr)
+    return None
+
 
 def induction_status_for_venue(inductions, venue_code):
     """Given inductions dict and venue code, return:
@@ -1195,6 +1395,7 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "groups":     c.get("groups", []) or [],
             "inductions": c.get("inductions", {}) or {},
             "ein":        c.get("id"),  # bulk endpoint doesn't yet expose EIN separately
+            "postcode":   str(c.get("postcode") or "").strip(),
         })
     return out, None
 
@@ -1832,6 +2033,8 @@ def login():
             session.permanent = remember
             _ss_sessions[sid] = ss
             start_keepalive()  # ensure keepalive thread is running
+            trigger_cache_refresh(ss)    # rebuild crew cache on login (background)
+            start_cache_autorefresh()    # keep it fresh on a timer thereafter
             # Cache preloads removed in 3.4.5 — forecast and unavail data
             # are fetched live on demand via the bulk endpoints.
 
@@ -1911,6 +2114,8 @@ def api_availability():
     data            = request.json
     required_groups = data.get("required_groups", [])
     min_rating      = int(data.get("min_rating", 3))
+    radius_km       = data.get("radius_km")     # None => geo filter off (back-compat)
+    origin          = data.get("origin")        # {"mode":"venue"} or {"mode":"postcode","postcode":"3000"}
 
     # Support both single call (legacy) and multiple calls
     # Multi-call payload: { "calls": [ {booking_id, call_id, start_dt, end_dt, venue, call_num, call_name}, ... ] }
@@ -1941,6 +2146,22 @@ def api_availability():
         })
 
     today = datetime.now()
+
+    # Geo radius filter (optional). radius_km absent/falsy => disabled (back-compat).
+    geo_active    = bool(radius_km)
+    origin_coords = resolve_origin(origin, targets) if geo_active else None
+    if geo_active and not origin_coords:
+        mode = (origin or {}).get("mode")
+        if mode == "venue":
+            vstr = (targets[0].get("venue") if targets else "") or ""
+            msg = ("No venue has been specified for this event, so distance can't be "
+                   "measured from it \u2014 switch Origin to Postcode and enter one.") if not vstr.strip() else \
+                  (f"Venue \"{vstr}\" isn't in the known-venue list, so distance can't be "
+                   "measured from it \u2014 switch Origin to Postcode and enter one.")
+        else:
+            msg = "Could not resolve that postcode \u2014 check it's a valid 4-digit AU postcode."
+        return jsonify({"error": msg}), 400
+    location_unknown = []
 
     # Reference time for nearby-shift window (earliest call start)
     ref_start = min(t["start"] for t in targets)
@@ -1976,6 +2197,7 @@ def api_availability():
                 "groups":    groups,
                 "rating":    rating,
                 "inductions": inductions,
+                "postcode":  crew.get("postcode", ""),
             }
 
         crew["groups"]     = groups
@@ -1998,8 +2220,22 @@ def api_availability():
 
         if reasons:
             skipped.append({**crew, "reason": " | ".join(reasons)})
-        else:
-            candidates.append(crew)
+            continue
+
+        # Geo filter — only for crew that already pass rating/groups.
+        if geo_active:
+            cpc    = crew.get("postcode") or cache.get(cid, {}).get("postcode", "")
+            ccoord = postcode_to_coords(cpc)
+            if not ccoord:
+                location_unknown.append({**crew, "reason": "No/unknown postcode"})
+                continue
+            dist = haversine_km(origin_coords[0], origin_coords[1], ccoord["lat"], ccoord["lon"])
+            crew["distance_km"] = round(dist, 1)
+            if dist > float(radius_km):
+                skipped.append({**crew, "reason": f"{round(dist)} km away"})
+                continue
+
+        candidates.append(crew)
 
     # Step 2: fetch shifts; unavailabilities from disk cache (instant).
     # Single bulk fetch over the target window (prefers the bulk endpoint, falls
@@ -2139,6 +2375,9 @@ def api_availability():
         # Legacy single-call fields for backward compat
         "call_id":    targets[0]["call_id"],
         "booking_id": targets[0]["booking_id"],
+        # Geo radius search
+        "location_unknown": location_unknown,
+        "origin_label":     origin_coords[2] if origin_coords else None,
     })
 
 @app.route("/api/cache/status")
@@ -2168,76 +2407,9 @@ def api_cache_refresh():
         return jsonify({"error": "Not logged in"}), 401
 
     # If a refresh is already running, don't start another
-    if _refresh_progress.get("running"):
+    if not trigger_cache_refresh(ss):
         return jsonify({"status": "Already running", "progress": _refresh_progress})
 
-    def refresh():
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        import time
-
-        _refresh_progress["running"]   = True
-        _refresh_progress["done"]      = 0
-        _refresh_progress["total"]     = 0
-        _refresh_progress["errors"]    = 0
-        _refresh_progress["started"]   = time.time()
-
-        try:
-            all_crew = _get_all_crew(ss)
-            total = len(all_crew)
-            _refresh_progress["total"] = total
-
-            # Load existing cache so we can merge
-            cache, _ = load_cache()
-            new_cache = dict(cache)
-            lock = threading.Lock()
-
-            # If the bulk endpoint succeeded, every crew row already carries
-            # groups, rating, and inductions — no per-crew HTTP needed.
-            _bulk_lookup = {str(c["id"]): c for c in all_crew} if USE_BULK_ENDPOINTS else None
-
-            def fetch_one(crew):
-                try:
-                    groups, rating, inductions = _get_crew_profile(
-                        ss, crew["id"], bulk_lookup=_bulk_lookup
-                    )
-                    return crew["manage_id"], {
-                        "name":      crew["name"],
-                        "phone":     crew.get("phone", ""),
-                        "user_id":   crew.get("id", crew["manage_id"]),  # userID — operations only
-                        "ein":       crew.get("ein", crew.get("id", crew["manage_id"])),  # EIN — display
-                        "groups":    groups,
-                        "rating":    rating,
-                        "inductions": inductions,
-                    }, None
-                except Exception as e:
-                    return crew["id"], None, str(e)
-
-            # 10 parallel workers — enough to be fast, not enough to get rate-limited.
-            # When _bulk_lookup is populated, fetch_one is in-memory only and finishes
-            # near-instantly; the worker pool is then just iterating a list.
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(fetch_one, c): c for c in all_crew}
-                for future in as_completed(futures):
-                    cid, data, err = future.result()
-                    with lock:
-                        if data:
-                            new_cache[cid] = data
-                        else:
-                            _refresh_progress["errors"] += 1
-                        _refresh_progress["done"] += 1
-                        # Save incrementally every 50 crew
-                        if _refresh_progress["done"] % 50 == 0:
-                            save_cache(new_cache)
-
-            save_cache(new_cache)
-            _refresh_progress["elapsed"] = round(time.time() - _refresh_progress["started"], 1)
-
-        except Exception as e:
-            _refresh_progress["error"] = str(e)
-        finally:
-            _refresh_progress["running"] = False
-
-    threading.Thread(target=refresh, daemon=True).start()
     return jsonify({"status": "Refresh started in background"})
 
 
