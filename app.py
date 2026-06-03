@@ -77,7 +77,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.4.8"
+APP_VERSION    = "3.4.10"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -1394,7 +1394,7 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "active":     int(c.get("active") or 0),
             "groups":     c.get("groups", []) or [],
             "inductions": c.get("inductions", {}) or {},
-            "ein":        c.get("id"),  # bulk endpoint doesn't yet expose EIN separately
+            "ein":        c.get("ein") or c.get("id"),  # prefer endpoint EIN; fall back to userID
             "postcode":   str(c.get("postcode") or "").strip(),
         })
     return out, None
