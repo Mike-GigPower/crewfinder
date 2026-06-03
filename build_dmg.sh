@@ -109,5 +109,9 @@ create-dmg \
   "$BUNDLE"
 
 echo ""
+echo "▶ Notarizing the DMG (uploads to Apple — can take a few minutes)..."
+xcrun notarytool submit "$DMG_OUT" --keychain-profile "GOAT-notary" --wait
+echo "▶ Stapling the notarization ticket..."
+xcrun stapler staple "$DMG_OUT"
 echo "✓ Done: ${DMG_OUT}"
 echo "  Send to users: double-click → drag to Applications → right-click → Open"
