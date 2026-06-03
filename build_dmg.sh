@@ -73,6 +73,27 @@ with open('dist/${APP_NAME}.app/Contents/MacOS/config.json', 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
 "
+# Bundle the AU postcode centroid table beside the executable (BASE_DIR) —
+# same place config.json lives. Distance/radius search reads it from here.
+if [ ! -f "au_postcodes.json" ]; then
+  echo "✗ au_postcodes.json not found in repo root — distance search would break. Aborting."
+  exit 1
+fi
+echo "▶ Bundling au_postcodes.json..."
+cp au_postcodes.json "dist/${APP_NAME}.app/Contents/MacOS/au_postcodes.json"
+# ─── Code signing (Developer ID + hardened runtime) ──────────────────────
+# Must run AFTER config.json and au_postcodes.json are copied in — signing
+# seals the bundle, so adding files afterward would break the signature.
+SIGN_ID="Developer ID Application: Gig Power Pty ltd (96W2KAK46G)"
+echo "▶ Stripping extended attributes (codesign rejects resource forks / Finder info)..."
+xattr -cr "dist/${APP_NAME}.app"
+echo "▶ Signing the app bundle..."
+codesign --force --deep --options runtime --timestamp \
+  --entitlements entitlements.plist \
+  --sign "$SIGN_ID" \
+  "dist/${APP_NAME}.app"
+echo "▶ Verifying signature..."
+codesign --verify --deep --strict --verbose=2 "dist/${APP_NAME}.app"
 echo "▶ Creating DMG..."
 create-dmg \
   --volname "${APP_NAME}" \
