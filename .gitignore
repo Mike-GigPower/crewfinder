@@ -18,3 +18,4 @@ __pycache__/
 # Build-time secrets (Anthropic key baked into DMG)
 build_secrets.json
 output/
+venv/
