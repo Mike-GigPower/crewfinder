@@ -1,6 +1,6 @@
 {
-    "version": "3.4.7",
-    "release_date": "2026-06-02",
-    "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.7/TheGOAT.dmg",
-    "release_notes": "Crew Finder updated to include proximity search. Cache refresh automated"
+  "version": "3.4.8",
+  "release_date": "2026-06-03",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.8/TheGOAT.dmg",
+  "release_notes": "ASK THE GOAT distance/radius availability search — 'find riggers within 20km of the Forum'. Completes the 3.4.7 geo-search feature."
 }

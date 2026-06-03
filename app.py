@@ -77,7 +77,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.4.7"
+APP_VERSION    = "3.4.8"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -3078,6 +3078,14 @@ GOAT_TOOLS = [
                     "type": "integer",
                     "description": "Minimum star rating (1-10)",
                     "default": 1
+                },
+                "radius_km": {
+                    "type": "integer",
+                    "description": "Optional distance filter. If set, only crew living within this many km of the origin are returned as available; crew further away appear in skipped with their distance, and crew with no usable postcode go to location_unknown. Omit to disable distance filtering."
+                },
+                "near": {
+                    "type": "string",
+                    "description": "Origin for the radius filter: a 4-digit AU postcode (e.g. '3220') or a known venue name/code (e.g. 'Forum', 'GMHBA'). If omitted while radius_km is set, the origin defaults to the venue of the first call being searched."
                 }
             },
             "required": ["calls"]
@@ -3274,7 +3282,7 @@ GOAT_SYSTEM = """You are THE GOAT — the Gig Power Operations and Administratio
 
 Your personality: confident, sharp, occasionally cocky (you are, after all, The GOAT). You have deep knowledge of the live events industry — bump ins, load outs, stagehands, crew bosses, venues, SmartStaff, rosters, inductions. You speak like a seasoned ops person who also happens to be an AI. You're direct, occasionally funny, never waste words. Australian English.
 
-You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data.
+You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data. When someone asks for crew near a place — "riggers within 20km of the Forum", "who's available near Geelong" — call search_availability with radius_km and near (a 4-digit postcode or a venue name). Crew too far away come back in skipped with their distance, and anyone with no known postcode lands in location_unknown — mention them, don't pretend they're not there.
 
 CRITICAL — WRITE ACTION RULES:
 - ALWAYS call lookup_crew_id for each crew member before calling add_crew_to_call, send_sms_to_crew, add_unavailability, delete_unavailability, or get_unavailabilities. Never use an ID from a previous search result without verifying it first — name formats differ between SmartStaff and what the operator types.
@@ -3338,7 +3346,7 @@ def execute_goat_tool(tool_name, tool_input, ss):
             today   = datetime.now()
             all_crew = _get_all_crew(ss)
             cache, _ = load_cache()
-            results = {"available": [], "conflicts": [], "skipped": []}
+            results = {"available": [], "conflicts": [], "skipped": [], "location_unknown": []}
             targets = []
             for c in calls:
                 try:
@@ -3349,7 +3357,27 @@ def execute_goat_tool(tool_name, tool_input, ss):
                     pass
             if not targets:
                 return "No valid calls provided"
-
+# ── Distance filter (optional) ─────────────────────────────────
+            # radius_km absent/falsy => disabled (back-compat). Origin is an
+            # explicit `near` (4-digit postcode or known venue), else the first
+            # call's venue. Reuses the same helpers as /api/availability.
+            radius_km     = tool_input.get("radius_km")
+            near          = (tool_input.get("near") or "").strip()
+            geo_active    = bool(radius_km)
+            origin_coords = None
+            if geo_active:
+                if near:
+                    if near.isdigit() and len(near) == 4:
+                        pcc = postcode_to_coords(near)
+                        if pcc:
+                            origin_coords = (pcc["lat"], pcc["lon"], f"postcode {near}")
+                    if not origin_coords:
+                        origin_coords = venue_to_coords(near)
+                else:
+                    origin_coords = venue_to_coords(targets[0].get("venue", ""))
+                if not origin_coords:
+                    where = near or targets[0].get("venue", "") or "the call"
+                    return _json.dumps({"error": f"Couldn't work out a location for '{where}' to measure distance from. Give a 4-digit AU postcode or a known venue name."})
             # Single bulk fetch over the target window (prefers bulk endpoint,
             # falls back to bookings scraper). Keyed by crew NAME. Replaces the
             # former per-crew get_crew_shifts call that under-reported bookings.
@@ -3372,6 +3400,19 @@ def execute_goat_tool(tool_name, tool_input, ss):
                 if crew_rating < rating:
                     results["skipped"].append(crew["name"])
                     continue
+                # Distance gate — only for crew past the group/rating filter.
+                crew_distance = None
+                if geo_active:
+                    cpc    = crew.get("postcode") or cached.get("postcode", "")
+                    ccoord = postcode_to_coords(cpc)
+                    if not ccoord:
+                        results["location_unknown"].append(crew["name"])
+                        continue
+                    d = haversine_km(origin_coords[0], origin_coords[1], ccoord["lat"], ccoord["lon"])
+                    crew_distance = round(d, 1)
+                    if d > float(radius_km):
+                        results["skipped"].append(f"{crew['name']} ({round(d)} km away)")
+                        continue
                 shifts = [s for s in shifts_by_name.get(crew["name"], []) if s.get("status") == 5]
                 conflict = False
                 for t in targets:
@@ -3384,14 +3425,17 @@ def execute_goat_tool(tool_name, tool_input, ss):
                         conflict = True
                         break
                 if not conflict:
-                    results["available"].append({
+                    entry = {
                         "name": crew["name"],
                         "id": cid,
                         "rating": crew_rating,
                         "groups": crew_groups
-                    })
+                    }
+                    if crew_distance is not None:
+                        entry["distance_km"] = crew_distance
+                    results["available"].append(entry)
                 count += 1
-            return _json.dumps(results)
+            return _json.dumps({**results, "origin_label": origin_coords[2] if origin_coords else None})
         except Exception as e:
             return f"Error searching availability: {e}"
 
