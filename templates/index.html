@@ -1169,9 +1169,11 @@ async function loadCalls(force=false){
     if(!data.calls?.length){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-icon">&#128235;</div><div class="empty-sub">No unfilled calls on dashboard</div></div>';return}
     const bookingOrder=[];const bookingMap={};
     data.calls.forEach(c=>{
+      if(!c.unfilled) return;   // Unfilled Calls panel — skip fully-booked calls
       if(!bookingMap[c.booking_id]){bookingMap[c.booking_id]={booking_id:c.booking_id,booking_name:c.booking_name||('Booking #'+c.booking_id),venue:c.venue||'',calls:[]};bookingOrder.push(c.booking_id)}
       bookingMap[c.booking_id].calls.push(c);
     });
+    if(!bookingOrder.length){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-icon">&#128235;</div><div class="empty-sub">No unfilled calls on dashboard</div></div>';return}
     list.innerHTML=bookingOrder.map(bid=>{
       const b=bookingMap[bid];
       const callsHtml=b.calls.map(c=>{
