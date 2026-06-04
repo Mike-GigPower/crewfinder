@@ -1,6 +1,6 @@
 {
-  "version": "3.4.10",
-  "release_date": "2026-06-03",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.4.10/TheGOAT.dmg",
-  "release_notes": "Patch to block filled calls from the Crew Finder, show EIN correctly"
+  "version": "3.5.0",
+  "release_date": "2026-06-04",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.0/TheGOAT.dmg",
+  "release_notes": "Three-cohort access (admin / leadership / crew): leadership get read-only all-crew Schedule, Utilization and Induction views plus a personal My Status; crew get a personal My Status dashboard."
 }
