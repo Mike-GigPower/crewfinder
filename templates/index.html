@@ -191,11 +191,16 @@ tr.skipped{opacity:.6}
 .tl-table tbody tr:hover{background:var(--surface2)}
 .tl-table tbody tr.row-selected{background:var(--accent-bg)!important}
 .tl-table td{padding:5px 12px;vertical-align:middle;white-space:nowrap}
-/* Scrollable timeline column: 600px viewport, wide inner content. */
-.tl-cell{padding:3px 0!important;width:600px;min-width:600px;max-width:600px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-.tl-cell::-webkit-scrollbar{display:none}
-.tl-inner{position:relative;height:24px}
+/* Timeline column: 600px viewport. The header (.tl-th-scroll) is the ONE real
+   horizontal scroller — its scrollbar is the visible "bar at the top". Body
+   cells only clip; their inner is moved with a transform to match the header.
+   One scroller (not N synced ones) = consistent in Safari as well as Chrome. */
+.tl-cell{padding:3px 0!important;width:600px;min-width:600px;max-width:600px;overflow:hidden}
+.tl-inner{position:relative;height:24px;will-change:transform}
 .tl-th-scroll{padding:0!important;width:600px;min-width:600px;max-width:600px;overflow-x:auto;overflow-y:hidden}
+.tl-th-scroll::-webkit-scrollbar{height:10px}
+.tl-th-scroll::-webkit-scrollbar-track{background:var(--surface2)}
+.tl-th-scroll::-webkit-scrollbar-thumb{background:var(--border-gold);border-radius:5px}
 .tl-target{position:absolute;top:0;bottom:0;background:rgba(10,124,62,.08);border-left:2px dashed rgba(10,124,62,.4);border-right:2px dashed rgba(10,124,62,.4);pointer-events:none}
 .tl-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border);pointer-events:none}
 .tl-bar{position:absolute;top:4px;bottom:4px;border-radius:3px;opacity:.85;cursor:default;transition:opacity .15s}
@@ -2134,8 +2139,12 @@ function renderTimeline(result,details,targets){
   thead.appendChild(hrow);table.appendChild(thead);
   const tbody=document.createElement('tbody');
 
-  // Collect every scrollable timeline element so we can keep them in sync
-  const scrollEls=[hrow.children[6]]; // header scroll container
+  // Single horizontal scroller: the header time-axis. Body rows are moved by
+  // transform to follow it (collected below), so there is only one scroll
+  // container to drive — robust in Safari, not just Chrome.
+  const headerScroller=hrow.children[6]; // .tl-th-scroll — the visible top scrollbar
+  const bodyInners=[];                   // each row's .tl-inner (transformed)
+  const bodyCells=[];                    // each row's .tl-cell (wheel target)
 
   function addSecRow(label){
     const tr=document.createElement('tr');tr.className='section-row-tl';
@@ -2259,7 +2268,7 @@ function renderTimeline(result,details,targets){
       });
     }
     tlTd.appendChild(inner);tr.appendChild(tlTd);
-    scrollEls.push(tlTd);
+    bodyInners.push(inner); bodyCells.push(tlTd);
 
     const detailParts=(crew.call_results||[]).filter(r=>r.detail).map(r=>'#'+r.call_num+': '+r.detail);
     const indParts=(crew.induction_warnings||[]);
@@ -2282,22 +2291,37 @@ function renderTimeline(result,details,targets){
 
   table.appendChild(tbody);wrap.appendChild(table);
 
-  // Centre the shift midpoint in the 600px viewport, then sync horizontal scroll
-  // across the header + every body row so they move as one.
+  // Centre the shift midpoint in the 600px viewport, then drive everything from
+  // the single header scroller: on its scroll, translate every body row to match.
   const midH=(callStart+callEnd)/2;
   let initialScroll=pxD(midH)-VIEWPORT_W/2;
-  initialScroll=Math.max(0,Math.min(initialScroll,innerWidth-VIEWPORT_W));
-  let syncing=false;
-  scrollEls.forEach(el=>{
-    el.scrollLeft=initialScroll;
-    el.addEventListener('scroll',()=>{
-      if(syncing)return;
-      syncing=true;
-      const x=el.scrollLeft;
-      for(const other of scrollEls){if(other!==el)other.scrollLeft=x}
-      syncing=false;
-    },{passive:true});
-  });
+  initialScroll=Math.max(0,Math.min(initialScroll,Math.max(0,innerWidth-VIEWPORT_W)));
+
+  function applyBodyScroll(x){
+    const tx='translateX('+(-x)+'px)';
+    for(const inner of bodyInners) inner.style.transform=tx;
+  }
+  headerScroller.scrollLeft=initialScroll;
+  applyBodyScroll(initialScroll);
+  // The header is the only real scroller; rows follow via transform. Using rAF
+  // coalesces the (sometimes async in Safari) scroll events into one paint.
+  let _tlRaf=null;
+  headerScroller.addEventListener('scroll',()=>{
+    if(_tlRaf) return;
+    _tlRaf=requestAnimationFrame(()=>{ _tlRaf=null; applyBodyScroll(headerScroller.scrollLeft); });
+  },{passive:true});
+
+  // Trackpad/drag over the body rows scrolls horizontally by forwarding the
+  // wheel delta to the header scroller (which then moves the rows). Vertical
+  // intent is left alone so the page/list still scrolls normally.
+  function onTlWheel(e){
+    const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX
+             : (e.shiftKey ? e.deltaY : 0);
+    if(dx===0) return;
+    e.preventDefault();
+    headerScroller.scrollLeft += dx;
+  }
+  bodyCells.forEach(td=>td.addEventListener('wheel',onTlWheel,{passive:false}));
 }
 
 // ── CREW SELECTION ──
