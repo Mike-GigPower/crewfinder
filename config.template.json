@@ -1,5 +1,6 @@
 {
   "username": "",
   "password": "",
-  "anthropic_api_key": ""
+  "anthropic_api_key": "",
+  "goat_glossary": {}
 }

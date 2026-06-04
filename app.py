@@ -94,7 +94,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.0"
+APP_VERSION    = "3.5.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -1607,6 +1607,7 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "inductions": c.get("inductions", {}) or {},
             "ein":        c.get("ein") or c.get("id"),  # prefer endpoint EIN; fall back to userID
             "postcode":   str(c.get("postcode") or "").strip(),
+            "notes":      c.get("notes") or "",          # users.notes — for the name-hover card
         })
     return out, None
 
@@ -1775,6 +1776,47 @@ def check_conflict(shifts, target_start, target_end, target_venue):
             return True, f"Rule 4 - Would work {total:.1f}hrs in 24hr window (max {MAX_24H_HRS}hrs)"
 
     return False, ""
+
+
+def _tag_shift_for_timeline(shift, targets):
+    """Annotate a nearby shift for Crew Finder timeline colouring (3.5.1).
+
+    Tags are computed against the searched target call(s) so the frontend can
+    colour each bar by its relationship to the *requested* shift, reusing the
+    SAME check_conflict rules (single source of truth) instead of duplicating
+    the overlap/gap maths in JS.
+
+      is_target        — this shift IS one of the target calls (the crew member
+                         is already assigned to the call being filled). The bar
+                         is coloured by its confirmation status, not by conflict:
+                         confirmed (5) -> green, declined (6) -> red, anything
+                         else -> grey. You can't "conflict" with the very call
+                         you're filling.
+      conflicts_target — this single non-target shift would trigger a conflict
+                         (Rule 1-4) against a target call. Drives red (confirmed)
+                         / amber (unconfirmed).
+      overlaps_target  — this single non-target shift overlaps a target window in
+                         time (Rule 1 only). Drives amber for declined shifts.
+    """
+    s_call_id = str(shift.get("call_id"))
+    is_target = any(s_call_id == str(t["call_id"]) for t in targets)
+    conflicts_target = False
+    overlaps_target  = False
+    if not is_target:
+        s_start = datetime.fromisoformat(shift["start"])
+        s_end   = datetime.fromisoformat(shift["end"])
+        for t in targets:
+            if s_call_id == str(t["call_id"]):
+                continue
+            c_flag, _ = check_conflict([shift], t["start"], t["end"], t.get("venue", ""))
+            if c_flag:
+                conflicts_target = True
+            if s_start < t["end"] and s_end > t["start"]:
+                overlaps_target = True
+    return {**shift,
+            "is_target":        is_target,
+            "conflicts_target": conflicts_target,
+            "overlaps_target":  overlaps_target}
 
 # ─── IMPORT LOG ───────────────────────────────────────────────────────────────
 
@@ -2565,7 +2607,7 @@ def api_availability():
             key = s["start"]
             if (in_window or cited) and key not in nearby_set:
                 nearby_set.add(key)
-                nearby.append(s)
+                nearby.append(_tag_shift_for_timeline(s, targets))
 
         nearby_unavails = [u for u in unavails if any(
             datetime.fromisoformat(u["end"]) >= t["start"] - timedelta(days=3)
@@ -3240,6 +3282,269 @@ def api_booked_crew(booking_id, call_id):
 
     return jsonify({"crew": crew, "total": len(crew)})
 
+
+# ─── CREW CARD (name-hover popover) ───────────────────────────────────────────
+# The Crew Finder name-hover card shows a crew member's profile photo + notes.
+# NOTES come from users.notes via list-crew-bulk.php and ride along on each crew
+# object — the frontend reads crew.notes directly (no fetch here).
+# PHOTO is served through an authenticated proxy (/api/crew-photo) because the
+# SmartStaff image sits behind the login session — the browser can't fetch it
+# directly. The photo URL is discovered from the profile page (/crew/manage/<id>)
+# and re-derived server-side on every request (never taken from the client).
+#
+# /api/crew-card is a photo probe / debug endpoint: GET ...?debug=1 dumps the
+# image candidates + profile tabs so the headshot path can be confirmed/pinned.
+
+_crew_card_cache = {}          # crew_id -> {"photo_url": str|None, "_debug": {...}}
+_crew_card_lock  = threading.Lock()
+
+def _discover_profile_photo(soup, crew_id):
+    """Pick the crew member's profile-photo <img> src from the profile page.
+    Returns (absolute_url_or_None, raw_candidate_srcs).
+
+    Excludes the 'no photo' placeholder, licence/cert scans, buttons and chrome.
+    SmartStaff shows images/nophoto.png in the avatar slot when no photo is set,
+    so a member with no headshot correctly resolves to None ('No photo on file').
+    """
+    # Substrings that are never a profile headshot.
+    bad = ("nophoto", "no_photo", "licensepic", "licenseimg", "licence",
+           "licensebtn", "logo", "icon", "sprite", "spacer", "blank",
+           "flag", "btn", "button", ".svg")
+    # Substrings that positively look like a headshot path.
+    prefer = ("crewpic", "profilepic", "userpic", "staffpic", "headshot",
+              "avatar", "profile", "crewimg", "memberpic", str(crew_id))
+    raw, clean = [], []
+    for img in soup.find_all("img"):
+        src = (img.get("src") or "").strip()
+        if not src:
+            continue
+        raw.append(src)
+        if any(b in src.lower() for b in bad):
+            continue
+        clean.append(src)
+    chosen = None
+    for src in clean:
+        if any(p in src.lower() for p in prefer):
+            chosen = src
+            break
+    if not chosen and clean:
+        chosen = clean[0]   # first non-excluded image is the avatar slot
+    if chosen and chosen.startswith("/"):
+        chosen = BASE_URL.rstrip("/") + chosen
+    elif chosen and not chosen.lower().startswith("http"):
+        chosen = BASE_URL.rstrip("/") + "/" + chosen
+    return chosen, raw
+
+def _profile_debug(soup, crew_id, photo_url):
+    """Verbose dump so the real headshot path can be confirmed/pinned in one pass."""
+    imgs = [{"src": (i.get("src") or ""),
+             "class": " ".join(i.get("class", [])),
+             "id": i.get("id") or "",
+             "alt": i.get("alt") or ""} for i in soup.find_all("img")]
+    tabs = []
+    for a in soup.find_all("a"):
+        href = a.get("href") or ""
+        if "manage" in href or "page=" in href:
+            tabs.append({"text": a.get_text(strip=True)[:40], "href": href})
+    return {"chosen_photo": photo_url, "imgs": imgs, "tabs": tabs}
+
+@app.route("/api/crew-card/<crew_id>")
+@require_cohort("admin", "leadership")
+def api_crew_card(crew_id):
+    """Photo probe for the name-hover popover (notes come from users.notes on the
+    crew object, not from here). Cached per crew_id. ?debug=1 dumps candidates."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    debug = request.args.get("debug") == "1"
+    with _crew_card_lock:
+        cached = _crew_card_cache.get(str(crew_id))
+    if cached and not debug:
+        return jsonify({"photo_available": bool(cached.get("photo_url"))})
+
+    try:
+        resp = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page=1")
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception as e:
+        return jsonify({"error": f"profile fetch failed: {e}"}), 502
+
+    photo_url, _ = _discover_profile_photo(soup, crew_id)
+    record = {"photo_url": photo_url, "_debug": _profile_debug(soup, crew_id, photo_url)}
+    with _crew_card_lock:
+        _crew_card_cache[str(crew_id)] = record
+
+    out = {"photo_available": bool(photo_url)}
+    if debug:
+        out["_debug"] = record["_debug"]
+        out["photo_url"] = photo_url
+    return jsonify(out)
+
+@app.route("/api/crew-photo/<crew_id>")
+@require_cohort("admin", "leadership")
+def api_crew_photo(crew_id):
+    """Authenticated proxy for a crew member's profile photo, streamed back so the
+    browser <img> can render an image that sits behind the SmartStaff session.
+
+    Fast path: the deterministic `images/crewpics/crewimg_<id>.jpg`. Falls back to
+    scraping the profile page only if that misses (non-standard filename), and
+    caches the discovered URL so the heavy page fetch happens at most once."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    def _serve(url):
+        # Only ever fetch a SmartStaff-hosted image, server-derived — no SSRF surface.
+        if not url or not url.startswith(BASE_URL.rstrip("/")):
+            return None
+        try:
+            img = ss.get(url, allow_redirects=True)
+        except Exception:
+            return None
+        final = str(getattr(img, "url", "") or "").lower()
+        ctype = img.headers.get("Content-Type", "")
+        # A missing photo 404s or redirects to nophoto.png; a session timeout
+        # redirects to the (non-image) login page. None of these is a photo.
+        if img.status_code != 200 or not img.content or "image" not in ctype or "nophoto" in final:
+            return None
+        return app.response_class(img.content, mimetype=ctype,
+                                  headers={"Cache-Control": "private, max-age=600"})
+
+    # 1) Deterministic crewpics path — no profile fetch needed.
+    resp = _serve(f"{BASE_URL.rstrip('/')}/images/crewpics/crewimg_{crew_id}.jpg")
+    if resp is not None:
+        return resp
+
+    # 2) Fallback: discover the real filename from the profile page (cached).
+    with _crew_card_lock:
+        cached = _crew_card_cache.get(str(crew_id))
+    photo_url = cached.get("photo_url") if cached else None
+    if not photo_url:
+        try:
+            page = ss.get(f"{BASE_URL}/crew/manage/{crew_id}?page=1")
+            soup = BeautifulSoup(page.text, "html.parser")
+            photo_url, _ = _discover_profile_photo(soup, crew_id)
+        except Exception:
+            photo_url = None
+        with _crew_card_lock:
+            _crew_card_cache[str(crew_id)] = {"photo_url": photo_url}
+    resp = _serve(photo_url)
+    return resp if resp is not None else ("", 404)
+
+
+# ─── GOAT DOMAIN GLOSSARY ─────────────────────────────────────────────────────
+# Abbreviations that appear in call names/descriptions, mapped to the role/skill
+# words used elsewhere (e.g. crew group names like "Video"/"Audio"/"Lights").
+# Both the Ask-the-GOAT crew filter and the main GOAT assistant read this, so a
+# request for "VX experience" maps onto the "Video" skill group.
+#
+# Built-in defaults live here; a "goat_glossary" object in config.json EXTENDS
+# and OVERRIDES them. It's read fresh on each request, so adding a term to
+# config.json takes effect on the next message — no code change, rebuild, or
+# even a restart. Example config.json:
+#   "goat_glossary": { "FX": "Special Effects, Pyro", "RX": "Rigging" }
+GOAT_GLOSSARY_DEFAULT = {
+    "VX": "Video",
+    "SX": "Sound, Audio",
+    "LX": "Lighting, Lights",
+}
+
+def goat_glossary():
+    """Built-in defaults merged with any `goat_glossary` map in config.json
+    (config extends/overrides). Tolerant of a missing/malformed config entry."""
+    g = dict(GOAT_GLOSSARY_DEFAULT)
+    try:
+        extra = load_config().get("goat_glossary")
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if k and v is not None:
+                    g[str(k).strip()] = str(v).strip()
+    except Exception:
+        pass
+    return g
+
+def _glossary_text():
+    return "\n".join(f"- {k} = {v}" for k, v in goat_glossary().items())
+
+
+# ─── CREW FINDER · ASK THE GOAT (natural-language filter/sort) ─────────────────
+# Translates a recruiter's plain-English request ("lots of RLA experience",
+# "experience with ProStage", "sort by hours worked at Marvel") into a small JSON
+# filter/sort spec that the frontend applies to the crew ALREADY on screen. The
+# model only ever sees the request plus the VOCABULARY of skills/groups and
+# induction venues present in the current results — never the full roster — so it
+# maps fuzzy phrasing onto real terms while staying token-light. The client does
+# the actual matching (against groups / inductions / notes) and sorting.
+
+CREW_ASK_SYSTEM = """You convert a live-events recruiter's natural-language request into a JSON spec for filtering and sorting a crew shortlist. You are given VOCABULARY: the skills/groups and induction venues that actually appear in the current results. Map the request to the closest vocabulary entries.
+
+Respond with ONLY a JSON object (no prose, no markdown fences) of this exact shape:
+{
+  "match": {"terms": ["<short token>", ...], "fields": ["groups","inductions","notes"], "mode": "any" or "all", "min_rating": <int, omit if none>},
+  "sort": {"by": "rating" or "name" or "distance" or "match_count" or "availability", "dir": "asc" or "desc"},
+  "explanation": "<one short plain sentence describing what you did>",
+  "note": "<short caveat if part of the request can't be honored; omit otherwise>"
+}
+Omit "sort" if no ordering is implied. Omit "match" terms only if nothing maps.
+
+Guidance:
+- "X experience" / "experience with X" / "experienced in X": terms = the distinctive token(s) of X mapped to VOCABULARY; fields default ["groups","inductions","notes"]; mode "all" if several skills are all required, else "any".
+- "lots of X experience" / "most experienced in X": match X and sort {"by":"match_count","dir":"desc"}.
+- "sort by hours worked at <venue>": hours worked are NOT available in this view. Match the venue so the list shows people with that venue experience, sort {"by":"match_count","dir":"desc"}, and explain the limitation in "note".
+- "highest rated" / "best": sort by rating desc. "rating over N" / "at least N stars": set min_rating.
+- "closest" / "nearest": sort by distance asc.
+- Always prefer terms that literally appear in VOCABULARY. If nothing matches, return empty terms and explain in "note".
+- Keep each term to the distinctive token (e.g. "RLA","VX","ProStage","Marvel"), not a whole phrase.
+- Expand glossary abbreviations to the role word before matching (e.g. "VX" -> "video"). If unsure which form the data stores, include BOTH the abbreviation and the expansion in terms with mode "any" (e.g. "VX experience" -> ["video","vx"]); prefer whichever appears in VOCABULARY."""
+
+def crew_ask_system():
+    return CREW_ASK_SYSTEM + "\n\nGLOSSARY (abbreviations common in call descriptions):\n" + _glossary_text()
+
+
+@app.route("/api/crew-finder/ask", methods=["POST"])
+@require_cohort("admin")
+def api_crew_finder_ask():
+    """NL request -> filter/sort spec for the on-screen crew list (Crew Finder)."""
+    if not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+    body  = request.get_json(force=True) or {}
+    query = (body.get("query") or "").strip()
+    if not query:
+        return jsonify({"error": "Empty request"}), 400
+    vocab  = body.get("vocabulary") or {}
+    groups = [str(g) for g in (vocab.get("groups") or [])][:250]
+    venues = [str(v) for v in (vocab.get("venues") or [])][:250]
+
+    import anthropic as _anthropic, json as _json
+    _api_key = os.environ.get("ANTHROPIC_API_KEY") or load_config().get("anthropic_api_key", "").strip()
+    if not _api_key:
+        return jsonify({"error": "AI is not configured"}), 500
+
+    user_msg = (
+        "VOCABULARY\n"
+        f"skills/groups: {', '.join(groups) if groups else '(none)'}\n"
+        f"induction venues: {', '.join(venues) if venues else '(none)'}\n\n"
+        f"REQUEST: {query}"
+    )
+    try:
+        client = _anthropic.Anthropic(api_key=_api_key)
+        resp = client.messages.create(
+            model      = "claude-haiku-4-5-20251001",
+            max_tokens = 400,
+            system     = crew_ask_system(),
+            messages   = [{"role": "user", "content": user_msg}],
+        )
+    except Exception as e:
+        return jsonify({"error": f"AI error: {e}"}), 502
+
+    text = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+    text = text.replace("```json", "").replace("```", "").strip()
+    try:
+        spec = _json.loads(text)
+    except Exception:
+        return jsonify({"error": "Couldn't interpret that — try rephrasing."}), 200
+    return jsonify({"spec": spec})
+
 @app.route("/api/call-status/<booking_id>/<call_id>")
 @require_cohort("admin", "leadership")
 def api_call_status(booking_id, call_id):
@@ -3541,6 +3846,11 @@ CRITICAL — WRITE ACTION RULES:
 - Unavailability supports partial days. "Free in the afternoon" means unavailable in the morning — e.g. a uni student with morning lectures is unavailable 09:00–13:00, available after. Translate natural language to explicit start/end times.
 
 Keep responses concise but warm. Occasional GOAT pun or dry humour is encouraged — never at the expense of being useful."""
+
+def goat_system():
+    return GOAT_SYSTEM + ("\n\nGLOSSARY — abbreviations common in call names/descriptions; "
+        "treat the expansion as the same thing (e.g. a \"VX call\" is a video call, and "
+        "\"video\" crew are the right fit):\n") + _glossary_text()
 
 
 def execute_goat_tool(tool_name, tool_input, ss):
@@ -3859,7 +4169,7 @@ def api_goat():
                 response = client.messages.create(
                     model      = "claude-haiku-4-5-20251001",
                     max_tokens = 1024,
-                    system     = GOAT_SYSTEM,
+                    system     = goat_system(),
                     tools      = GOAT_TOOLS,
                     messages   = msgs,
                 )

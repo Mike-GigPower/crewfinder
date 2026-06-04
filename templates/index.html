@@ -132,6 +132,19 @@ tr.partial .name-cell{border-left-color:var(--warn)}
 .stat-num.green{color:var(--available)}
 .stat-num.red{color:var(--conflict)}
 .stat-num.grey{color:var(--muted)}
+.cf-legend{display:flex;align-items:center;gap:16px;padding:6px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-family:'Share Tech Mono',monospace}
+.cf-legend-title{color:var(--accent);font-weight:700}
+.cf-legend-item{display:flex;align-items:center;gap:6px}
+.cf-legend-swatch{width:20px;height:10px;border-radius:2px;flex-shrink:0}
+.goat-ask-bar{display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
+.goat-ask-icon{font-size:15px;flex-shrink:0}
+.goat-ask-input{flex:1;min-width:240px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 11px;font-family:'Rajdhani',sans-serif;font-size:13px}
+.goat-ask-input:focus{outline:none;border-color:var(--border-gold)}
+.goat-ask-input::placeholder{color:var(--muted)}
+.goat-ask-status{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted);flex-basis:100%;padding-top:2px}
+.goat-ask-status .gas-text{flex:1}
+.goat-clear{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 9px;font-size:11px;cursor:pointer;font-family:'Rajdhani',sans-serif;font-weight:600;flex-shrink:0}
+.goat-clear:hover{border-color:var(--border-gold);color:var(--accent)}
 .stat-label{font-size:10px;color:var(--muted)}
 .results-actions{margin-left:auto;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 .sel-count{font-size:11px;color:var(--muted)}
@@ -160,6 +173,9 @@ tr.skipped{opacity:.6}
 .status-available{font-size:10px;font-weight:600;color:var(--available);background:var(--avail-bg);padding:2px 7px;border-radius:4px}
 .status-conflict{font-size:10px;font-weight:600;color:var(--conflict);background:var(--conf-bg);padding:2px 7px;border-radius:4px}
 .status-skipped{font-size:10px;color:var(--muted);padding:2px 7px}
+.status-booked{font-size:10px;font-weight:600;color:#22c55e;background:rgba(34,197,94,0.12);padding:2px 7px;border-radius:4px}
+.status-waiting{font-size:10px;font-weight:600;color:var(--warn);background:rgba(245,158,11,0.12);padding:2px 7px;border-radius:4px}
+.status-declined{font-size:10px;font-weight:600;color:var(--conflict);background:var(--conf-bg);padding:2px 7px;border-radius:4px}
 .phone-cell a{color:var(--muted);text-decoration:none}
 .phone-cell a:hover{color:var(--accent)}
 .groups-cell{color:var(--muted);font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis}
@@ -188,7 +204,20 @@ tr.skipped{opacity:.6}
 .tl-bar.bar-conflict{background:var(--conflict)}
 .tl-bar.bar-info{background:rgba(59,130,246,0.65);border:1px solid rgba(59,130,246,0.85)}
 .tl-bar.bar-unavail{background:rgba(168,85,247,0.75);border:1px solid rgba(168,85,247,0.9)}
-.tl-bar[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:#1a1d23;color:#fff;font-size:10px;padding:4px 8px;border-radius:4px;white-space:nowrap;z-index:200;pointer-events:none}
+.tl-bar.bar-warn{background:var(--warn);border:1px solid #fbbf24}
+.tl-bar.bar-booked{background:#22c55e;border:1px solid #16a34a}
+.tl-bar.bar-assigned{background:#6b7280;border:1px solid #9ca3af}
+/* Floating shift tooltip — fixed-position so the scrollable cell's overflow can't clip it */
+#tl-tip{position:fixed;transform:translate(-50%,-100%);background:#1a1d23;color:#fff;font-size:10px;line-height:1.5;text-align:left;padding:5px 9px;border-radius:4px;white-space:pre-line;max-width:300px;z-index:9999;pointer-events:none;display:none;box-shadow:0 4px 14px rgba(0,0,0,.5)}
+/* Crew name-hover card (photo + notes) */
+.crew-name{cursor:default;border-bottom:1px dotted rgba(212,175,55,0.35)}
+#crew-card{position:fixed;z-index:9999;width:240px;background:var(--surface2);border:1px solid var(--border-gold);border-radius:8px;box-shadow:0 10px 34px rgba(0,0,0,.6);padding:12px;pointer-events:none;display:none;font-family:'Rajdhani',sans-serif}
+#crew-card .cc-name{font-weight:700;font-size:13px;color:var(--accent);margin-bottom:8px;letter-spacing:.02em}
+#crew-card .cc-photo{width:100%;height:150px;object-fit:cover;border-radius:5px;background:var(--surface);display:block;margin-bottom:8px;border:1px solid var(--border)}
+#crew-card .cc-photo-ph{width:100%;height:90px;display:flex;align-items:center;justify-content:center;border-radius:5px;background:var(--surface);border:1px dashed var(--border);color:var(--muted);font-size:11px;margin-bottom:8px}
+#crew-card .cc-notes-label{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-bottom:3px}
+#crew-card .cc-notes{font-size:11px;line-height:1.5;color:var(--text);white-space:pre-line;max-height:140px;overflow:auto}
+#crew-card .cc-notes.empty{color:var(--muted);font-style:italic}
 .tl-time-header{position:relative;height:20px}
 .tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%);white-space:nowrap}
 .section-row-tl td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
@@ -755,6 +784,22 @@ body.cohort-leadership #unavail-add-section{display:none}
         <button class="btn btn-confirm" id="btn-confirm" disabled onclick="addSelected(true)">&#10003; Add &amp; Confirm</button>
         <button class="btn btn-sms" id="btn-sms" disabled onclick="sendSMS()">&#9993; Send SMS</button>
       </div>
+    </div>
+    <div class="goat-ask-bar" id="goat-ask-bar" style="display:none">
+      <span class="goat-ask-icon">🐐</span>
+      <input id="goat-ask-input" class="goat-ask-input" autocomplete="off"
+             placeholder="Ask the GOAT to filter or sort — e.g. &ldquo;lots of RLA experience&rdquo;, &ldquo;experience with ProStage&rdquo;, &ldquo;sort by hours at Marvel&rdquo;"
+             onkeydown="if(event.key==='Enter')askGoatCrew()">
+      <button id="goat-ask-btn" class="btn" onclick="askGoatCrew()">Ask</button>
+      <div id="goat-ask-status" class="goat-ask-status" style="display:none"></div>
+    </div>
+    <div class="cf-legend" id="cf-legend" style="display:none">
+      <span class="cf-legend-title">Shift bars:</span>
+      <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:#22c55e"></span>Booked</span>
+      <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:#6b7280"></span>Waiting</span>
+      <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:var(--conflict)"></span>Conflict</span>
+      <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:var(--warn)"></span>Potential Conflict</span>
+      <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:rgba(59,130,246,0.65)"></span>For Info</span>
     </div>
     <div class="results-table-wrap" id="results-wrap">
       <div class="empty-state">
@@ -1573,6 +1618,8 @@ async function runSearch(){
     result.bookedCrew = bookedCrew;
 
     // Use first call's details as reference for timeline date
+    _goatSpec=null;                       // fresh search clears any GOAT filter
+    const gi=document.getElementById('goat-ask-input'); if(gi) gi.value='';
     currentResult={...result, details:detailsArr[0], calls:calls};
     renderResults(result, detailsArr[0], result.targets);
   }catch(e){alert('Search error: '+e)}
@@ -1589,9 +1636,119 @@ function setView(view){
   if(currentResult)renderResults(currentResult,currentResult.details,currentResult.targets);
 }
 
+// ── ASK THE GOAT (Crew Finder natural-language filter/sort) ──
+let _goatSpec=null, _cfAskBusy=false;
+
+function buildCrewVocab(result){
+  const groups=new Set(), venues=new Set();
+  ['available','conflicts','skipped'].forEach(k=>(result[k]||[]).forEach(c=>{
+    (c.groups||[]).forEach(g=>{ if(g) groups.add(g); });
+    Object.keys(c.inductions||{}).forEach(v=>{ if(v) venues.add(v); });
+  }));
+  return {groups:[...groups], venues:[...venues]};
+}
+
+async function askGoatCrew(){
+  const inp=document.getElementById('goat-ask-input');
+  const q=(inp&&inp.value||'').trim();
+  if(!q||_cfAskBusy||!currentResult) return;
+  _cfAskBusy=true;
+  const btn=document.getElementById('goat-ask-btn'); const label=btn.textContent; btn.textContent='…'; btn.disabled=true;
+  try{
+    const r=await fetch('/api/crew-finder/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query:q, vocabulary:buildCrewVocab(currentResult)})});
+    const d=await r.json();
+    if(!r.ok||d.error){ updateGoatBar(null); setGoatError(d.error||'Request failed'); return; }
+    _goatSpec=d.spec||null;
+    renderResults(currentResult,currentResult.details,currentResult.targets);
+  }catch(e){ updateGoatBar(null); setGoatError('Error: '+e.message); }
+  finally{ _cfAskBusy=false; btn.textContent=label; btn.disabled=false; }
+}
+
+function clearGoatCrew(){
+  _goatSpec=null;
+  const inp=document.getElementById('goat-ask-input'); if(inp) inp.value='';
+  if(currentResult) renderResults(currentResult,currentResult.details,currentResult.targets);
+}
+
+function setGoatError(msg){
+  const el=document.getElementById('goat-ask-status'); if(!el) return;
+  el.innerHTML='<span class="gas-text" style="color:var(--conflict)">'+escapeHtml(msg)+'</span>';
+  el.style.display='flex';
+}
+
+function updateGoatBar(info){
+  const el=document.getElementById('goat-ask-status'); if(!el) return;
+  if(!info){ el.style.display='none'; el.innerHTML=''; return; }
+  const note=info.note?' · '+escapeHtml(info.note):'';
+  el.innerHTML='<span class="gas-text">🐐 '+escapeHtml(info.explanation)+
+    ' — showing '+info.matched+' of '+info.total+note+
+    '</span><button class="goat-clear" onclick="clearGoatCrew()">✕ Clear</button>';
+  el.style.display='flex';
+}
+
+// Apply a GOAT spec to a result set → new {available,conflicts,skipped} (filtered+sorted).
+function applyCrewSpec(result, spec){
+  const m=(spec&&spec.match)||{};
+  const terms=(m.terms||[]).map(t=>String(t).toLowerCase()).filter(Boolean);
+  const fields=(m.fields&&m.fields.length)?m.fields:['groups','inductions','notes'];
+  const mode=(m.mode==='all')?'all':'any';
+  const minR=(typeof m.min_rating==='number')?m.min_rating:null;
+  const sort=(spec&&spec.sort)||null;
+
+  function hay(c){
+    const parts=[];
+    if(fields.includes('groups'))     parts.push((c.groups||[]).join(' '));
+    if(fields.includes('inductions')) parts.push(Object.keys(c.inductions||{}).join(' '));
+    if(fields.includes('notes'))      parts.push(c.notes||'');
+    parts.push(c.name||'');
+    return parts.join(' ').toLowerCase();
+  }
+  function matchCount(c){ const h=hay(c); return terms.filter(t=>h.includes(t)).length; }
+  // Total occurrences across the haystack — ranks "lots of X experience".
+  function matchFreq(c){ const h=hay(c); let n=0; terms.forEach(t=>{ if(!t) return; let i=h.indexOf(t); while(i!==-1){ n++; i=h.indexOf(t,i+t.length); } }); return n; }
+  function keep(c){
+    if(minR!=null && (c.rating||0)<minR) return false;
+    if(!terms.length) return true;
+    const n=matchCount(c);
+    return mode==='all' ? n===terms.length : n>0;
+  }
+  function sortArr(arr){
+    if(!sort) return arr;
+    const dir=(sort.dir==='asc')?1:-1, by=sort.by;
+    return arr.slice().sort((a,b)=>{
+      if(by==='name'){ const av=(a.name||'').toLowerCase(), bv=(b.name||'').toLowerCase(); return av<bv?-dir:av>bv?dir:0; }
+      let av,bv;
+      if(by==='distance'){ av=(a.distance_km==null?1e9:a.distance_km); bv=(b.distance_km==null?1e9:b.distance_km); }
+      else if(by==='match_count'){ av=matchFreq(a); bv=matchFreq(b); }
+      else if(by==='availability'){ av=a.avail_count||0; bv=b.avail_count||0; }
+      else { av=a.rating||0; bv=b.rating||0; }     // rating (default)
+      return (av-bv)*dir;
+    });
+  }
+  const out={...result}; let matched=0, total=0;
+  ['available','conflicts','skipped'].forEach(k=>{
+    const arr=result[k]||[];
+    total+=arr.length;
+    const kept=sortArr(arr.filter(keep));
+    matched+=kept.length;
+    out[k]=kept;
+  });
+  return {result:out, matched, total};
+}
+
 function renderResults(result,details,targets){
+  // Apply an active ASK THE GOAT filter/sort to the on-screen list (if any).
+  let goatInfo=null;
+  if(_goatSpec){
+    const ap=applyCrewSpec(result,_goatSpec);
+    result=ap.result;
+    goatInfo={explanation:_goatSpec.explanation||'Filtered',note:_goatSpec.note||'',matched:ap.matched,total:ap.total};
+  }
+  updateGoatBar(goatInfo);
   const{available,conflicts,skipped}=result;
   const bookedCrew = result.bookedCrew || [];
+  _bookedRel = buildBookedRel(bookedCrew);
   document.getElementById('cnt-avail').textContent=available.length;
   document.getElementById('cnt-conf').textContent=conflicts.length;
   document.getElementById('cnt-skip').textContent=skipped.length;
@@ -1602,6 +1759,8 @@ function renderResults(result,details,targets){
     else { su.style.display='none'; }
   }
   document.getElementById('results-header').style.display='flex';
+  document.getElementById('cf-legend').style.display='flex';
+  document.getElementById('goat-ask-bar').style.display='flex';
   selected.clear();updateSelCount();
 
   // Build booked crew section
@@ -1660,14 +1819,67 @@ function renderResults(result,details,targets){
 }
 
 // ── STATUS HELPERS ──
+// Relationship to the REQUESTED call. The authoritative source is the booked-crew
+// list (the same data behind the ALREADY BOOKED chips: confirmed/unconfirmed/
+// waiting/declined), because a waiting/declined assignment may have NO calendar
+// shift row. We match booked-crew (names "First Last") to rows ("Last, First")
+// via an order-independent normalised key. Falls back to the crew's own shift on
+// a target call for multi-call searches (where booked-crew isn't fetched).
+let _bookedRel=new Map();   // normalised name -> 'booked'|'waiting'|'declined'
+function _normName(n){return String(n||'').toLowerCase().replace(/,/g,' ').split(/\s+/).filter(Boolean).sort().join(' ');}
+function buildBookedRel(bookedCrew){
+  const m=new Map();
+  (bookedCrew||[]).forEach(c=>{
+    const rel = c.status==='confirmed' ? 'booked'
+              : c.status==='declined'  ? 'declined'
+              : 'waiting';   // unconfirmed / waiting / sent
+    m.set(_normName(c.name),rel);
+  });
+  return m;
+}
+function targetRelationship(crew){
+  const r=_bookedRel.get(_normName(crew.name));
+  if(r) return r;
+  const ts=(crew.shifts||[]).filter(s=>s.is_target);
+  if(!ts.length) return null;
+  if(ts.some(s=>s.status===5)) return 'booked';
+  if(ts.some(s=>s.status===6)) return 'declined';
+  return 'waiting';
+}
+
+// Floating shift tooltip (fixed-position; not clipped by the scroll container).
+let _tlTipEl=null;
+function _tlTip(){if(_tlTipEl)return _tlTipEl;const e=document.createElement('div');e.id='tl-tip';document.body.appendChild(e);_tlTipEl=e;return e;}
+function showTlTip(bar){
+  const tip=bar.dataset.tip; if(!tip) return;
+  const e=_tlTip(); e.textContent=tip; e.style.display='block';
+  const r=bar.getBoundingClientRect();
+  e.style.left=(r.left+r.width/2)+'px';
+  e.style.top=(r.top-6)+'px';
+}
+function hideTlTip(){if(_tlTipEl)_tlTipEl.style.display='none';}
+function wireTip(bar,tip){
+  if(!tip)return;
+  bar.dataset.tip=tip;
+  bar.addEventListener('mouseenter',()=>showTlTip(bar));
+  bar.addEventListener('mouseleave',hideTlTip);
+}
+
 function statusLabel(crew, targets, rowStatus){
-  // CONFLICTED/SKIPPED take precedence — if the row landed in a non-available
-  // bucket, say so regardless of how many calls were searched.
-  if(rowStatus==='conflict'){
-    return '<span class="status-conflict">CONFLICTED</span>';
-  }
   if(rowStatus==='skipped'){
     return '<span class="status-skipped">SKIPPED</span>';
+  }
+  // Relationship to the requested call takes precedence over the availability
+  // bucket — "they declined this call" / "already booked" is the operator's
+  // most relevant signal when filling it.
+  const rel=targetRelationship(crew);
+  if(rel==='booked')   return '<span class="status-booked">BOOKED</span>';
+  if(rel==='declined') return '<span class="status-declined">DECLINED</span>';
+  if(rel==='waiting')  return '<span class="status-waiting">WAITING</span>';
+  // CONFLICTED — if the row landed in the conflict bucket, say so regardless of
+  // how many calls were searched.
+  if(rowStatus==='conflict'){
+    return '<span class="status-conflict">CONFLICTED</span>';
   }
   if(!targets||targets.length<=1){
     return crew.partial
@@ -1678,6 +1890,75 @@ function statusLabel(crew, targets, rowStatus){
     return '<span class="status-partial">'+crew.avail_count+'/'+crew.total_calls+' calls</span>';
   }
   return '<span class="status-available">ALL '+targets.length+' CALLS</span>';
+}
+
+// #2 — multi-line call-detail tooltip for a shift bar.
+function shiftTip(s,targetDate,sh,eh,state){
+  const time=hToLabel(sh,targetDate)+' – '+hToLabel(eh,targetDate);
+  const lines=[];
+  if(s.booking_name) lines.push(s.booking_name);
+  if(s.call_name)    lines.push('Call: '+s.call_name);
+  lines.push(time);
+  if(s.venue)        lines.push('Venue: '+s.venue);
+  lines.push(state);
+  return lines.join('\n');
+}
+
+// #1 — name-hover card showing the crew member's profile photo + notes.
+// Notes come from crew.notes (users.notes, already on the row). The photo is the
+// authenticated /api/crew-photo proxy with an onerror placeholder, so the card
+// renders instantly with no extra round trip.
+let _crewCardEl=null, _crewCardTimer=null;
+
+function _ensureCrewCardEl(){
+  if(_crewCardEl) return _crewCardEl;
+  const el=document.createElement('div');
+  el.id='crew-card';
+  document.body.appendChild(el);
+  _crewCardEl=el;
+  return el;
+}
+function _positionCrewCard(el,anchor){
+  const r=anchor.getBoundingClientRect();
+  const cardW=240, margin=10;
+  let left=r.right+12;
+  if(left+cardW+margin>window.innerWidth) left=Math.max(margin,r.left-cardW-12);
+  let top=r.top;
+  el.style.left=left+'px'; el.style.top=top+'px';
+  requestAnimationFrame(()=>{
+    const h=el.offsetHeight;
+    if(top+h+margin>window.innerHeight) el.style.top=Math.max(margin,window.innerHeight-h-margin)+'px';
+  });
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+function showCrewCard(anchor,crew){
+  if(!crew) return;
+  const el=_ensureCrewCardEl();
+  const photo=(crew.id!=null)
+    ? `<img class="cc-photo" src="/api/crew-photo/${encodeURIComponent(crew.id)}" alt="" onerror="this.outerHTML='<div class=&quot;cc-photo-ph&quot;>No photo on file</div>'">`
+    : `<div class="cc-photo-ph">No photo on file</div>`;
+  const hasNotes=crew.notes&&String(crew.notes).trim();
+  const notes=hasNotes
+    ? `<div class="cc-notes">${escapeHtml(crew.notes)}</div>`
+    : `<div class="cc-notes empty">No notes on file</div>`;
+  el.innerHTML=`<div class="cc-name">${escapeHtml(crew.name)}</div>${photo}<div class="cc-notes-label">Notes</div>${notes}`;
+  el.style.display='block';
+  _positionCrewCard(el,anchor);
+}
+function hideCrewCard(){ if(_crewCardEl) _crewCardEl.style.display='none'; }
+// Wire a name cell to the hover card. 220ms intent delay so quick scans don't pop it.
+function attachCrewCardHover(td,crew){
+  if(!crew) return;
+  const nameSpan=td.querySelector('.crew-name')||td;
+  td.addEventListener('mouseenter',()=>{
+    clearTimeout(_crewCardTimer);
+    _crewCardTimer=setTimeout(()=>showCrewCard(nameSpan,crew),220);
+  });
+  td.addEventListener('mouseleave',()=>{
+    clearTimeout(_crewCardTimer);
+    hideCrewCard();
+  });
 }
 
 function inductionWarnHtml(crew){
@@ -1779,10 +2060,11 @@ function addTableRow(tbody,crew,status,targets){
   tr.appendChild(cbTd);
   function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
   const ph=phoneLink(crew.phone);
-  const nameHtml=(isGoat?'🐐 ':'')+crew.name+inductionWarnHtml(crew);
+  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew);
   const nameTd=mkTd('name-cell',nameHtml);
   if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
   tr.appendChild(nameTd);
+  attachCrewCardHover(nameTd,crew);
   tr.appendChild(mkTd('',statusLabel(crew,targets,status)+breakdownHtml(crew)));
   if(_geoActive){
     const dkm=(crew.distance_km!=null)?crew.distance_km+' km':'\u2014';
@@ -1878,7 +2160,9 @@ function renderTimeline(result,details,targets){
     tr.appendChild(cbTd);
     function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
     const ph=phoneLink(crew.phone);
-    tr.appendChild(mkTd('name-cell',crew.name+inductionWarnHtml(crew)));
+    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew));
+    tr.appendChild(nameTd);
+    attachCrewCardHover(nameTd,crew);
     tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
     tr.appendChild(mkTd('phone-cell',ph));
     tr.appendChild(mkTd('rating-cell',crew.rating));
@@ -1899,36 +2183,79 @@ function renderTimeline(result,details,targets){
       inner.appendChild(bg);
     });
 
-    // Shift bars — colour by per-shift status, not by row status:
-    //   confirmed (status==5)  → red  (bar-conflict)  — a real commitment
-    //   anything else          → blue (bar-info)      — informational only
-    // A declined/pending/noshow shift doesn't block the crew member from new
-    // work, but the operator should see it on the timeline for context.
+    // Bar geometry + tooltip helper (floating tip avoids the scroll-cell clip).
+    function addBar(startH,endH,cls,tip,extra){
+      if(endH<tlMin||startH>tlMax)return;
+      const bar=document.createElement('div');
+      bar.className='tl-bar '+cls;
+      const lp=pxD(Math.max(startH,tlMin)),rp=pxD(Math.min(endH,tlMax));
+      bar.style.left=lp+'px'; bar.style.width=(rp-lp)+'px';
+      if(extra) bar.style.cssText+=extra;
+      wireTip(bar,tip);
+      inner.appendChild(bar);
+      return bar;
+    }
+
+    // Relationship to the requested call (authoritative: booked-crew list).
+    const rel=targetRelationship(crew);
+
+    // Shift bars — colour by each shift's relationship to the REQUESTED call:
+    //  OTHER shifts:
+    //    confirmed + conflict → red    (a real commitment that clashes)
+    //    unconfirmed + conflict → amber (would clash if confirmed)
+    //    declined + overlap   → amber  (declined but still overlaps the window)
+    //    everything else      → blue   (informational only)
+    //  The requested-call assignment itself is drawn once, below, from `rel`
+    //  (green=booked / grey=waiting / red=declined) — covers waiting/declined
+    //  crew who have no calendar shift row. is_target shifts are skipped here
+    //  when rel is known so we don't double-draw.
     if(status!=='skipped'){
       (crew.shifts||[]).forEach(s=>{
         const sh=dtToH(s.start,targetDate),eh=dtToH(s.end,targetDate);
-        if(eh<tlMin||sh>tlMax)return;
-        const bar=document.createElement('div');
-        const barStatus=(s.status===5)?'conflict':'info';
-        bar.className='tl-bar bar-'+barStatus;
-        const lp=pxD(Math.max(sh,tlMin)),rp=pxD(Math.min(eh,tlMax));
-        bar.style.left=lp+'px';
-        bar.style.width=(rp-lp)+'px';
-        const statusLabel=(s.status===5)?'Confirmed':(s.status===6)?'Declined':(s.status===1)?'Pending':(s.status===8)?'No Show':'Unconfirmed';
-        bar.dataset.tip=hToLabel(sh,targetDate)+'-'+hToLabel(eh,targetDate)+' @ '+(s.venue||'?')+' ('+statusLabel+')';
-        inner.appendChild(bar);
+        if(s.is_target && rel) return;   // covered by the synthetic target bar below
+        let barClass, state;
+        if(s.is_target){
+          if(s.status===5){ barClass='bar-booked';   state='Booked — confirmed on this call'; }
+          else if(s.status===6){ barClass='bar-conflict'; state='Declined this call'; }
+          else { barClass='bar-assigned'; state='Assigned — awaiting confirmation'; }
+        } else if(s.status===5 && s.conflicts_target){
+          barClass='bar-conflict'; state='Confirmed — conflicts with requested shift';
+        } else if(s.status===1 && s.conflicts_target){
+          barClass='bar-warn'; state='Unconfirmed — would conflict if confirmed';
+        } else if(s.status===6 && s.overlaps_target){
+          barClass='bar-warn'; state='Declined — overlaps the requested shift';
+        } else {
+          barClass='bar-info';
+          state=(s.status===5)?'Confirmed':(s.status===6)?'Declined':(s.status===1)?'Pending':(s.status===8)?'No Show':'Unconfirmed';
+        }
+        addBar(sh,eh,barClass,shiftTip(s,targetDate,sh,eh,state));
       });
+
+      // Synthetic bar(s) for the requested call, coloured by the relationship.
+      if(rel){
+        const cls   = rel==='booked'?'bar-booked':rel==='declined'?'bar-conflict':'bar-assigned';
+        const state = rel==='booked'?'Booked — confirmed on this call'
+                    : rel==='declined'?'Declined this call'
+                    : 'Assigned — awaiting confirmation';
+        const tgtShift=(crew.shifts||[]).find(s=>s.is_target);
+        targetWindows.forEach(tw=>{
+          let tip;
+          if(tgtShift){ tip=shiftTip(tgtShift,targetDate,tw.startH,tw.endH,state); }
+          else {
+            const lines=[];
+            if(tw.label && tw.label.trim()!=='#') lines.push('Call '+tw.label.trim());
+            lines.push(hToLabel(tw.startH,targetDate)+' – '+hToLabel(tw.endH,targetDate));
+            if(details&&details.venue) lines.push('Venue: '+details.venue);
+            lines.push(state);
+            tip=lines.join('\n');
+          }
+          addBar(tw.startH,tw.endH,cls,tip);
+        });
+      }
+
       (crew.unavails||[]).forEach(u=>{
         const sh=dtToH(u.start,targetDate),eh=dtToH(u.end,targetDate);
-        if(eh<tlMin||sh>tlMax)return;
-        const bar=document.createElement('div');
-        bar.className='tl-bar bar-unavail';
-        const lp=pxD(Math.max(sh,tlMin)),rp=pxD(Math.min(eh,tlMax));
-        bar.style.left=lp+'px';
-        bar.style.width=(rp-lp)+'px';
-        bar.style.top='0'; bar.style.bottom='0'; bar.style.opacity='0.5';
-        bar.dataset.tip='Unavailable: '+(u.reason||'Leave');
-        inner.appendChild(bar);
+        addBar(sh,eh,'bar-unavail','Unavailable: '+(u.reason||'Leave'),'top:0;bottom:0;opacity:0.5;');
       });
     }
     tlTd.appendChild(inner);tr.appendChild(tlTd);
