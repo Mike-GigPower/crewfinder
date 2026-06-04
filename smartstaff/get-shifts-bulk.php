@@ -4,6 +4,7 @@
 	/* global file */
 
 	include('../../global.php');
+	include('cohort.php');
 
 	/*
 	/* JSON response */
@@ -11,13 +12,15 @@
 	header('Content-Type: application/json');
 
 	/*
-	/* admin only — this endpoint returns assignments for every crew member,
-	/* not just the requester */
+	/* admin OR leadership — this endpoint returns assignments for every crew
+	/* member, not just the requester. Leadership is read-only; this is a read
+	/* endpoint, so it is permitted.
+	*/
 
-	if (!$user->checkSession() || $user->info->usergroupID != 1)
+	if (!goat_can_read_all())
 	{
 		http_response_code(403);
-		die('{"error":"Admin only"}');
+		die('{"error":"Admin or Leadership only"}');
 	}
 
 	/*
@@ -93,12 +96,14 @@
 			c.bookingID     AS booking_id,
 			c.call_name     AS call_name,
 			b.name          AS booking_name,
-			v.venue         AS venue_name
+			v.venue         AS venue_name,
+			ccm.status      AS ccm_status
 		FROM calendars cal
-		LEFT JOIN users    u ON u.id  = cal.user
-		LEFT JOIN calls    c ON c.id  = cal.call
-		LEFT JOIN bookings b ON b.id  = c.bookingID
-		LEFT JOIN venues   v ON v.id  = b.venueID
+		LEFT JOIN users         u   ON u.id      = cal.user
+		LEFT JOIN calls         c   ON c.id      = cal.call
+		LEFT JOIN bookings      b   ON b.id      = c.bookingID
+		LEFT JOIN venues        v   ON v.id      = b.venueID
+		LEFT JOIN call_crew_map ccm ON ccm.callID = cal.call AND ccm.userID = cal.user
 		WHERE cal.start < $end_sql
 		  AND cal.end   > $start_sql
 		  AND cal.type IN (1, 2)
@@ -140,6 +145,15 @@
 			$entry['call_name']    = $row->call_name;
 			$entry['booking_name'] = $row->booking_name;
 			$entry['venue']        = $row->venue_name;
+			/* Real confirmation state from call_crew_map:
+			/*   5=confirmed, 1=pending, 6=declined, 8=noshow, 0/none=unset.
+			/* The client treats status==5 as a confirmed conflict (red bar, counts
+			/* toward utilization) and everything else as an informational (blue)
+			/* bar. This MUST be the true per-assignment status — a calendars
+			/* type=2 row also exists for non-confirmed assignments, so hard-coding
+			/* 5 here painted every "for information" shift as a red conflict. */
+			$entry['status'] = ($row->ccm_status === null || $row->ccm_status === '')
+			                   ? 0 : (int) $row->ccm_status;
 			$shifts[] = $entry;
 		}
 		else

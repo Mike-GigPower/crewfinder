@@ -602,8 +602,40 @@ tr.skipped{opacity:.6}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
 .crew-clash{color:#ef4444!important;font-weight:700}
 .crew-clash::before{content:'⚠ '}
+/* Leadership sees the Schedule read-only — hide the per-call admin actions
+   (Find Crew / SMS / open-in-SmartStaff). Admin keeps them. */
+body.cohort-leadership .sched-action-btn{display:none!important}
 .sched-clash-badge{background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.4);color:#f97316;font-size:8px;font-family:'Share Tech Mono',monospace;padding:1px 5px;border-radius:3px;white-space:nowrap}
 .sched-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:10px;color:var(--muted);text-align:center;padding:60px}
+
+/* ── COHORT: crew "My Status" self view ── */
+#tab-my-status{display:none}
+#tab-my-status.active{display:block;flex:1;overflow:auto;padding:24px 28px}
+.ms-wrap{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+.ms-hello{font-family:'Bebas Neue',sans-serif;letter-spacing:.06em;font-size:26px;color:var(--accent)}
+.ms-hello small{display:block;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:.1em;margin-top:2px}
+.ms-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.ms-card-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border);background:#0a0a0a}
+.ms-card-title{font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:14px;color:var(--text)}
+.ms-card-meta{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.ms-card-body{padding:14px 16px}
+.ms-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)}
+.ms-row:last-child{border-bottom:none}
+.ms-row .ms-venue{flex:1;font-size:13px;color:var(--text)}
+.ms-row .ms-when{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.ms-badge{font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:.06em;padding:2px 7px;border-radius:3px;text-transform:uppercase;white-space:nowrap}
+.ms-badge.complete{color:#22c55e;background:rgba(34,197,94,0.12)}
+.ms-badge.expiring{color:#f59e0b;background:rgba(245,158,11,0.12)}
+.ms-badge.expired{color:#ef4444;background:rgba(239,68,68,0.12)}
+.ms-badge.incomplete{color:var(--muted);background:rgba(255,255,255,0.05)}
+.ms-util-big{font-family:'Bebas Neue',sans-serif;font-size:40px;color:var(--accent);line-height:1}
+.ms-util-sub{font-size:12px;color:var(--muted);margin-top:4px}
+.ms-empty{color:var(--muted);font-size:12px;padding:6px 0}
+.ms-mini-input{background:#0a0a0a;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px}
+.ms-del{flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);color:var(--conflict);border-radius:3px;padding:3px 9px;font-size:11px;cursor:pointer;font-family:'Rajdhani',sans-serif;font-weight:600}
+.ms-add-btn{background:var(--accent);color:#000;border:none;border-radius:3px;padding:6px 14px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:.06em;text-transform:uppercase}
+/* leadership is read-only: hide unavailability editing in the admin manager */
+body.cohort-leadership #unavail-add-section{display:none}
 </style>
 </head>
 <body>
@@ -642,11 +674,12 @@ tr.skipped{opacity:.6}
   <button class="update-banner-close" onclick="document.getElementById('update-banner').classList.remove('show')">&#215;</button>
 </div>
 <div class="tab-bar">
-  <button class="tab-btn active" onclick="switchTab('schedule')">📅 Schedule</button>
-  <button class="tab-btn" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
-  <button class="tab-btn" onclick="switchTab('forecast')">📊 Crew Utilization</button>
-  <button class="tab-btn" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
-  <button class="tab-btn" onclick="switchTab('import')" id="import-tab-btn">⬆ Estimate Import</button>
+  <button class="tab-btn active" id="tab-btn-schedule" onclick="switchTab('schedule')">📅 Schedule</button>
+  <button class="tab-btn" id="tab-btn-crew-finder" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
+  <button class="tab-btn" id="tab-btn-forecast" onclick="switchTab('forecast')">📊 Crew Utilization</button>
+  <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
+  <button class="tab-btn" id="tab-btn-import" onclick="switchTab('import')">⬆ Estimate Import</button>
+  <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
 </div>
 <div class="main">
   <!-- ── CREW FINDER TAB ── -->
@@ -1109,6 +1142,52 @@ tr.skipped{opacity:.6}
 
     </div>
   </div><!-- end tab-forecast -->
+  <!-- ── MY STATUS (crew self view) ── -->
+  <div class="tab-panel" id="tab-my-status">
+    <div class="ms-wrap">
+      <div class="ms-hello">My Status<small id="ms-hello-sub"></small></div>
+
+      <div class="ms-card">
+        <div class="ms-card-head"><span class="ms-card-title">My Inductions</span>
+          <span class="ms-card-meta" id="ms-ind-meta"></span></div>
+        <div class="ms-card-body" id="ms-ind-body"><div class="ms-empty">Loading…</div></div>
+      </div>
+
+      <div class="ms-card">
+        <div class="ms-card-head"><span class="ms-card-title">My Utilization</span>
+          <span class="ms-card-meta" id="ms-util-meta"></span></div>
+        <div class="ms-card-body" id="ms-util-body"><div class="ms-empty">Loading…</div></div>
+      </div>
+
+      <div class="ms-card">
+        <div class="ms-card-head"><span class="ms-card-title">My Schedule</span>
+          <span class="ms-card-meta" id="ms-sched-meta"></span></div>
+        <div class="ms-card-body" id="ms-sched-body"><div class="ms-empty">Loading…</div></div>
+      </div>
+
+      <div class="ms-card">
+        <div class="ms-card-head"><span class="ms-card-title">My Unavailability</span>
+          <button class="ms-add-btn" onclick="msToggleAddUnavail()">+ Add</button></div>
+        <div class="ms-card-body">
+          <div id="ms-unavail-list"><div class="ms-empty">Loading…</div></div>
+          <div id="ms-unavail-add" style="display:none;border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+              <div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">From</label>
+                <input type="date" id="ms-un-start-date" class="ms-mini-input">
+                <input type="time" id="ms-un-start-time" class="ms-mini-input" value="00:00"></div>
+              <div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">To</label>
+                <input type="date" id="ms-un-end-date" class="ms-mini-input">
+                <input type="time" id="ms-un-end-time" class="ms-mini-input" value="23:59"></div>
+            </div>
+            <div style="margin-top:10px"><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">Reason</label>
+              <input type="text" id="ms-un-reason" placeholder="e.g. Uni lectures, On leave" class="ms-mini-input" style="width:100%;box-sizing:border-box"></div>
+            <div id="ms-un-msg" style="font-size:11px;margin-top:8px;min-height:14px"></div>
+            <div style="margin-top:6px"><button class="ms-add-btn" onclick="msSubmitUnavail()">Save</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
 // ── STATE ──
@@ -1133,8 +1212,147 @@ function hToLabel(h,targetDate){
   return d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
 }
 
-document.addEventListener('DOMContentLoaded',()=>{
-  Promise.all([loadGroups(), loadCalls(), loadCacheStatus(), checkForUpdates()]);
+
+// ── COHORT / role-aware UI ──────────────────────────────────────────────────
+window._cohort = 'admin';
+async function loadWhoami(){
+  try{
+    const r = await fetch('/api/whoami', {cache:'no-store'});
+    if(!r.ok) throw new Error('whoami '+r.status);
+    const d = await r.json();
+    window._cohort = d.cohort || 'crew';
+    window._identity = d;
+    applyCohort(d);
+    return window._cohort;
+  }catch(e){
+    // Fail closed to least privilege if identity can't be read.
+    window._cohort = 'crew';
+    applyCohort({cohort:'crew', name:'', ein:''});
+    return 'crew';
+  }
+}
+function applyCohort(d){
+  const cohort = d.cohort || 'crew';
+  document.body.classList.add('cohort-'+cohort);
+  const hide = id => { const el=document.getElementById(id); if(el) el.style.display='none'; };
+  // My Status hello line — shown to anyone who can open the panel (crew + leadership)
+  const sub = document.getElementById('ms-hello-sub');
+  if(sub) sub.textContent = [d.name||'', d.ein?('EIN '+d.ein):''].filter(Boolean).join('  ·  ');
+  if(cohort === 'admin'){ hide('tab-btn-my-status'); return; }  // shared admin login — no personal view
+  if(cohort === 'leadership'){
+    hide('tab-btn-crew-finder');                 // Crew Finder is admin-only
+    hide('tab-btn-import');                       // Estimate Import is admin-only
+    // My Status tab stays: leadership are crew too — own inductions/shifts and
+    // can add/remove their own availability (the /api/me/* routes are any-cohort).
+    switchTab('schedule');                        // never land on a hidden tab
+    return;
+  }
+  // crew → personal dashboard only
+  hide('btn-ask-goat');
+  hide('cache-badge');
+  const bar = document.querySelector('.tab-bar'); if(bar) bar.style.display='none';
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  const ms = document.getElementById('tab-my-status'); if(ms) ms.classList.add('active');
+}
+
+// ── My Status data loaders ──────────────────────────────────────────────────
+async function loadMyStatus(){ loadMyInductions(); loadMyShifts(); loadMyUnavail(); }
+
+async function loadMyInductions(){
+  const body=document.getElementById('ms-ind-body'), meta=document.getElementById('ms-ind-meta');
+  try{
+    const d = await (await fetch('/api/me/inductions')).json();
+    if(d.error){ body.innerHTML=`<div class="ms-empty">${d.error}</div>`; return; }
+    const vs=d.venue_status||{}; const venues=Object.keys(vs).sort();
+    if(!venues.length){ body.innerHTML='<div class="ms-empty">No inductions on record.</div>'; meta.textContent=''; return; }
+    let exp=0, soon=0;
+    body.innerHTML = venues.map(v=>{
+      const s=vs[v]; const st=(s.status||'').toLowerCase();
+      const cls = st==='complete'?'complete':st==='expired'?'expired':st==='expiring soon'?'expiring':'incomplete';
+      if(cls==='expired') exp++; if(cls==='expiring') soon++;
+      const when = s.expiry?('expires '+s.expiry):(s.completed?('done '+s.completed):'');
+      return `<div class="ms-row"><span class="ms-venue">${v}</span><span class="ms-when">${when}</span><span class="ms-badge ${cls}">${s.status||'—'}</span></div>`;
+    }).join('');
+    meta.textContent = [exp?exp+' expired':'', soon?soon+' expiring':''].filter(Boolean).join(' · ') || 'all current';
+  }catch(e){ body.innerHTML=`<div class="ms-empty">Error: ${e.message}</div>`; }
+}
+
+async function loadMyShifts(){
+  const ub=document.getElementById('ms-util-body'), um=document.getElementById('ms-util-meta');
+  const sb=document.getElementById('ms-sched-body'), sm=document.getElementById('ms-sched-meta');
+  try{
+    const d = await (await fetch('/api/me/shifts?days=28')).json();
+    if(d.error){ ub.innerHTML=`<div class="ms-empty">${d.error}</div>`; sb.innerHTML=''; return; }
+    const days=(d.window&&d.window.days)||28;
+    ub.innerHTML = `<div class="ms-util-big">${d.total_hours||0}h</div><div class="ms-util-sub">confirmed over the next ${days} days · ${(d.shifts||[]).length} shift(s)</div>`;
+    um.textContent='';
+    const shifts=(d.shifts||[]).slice().sort((a,b)=>a.start.localeCompare(b.start));
+    if(!shifts.length){ sb.innerHTML='<div class="ms-empty">No upcoming shifts.</div>'; sm.textContent=''; }
+    else{
+      const fmt=iso=>{const x=new Date(iso);return x.toLocaleDateString('en-AU',{weekday:'short',day:'2-digit',month:'short'})+' '+x.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});};
+      const endt=iso=>new Date(iso).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+      sb.innerHTML = shifts.map(s=>`<div class="ms-row"><span class="ms-venue">${s.venue||s.booking_name||'Shift'}${s.call_name?(' · '+s.call_name):''}</span><span class="ms-when">${fmt(s.start)} – ${endt(s.end)}</span></div>`).join('');
+      sm.textContent = shifts.length+' shift(s)';
+    }
+  }catch(e){ ub.innerHTML=`<div class="ms-empty">Error: ${e.message}</div>`; }
+}
+
+async function loadMyUnavail(){
+  const box=document.getElementById('ms-unavail-list');
+  try{
+    const d = await (await fetch('/api/me/unavailability')).json();
+    if(d.error){ box.innerHTML=`<div class="ms-empty">${d.error}</div>`; return; }
+    const list=d.unavailabilities||[];
+    if(!list.length){ box.innerHTML='<div class="ms-empty">No unavailability periods.</div>'; return; }
+    const fmt=iso=>{const x=new Date(iso);return x.toLocaleDateString('en-AU',{day:'2-digit',month:'short'})+' '+x.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});};
+    box.innerHTML = list.map(p=>`<div class="ms-row"><span class="ms-venue">${p.reason||'Unavailable'}<br><span class="ms-when">${fmt(p.start)} → ${fmt(p.end)}</span></span><button class="ms-del" onclick='msDeleteUnavail(${JSON.stringify(p.id)})'>✕ Remove</button></div>`).join('');
+  }catch(e){ box.innerHTML=`<div class="ms-empty">Error: ${e.message}</div>`; }
+}
+
+function msToggleAddUnavail(){
+  const f=document.getElementById('ms-unavail-add');
+  const show = (f.style.display==='none'||!f.style.display);
+  f.style.display = show ? 'block' : 'none';
+  if(show) setTimeout(()=>f.scrollIntoView({behavior:'smooth',block:'end'}), 30);
+}
+
+async function msSubmitUnavail(){
+  const msg=document.getElementById('ms-un-msg');
+  const sd=document.getElementById('ms-un-start-date').value, st=document.getElementById('ms-un-start-time').value||'00:00';
+  const ed=document.getElementById('ms-un-end-date').value, et=document.getElementById('ms-un-end-time').value||'23:59';
+  const reason=document.getElementById('ms-un-reason').value.trim();
+  if(!sd||!ed||!reason){ msg.style.color='var(--conflict)'; msg.textContent='Fill in both dates and a reason.'; return; }
+  const sp=st.split(':').map(Number), ep=et.split(':').map(Number);
+  msg.style.color='var(--muted)'; msg.textContent='Saving…';
+  try{
+    const r=await fetch('/api/me/unavailability/add',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({start_date:sd,start_hour:sp[0],start_min:sp[1],end_date:ed,end_hour:ep[0],end_min:ep[1],reason})});
+    const d=await r.json();
+    if(!r.ok||d.error){ msg.style.color='var(--conflict)'; msg.textContent=d.error||'Failed to add.'; return; }
+    msg.style.color='var(--accent)'; msg.textContent='Added.';
+    document.getElementById('ms-un-reason').value='';
+    loadMyUnavail();
+    setTimeout(()=>{ const f=document.getElementById('ms-unavail-add'); if(f) f.style.display='none'; msg.textContent=''; },900);
+  }catch(e){ msg.style.color='var(--conflict)'; msg.textContent='Error: '+e.message; }
+}
+
+async function msDeleteUnavail(id){
+  try{
+    const r=await fetch('/api/me/unavailability/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({event_id:id})});
+    const d=await r.json();
+    if(r.ok && !d.error) loadMyUnavail();
+  }catch(e){}
+}
+
+document.addEventListener('DOMContentLoaded', async ()=>{
+  checkForUpdates();                       // version banner — fine for everyone
+  const cohort = await loadWhoami();        // identity + cohort-aware nav
+  if(cohort === 'crew'){ loadMyStatus(); return; }   // crew: personal view only
+  // admin + leadership
+  loadGroups();
+  loadCacheStatus();
+  if(cohort === 'admin') loadCalls();       // Crew Finder call list — admin only
   loadSchedule();
 });
 
@@ -1852,9 +2070,10 @@ async function sendSMS(){
 
 // ── TABS ──
 function switchTab(tab){
-  const tabNames = ['schedule','crew-finder','forecast','induction-checker','import'];
-  document.querySelectorAll('.tab-btn').forEach((b,i)=>{
-    b.classList.toggle('active', tabNames[i]===tab);
+  // Match buttons/panels by id, not list position — robust to hidden/added tabs
+  // (the positional version broke when the My Status tab was added).
+  document.querySelectorAll('.tab-btn').forEach(b=>{
+    b.classList.toggle('active', b.id === 'tab-btn-'+tab);
   });
   document.querySelectorAll('.tab-panel').forEach(p=>{
     p.classList.toggle('active', p.id==='tab-'+tab);
@@ -1863,6 +2082,7 @@ function switchTab(tab){
   if(tab==='import') loadImportHistory();
   if(tab==='forecast') initForecast();
   if(tab==='schedule') { initSchedule(); if(!_schedData) loadSchedule(); }
+  if(tab==='my-status') loadMyStatus();
 }
 
 // ── CALL SEARCH & COLLAPSE ──
@@ -3343,10 +3563,10 @@ async function loadUnavailList(){
           <div style="font-size:12px;color:var(--text)">${p.reason||'Unavailable'}</div>
           <div style="font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace">${fmt(p.start)} → ${fmt(p.end)}</div>
         </div>
-        <button onclick="submitUnavailDelete(${JSON.stringify(p.id)})"
+        ${window._cohort==='leadership' ? '' : `<button onclick="submitUnavailDelete(${JSON.stringify(p.id)})"
                 style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);
                        color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;
-                       font-family:'Rajdhani',sans-serif;font-weight:600">✕ Remove</button>
+                       font-family:'Rajdhani',sans-serif;font-weight:600">✕ Remove</button>`}
       </div>`).join('');
   }catch(e){
     box.innerHTML = `<div style="color:var(--accent2);font-size:12px">Error: ${e.message}</div>`;
@@ -3418,6 +3638,10 @@ async function submitUnavailDelete(eventId){
 
 
 let _schedInitDone = false;
+let _schedData = null;   // declared up-front: switchTab('schedule') reads it
+                         // before loadSchedule() ever assigns it (leadership
+                         // lands on Schedule at load); an undeclared read threw
+                         // a ReferenceError that loadWhoami swallowed -> crew.
 let _schedFilter   = 'all'; // 'all' | 'full' | 'partial' | 'empty'
 
 function setSchedFilter(f){
@@ -3698,7 +3922,7 @@ function renderSchedule(){
                 <span style="opacity:.4">loading...</span>
               </span>
               <span data-crew-list="${call.call_id}" style="display:none;font-size:9px;margin-top:2px;flex-basis:100%"></span>
-              <button onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
+              <button class="sched-action-btn" onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
                       title="Find available crew for this call"
                       style="background:rgba(212,175,55,0.1);border:1px solid rgba(212,175,55,0.25);
                              color:var(--accent);border-radius:3px;padding:2px 7px;
@@ -3708,7 +3932,7 @@ function renderSchedule(){
                       onmouseout="this.style.background='rgba(212,175,55,0.1)'">
                 🔍 Find Crew
               </button>
-              <button onclick="event.stopPropagation();schedOpenSMS('${call.booking_id}','${call.call_id}')"
+              <button class="sched-action-btn" onclick="event.stopPropagation();schedOpenSMS('${call.booking_id}','${call.call_id}')"
                       title="Send SMS for this call"
                       style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);
                              color:#22c55e;border-radius:3px;padding:2px 7px;
@@ -3718,7 +3942,7 @@ function renderSchedule(){
                       onmouseout="this.style.background='rgba(34,197,94,0.08)'">
                 📱 SMS
               </button>
-              <a href="https://smartstaffsolutions.com/bookings/${call.booking_id}/callsheet/${call.call_id}"
+              <a class="sched-action-btn" href="https://smartstaffsolutions.com/bookings/${call.booking_id}/callsheet/${call.call_id}"
                  target="_blank"
                  onclick="event.stopPropagation()"
                  title="Open callsheet in SmartStaff"
@@ -3901,6 +4125,7 @@ function toggleSchedBooking(bid){
 }
 
 function schedOpenSMS(bookingId, callId){
+  if(window._cohort !== 'admin') return;   // admin-only action
   // Open SmartStaff SMS page for this call in a new tab
   window.open(
     `https://smartstaffsolutions.com/bookings/${bookingId}/callsheet/${callId}`,
@@ -3909,6 +4134,9 @@ function schedOpenSMS(bookingId, callId){
 }
 
 async function schedJumpToCrewFinder(bookingId, callId){
+  // Crew Finder is admin-only; leadership's Schedule is read-only, so clicking a
+  // call (cell, block, or label) must not navigate there.
+  if(window._cohort !== 'admin') return;
   // Switch to Crew Finder tab and pre-select the call
   switchTab('crew-finder');
 
@@ -4193,6 +4421,7 @@ function applyGoldRows(){
       </div>
 
       <!-- add form -->
+      <div id="unavail-add-section">
       <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace;
                   letter-spacing:.1em;margin-bottom:8px;border-top:1px solid var(--border);padding-top:14px">ADD A PERIOD</div>
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
@@ -4236,6 +4465,7 @@ function applyGoldRows(){
                        font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;
                        letter-spacing:.08em;text-transform:uppercase">+ Add Unavailability</button>
       </div>
+      </div><!-- /unavail-add-section -->
     </div>
   </div>
 </div>

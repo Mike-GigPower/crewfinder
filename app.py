@@ -12,6 +12,7 @@ import os
 import re
 import math
 import threading
+import functools
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template, session, redirect, url_for
 from bs4 import BeautifulSoup
@@ -19,6 +20,22 @@ import requests as http
 
 app = Flask(__name__)
 app.secret_key = "crewfinder-gigpower-2026-internal"
+
+
+@app.after_request
+def _no_store_api(resp):
+    """Never let API responses OR the app HTML be cached. /api/whoami decides the
+    cohort and the /api/me/* routes return per-user data — a stale cached copy
+    renders the wrong cohort's UI. The index/login HTML is included because a
+    browser-cached old index.html will ignore a correct whoami response and run
+    the wrong cohort's code path."""
+    try:
+        p = request.path
+        if p.startswith("/api/") or p in ("/", "/login"):
+            resp.headers["Cache-Control"] = "no-store"
+    except Exception:
+        pass
+    return resp
 
 # ─── PATHS ────────────────────────────────────────────────────────────────────
 
@@ -77,7 +94,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.4.10"
+APP_VERSION    = "3.5.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -103,6 +120,8 @@ except Exception:
 
 
 _ss_sessions     = {}  # per-user SmartStaff sessions keyed by app session id
+_ss_identity     = {}  # sid -> {user_id, ein, name, usergroupID, cohort}
+_ss_creds        = {}  # sid -> {username, password} for per-session reauth
 _keepalive_thread    = None
 # Auto-refresh thread removed in 3.4.5 — forecast and unavail caches no longer
 # exist. The crew cache is the only persistent cache and is refreshed
@@ -122,16 +141,30 @@ def is_ss_session_valid(ss):
         return False
 
 def reauth_ss_session(sid):
-    """Re-authenticate a SmartStaff session using saved credentials."""
-    cfg = load_config()
-    username = cfg.get("username", "")
-    password = cfg.get("password", "")
+    """Re-authenticate a SmartStaff session.
+
+    Uses the per-session credentials captured at login so an expired session
+    re-auths as the SAME user. Falls back to config only if no per-session
+    creds exist (legacy). This prevents a crew session from silently re-authing
+    as the saved admin account."""
+    creds = _ss_creds.get(sid)
+    if creds and creds.get("username") and creds.get("password"):
+        username = creds["username"]
+        password = creds["password"]
+    else:
+        cfg = load_config()
+        username = cfg.get("username", "")
+        password = cfg.get("password", "")
     if not username or not password:
         return False
     ss, err = create_ss_session(username, password)
     if err or not ss:
         return False
     _ss_sessions[sid] = ss
+    # Re-confirm identity/cohort on reauth in case it changed server-side.
+    ident = fetch_whoami(ss)
+    if ident:
+        _ss_identity[sid] = ident
     app.logger.info(f"SmartStaff session re-authenticated for sid {sid}")
     return True
 
@@ -286,6 +319,78 @@ def get_ss_session():
             return None
         ss = _ss_sessions.get(sid)
     return ss
+
+# ─── IDENTITY & ROLE (cohort) ─────────────────────────────────────────────────
+# Identity + cohort are captured at login from SmartStaff's whoami.php and held
+# server-side keyed by session id. The cohort is the single source of truth for
+# all role gating — it is NEVER read from anything the client sends.
+#   admin       -> usergroupID==1 login: full access
+#   leadership  -> read-only across all-crew views; no Crew Finder / Import / writes
+#   crew        -> own self views only
+
+def fetch_whoami(ss, retries=2):
+    """Ask SmartStaff who the logged-in user is. Returns an identity dict with a
+    valid cohort, or None on failure.
+
+    A response is accepted ONLY if it is HTTP 200 AND carries a recognised
+    cohort. A 401/error body or a missing cohort is a FAILURE — not a silent
+    'crew'. (The old code called resp.json() without checking status, so a
+    login-time 401 'Not logged in' — valid JSON, no cohort — was coerced to
+    'crew', silently dropping Leadership/Admin users to the crew view.)
+
+    Retries a few times because at login the whoami call can fire a beat before
+    SmartStaff fully recognises the freshly-authenticated session."""
+    import time as _time
+    last = "no attempt"
+    for attempt in range(retries + 1):
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/crew/whoami.php",
+                          allow_redirects=True, timeout=10)
+            if resp.status_code != 200:
+                last = f"HTTP {resp.status_code}: {(resp.text or '')[:120]!r}"
+            else:
+                try:
+                    data = resp.json()
+                except Exception as je:
+                    data, last = None, f"non-JSON body: {(resp.text or '')[:120]!r}"
+                if isinstance(data, dict):
+                    c = str(data.get("cohort", "")).strip().lower()
+                    if c in ("admin", "leadership", "crew"):
+                        data["cohort"] = c
+                        return data
+                    last = f"no valid cohort in 200 body: {data!r}"
+        except Exception as e:
+            last = f"request error: {e}"
+        if attempt < retries:
+            _time.sleep(0.4)
+    app.logger.warning(f"whoami lookup failed after {retries + 1} tries: {last}")
+    return None
+
+def current_identity():
+    """Identity dict for the current request's session, or None."""
+    sid = session.get("sid")
+    return _ss_identity.get(sid) if sid else None
+
+def current_cohort():
+    """Cohort string for the current session. Defaults to 'crew' (least
+    privilege) if identity wasn't captured for any reason."""
+    ident = current_identity()
+    return (ident or {}).get("cohort", "crew")
+
+def require_cohort(*allowed):
+    """Route guard: 401 if not logged in, 403 if the session's cohort isn't in
+    `allowed`. Server-side only — does not trust any client-supplied role."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not session.get("sid") or not get_ss_session():
+                return jsonify({"error": "Not logged in"}), 401
+            if current_cohort() not in allowed:
+                return jsonify({"error": "Forbidden for your access level"}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
+
 
 def create_ss_session(username, password):
     """Login to SmartStaff and return a session object."""
@@ -448,6 +553,94 @@ def fetch_unavailabilities(crew_id):
             _release(ss)
 
 # ─── CACHE ────────────────────────────────────────────────────────────────────
+
+# ─── SELF-SCOPED HELPERS (crew acting on their own data) ──────────────────────
+# These run on the caller's OWN SmartStaff session — no impersonation. SmartStaff
+# keys add-event/delete-event/get-unavailabilities on $_SESSION userID, so a crew
+# member can only ever touch their own calendar, and delete-event scopes the
+# DELETE to the logged-in user (ownership enforced server-side).
+
+def fetch_own_unavailabilities(ss):
+    """Read the logged-in user's own unavailability periods."""
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/calendar/get-unavailabilities.php",
+                      allow_redirects=True)
+        data = json.loads(resp.text or "[]")
+        out = []
+        for ev in data:
+            out.append({
+                "id":     ev.get("id"),
+                "start":  ev.get("start"),
+                "end":    ev.get("end"),
+                "reason": ev.get("title", "") or "Unavailable",
+            })
+        return out, None
+    except Exception as e:
+        return None, str(e)
+
+def add_own_unavailability(ss, start_date, start_hour, start_min,
+                           end_date, end_hour, end_min, reason):
+    """Create an unavailability on the logged-in user's own calendar."""
+    from urllib.parse import quote
+    try:
+        url = (f"{BASE_URL}/ajax/calendar/add-event.php"
+               f"?start_date={start_date}&start_hour={int(start_hour)}"
+               f"&start_min={int(start_min)}&end_date={end_date}"
+               f"&end_hour={int(end_hour)}&end_min={int(end_min)}"
+               f"&title={quote(reason)}&type=1")
+        resp = ss.get(url, allow_redirects=True)
+        body = (resp.text or "").strip()
+        if body.upper().startswith("ERROR"):
+            return False, body
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def delete_own_unavailability(ss, event_id):
+    """Delete one of the logged-in user's own unavailabilities by calendars.id.
+    delete-event.php scopes the DELETE to the logged-in user, so a crew member
+    cannot delete anyone else's event even by guessing an id."""
+    try:
+        url = f"{BASE_URL}/ajax/calendar/delete-event.php?id={int(event_id)}"
+        resp = ss.get(url, allow_redirects=True)
+        body = (resp.text or "").strip()
+        if body.upper().startswith("ERROR"):
+            return False, body
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def _compute_induction_status(inductions):
+    """Given a {venue: {status, completed}} dict, return {venue: {status,
+    completed[, expiry]}} with Expired / Expiring Soon / Complete computed from
+    the completion date and the venue's expiry policy. Shared by the admin
+    Induction Checker and the crew self-view so they can never diverge."""
+    venue_status = {}
+    for venue_name, ind_data in (inductions or {}).items():
+        if isinstance(ind_data, str):
+            status, completed = ind_data, ""
+        else:
+            status    = ind_data.get("status", "")
+            completed = ind_data.get("completed", "")
+        if status == "Incomplete" or not completed:
+            venue_status[venue_name] = {"status": "Incomplete", "completed": ""}
+        else:
+            try:
+                completed_dt = datetime.strptime(completed, "%d %b %Y")
+                days   = 730 if venue_name.lower() in INDUCTION_24_MONTH else 365
+                expiry = completed_dt + timedelta(days=days)
+                now    = datetime.now()
+                if now > expiry:
+                    st = "Expired"
+                elif (expiry - now).days <= 14:
+                    st = "Expiring Soon"
+                else:
+                    st = "Complete"
+                venue_status[venue_name] = {"status": st, "completed": completed,
+                                            "expiry": expiry.strftime("%d %b %Y")}
+            except Exception:
+                venue_status[venue_name] = {"status": status, "completed": completed}
+    return venue_status
 
 def load_cache():
     if not os.path.exists(CACHE_FILE):
@@ -1173,6 +1366,24 @@ def get_crew_unavailabilities(ss, crew_id, today):
     return unavails
 
 
+def _coerce_status(raw):
+    """Normalize a shift status to int (or None).
+
+    SmartStaff's get-shifts-bulk.php can emit the status as a JSON *string*
+    ("5") rather than an int (5). Every conflict/utilization check compares
+    `status == 5` and the timeline JS compares `status === 5` — both fail
+    against a string, so confirmed shifts silently stop triggering conflicts
+    and render as blue 'info' bars instead of red. Coercing to int at this one
+    parse boundary fixes all of them regardless of the wire type. Idempotent:
+    an int passes straight through; None / "" / junk -> None (non-confirmed)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_shifts_bulk(ss, start_dt, end_dt):
     """Bulk fetch of every confirmed shift + every unavailability in the window,
     in one HTTP call, via the SmartStaff /ajax/crew/get-shifts-bulk.php endpoint.
@@ -1214,7 +1425,7 @@ def fetch_shifts_bulk(ss, start_dt, end_dt):
             "booking_id":   s.get("booking_id"),
             "call_name":    s.get("call_name", ""),
             "booking_name": s.get("booking_name", ""),
-            "status":       s.get("status"),   # 5=confirmed, 1=pending, 6=declined, 8=noshow, 0=unset, None=orphan
+            "status":       _coerce_status(s.get("status")),   # 5=confirmed, 1=pending, 6=declined, 8=noshow, 0=unset, None=orphan (coerced "5"->5)
         })
 
     unavails_by_user_id = {}
@@ -1498,9 +1709,10 @@ def scrape_shifts_from_bookings(ss, start_dt, end_dt):
                 if cache_name not in shifts_by_name:
                     shifts_by_name[cache_name] = []
                 shifts_by_name[cache_name].append({
-                    "start": call["start"],
-                    "end":   call["end"],
-                    "venue": call["venue"],
+                    "start":  call["start"],
+                    "end":    call["end"],
+                    "venue":  call["venue"],
+                    "status": 5,  # scraper only collects confirmed crew (see "confirm" filter above) — tag so the ==5 conflict/forecast checks pass on this fallback path
                 })
 
     return shifts_by_name
@@ -2032,13 +2244,33 @@ def login():
             session["sid"] = sid
             session.permanent = remember
             _ss_sessions[sid] = ss
-            start_keepalive()  # ensure keepalive thread is running
-            trigger_cache_refresh(ss)    # rebuild crew cache on login (background)
-            start_cache_autorefresh()    # keep it fresh on a timer thereafter
-            # Cache preloads removed in 3.4.5 — forecast and unavail data
-            # are fetched live on demand via the bulk endpoints.
 
-            if remember:
+            # Capture identity + cohort (the source of truth for all role
+            # gating). Default to least-privilege 'crew' if whoami is
+            # unreachable for any reason.
+            ident = fetch_whoami(ss) or {"cohort": "crew", "name": "",
+                                         "ein": "", "user_id": None,
+                                         "usergroupID": None}
+            _ss_identity[sid] = ident
+            # Per-session creds so an expired session re-auths as THIS user,
+            # never as the saved admin account.
+            _ss_creds[sid] = {"username": username, "password": password}
+            cohort = ident.get("cohort", "crew")
+
+            start_keepalive()  # ensure keepalive thread is running
+
+            # The roster cache only backs the all-crew views (admin/leadership)
+            # and only their sessions can build it (bulk endpoints are
+            # admin/leadership only). Skip it for crew.
+            if cohort in ("admin", "leadership"):
+                trigger_cache_refresh(ss)    # rebuild crew cache (background)
+                start_cache_autorefresh()    # keep it fresh on a timer
+
+            # Only an ADMIN login may persist creds to config.json — those creds
+            # double as the impersonation account used by _make_admin_ss, so a
+            # non-admin "remember" must NOT overwrite them. Per-session reauth
+            # uses _ss_creds instead, so non-admins still get a remembered login.
+            if remember and cohort == "admin":
                 cfg = load_config()
                 cfg["username"] = username
                 cfg["password"] = password
@@ -2058,9 +2290,12 @@ def logout():
     sid = session.pop("sid", None)
     if sid:
         _ss_sessions.pop(sid, None)
+        _ss_identity.pop(sid, None)
+        _ss_creds.pop(sid, None)
     return redirect(url_for("login"))
 
 @app.route("/api/calls")
+@require_cohort("admin")
 def api_calls():
     ss = get_ss_session()
     if not ss:
@@ -2096,6 +2331,7 @@ def api_calls():
     return jsonify({"calls": calls})
 
 @app.route("/api/call/<booking_id>/<call_id>")
+@require_cohort("admin")
 def api_call_details(booking_id, call_id):
     ss = get_ss_session()
     if not ss:
@@ -2106,6 +2342,7 @@ def api_call_details(booking_id, call_id):
     return jsonify(details)
 
 @app.route("/api/availability", methods=["POST"])
+@require_cohort("admin")
 def api_availability():
     ss = get_ss_session()
     if not ss:
@@ -2381,6 +2618,7 @@ def api_availability():
     })
 
 @app.route("/api/cache/status")
+@require_cohort("admin", "leadership")
 def api_cache_status():
     cache, is_fresh = load_cache()
     age_str = "No cache"
@@ -2400,6 +2638,7 @@ def api_cache_status():
     })
 
 @app.route("/api/cache/refresh", methods=["POST"])
+@require_cohort("admin", "leadership")
 def api_cache_refresh():
     """Trigger a full parallel cache refresh in the background."""
     ss = get_ss_session()
@@ -2414,11 +2653,13 @@ def api_cache_refresh():
 
 
 @app.route("/api/cache/progress")
+@require_cohort("admin", "leadership")
 def api_cache_progress():
     """Return current refresh progress."""
     return jsonify(_refresh_progress)
 
 @app.route("/api/inductions")
+@require_cohort("admin", "leadership")
 def api_inductions():
     """Return induction status for all cached crew, with expiry checking."""
     ss = get_ss_session()
@@ -2438,33 +2679,7 @@ def api_inductions():
         inductions = data.get("inductions", {})
         name       = name_map.get(cid, cid)
 
-        venue_status = {}
-        for venue_name, ind_data in inductions.items():
-            if isinstance(ind_data, str):
-                status, completed = ind_data, ""
-            else:
-                status    = ind_data.get("status", "")
-                completed = ind_data.get("completed", "")
-
-            if status == "Incomplete":
-                venue_status[venue_name] = {"status": "Incomplete", "completed": ""}
-            elif not completed:
-                venue_status[venue_name] = {"status": "Incomplete", "completed": ""}
-            else:
-                try:
-                    completed_dt = datetime.strptime(completed, "%d %b %Y")
-                    days   = 730 if venue_name.lower() in INDUCTION_24_MONTH else 365
-                    expiry = completed_dt + timedelta(days=days)
-                    now    = datetime.now()
-                    if now > expiry:
-                        st = "Expired"
-                    elif (expiry - now).days <= 14:
-                        st = "Expiring Soon"
-                    else:
-                        st = "Complete"
-                    venue_status[venue_name] = {"status": st, "completed": completed, "expiry": expiry.strftime("%d %b %Y")}
-                except Exception:
-                    venue_status[venue_name] = {"status": status, "completed": completed}
+        venue_status = _compute_induction_status(inductions)
 
         result.append({"id": data.get("user_id", cid), "ein": data.get("ein", data.get("user_id", cid)), "name": name, "groups": groups, "rating": rating, "venue_status": venue_status})
 
@@ -2518,6 +2733,7 @@ def api_version():
         return jsonify({"current": APP_VERSION, "update_available": False, "error": str(e)})
 
 @app.route("/api/groups")
+@require_cohort("admin", "leadership")
 def api_groups():
     return jsonify({"groups": [
         "W.B.", "PhD.", "CI Card", "JOAT", "Audio", "Backline",
@@ -2530,6 +2746,7 @@ def api_groups():
 # _forecast_cache (in-memory) removed in 3.4.5 — no caching layer.
 
 @app.route("/api/forecast")
+@require_cohort("admin", "leadership")
 def api_forecast():
     """Compute and return the Crew Utilization forecast grid for a window.
 
@@ -2631,6 +2848,7 @@ def api_forecast():
 
 
 @app.route("/api/forecast/preload-status")
+@require_cohort("admin", "leadership")
 def api_forecast_preload_status():
     """Compatibility shim — caches were removed in 3.4.5 so there is nothing
     to preload. Reports live-mode and always-fresh so existing clients (the
@@ -2647,6 +2865,7 @@ def api_forecast_preload_status():
     })
 
 @app.route("/api/forecast/preload", methods=["POST"])
+@require_cohort("admin", "leadership")
 def api_forecast_preload():
     """Compatibility shim — no-op since 3.4.5. Forecast and unavailability
     data are fetched live; there is no cache to preload. Returns OK so existing
@@ -2807,7 +3026,27 @@ def scrape_schedule(ss, days=14):
 
 _schedule_cache = {}  # {sid: {data, at}}
 
+def fetch_calls_bulk(ss, days=14):
+    """All-crew call list for the Schedule via the DB-backed get-calls-bulk.php
+    (cohort-gated admin+leadership). Returns the same per-call shape as
+    scrape_schedule, so api_schedule's grouping is unchanged. Used for
+    leadership sessions, which can't scrape the admin /bookings pages."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today.strftime("%Y-%m-%d")
+    end   = (today + timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/get-calls-bulk.php?start={start}&end={end}",
+                      allow_redirects=True, timeout=30)
+        if resp.status_code != 200:
+            app.logger.warning(f"get-calls-bulk HTTP {resp.status_code}")
+            return []
+        return (resp.json() or {}).get("calls", [])
+    except Exception as e:
+        app.logger.warning(f"get-calls-bulk failed: {e}")
+        return []
+
 @app.route("/api/schedule")
+@require_cohort("admin", "leadership")
 def api_schedule():
     """Return all calls for the next 14 days grouped by booking, with
     server-side clash detection per call (3.4.6).
@@ -2831,7 +3070,12 @@ def api_schedule():
     if not force and cached and (datetime.now() - cached["at"]).total_seconds() < 120:
         return jsonify(cached["data"])
 
-    calls = scrape_schedule(ss, days=days)
+    # Leadership can't scrape the admin /bookings pages, so it reads the call
+    # list from the DB-backed bulk endpoint. Admin keeps the proven scrape.
+    if current_cohort() == "leadership":
+        calls = fetch_calls_bulk(ss, days=days)
+    else:
+        calls = scrape_schedule(ss, days=days)
 
     # Group by booking_id
     bookings = {}
@@ -2946,6 +3190,7 @@ def api_schedule():
 
 
 @app.route("/api/booked-crew/<booking_id>/<call_id>")
+@require_cohort("admin", "leadership")
 def api_booked_crew(booking_id, call_id):
     """Scrape crew already booked for a call with their confirmation status."""
     ss = get_ss_session()
@@ -2996,6 +3241,7 @@ def api_booked_crew(booking_id, call_id):
     return jsonify({"crew": crew, "total": len(crew)})
 
 @app.route("/api/call-status/<booking_id>/<call_id>")
+@require_cohort("admin", "leadership")
 def api_call_status(booking_id, call_id):
     """Fetch confirmed/waiting/declined counts from the callsheet page."""
     ss = get_ss_session()
@@ -3553,6 +3799,7 @@ GOAT_MAX_HISTORY = 50  # max messages to retain per session
 
 
 @app.route("/api/goat/history")
+@require_cohort("admin", "leadership")
 def api_goat_history():
     """Return stored conversation history for the current session."""
     if not session.get("sid") or not get_ss_session():
@@ -3566,6 +3813,7 @@ def api_goat_history():
 
 
 @app.route("/api/goat/history/clear", methods=["POST"])
+@require_cohort("admin", "leadership")
 def api_goat_history_clear():
     """Clear conversation history for the current session."""
     if not session.get("sid"):
@@ -3575,6 +3823,7 @@ def api_goat_history_clear():
 
 
 @app.route("/api/goat", methods=["POST"])
+@require_cohort("admin", "leadership")
 def api_goat():
     """GOAT AI endpoint — runs Claude with tools, executes tool calls, streams final response."""
     ss = get_ss_session()
@@ -3673,6 +3922,7 @@ def api_goat():
 
 
 @app.route("/api/goat/add-crew", methods=["POST"])
+@require_cohort("admin")
 def api_goat_add_crew():
     """Add crew to calls server-side using the existing SmartStaff session."""
     ss = get_ss_session()
@@ -3709,6 +3959,7 @@ def api_goat_add_crew():
 
 
 @app.route("/api/goat/send-sms", methods=["POST"])
+@require_cohort("admin")
 def api_goat_send_sms():
     """Add crew to calls and send SMS server-side using the existing SmartStaff session."""
     ss = get_ss_session()
@@ -3761,6 +4012,7 @@ def api_goat_send_sms():
 # ── UNAVAILABILITY ENDPOINTS ─────────────────────────────────────────────────
 
 @app.route("/api/unavailability/<crew_id>", methods=["GET"])
+@require_cohort("admin")
 def api_unavailability_list(crew_id):
     """List a crew member's unavailability periods (id + real times + reason)."""
     if not get_ss_session():
@@ -3772,6 +4024,7 @@ def api_unavailability_list(crew_id):
 
 
 @app.route("/api/unavailability/add", methods=["POST"])
+@require_cohort("admin")
 def api_unavailability_add():
     """Create an unavailability for a crew member in SmartStaff.
     Body: {crew_id, start_date 'YYYY-MM-DD', start_hour, start_min,
@@ -3799,6 +4052,7 @@ def api_unavailability_add():
 
 
 @app.route("/api/unavailability/delete", methods=["POST"])
+@require_cohort("admin")
 def api_unavailability_delete():
     """Delete an unavailability by calendars.id.
     Body: {crew_id, event_id}."""
@@ -3819,8 +4073,147 @@ def api_unavailability_delete():
 
 
 
+@app.route("/api/whoami")
+def api_whoami():
+    """Identity + cohort for the current session — lets the frontend render the
+    correct cohort-aware navigation. Safe fields only."""
+    if not session.get("sid") or not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+    ident = current_identity() or {}
+    return jsonify({
+        "name":   ident.get("name", ""),
+        "ein":    ident.get("ein", ""),
+        "cohort": ident.get("cohort", "crew"),
+    })
+
+
+# ─── SELF VIEWS (any logged-in cohort — own data only) ────────────────────────
+
+@app.route("/api/me/inductions")
+def api_me_inductions():
+    """The logged-in user's OWN induction status, with the same expiry logic
+    the admin Induction Checker uses."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/my-inductions.php",
+                      allow_redirects=True, timeout=15)
+        data = resp.json()
+    except Exception as e:
+        return jsonify({"error": f"Could not load inductions: {e}"}), 502
+    venue_status = _compute_induction_status((data or {}).get("inductions", {}))
+    ident = current_identity() or {}
+    return jsonify({
+        "name":         ident.get("name", ""),
+        "ein":          ident.get("ein", ""),
+        "venue_status": venue_status,
+        "venues":       sorted(venue_status.keys()),
+    })
+
+
+@app.route("/api/me/shifts")
+def api_me_shifts():
+    """The logged-in user's OWN shifts + unavailabilities for a window. Powers
+    both My Schedule (the list) and My Utilization (summed confirmed hours)."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    start_str = request.args.get("start_date", datetime.now().strftime("%Y-%m-%d"))
+    try:    days = min(120, max(1, int(request.args.get("days", 28))))
+    except: days = 28
+    try:    start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+    except: return jsonify({"error": "Invalid start_date"}), 400
+    end_str = (start_dt + timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/my-shifts.php?start={start_str}&end={end_str}",
+                      allow_redirects=True, timeout=15)
+        data = resp.json()
+    except Exception as e:
+        return jsonify({"error": f"Could not load shifts: {e}"}), 502
+    shifts   = (data or {}).get("shifts", [])
+    unavails = (data or {}).get("unavails", [])
+    total_hours = 0.0
+    day_hours = {}
+    for sft in shifts:
+        try:
+            cs = datetime.fromisoformat(sft["start"])
+            ce = datetime.fromisoformat(sft["end"])
+        except Exception:
+            continue
+        total_hours += (ce - cs).total_seconds() / 3600
+        cur = cs.replace(hour=0, minute=0, second=0, microsecond=0)
+        while cur < ce:
+            dkey = cur.strftime("%Y-%m-%d")
+            seg_start = max(cs, cur)
+            seg_end   = min(ce, cur + timedelta(days=1))
+            day_hours[dkey] = day_hours.get(dkey, 0) + (seg_end - seg_start).total_seconds() / 3600
+            cur += timedelta(days=1)
+    ident = current_identity() or {}
+    return jsonify({
+        "name":        ident.get("name", ""),
+        "ein":         ident.get("ein", ""),
+        "window":      {"start": start_str, "end": end_str, "days": days},
+        "shifts":      shifts,
+        "unavails":    unavails,
+        "total_hours": round(total_hours, 1),
+        "day_hours":   day_hours,
+    })
+
+
+@app.route("/api/me/unavailability", methods=["GET"])
+def api_me_unavailability_list():
+    """List the logged-in user's OWN unavailability periods."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    periods, err = fetch_own_unavailabilities(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"unavailabilities": periods})
+
+
+@app.route("/api/me/unavailability/add", methods=["POST"])
+def api_me_unavailability_add():
+    """Add an unavailability to the logged-in user's OWN calendar."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    b = request.get_json(force=True)
+    required = ["start_date", "start_hour", "start_min",
+                "end_date", "end_hour", "end_min", "reason"]
+    missing = [k for k in required if b.get(k) in (None, "")]
+    if missing:
+        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+    if not str(b.get("reason")).strip():
+        return jsonify({"error": "A reason is required"}), 400
+    ok, err = add_own_unavailability(
+        ss, b["start_date"], b["start_hour"], b["start_min"],
+        b["end_date"], b["end_hour"], b["end_min"], str(b["reason"]).strip())
+    if not ok:
+        return jsonify({"error": err or "Failed to add unavailability"}), 502
+    return jsonify({"success": True})
+
+
+@app.route("/api/me/unavailability/delete", methods=["POST"])
+def api_me_unavailability_delete():
+    """Delete one of the logged-in user's OWN unavailabilities by id."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    b = request.get_json(force=True)
+    event_id = b.get("event_id")
+    if event_id in (None, ""):
+        return jsonify({"error": "event_id is required"}), 400
+    ok, err = delete_own_unavailability(ss, event_id)
+    if not ok:
+        return jsonify({"error": err or "Failed to delete unavailability"}), 502
+    return jsonify({"success": True})
+
+
 # ── IMPORT ENDPOINTS ── DO NOT REMOVE DECORATOR BELOW ────────────────────────
 @app.route("/api/import/validate", methods=["POST"])
+@require_cohort("admin")
 def api_import_validate():
     """Validate an import payload and return preview data + duplicate check."""
     ss = get_ss_session()
@@ -3951,6 +4344,7 @@ def api_import_validate():
 
 
 @app.route("/api/import/start", methods=["POST"])
+@require_cohort("admin")
 def api_import_start():
     """Begin the SmartStaff booking/call creation process in a background thread."""
     ss = get_ss_session()
@@ -4145,12 +4539,14 @@ def api_import_start():
 
 
 @app.route("/api/import/progress")
+@require_cohort("admin")
 def api_import_progress():
     """Poll current import progress."""
     return jsonify(_import_progress)
 
 
 @app.route("/api/import/log")
+@require_cohort("admin")
 def api_import_log():
     """Return the full import history log."""
     return jsonify({"log": load_import_log()})

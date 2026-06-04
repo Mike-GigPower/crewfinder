@@ -4,6 +4,7 @@
 	/* global file */
 
 	include('../../global.php');
+	include('cohort.php');
 
 	/*
 	/* JSON response */
@@ -11,12 +12,14 @@
 	header('Content-Type: application/json');
 
 	/*
-	/* admin only — full crew roster including phone numbers */
+	/* admin OR leadership — full crew roster including phone numbers.
+	/* Leadership is read-only; this is a read endpoint, so it is permitted.
+	*/
 
-	if (!$user->checkSession() || $user->info->usergroupID != 1)
+	if (!goat_can_read_all())
 	{
 		http_response_code(403);
-		die('{"error":"Admin only"}');
+		die('{"error":"Admin or Leadership only"}');
 	}
 
 	/*
