@@ -1,6 +1,6 @@
 {
-  "version": "3.5.0",
+  "version": "3.5.1",
   "release_date": "2026-06-04",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.0/TheGOAT.dmg",
-  "release_notes": "Three-cohort access (admin / leadership / crew): leadership get read-only all-crew Schedule, Utilization and Induction views plus a personal My Status; crew get a personal My Status dashboard."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.1/TheGOAT.dmg",
+  "release_notes": "Crew Finder: shift bars coloured by relationship to the requested call (green=booked, grey=waiting, red=conflict/declined, amber=potential conflict, blue=info) with a legend; BOOKED/WAITING/DECLINED availability; hover a shift bar for call details, hover a name for photo + notes; Ask the GOAT natural-language filter."
 }
