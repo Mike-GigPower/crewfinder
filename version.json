@@ -1,6 +1,6 @@
 {
-  "version": "3.5.1",
+  "version": "3.5.2",
   "release_date": "2026-06-04",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.1/TheGOAT.dmg",
-  "release_notes": "Crew Finder: shift bars coloured by relationship to the requested call (green=booked, grey=waiting, red=conflict/declined, amber=potential conflict, blue=info) with a legend; BOOKED/WAITING/DECLINED availability; hover a shift bar for call details, hover a name for photo + notes; Ask the GOAT natural-language filter."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.2/TheGOAT.dmg",
+  "release_notes": "Fixes Crew Finder timeline horizontal scrolling in Safari — the time-axis and all rows now scroll together, with a visible scrollbar at the top. No change for Chrome users."
 }
