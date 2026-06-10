@@ -1,6 +1,6 @@
 {
-  "version": "3.5.2",
-  "release_date": "2026-06-04",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.2/TheGOAT.dmg",
-  "release_notes": "Fixes Crew Finder timeline horizontal scrolling in Safari — the time-axis and all rows now scroll together, with a visible scrollbar at the top. No change for Chrome users."
+  "version": "3.5.3",
+  "release_date": "2026-06-10",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.3/TheGOAT.dmg",
+  "release_notes": "New Cohort group: operations added to SmartStaff. Crew Finder column sort and section hide added."
 }
