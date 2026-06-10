@@ -1,6 +1,6 @@
 {
-  "version": "3.5.3",
+  "version": "3.5.4",
   "release_date": "2026-06-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.3/TheGOAT.dmg",
-  "release_notes": "New Cohort group: operations added to SmartStaff. Crew Finder column sort and section hide added."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.4/TheGOAT.dmg",
+  "release_notes": "Backend chnages to Call data gathering."
 }
