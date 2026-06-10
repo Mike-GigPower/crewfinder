@@ -94,7 +94,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.3"
+APP_VERSION    = "3.5.4"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -106,6 +106,7 @@ VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/mai
 USE_BULK_ENDPOINTS = True
 USE_BULK_UNAVAILS_ENDPOINT = True
 USE_BULK_BOOKED_CREW_ENDPOINT = True
+USE_BULK_CALLS_ENDPOINT = True
 try:
     if os.path.exists(CONFIG_FILE):
         _cfg = json.load(open(CONFIG_FILE))
@@ -115,6 +116,8 @@ try:
             USE_BULK_UNAVAILS_ENDPOINT = bool(_cfg["use_bulk_unavails_endpoint"])
         if "use_bulk_booked_crew_endpoint" in _cfg:
             USE_BULK_BOOKED_CREW_ENDPOINT = bool(_cfg["use_bulk_booked_crew_endpoint"])
+        if "use_bulk_calls_endpoint" in _cfg:
+            USE_BULK_CALLS_ENDPOINT = bool(_cfg["use_bulk_calls_endpoint"])
 except Exception:
     pass
 
@@ -2369,7 +2372,7 @@ def api_calls():
 
     def do_scrape():
         try:
-            result[0] = scrape_calls(ss, f"{BASE_URL}/dash")
+            result[0] = fetch_unfilled_calls(ss)
         except Exception as e:
             result[0] = []
 
@@ -3095,6 +3098,64 @@ def fetch_calls_bulk(ss, days=14):
     except Exception as e:
         app.logger.warning(f"get-calls-bulk failed: {e}")
         return []
+
+
+def _bulk_call_to_scrape_shape(r):
+    """Map one get-calls-bulk.php row to the exact dict shape scrape_calls
+    returns, so /api/calls, loadCalls, and the GOAT get_calls tool are unchanged.
+
+    Notes on the two fields the endpoint doesn't carry 1:1:
+      - call_num: the DB has no per-booking call sequence number. scrape_calls
+        already falls back to call_id when the dashboard '#num' is absent, and
+        /api/availability defaults call_num -> call_id, so call_id is the
+        behaviour-preserving value here.
+      - unfilled: computed from booked/required exactly as scrape_calls does
+        (the endpoint exposes 'full'; we don't rely on it, to keep the rule in
+        one place)."""
+    booked   = int(r.get("booked") or 0)
+    required = int(r.get("required") or 0)
+    return {
+        "booking_id":   r.get("booking_id"),
+        "call_id":      r.get("call_id"),
+        "call_num":     r.get("call_id"),
+        "date":         r.get("date", "") or "",
+        "time":         r.get("time", "") or "",
+        "length":       float(r.get("length") or 0),
+        "call_name":    r.get("call_name", "") or "",
+        "booked":       booked,
+        "required":     required,
+        "unfilled":     booked < required,
+        "venue":        r.get("venue", "") or "",
+        "notes":        r.get("notes", "") or "",
+        "booking_name": r.get("booking_name", "") or "",
+    }
+
+
+def fetch_unfilled_calls(ss, horizon_days=90):
+    """Crew Finder 'Unfilled Calls' source. Prefers the DB-backed
+    get-calls-bulk.php endpoint (the same one the Schedule uses), mapped into
+    the scrape_calls() dict shape; falls back to the dashboard scrape on any
+    failure or when the bulk path is disabled. Same feature-flag + graceful-
+    degradation pattern as the other bulk reads (3.4.3-3.4.6)."""
+    use_bulk = USE_BULK_ENDPOINTS and USE_BULK_CALLS_ENDPOINT
+    if use_bulk:
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        start = today.strftime("%Y-%m-%d")
+        end   = (today + timedelta(days=min(horizon_days, 120))).strftime("%Y-%m-%d")
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/crew/get-calls-bulk.php?start={start}&end={end}",
+                          allow_redirects=True, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json() or {}
+                if "error" not in data:
+                    return [_bulk_call_to_scrape_shape(r) for r in data.get("calls", [])]
+                app.logger.warning(f"[bulk-calls] endpoint error: {data.get('error')}; falling back to scrape")
+            else:
+                app.logger.warning(f"[bulk-calls] HTTP {resp.status_code}; falling back to scrape")
+        except Exception as e:
+            app.logger.warning(f"[bulk-calls] failed ({e}); falling back to scrape")
+    return scrape_calls(ss, f"{BASE_URL}/dash")
+
 
 @app.route("/api/schedule")
 @require_cohort(*READ_ALL_COHORTS)
@@ -3898,7 +3959,7 @@ def execute_goat_tool(tool_name, tool_input, ss):
         force = tool_input.get("force_refresh", False)
         try:
             with app.test_request_context():
-                calls = scrape_calls(ss, f"{BASE_URL}/dash")
+                calls = fetch_unfilled_calls(ss)
             return _json.dumps(calls[:20])  # cap at 20 for token budget
         except Exception as e:
             return f"Error fetching calls: {e}"
