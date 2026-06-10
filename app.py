@@ -94,7 +94,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.2"
+APP_VERSION    = "3.5.3"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -324,9 +324,18 @@ def get_ss_session():
 # Identity + cohort are captured at login from SmartStaff's whoami.php and held
 # server-side keyed by session id. The cohort is the single source of truth for
 # all role gating — it is NEVER read from anything the client sends.
-#   admin       -> usergroupID==1 login: full access
-#   leadership  -> read-only across all-crew views; no Crew Finder / Import / writes
-#   crew        -> own self views only
+#   admin                 -> usergroupID==1 login: full access
+#   leadership/operations -> read-only across all-crew views; no Crew Finder /
+#                            Import / writes. Identical access IN THE GOAT; the
+#                            Gig Power website maps them to different privileges.
+#   crew                  -> own self views only
+#
+# Cohort classes — the single place that encodes "operations is leadership-
+# equivalent in THE GOAT". Add a future leadership-class cohort here once and
+# every gate and branch below picks it up.
+LEADERSHIP_COHORTS = ("leadership", "operations")     # leadership-equivalent here
+READ_ALL_COHORTS   = ("admin",) + LEADERSHIP_COHORTS  # may read all-crew data
+KNOWN_COHORTS      = READ_ALL_COHORTS + ("crew",)     # every recognised value
 
 def fetch_whoami(ss, retries=2):
     """Ask SmartStaff who the logged-in user is. Returns an identity dict with a
@@ -355,7 +364,7 @@ def fetch_whoami(ss, retries=2):
                     data, last = None, f"non-JSON body: {(resp.text or '')[:120]!r}"
                 if isinstance(data, dict):
                     c = str(data.get("cohort", "")).strip().lower()
-                    if c in ("admin", "leadership", "crew"):
+                    if c in KNOWN_COHORTS:
                         data["cohort"] = c
                         return data
                     last = f"no valid cohort in 200 body: {data!r}"
@@ -2304,7 +2313,7 @@ def login():
             # The roster cache only backs the all-crew views (admin/leadership)
             # and only their sessions can build it (bulk endpoints are
             # admin/leadership only). Skip it for crew.
-            if cohort in ("admin", "leadership"):
+            if cohort in READ_ALL_COHORTS:
                 trigger_cache_refresh(ss)    # rebuild crew cache (background)
                 start_cache_autorefresh()    # keep it fresh on a timer
 
@@ -2660,7 +2669,7 @@ def api_availability():
     })
 
 @app.route("/api/cache/status")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_cache_status():
     cache, is_fresh = load_cache()
     age_str = "No cache"
@@ -2680,7 +2689,7 @@ def api_cache_status():
     })
 
 @app.route("/api/cache/refresh", methods=["POST"])
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_cache_refresh():
     """Trigger a full parallel cache refresh in the background."""
     ss = get_ss_session()
@@ -2695,13 +2704,13 @@ def api_cache_refresh():
 
 
 @app.route("/api/cache/progress")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_cache_progress():
     """Return current refresh progress."""
     return jsonify(_refresh_progress)
 
 @app.route("/api/inductions")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_inductions():
     """Return induction status for all cached crew, with expiry checking."""
     ss = get_ss_session()
@@ -2775,7 +2784,7 @@ def api_version():
         return jsonify({"current": APP_VERSION, "update_available": False, "error": str(e)})
 
 @app.route("/api/groups")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_groups():
     return jsonify({"groups": [
         "W.B.", "PhD.", "CI Card", "JOAT", "Audio", "Backline",
@@ -2788,7 +2797,7 @@ def api_groups():
 # _forecast_cache (in-memory) removed in 3.4.5 — no caching layer.
 
 @app.route("/api/forecast")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_forecast():
     """Compute and return the Crew Utilization forecast grid for a window.
 
@@ -2890,7 +2899,7 @@ def api_forecast():
 
 
 @app.route("/api/forecast/preload-status")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_forecast_preload_status():
     """Compatibility shim — caches were removed in 3.4.5 so there is nothing
     to preload. Reports live-mode and always-fresh so existing clients (the
@@ -2907,7 +2916,7 @@ def api_forecast_preload_status():
     })
 
 @app.route("/api/forecast/preload", methods=["POST"])
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_forecast_preload():
     """Compatibility shim — no-op since 3.4.5. Forecast and unavailability
     data are fetched live; there is no cache to preload. Returns OK so existing
@@ -3088,7 +3097,7 @@ def fetch_calls_bulk(ss, days=14):
         return []
 
 @app.route("/api/schedule")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_schedule():
     """Return all calls for the next 14 days grouped by booking, with
     server-side clash detection per call (3.4.6).
@@ -3114,7 +3123,7 @@ def api_schedule():
 
     # Leadership can't scrape the admin /bookings pages, so it reads the call
     # list from the DB-backed bulk endpoint. Admin keeps the proven scrape.
-    if current_cohort() == "leadership":
+    if current_cohort() in LEADERSHIP_COHORTS:
         calls = fetch_calls_bulk(ss, days=days)
     else:
         calls = scrape_schedule(ss, days=days)
@@ -3232,7 +3241,7 @@ def api_schedule():
 
 
 @app.route("/api/booked-crew/<booking_id>/<call_id>")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_booked_crew(booking_id, call_id):
     """Scrape crew already booked for a call with their confirmation status."""
     ss = get_ss_session()
@@ -3349,7 +3358,7 @@ def _profile_debug(soup, crew_id, photo_url):
     return {"chosen_photo": photo_url, "imgs": imgs, "tabs": tabs}
 
 @app.route("/api/crew-card/<crew_id>")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_crew_card(crew_id):
     """Photo probe for the name-hover popover (notes come from users.notes on the
     crew object, not from here). Cached per crew_id. ?debug=1 dumps candidates."""
@@ -3381,7 +3390,7 @@ def api_crew_card(crew_id):
     return jsonify(out)
 
 @app.route("/api/crew-photo/<crew_id>")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_crew_photo(crew_id):
     """Authenticated proxy for a crew member's profile photo, streamed back so the
     browser <img> can render an image that sits behind the SmartStaff session.
@@ -3546,7 +3555,7 @@ def api_crew_finder_ask():
     return jsonify({"spec": spec})
 
 @app.route("/api/call-status/<booking_id>/<call_id>")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_call_status(booking_id, call_id):
     """Fetch confirmed/waiting/declined counts from the callsheet page."""
     ss = get_ss_session()
@@ -4109,7 +4118,7 @@ GOAT_MAX_HISTORY = 50  # max messages to retain per session
 
 
 @app.route("/api/goat/history")
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_goat_history():
     """Return stored conversation history for the current session."""
     if not session.get("sid") or not get_ss_session():
@@ -4123,7 +4132,7 @@ def api_goat_history():
 
 
 @app.route("/api/goat/history/clear", methods=["POST"])
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_goat_history_clear():
     """Clear conversation history for the current session."""
     if not session.get("sid"):
@@ -4133,7 +4142,7 @@ def api_goat_history_clear():
 
 
 @app.route("/api/goat", methods=["POST"])
-@require_cohort("admin", "leadership")
+@require_cohort(*READ_ALL_COHORTS)
 def api_goat():
     """GOAT AI endpoint — runs Claude with tools, executes tool calls, streams final response."""
     ss = get_ss_session()

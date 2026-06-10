@@ -159,6 +159,10 @@ tr.partial .name-cell{border-left-color:var(--warn)}
 /* TABLE VIEW */
 table{width:100%;border-collapse:collapse;min-width:700px}
 thead th{background:var(--surface);padding:8px 12px;text-align:left;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:10;white-space:nowrap}
+th.sortable{cursor:pointer;user-select:none;transition:color .1s}
+th.sortable:hover{color:var(--text)}
+thead th.sorted,.tl-table thead th.sorted{color:var(--accent)}
+.th-arrow{font-size:8px;margin-left:3px;vertical-align:middle}
 tbody tr{border-bottom:1px solid var(--border);transition:background .08s}
 tbody tr:hover{background:var(--surface2)}
 tbody tr.row-selected{background:var(--accent-bg)!important}
@@ -636,9 +640,9 @@ tr.skipped{opacity:.6}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
 .crew-clash{color:#ef4444!important;font-weight:700}
 .crew-clash::before{content:'⚠ '}
-/* Leadership sees the Schedule read-only — hide the per-call admin actions
-   (Find Crew / SMS / open-in-SmartStaff). Admin keeps them. */
-body.cohort-leadership .sched-action-btn{display:none!important}
+/* Leadership & Operations see the Schedule read-only — hide the per-call admin
+   actions (Find Crew / SMS / open-in-SmartStaff). Admin keeps them. */
+body.cohort-readonly .sched-action-btn{display:none!important}
 .sched-clash-badge{background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.4);color:#f97316;font-size:8px;font-family:'Share Tech Mono',monospace;padding:1px 5px;border-radius:3px;white-space:nowrap}
 .sched-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:10px;color:var(--muted);text-align:center;padding:60px}
 
@@ -668,8 +672,8 @@ body.cohort-leadership .sched-action-btn{display:none!important}
 .ms-mini-input{background:#0a0a0a;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px}
 .ms-del{flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);color:var(--conflict);border-radius:3px;padding:3px 9px;font-size:11px;cursor:pointer;font-family:'Rajdhani',sans-serif;font-weight:600}
 .ms-add-btn{background:var(--accent);color:#000;border:none;border-radius:3px;padding:6px 14px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:.06em;text-transform:uppercase}
-/* leadership is read-only: hide unavailability editing in the admin manager */
-body.cohort-leadership #unavail-add-section{display:none}
+/* leadership & operations are read-only: hide unavailability editing in the admin manager */
+body.cohort-readonly #unavail-add-section{display:none}
 </style>
 </head>
 <body>
@@ -1247,6 +1251,9 @@ let selectedCalls=new Map(), // call_id → call object
     currentResult=null,currentView='timeline';
 let geoMode='venue', _geoActive=false;  // distance-filter state
 
+let _bookedCollapsed=false;             // ALREADY BOOKED panel collapse state (session-scoped)
+let _sortBy=null, _sortDir='asc';       // clickable-header sort (asc → desc → off)
+
 // ── TIMELINE CONFIG ──
 const TL_START_H=0,TL_END_H=30,TL_TOTAL_H=30,TL_TICKS=[0,4,8,12,16,20,24,28];
 function pct(h){return((h-TL_START_H)/TL_TOTAL_H)*100}
@@ -1265,6 +1272,11 @@ function hToLabel(h,targetDate){
 
 // ── COHORT / role-aware UI ──────────────────────────────────────────────────
 window._cohort = 'admin';
+// Cohorts with leadership-equivalent access IN THE GOAT (read-only, all-crew
+// views). operations == leadership here; the Gig Power website maps the same
+// values to different privileges. Single source so a new leadership-class
+// cohort is a one-line change.
+window.isReadOnlyCohort = function(c){ return ['leadership','operations'].includes(c || window._cohort); };
 async function loadWhoami(){
   try{
     const r = await fetch('/api/whoami', {cache:'no-store'});
@@ -1284,12 +1296,13 @@ async function loadWhoami(){
 function applyCohort(d){
   const cohort = d.cohort || 'crew';
   document.body.classList.add('cohort-'+cohort);
+  if(window.isReadOnlyCohort(cohort)) document.body.classList.add('cohort-readonly');
   const hide = id => { const el=document.getElementById(id); if(el) el.style.display='none'; };
   // My Status hello line — shown to anyone who can open the panel (crew + leadership)
   const sub = document.getElementById('ms-hello-sub');
   if(sub) sub.textContent = [d.name||'', d.ein?('EIN '+d.ein):''].filter(Boolean).join('  ·  ');
   if(cohort === 'admin'){ hide('tab-btn-my-status'); return; }  // shared admin login — no personal view
-  if(cohort === 'leadership'){
+  if(window.isReadOnlyCohort(cohort)){
     hide('tab-btn-crew-finder');                 // Crew Finder is admin-only
     hide('tab-btn-import');                       // Estimate Import is admin-only
     // My Status tab stays: leadership are crew too — own inductions/shifts and
@@ -1641,6 +1654,14 @@ function setView(view){
   if(currentResult)renderResults(currentResult,currentResult.details,currentResult.targets);
 }
 
+// Clickable column-header sort. Cycles asc → desc → off for the clicked column.
+function sortByHeader(key){
+  if(_sortBy!==key){ _sortBy=key; _sortDir='asc'; }
+  else if(_sortDir==='asc'){ _sortDir='desc'; }
+  else { _sortBy=null; _sortDir='asc'; }   // third click clears the sort
+  if(currentResult) renderResults(currentResult,currentResult.details,currentResult.targets);
+}
+
 // ── ASK THE GOAT (Crew Finder natural-language filter/sort) ──
 let _goatSpec=null, _cfAskBusy=false;
 
@@ -1692,6 +1713,22 @@ function updateGoatBar(info){
   el.style.display='flex';
 }
 
+// Single source of truth for ordering a crew bucket. Used by the clickable-header
+// sort and by the Ask-the-GOAT spec. `freqFn` is optional (only for match_count).
+function sortCrewArray(arr, by, dir, freqFn){
+  if(!by) return arr;
+  const d=(dir==='asc')?1:-1;
+  return arr.slice().sort((a,b)=>{
+    if(by==='name'){ const av=(a.name||'').toLowerCase(), bv=(b.name||'').toLowerCase(); return av<bv?-d:av>bv?d:0; }
+    let av,bv;
+    if(by==='distance'){ av=(a.distance_km==null?1e9:a.distance_km); bv=(b.distance_km==null?1e9:b.distance_km); }
+    else if(by==='match_count'){ av=freqFn?freqFn(a):0; bv=freqFn?freqFn(b):0; }
+    else if(by==='availability'){ av=a.avail_count||0; bv=b.avail_count||0; }
+    else { av=a.rating||0; bv=b.rating||0; }     // rating (default)
+    return (av-bv)*d;
+  });
+}
+
 // Apply a GOAT spec to a result set → new {available,conflicts,skipped} (filtered+sorted).
 function applyCrewSpec(result, spec){
   const m=(spec&&spec.match)||{};
@@ -1719,17 +1756,7 @@ function applyCrewSpec(result, spec){
     return mode==='all' ? n===terms.length : n>0;
   }
   function sortArr(arr){
-    if(!sort) return arr;
-    const dir=(sort.dir==='asc')?1:-1, by=sort.by;
-    return arr.slice().sort((a,b)=>{
-      if(by==='name'){ const av=(a.name||'').toLowerCase(), bv=(b.name||'').toLowerCase(); return av<bv?-dir:av>bv?dir:0; }
-      let av,bv;
-      if(by==='distance'){ av=(a.distance_km==null?1e9:a.distance_km); bv=(b.distance_km==null?1e9:b.distance_km); }
-      else if(by==='match_count'){ av=matchFreq(a); bv=matchFreq(b); }
-      else if(by==='availability'){ av=a.avail_count||0; bv=b.avail_count||0; }
-      else { av=a.rating||0; bv=b.rating||0; }     // rating (default)
-      return (av-bv)*dir;
-    });
+    return sort ? sortCrewArray(arr, sort.by, sort.dir, matchFreq) : arr;
   }
   const out={...result}; let matched=0, total=0;
   ['available','conflicts','skipped'].forEach(k=>{
@@ -1751,6 +1778,13 @@ function renderResults(result,details,targets){
     goatInfo={explanation:_goatSpec.explanation||'Filtered',note:_goatSpec.note||'',matched:ap.matched,total:ap.total};
   }
   updateGoatBar(goatInfo);
+  // Clickable-header sort: applied after any GOAT filter, within each bucket.
+  if(_sortBy){
+    result={...result};
+    ['available','conflicts','skipped','location_unknown'].forEach(k=>{
+      if(Array.isArray(result[k])) result[k]=sortCrewArray(result[k],_sortBy,_sortDir);
+    });
+  }
   const{available,conflicts,skipped}=result;
   const bookedCrew = result.bookedCrew || [];
   _bookedRel = buildBookedRel(bookedCrew);
@@ -1802,13 +1836,19 @@ function renderResults(result,details,targets){
 
     bookedSection = document.createElement('div');
     bookedSection.id = 'booked-crew-section';
-    bookedSection.style.cssText = 'padding:12px 16px;border-bottom:1px solid var(--border-gold);background:var(--surface2);flex-shrink:0';
+    bookedSection.style.cssText = 'border-bottom:1px solid var(--border-gold);background:var(--surface2);flex-shrink:0';
     bookedSection.innerHTML = `
-      <div style="font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;
-                  color:var(--accent);letter-spacing:.08em;margin-bottom:8px">
-        ⚡ ALREADY BOOKED (${bookedCrew.length})
+      <div onclick="toggleBookedSection()" title="Click to collapse / expand"
+           style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;
+                  padding:12px 16px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;
+                  color:var(--accent);letter-spacing:.08em">
+        <span id="booked-chevron" style="display:inline-block;transition:transform .12s;
+              transform:rotate(${_bookedCollapsed?'-90deg':'0deg'})">&#9662;</span>
+        <span>⚡ ALREADY BOOKED (${bookedCrew.length})</span>
       </div>
-      ${chips}`;
+      <div id="booked-crew-body" style="padding:0 16px 12px;${_bookedCollapsed?'display:none':''}">
+        ${chips}
+      </div>`;
   }
 
   if(currentView==='timeline')renderTimeline(result,details,targets||[]);
@@ -1821,6 +1861,14 @@ function renderResults(result,details,targets){
     const resultsWrap = document.getElementById('results-wrap');
     if(resultsWrap) resultsWrap.before(bookedSection);
   }
+}
+
+function toggleBookedSection(){
+  _bookedCollapsed = !_bookedCollapsed;
+  const body = document.getElementById('booked-crew-body');
+  const chev = document.getElementById('booked-chevron');
+  if(body) body.style.display = _bookedCollapsed ? 'none' : '';
+  if(chev) chev.style.transform = _bookedCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
 }
 
 // ── STATUS HELPERS ──
@@ -1988,12 +2036,15 @@ function renderTable(result,targets){
   const{available,conflicts,skipped}=result;
   const multiCall=targets.length>1;
   _geoActive = !!result.origin_label;
-  const distTh = _geoActive ? '<th>Dist</th>' : '';
+  const sortTh=(label,key)=>{
+    const active=_sortBy===key, arrow=active?(_sortDir==='asc'?'\u25B2':'\u25BC'):'';
+    return '<th class="sortable'+(active?' sorted':'')+'" onclick="sortByHeader(\''+key+'\')">'+label+(arrow?'<span class="th-arrow">'+arrow+'</span>':'')+'</th>';
+  };
+  const distTh = _geoActive ? sortTh('Dist','distance') : '';
   const ncols  = _geoActive ? 8 : 7;
   const wrap=document.getElementById('results-wrap');
   const table=document.createElement('table');
-  const cols=multiCall?'<th></th><th>Name</th><th>Availability</th>'+distTh+'<th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>'
-                       :'<th></th><th>Name</th><th>Status</th>'+distTh+'<th>Phone</th><th>Rating</th><th>Groups</th><th>Detail</th>';
+  const cols='<th></th>'+sortTh('Name','name')+sortTh(multiCall?'Availability':'Status','availability')+distTh+'<th>Phone</th>'+sortTh('Rating','rating')+'<th>Groups</th><th>Detail</th>';
   table.innerHTML='<thead><tr>'+cols+'</tr></thead><tbody id="results-tbody"></tbody>';
   wrap.innerHTML='';
   if(_geoActive){
@@ -2119,10 +2170,16 @@ function renderTimeline(result,details,targets){
   table.className='tl-table';
   const thead=document.createElement('thead');
   const hrow=document.createElement('tr');
-  ['','Name','Availability','Phone','Rating','Groups','Timeline'].forEach((h,i)=>{
+  _geoActive = !!result.origin_label;   // mirror table view: Dist column only when distance filter is on
+  const tlCols = _geoActive
+    ? ['','Name','Availability','Dist','Phone','Rating','Groups','Timeline']
+    : ['','Name','Availability','Phone','Rating','Groups','Timeline'];
+  const tlIdx = tlCols.length - 1;       // Timeline is always the last column
+  const TL_SORT_KEYS={'Name':'name','Availability':'availability','Status':'availability','Dist':'distance','Rating':'rating'};
+  tlCols.forEach((h,i)=>{
     const th=document.createElement('th');
     if(i===0)th.style.width='36px';
-    if(i===6){
+    if(i===tlIdx){
       th.className='tl-th-scroll';
       const tDiv=document.createElement('div');tDiv.className='tl-time-header';
       tDiv.style.width=innerWidth+'px';
@@ -2133,7 +2190,15 @@ function renderTimeline(result,details,targets){
         tDiv.appendChild(span);
       });
       th.appendChild(tDiv);
-    } else {th.textContent=h}
+    } else {
+      const sk=TL_SORT_KEYS[h];
+      if(sk){
+        const active=_sortBy===sk;
+        th.className='sortable'+(active?' sorted':'');
+        th.innerHTML=h+(active?'<span class="th-arrow">'+(_sortDir==='asc'?'\u25B2':'\u25BC')+'</span>':'');
+        th.onclick=()=>sortByHeader(sk);
+      } else { th.textContent=h; }
+    }
     hrow.appendChild(th);
   });
   thead.appendChild(hrow);table.appendChild(thead);
@@ -2142,13 +2207,13 @@ function renderTimeline(result,details,targets){
   // Single horizontal scroller: the header time-axis. Body rows are moved by
   // transform to follow it (collected below), so there is only one scroll
   // container to drive — robust in Safari, not just Chrome.
-  const headerScroller=hrow.children[6]; // .tl-th-scroll — the visible top scrollbar
+  const headerScroller=hrow.children[tlIdx]; // .tl-th-scroll — the visible top scrollbar
   const bodyInners=[];                   // each row's .tl-inner (transformed)
   const bodyCells=[];                    // each row's .tl-cell (wheel target)
 
   function addSecRow(label){
     const tr=document.createElement('tr');tr.className='section-row-tl';
-    const td=document.createElement('td');td.colSpan=7;td.textContent=label;
+    const td=document.createElement('td');td.colSpan=tlCols.length;td.textContent=label;
     tr.appendChild(td);tbody.appendChild(tr);
   }
 
@@ -2173,6 +2238,10 @@ function renderTimeline(result,details,targets){
     tr.appendChild(nameTd);
     attachCrewCardHover(nameTd,crew);
     tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
+    if(_geoActive){
+      const dkm=(crew.distance_km!=null)?crew.distance_km+' km':'\u2014';
+      tr.appendChild(mkTd('dist-cell',dkm));
+    }
     tr.appendChild(mkTd('phone-cell',ph));
     tr.appendChild(mkTd('rating-cell',crew.rating));
     tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
@@ -2289,6 +2358,12 @@ function renderTimeline(result,details,targets){
   addSecRow('CONFLICTS ('+conflicts.length+')');conflicts.forEach(c=>addTlRow(c,'conflict'));
   addSecRow('SKIPPED ('+skipped.length+')');skipped.forEach(c=>addTlRow(c,'skipped'));
 
+  if(_geoActive){
+    const cap=document.createElement('div');
+    cap.style.cssText="font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);padding:6px 10px 0";
+    cap.innerHTML='Within '+document.getElementById('radius-slider').value+' km of <span style="color:var(--accent)">'+result.origin_label+'</span>';
+    wrap.appendChild(cap);
+  }
   table.appendChild(tbody);wrap.appendChild(table);
 
   // Centre the shift midpoint in the 600px viewport, then drive everything from
@@ -3914,7 +3989,7 @@ async function loadUnavailList(){
           <div style="font-size:12px;color:var(--text)">${p.reason||'Unavailable'}</div>
           <div style="font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace">${fmt(p.start)} → ${fmt(p.end)}</div>
         </div>
-        ${window._cohort==='leadership' ? '' : `<button onclick="submitUnavailDelete(${JSON.stringify(p.id)})"
+        ${window.isReadOnlyCohort() ? '' : `<button onclick="submitUnavailDelete(${JSON.stringify(p.id)})"
                 style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);
                        color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;
                        font-family:'Rajdhani',sans-serif;font-weight:600">✕ Remove</button>`}

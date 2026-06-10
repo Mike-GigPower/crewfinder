@@ -6,15 +6,22 @@
 	include('../../global.php');
 
 	/*
+	/* shared cohort resolver — single source of truth for the allow-list.
+	/* Use the SAME include line the bulk endpoints (e.g. list-crew-bulk.php)
+	/* already use for cohort.php; adjust the path here if theirs differs.
+	*/
+
+	include('cohort.php');
+
+	/*
 	/* JSON response */
 
 	header('Content-Type: application/json');
 
 	/*
 	/* SELF endpoint — any logged-in user may ask who they are. No admin gate.
-	/* Mirrors the get-unavailabilities.php pattern: keyed entirely on the
-	/* logged-in $_SESSION userID, so each caller can only ever learn about
-	/* themselves.
+	/* Keyed entirely on the logged-in $_SESSION userID, so each caller can only
+	/* ever learn about themselves.
 	*/
 
 	if (!$user->checkSession())
@@ -26,28 +33,16 @@
 	$userID = (int) $_SESSION[SITE_KEY]['userID'];
 
 	/*
-	/* Identity lookup.
-	/*
-	/* We try to read the `cohort` column first; if it does not exist yet
-	/* (the ALTER TABLE has not been run), mysql_query() returns false and we
-	/* retry WITHOUT it, defaulting cohort to 'crew'. This lets the endpoint be
-	/* deployed safely BEFORE the migration — it degrades to "everyone is crew
-	/* except admin logins" rather than 500-ing.
+	/* Identity lookup — names / ein / usergroupID only. The cohort VALUE comes
+	/* from goat_user_cohort() below, so the {leadership, operations, crew}
+	/* allow-list lives in exactly ONE place (cohort.php) and this endpoint can
+	/* never drift from the gating used by the bulk endpoints — or from what the
+	/* Gig Power website reads here.
 	*/
 
-	$cohort_supported = true;
-
-	$sql = "SELECT id, ein, firstname, lastname, usergroupID, cohort
+	$sql = "SELECT id, ein, firstname, lastname, usergroupID
 	        FROM users WHERE id = $userID LIMIT 1";
 	$res = mysql_query($sql);
-
-	if ($res === false)
-	{
-		$cohort_supported = false;
-		$sql = "SELECT id, ein, firstname, lastname, usergroupID
-		        FROM users WHERE id = $userID LIMIT 1";
-		$res = mysql_query($sql);
-	}
 
 	if ($res === false || mysql_num_rows($res) == 0)
 	{
@@ -59,32 +54,13 @@
 	$usergroupID = (int) $row->usergroupID;
 
 	/*
-	/* Cohort resolution rule:
-	/*
-	/*   usergroupID == 1 (admin login)  -> always 'admin'
-	/*   otherwise                       -> users.cohort, restricted to
-	/*                                      {leadership, crew}, default 'crew'
-	/*
-	/* IMPORTANT: a non-admin login can NEVER resolve to 'admin', even if the
-	/* cohort column somehow contains 'admin'. Admin is tied to the usergroupID
-	/* == 1 login only — the cohort column can grant Leadership but not Admin,
-	/* so it can't be used to escalate a crew-group account to full access.
+	/* Resolved cohort — 'admin' | 'leadership' | 'operations' | 'crew'.
+	/* Resolution rule and allow-list are defined once in
+	/* cohort.php::goat_user_cohort(). Returns the normalised (lowercase) value
+	/* regardless of how the column is cased, so the wire value is canonical.
 	*/
 
-	if ($usergroupID == 1)
-	{
-		$cohort = 'admin';
-	}
-	else
-	{
-		$cohort = 'crew';
-		if ($cohort_supported && isset($row->cohort))
-		{
-			$c = strtolower(trim($row->cohort));
-			if ($c == 'leadership')
-				$cohort = 'leadership';
-		}
-	}
+	$cohort = goat_user_cohort();
 
 	/*
 	/* "Lastname, Firstname" — matches list-crew-bulk.php / get-shifts-bulk.php
