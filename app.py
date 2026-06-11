@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.6"
+APP_VERSION    = "3.5.7"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -110,6 +110,7 @@ USE_BULK_BOOKED_CREW_ENDPOINT = True
 USE_BULK_CALLS_ENDPOINT = True
 USE_BULK_IMPORT_LOOKUPS = True
 USE_BULK_VENUES_ENDPOINT = True
+USE_CREATE_BOOKING_ENDPOINT = True
 try:
     if os.path.exists(CONFIG_FILE):
         _cfg = json.load(open(CONFIG_FILE))
@@ -125,6 +126,8 @@ try:
             USE_BULK_IMPORT_LOOKUPS = bool(_cfg["use_bulk_import_lookups"])
         if "use_bulk_venues_endpoint" in _cfg:
             USE_BULK_VENUES_ENDPOINT = bool(_cfg["use_bulk_venues_endpoint"])
+        if "use_create_booking_endpoint" in _cfg:
+            USE_CREATE_BOOKING_ENDPOINT = bool(_cfg["use_create_booking_endpoint"])
 except Exception:
     pass
 
@@ -2403,6 +2406,106 @@ def ss_create_call(ss, booking_id, call_data):
         return "created", None
 
     return None, f"Call creation failed — unexpected response: {resp.url}"
+
+def ss_create_booking_bulk(ss, booking, calls):
+    """Create a booking and all of its calls in ONE call via create-booking.php,
+    replacing the per-record scrape-and-POST path. No form scrape, no per-call
+    HTTP round trips, no pacing — the endpoint does every insert server-side.
+
+    booking : {name, creation_date, status, customer_id, contact_id,
+               onsite_contact_id, venue_id, notes, reference}
+    calls   : [{call_name, start_date, start_time, length, required, notes,
+                is_pubhol, is_pubhol_tomorrow}, ...]  (dates may be ISO or unix)
+
+    Returns (result, error):
+        result : {booking_id, call_ids: [...], call_errors: [{index, detail}]}
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/create-booking.php"
+    try:
+        resp = ss.post(url, json={"booking": booking, "calls": calls}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def _build_import_payload(booking_data, lines, non_labour, resolved_call_names, earliest_date):
+    """Map the import's booking_data + labour lines + non-labour items into the
+    create-booking.php payload (booking + calls), plus a parallel call_meta list
+    used to map the endpoint's call_ids/call_errors back to per-line log entries.
+
+    Calls are ordered labour-lines first, then non-labour 'Other' items — the
+    same order the scrape path created them in. Dates are sent ISO (YYYY-MM-DD);
+    the endpoint strtotime's them in the Melbourne tz, matching the form handler.
+    """
+    booking_date = earliest_date or datetime.now().strftime("%Y-%m-%d")
+    booking_payload = {
+        "name":              booking_data["booking_name"],
+        "creation_date":     booking_date,
+        "status":            0,
+        "customer_id":       booking_data.get("customer_id", ""),
+        "contact_id":        booking_data.get("contact_id", ""),
+        "onsite_contact_id": booking_data.get("onsite_contact_id", ""),
+        "venue_id":          booking_data.get("venue_id", ""),
+        "notes":             booking_data.get("notes", ""),
+        "reference":         booking_data.get("invoice_ref", ""),
+    }
+
+    calls_payload = []
+    call_meta     = []
+
+    for ll in lines:
+        cn = resolved_call_names[ll["line_id"]]
+        calls_payload.append({
+            "call_name":          cn,
+            "start_date":         ll["date"],
+            "start_time":         ll["start_time"] + ":00",
+            "length":             ll["duration_hours"],
+            "required":           ll["quantity"],
+            "notes":              ll.get("shift_notes") or "",
+            "is_pubhol":          bool(ll.get("public_holiday_same_day", False)),
+            "is_pubhol_tomorrow": bool(ll.get("public_holiday_next_day", False)),
+        })
+        call_meta.append({
+            "line_id":   ll["line_id"],
+            "call_name": cn,
+            "date":      ll["date"],
+            "label":     f"Line {ll['line_id']} ({cn})",
+        })
+
+    nl_date = earliest_date or datetime.now().strftime("%Y-%m-%d")
+    for nl in non_labour:
+        item_name = nl_item_name(nl)
+        lid = nl.get("line_id", "?")
+        calls_payload.append({
+            "call_name":  item_name,
+            "start_date": nl_date,
+            "start_time": "00:00:00",
+            "length":     0,
+            "required":   0,
+            "notes":      nl_compose_notes(nl),
+        })
+        call_meta.append({
+            "line_id":   lid,
+            "call_name": f"Other: {item_name}",
+            "date":      earliest_date or "",
+            "label":     f"Non-labour {lid} ({item_name})",
+        })
+
+    return booking_payload, calls_payload, call_meta
 
 def format_ss_date(date_str):
     """Convert YYYY-MM-DD → 'Month D, YYYY' for SmartStaff start_date field.
@@ -4763,6 +4866,7 @@ def api_whoami():
         "name":   ident.get("name", ""),
         "ein":    ident.get("ein", ""),
         "cohort": ident.get("cohort", "crew"),
+        "ss_base": BASE_URL,
     })
 
 
@@ -5132,7 +5236,7 @@ def api_import_start():
         })
 
         try:
-            # Step 1: create booking
+            # Build the booking record (shared by both creation paths)
             booking_data = {
                 "booking_name":     event["event_name"],
                 "booking_date":     format_booking_date(earliest_date),
@@ -5143,85 +5247,115 @@ def api_import_start():
                 "onsite_contact_id":    onsite_contact_id,
                 "venue_id":         venue_id,
             }
-            booking_id, err = ss_create_booking(ss, booking_data)
-            if err:
-                _import_progress["errors"].append(f"Booking creation failed: {err}")
-                _import_progress["running"] = False
-                return
 
-            _import_progress["booking_id"] = booking_id
-            _import_progress["step"] = f"Booking #{booking_id} created. Adding calls..."
-
-            # Step 2: create each call sequentially
-            for i, ll in enumerate(lines):
-                resolved_cn = resolved_call_names[ll["line_id"]]
-                _import_progress["step"] = f"Creating call {i+1}/{len(lines)}: {resolved_cn}..."
-                call_data = {
-                    "call_name":               resolved_cn,
-                    "start_date":              format_ss_date(ll["date"]),
-                    "start_time":              ll["start_time"] + ":00",
-                    "duration_hours":          ll["duration_hours"],
-                    "crew_required":           ll["quantity"],
-                    "notes":                   ll.get("shift_notes") or "",
-                    "public_holiday_same_day": ll.get("public_holiday_same_day", False),
-                    "public_holiday_next_day": ll.get("public_holiday_next_day", False),
-                }
-                call_id, call_err = ss_create_call(ss, booking_id, call_data)
-                log_entry = {
-                    "line_id":   ll["line_id"],
-                    "call_name": resolved_cn,
-                    "date":      ll["date"],
-                    "success":   call_err is None,
-                    "call_id":   call_id,
-                    "error":     call_err,
-                }
-                _import_progress["call_log"].append(log_entry)
-                if call_err:
-                    _import_progress["errors"].append(f"Line {ll['line_id']} ({resolved_cn}): {call_err}")
-                _import_progress["done"] += 1
-                time.sleep(1.2)  # respectful pacing, matches existing add/confirm behaviour
-
-            # Step 2b: create each non-labour item as an "Other" call.
-            # IMPORTANT: SmartStaff pre-fills the add-call form client-side, but
-            # does NOT default these fields server-side — a POST with blank
-            # start_date/length is rejected and the form re-renders (no redirect),
-            # which reads as a failure. So we send the same values a hand-entered
-            # "Other" call ends up with: booking's earliest date, 00:00, length 0.
-            nl_start_date = format_ss_date(earliest_date) if earliest_date else format_ss_date(
-                datetime.now().strftime("%Y-%m-%d")
-            )
-            for j, nl in enumerate(non_labour):
-                item_name = nl_item_name(nl)
-                lid = nl.get("line_id", "?")
-                _import_progress["step"] = (
-                    f"Creating non-labour item {j+1}/{len(non_labour)}: {item_name}..."
+            if USE_CREATE_BOOKING_ENDPOINT:
+                # One server-side call creates the booking and every call.
+                booking_payload, calls_payload, call_meta = _build_import_payload(
+                    booking_data, lines, non_labour, resolved_call_names, earliest_date
                 )
-                call_data = {
-                    # SmartStaff uses call_name_hidden as the actual displayed call name.
-                    # Post the item name for both fields — the select value doesn't
-                    # matter since call_name_hidden always takes precedence.
-                    "call_name":      item_name,
-                    "call_name_free": item_name,  # → call_name_hidden in ss_create_call
-                    "start_date":     nl_start_date,
-                    "start_time":     "00:00:00",
-                    "duration_hours": 0,
-                    "crew_required":  0,
-                    "notes":          nl_compose_notes(nl),
-                }
-                call_id, call_err = ss_create_call(ss, booking_id, call_data)
-                log_entry = {
-                    "line_id":   lid,
-                    "call_name": f"Other: {item_name}",
-                    "date":      earliest_date or "",
-                    "success":   call_err is None,
-                    "call_id":   call_id,
-                    "error":     call_err,
-                }
-                _import_progress["call_log"].append(log_entry)
-                if call_err:
-                    _import_progress["errors"].append(f"Non-labour {lid} ({item_name}): {call_err}")
-                _import_progress["done"] += 1
-                time.sleep(1.2)
+                _import_progress["step"] = f"Creating booking and {len(calls_payload)} calls..."
+                result, err = ss_create_booking_bulk(ss, booking_payload, calls_payload)
+                if err:
+                    _import_progress["errors"].append(f"Booking creation failed: {err}")
+                    _import_progress["running"] = False
+                    return
+
+                booking_id = str(result.get("booking_id"))
+                _import_progress["booking_id"] = booking_id
+                _import_progress["step"] = f"Booking #{booking_id} created. Recording calls..."
+
+                # Map the endpoint's call_ids / call_errors back to per-line log
+                # entries. call_ids holds the successful inserts in order;
+                # call_errors holds the indices that failed.
+                err_idx = {e.get("index"): e.get("detail") for e in result.get("call_errors", [])}
+                id_iter = iter(result.get("call_ids", []))
+                for idx, meta in enumerate(call_meta):
+                    failed = idx in err_idx
+                    _import_progress["call_log"].append({
+                        "line_id":   meta["line_id"],
+                        "call_name": meta["call_name"],
+                        "date":      meta["date"],
+                        "success":   not failed,
+                        "call_id":   None if failed else next(id_iter, None),
+                        "error":     err_idx.get(idx),
+                    })
+                    if failed:
+                        _import_progress["errors"].append(f"{meta['label']}: {err_idx[idx]}")
+                    _import_progress["done"] += 1
+
+            else:
+                # ââ Legacy scrape-and-POST path (form GET + POST per record) ââ
+                booking_id, err = ss_create_booking(ss, booking_data)
+                if err:
+                    _import_progress["errors"].append(f"Booking creation failed: {err}")
+                    _import_progress["running"] = False
+                    return
+
+                _import_progress["booking_id"] = booking_id
+                _import_progress["step"] = f"Booking #{booking_id} created. Adding calls..."
+
+                # create each call sequentially
+                for i, ll in enumerate(lines):
+                    resolved_cn = resolved_call_names[ll["line_id"]]
+                    _import_progress["step"] = f"Creating call {i+1}/{len(lines)}: {resolved_cn}..."
+                    call_data = {
+                        "call_name":               resolved_cn,
+                        "start_date":              format_ss_date(ll["date"]),
+                        "start_time":              ll["start_time"] + ":00",
+                        "duration_hours":          ll["duration_hours"],
+                        "crew_required":           ll["quantity"],
+                        "notes":                   ll.get("shift_notes") or "",
+                        "public_holiday_same_day": ll.get("public_holiday_same_day", False),
+                        "public_holiday_next_day": ll.get("public_holiday_next_day", False),
+                    }
+                    call_id, call_err = ss_create_call(ss, booking_id, call_data)
+                    log_entry = {
+                        "line_id":   ll["line_id"],
+                        "call_name": resolved_cn,
+                        "date":      ll["date"],
+                        "success":   call_err is None,
+                        "call_id":   call_id,
+                        "error":     call_err,
+                    }
+                    _import_progress["call_log"].append(log_entry)
+                    if call_err:
+                        _import_progress["errors"].append(f"Line {ll['line_id']} ({resolved_cn}): {call_err}")
+                    _import_progress["done"] += 1
+                    time.sleep(1.2)  # respectful pacing, matches existing add/confirm behaviour
+
+                # non-labour items as "Other" calls
+                nl_start_date = format_ss_date(earliest_date) if earliest_date else format_ss_date(
+                    datetime.now().strftime("%Y-%m-%d")
+                )
+                for j, nl in enumerate(non_labour):
+                    item_name = nl_item_name(nl)
+                    lid = nl.get("line_id", "?")
+                    _import_progress["step"] = (
+                        f"Creating non-labour item {j+1}/{len(non_labour)}: {item_name}..."
+                    )
+                    call_data = {
+                        "call_name":      item_name,
+                        "call_name_free": item_name,  # → call_name_hidden in ss_create_call
+                        "start_date":     nl_start_date,
+                        "start_time":     "00:00:00",
+                        "duration_hours": 0,
+                        "crew_required":  0,
+                        "notes":          nl_compose_notes(nl),
+                    }
+                    call_id, call_err = ss_create_call(ss, booking_id, call_data)
+                    log_entry = {
+                        "line_id":   lid,
+                        "call_name": f"Other: {item_name}",
+                        "date":      earliest_date or "",
+                        "success":   call_err is None,
+                        "call_id":   call_id,
+                        "error":     call_err,
+                    }
+                    _import_progress["call_log"].append(log_entry)
+                    if call_err:
+                        _import_progress["errors"].append(f"Non-labour {lid} ({item_name}): {call_err}")
+                    _import_progress["done"] += 1
+                    time.sleep(1.2)
 
             # Step 3: record in import log
             import_log = load_import_log()
@@ -5260,6 +5394,71 @@ def api_import_progress():
 def api_import_log():
     """Return the full import history log."""
     return jsonify({"log": load_import_log()})
+
+
+@app.route("/api/booking/lookups")
+@require_cohort("admin")
+def api_booking_lookups():
+    """Customer/venue/contact lists for the manual Booking form's dropdowns.
+    Same source as the Estimate Import matcher, just without needing a payload."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    if USE_BULK_ENDPOINTS and USE_BULK_IMPORT_LOOKUPS:
+        lookups, err = fetch_import_lookups(ss)
+        if err is None and lookups is not None:
+            return jsonify({
+                "customers":    lookups["customers"],
+                "venues":       lookups["venues"],
+                "contacts":     lookups["contacts"],
+                "customer_map": lookups.get("customer_map", []),
+            })
+        app.logger.warning(f"[booking-lookups] endpoint failed ({err}); falling back to scrape")
+
+    return jsonify({
+        "customers":    ss_get_customers(ss),
+        "venues":       ss_get_venues(ss),
+        "contacts":     ss_get_contacts(ss),
+        "customer_map": [],
+    })
+
+
+@app.route("/api/booking/create", methods=["POST"])
+@require_cohort("admin")
+def api_booking_create():
+    """Create a booking + calls from the manual Booking form. Feeds the same
+    create-booking endpoint the Estimate Import uses (ss_create_booking_bulk).
+    Expects {booking: {...}, calls: [...]} already in endpoint shape."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body    = request.get_json(force=True) or {}
+    booking = body.get("booking") or {}
+    calls   = body.get("calls") or []
+
+    # Friendly pre-checks (the endpoint re-validates + checks FK existence).
+    if not str(booking.get("name", "")).strip():
+        return jsonify({"error": "Booking name is required"}), 400
+    if not booking.get("customer_id"):
+        return jsonify({"error": "Customer is required"}), 400
+    if not booking.get("venue_id"):
+        return jsonify({"error": "Venue is required"}), 400
+    if not booking.get("contact_id"):
+        return jsonify({"error": "Contact is required"}), 400
+    for i, c in enumerate(calls):
+        if not str(c.get("call_name", "")).strip():
+            return jsonify({"error": f"Call {i+1}: name is required"}), 400
+        if not str(c.get("start_date", "")).strip():
+            return jsonify({"error": f"Call {i+1}: date is required"}), 400
+
+    booking.setdefault("status", 0)  # 0 = Active/open
+
+    result, err = ss_create_booking_bulk(ss, booking, calls)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
 
 
 if __name__ == "__main__":

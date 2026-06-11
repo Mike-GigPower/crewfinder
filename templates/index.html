@@ -343,6 +343,17 @@ tr.skipped{opacity:.6}
 .import-field-val{font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;min-height:28px}
 .import-field select{font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;font-family:'Share Tech Mono',monospace;outline:none;cursor:pointer;width:100%}
 .import-field select:focus{border-color:var(--accent)}
+.import-field input,.import-field textarea{font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:6px 10px;font-family:'Share Tech Mono',monospace;outline:none;width:100%;box-sizing:border-box}
+.import-field input:focus,.import-field textarea:focus{border-color:var(--accent)}
+.mb-mode-btn{padding:6px 14px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:11px;cursor:pointer;transition:all .12s}
+.mb-mode-btn.active{border-color:var(--accent);color:var(--accent)}
+.mb-call-head,.mb-call-row{display:grid;grid-template-columns:140px 130px 84px 76px 76px 1fr 30px;gap:8px;align-items:start}
+.mb-call-head{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:6px}
+.mb-call-row{padding:8px 0;border-top:1px solid var(--border)}
+.mb-call-row input,.mb-call-row select{font-size:11px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:5px 7px;font-family:'Share Tech Mono',monospace;outline:none;width:100%;box-sizing:border-box}
+.mb-call-row input:focus,.mb-call-row select:focus{border-color:var(--accent)}
+.mb-call-rm{background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:12px;padding:0;height:30px}
+.mb-call-rm:hover{border-color:var(--conflict);color:var(--conflict)}
 .import-match-ok{font-size:10px;color:var(--available);display:flex;align-items:center;gap:4px}
 .import-match-warn{font-size:10px;color:var(--warn);display:flex;align-items:center;gap:4px}
 .import-field-shadow{font-size:10px;color:var(--muted);margin-top:3px;padding-left:2px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -716,7 +727,7 @@ body.cohort-readonly #unavail-add-section{display:none}
   <button class="tab-btn" id="tab-btn-crew-finder" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
   <button class="tab-btn" id="tab-btn-forecast" onclick="switchTab('forecast')">📊 Crew Utilization</button>
   <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
-  <button class="tab-btn" id="tab-btn-import" onclick="switchTab('import')">⬆ Estimate Import</button>
+  <button class="tab-btn" id="tab-btn-import" onclick="switchTab('import')">📋 Create Booking</button>
   <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
 </div>
 <div class="main">
@@ -926,7 +937,73 @@ body.cohort-readonly #unavail-add-section{display:none}
   <!-- ── IMPORT TAB ── -->
   <div class="tab-panel" id="tab-import">
     <div class="import-panel">
-      <div class="import-body">
+      <!-- mode switcher: Manual / From Estimate -->
+      <div style="display:flex;align-items:center;gap:8px;padding:14px 20px;border-bottom:1px solid var(--border);flex-shrink:0">
+        <span style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace">CREATE BOOKING</span>
+        <button class="mb-mode-btn active" id="mb-mode-btn-manual" onclick="switchBookingMode('manual')">✎ Manual</button>
+        <button class="mb-mode-btn" id="mb-mode-btn-estimate" onclick="switchBookingMode('estimate')">⬆ From Estimate</button>
+      </div>
+
+      <!-- MANUAL MODE -->
+      <div id="import-mode-manual" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:20px;gap:16px">
+
+        <div class="import-section">
+          <div class="import-section-head"><span class="import-section-title">📋 Booking Details</span></div>
+          <div class="import-section-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="import-field"><label>Booking Name *</label><input id="mb-name" oninput="updateManualReadiness()" placeholder="e.g. Lil' Kim - Festival Hall"></div>
+              <div class="import-field"><label>Booking Date</label><input id="mb-date" type="date"></div>
+              <div class="import-field"><label>Invoice Reference</label><input id="mb-reference" placeholder="optional"></div>
+              <div class="import-field"><label>&nbsp;</label><div style="font-size:10px;color:var(--muted);align-self:center;padding:6px 0">Created as <b>Active</b>.</div></div>
+            </div>
+            <div class="import-field"><label>Notes</label><textarea id="mb-notes" rows="3" placeholder="optional"></textarea></div>
+          </div>
+        </div>
+
+        <div class="import-section">
+          <div class="import-section-head"><span class="import-section-title">🔗 Customer / Venue</span><span id="mb-lookup-status" style="font-size:10px;color:var(--muted)"></span></div>
+          <div class="import-section-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
+              <div class="import-field"><label>Customer *</label><select id="mb-customer" onchange="updateManualReadiness()"></select></div>
+              <div class="import-field"><label>Contact *</label><select id="mb-contact" onchange="updateManualReadiness()"></select></div>
+              <div class="import-field"><label>On-site Contact</label><select id="mb-onsite"></select></div>
+              <div class="import-field"><label>Venue *</label><select id="mb-venue" onchange="updateManualReadiness()"></select></div>
+            </div>
+            <div style="font-size:10px;color:var(--muted);margin-top:4px">On-site contact defaults to the booking contact if left blank.</div>
+          </div>
+        </div>
+
+        <div class="import-section">
+          <div class="import-section-head"><span class="import-section-title">📞 Calls</span><span style="font-size:10px;color:var(--muted)">one row per call — optional (booking can have none)</span></div>
+          <div class="import-section-body">
+            <div class="mb-call-head">
+              <span>Call Name</span><span>Date</span><span>Start</span><span>Length (h)</span><span>Required</span><span>Notes</span><span></span>
+            </div>
+            <div id="mb-calls"></div>
+            <button class="btn" style="margin-top:12px" onclick="addManualCall()">+ Add Call</button>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <button class="btn-import" id="mb-create-btn" disabled onclick="createManualBooking()">➕ Create Booking</button>
+          <button class="btn" onclick="resetManualBooking()">✕ Clear</button>
+          <span id="mb-action-note" style="font-size:10px;color:var(--muted)"></span>
+        </div>
+
+        <div class="import-progress" id="mb-result-panel" style="display:none">
+          <div class="import-section-head"><span class="import-section-title" id="mb-result-title">Creating...</span></div>
+          <div class="import-progress-body" style="padding:12px 16px">
+            <div class="import-progress-step" id="mb-result-step"></div>
+            <div class="import-call-log" id="mb-result-log"></div>
+            <div id="mb-result-link" style="display:none;margin-top:10px">
+              <a id="mb-booking-link" href="#" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none"></a>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- end import-mode-manual -->
+
+      <div class="import-body" id="import-body" style="display:none">
         <!-- LEFT: drop zone + file info + errors -->
         <div class="import-left">
           <div class="import-drop-zone" id="import-drop-zone"
@@ -1272,6 +1349,10 @@ function hToLabel(h,targetDate){
 
 // ── COHORT / role-aware UI ──────────────────────────────────────────────────
 window._cohort = 'admin';
+// SmartStaff base URL — overwritten from /api/whoami so test builds open the
+// test copy, not prod. Default to prod until whoami resolves.
+window._ssBase = 'https://smartstaffsolutions.com';
+function ssUrl(path){ return (window._ssBase || 'https://smartstaffsolutions.com') + path; }
 // Cohorts with leadership-equivalent access IN THE GOAT (read-only, all-crew
 // views). operations == leadership here; the Gig Power website maps the same
 // values to different privileges. Single source so a new leadership-class
@@ -1283,6 +1364,7 @@ async function loadWhoami(){
     if(!r.ok) throw new Error('whoami '+r.status);
     const d = await r.json();
     window._cohort = d.cohort || 'crew';
+    window._ssBase = d.ss_base || window._ssBase;
     window._identity = d;
     applyCohort(d);
     return window._cohort;
@@ -1466,7 +1548,7 @@ async function loadCalls(force=false){
           +'<div class="call-card-top">'
           +(c.unfilled?'<div class="unfilled-dot"></div>':'')
           +'<span class="call-num">#'+c.call_num+'</span>'
-          +'<span class="call-name">'+(c.call_name||'Call')+'</span>'
+          +'<span class="call-name" onclick="event.stopPropagation();openSmartStaffCall(\''+c.booking_id+'\',\''+c.call_id+'\')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="Open call in SmartStaff">'+(c.call_name||'Call')+'</span>'
           +'</div>'
           +'<div class="call-meta">'
           +'<span>'+c.date+'</span><span>'+c.time+'</span><span>'+c.length+'h</span>'
@@ -1479,7 +1561,7 @@ async function loadCalls(force=false){
       return '<div class="booking-group" id="bg-'+bid+'">'
         +'<div class="booking-group-header" onclick="toggleBookingGroup(this)">'
         +'<span class="booking-group-toggle">&#9660;</span>'
-        +'<span class="booking-group-name">'+b.booking_name+'</span>'
+        +'<span class="booking-group-name" onclick="event.stopPropagation();openSmartStaffBooking(\''+b.booking_id+'\')" style="cursor:pointer" title="Open booking in SmartStaff">'+b.booking_name+'</span>'
         +venueTag
         +'</div>'
         +'<div class="booking-group-calls">'+callsHtml+'</div>'
@@ -2436,7 +2518,7 @@ async function addSelected(confirm){
   const urls=[];
   targets.forEach(t=>{
     crew.forEach(c=>{
-      urls.push({url:'https://smartstaffsolutions.com/add-call.php?action='+action+'&id='+t.call_id+'&userID='+c.crewId,callId:t.call_id,bookingId:t.booking_id});
+      urls.push({url:ssUrl('/add-call.php?action='+action+'&id='+t.call_id+'&userID='+c.crewId),callId:t.call_id,bookingId:t.booking_id});
     });
   });
 
@@ -2450,7 +2532,7 @@ async function addSelected(confirm){
   await new Promise(r=>setTimeout(r,1200));
   // Navigate to first call's callsheet when done
   const last=urls[urls.length-1];
-  try{tab.location.href='https://smartstaffsolutions.com/bookings/'+last.bookingId+'/callsheet/'+last.callId}catch(e){}
+  try{tab.location.href=ssUrl('/bookings/'+last.bookingId+'/callsheet/'+last.callId)}catch(e){}
   const total=crew.length*targets.length;
   btn.textContent='Done - '+total+' added ('+(targets.length>1?crew.length+' crew × '+targets.length+' calls':crew.length+' crew')+')';
   setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},4000);
@@ -2465,7 +2547,7 @@ async function sendSMS(){
   const addUrls=[];
   targets.forEach(t=>{
     crew.forEach(c=>{
-      addUrls.push({url:'https://smartstaffsolutions.com/add-call.php?action=addcrew&id='+t.call_id+'&userID='+c.crewId});
+      addUrls.push({url:ssUrl('/add-call.php?action=addcrew&id='+t.call_id+'&userID='+c.crewId)});
     });
   });
 
@@ -2486,7 +2568,7 @@ async function sendSMS(){
     const t=targets[i];
     btn.textContent='SMS '+(i+1)+'/'+targets.length+'...';
     await new Promise(r=>setTimeout(r,1200));
-    try{tab.location.href='https://smartstaffsolutions.com/add-call.php?action=sendsms&id='+t.call_id+'&bookingID='+t.booking_id+'&'+params}catch(e){break}
+    try{tab.location.href=ssUrl('/add-call.php?action=sendsms&id='+t.call_id+'&bookingID='+t.booking_id+'&'+params)}catch(e){break}
   }
   await new Promise(r=>setTimeout(r,800));
 
@@ -2505,7 +2587,7 @@ function switchTab(tab){
     p.classList.toggle('active', p.id==='tab-'+tab);
   });
   if(tab==='induction-checker' && !_indData) loadInductions();
-  if(tab==='import') loadImportHistory();
+  if(tab==='import'){ loadImportHistory(); initManualBooking(); }
   if(tab==='forecast') initForecast();
   if(tab==='schedule') { initSchedule(); if(!_schedData) loadSchedule(); }
   if(tab==='my-status') loadMyStatus();
@@ -3061,7 +3143,7 @@ function updateImportProgressUI(data){
       data.errors?.length ? '⚠ Import complete with errors' : '✓ Import complete';
     if(data.booking_id){
       const link = document.getElementById('import-booking-link');
-      link.href = 'https://smartstaffsolutions.com/bookings/' + data.booking_id;
+      link.href = ssUrl('/bookings/' + data.booking_id);
       link.textContent = '→ View Booking #' + data.booking_id + ' in SmartStaff';
       document.getElementById('import-done-link').style.display = '';
       if(!data.errors?.length){const a=document.getElementById('cha-ching');if(a){a.currentTime=0;a.play().catch(()=>{})}}
@@ -3135,6 +3217,204 @@ async function loadImportHistory(){
       </div>`;
     }).join('');
   }catch(e){}
+}
+
+
+// ── MANUAL BOOKING ──────────────────────────────────────────────────────────
+
+let _mbLookups = null;            // {customers, venues, contacts, customer_map}
+
+const MB_CALL_NAMES = [
+  'Load In','Load Out','LX','SX','VX','Backline','Show Call',
+  'FOH Spot','Truss Spot','Wardrobe','Steel','Fork','Truck','EWP',
+  'Crown Hand','Crew Boss','Site','Utility','General','Other'
+];
+
+function switchBookingMode(mode){
+  document.getElementById('mb-mode-btn-manual').classList.toggle('active', mode==='manual');
+  document.getElementById('mb-mode-btn-estimate').classList.toggle('active', mode==='estimate');
+  document.getElementById('import-mode-manual').style.display = mode==='manual' ? 'flex' : 'none';
+  document.getElementById('import-body').style.display        = mode==='estimate' ? 'flex' : 'none';
+  if(mode==='manual') initManualBooking();
+}
+
+async function initManualBooking(){
+  if(_mbLookups) return;          // load lists once
+  const status = document.getElementById('mb-lookup-status');
+  status.textContent = 'Loading lists...';
+  try{
+    const resp = await fetch('/api/booking/lookups');
+    const data = await resp.json();
+    if(data.error){ status.textContent = 'Error: ' + data.error; return; }
+    _mbLookups = data;
+    fillMbSelect('mb-customer', data.customers, '-- Select customer --');
+    fillMbSelect('mb-contact',  data.contacts,  '-- Select contact --');
+    fillMbSelect('mb-onsite',   data.contacts,  '-- defaults to contact --');
+    fillMbSelect('mb-venue',    data.venues,    '-- Select venue --');
+    status.textContent = `${data.customers.length} customers · ${data.venues.length} venues · ${data.contacts.length} contacts`;
+    const d = document.getElementById('mb-date');
+    if(d && !d.value) d.value = new Date().toISOString().slice(0,10);
+    if(!document.querySelectorAll('#mb-calls .mb-call-row').length) addManualCall();
+    updateManualReadiness();
+  }catch(e){ status.textContent = 'Error loading lists'; }
+}
+
+function fillMbSelect(id, items, placeholder){
+  const sel = document.getElementById(id);
+  if(!sel) return;
+  sel.innerHTML = `<option value="">${placeholder}</option>` +
+    (items||[]).map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
+}
+
+function addManualCall(){
+  const wrap = document.getElementById('mb-calls');
+  const lastDate = wrap.querySelector('.mb-call-row:last-child .mbc-date')?.value
+                 || document.getElementById('mb-date')?.value || '';
+  const opts = '<option value="">-- select --</option>' +
+    MB_CALL_NAMES.map(n => `<option value="${n}">${n}</option>`).join('');
+  const row = document.createElement('div');
+  row.className = 'mb-call-row';
+  row.innerHTML =
+    `<div>
+       <select class="mbc-name" onchange="onManualCallName(this)">${opts}</select>
+       <input class="mbc-name-free" placeholder="custom name" style="display:none;margin-top:4px" oninput="updateManualReadiness()">
+     </div>
+     <input class="mbc-date" type="date" value="${lastDate}" onchange="updateManualReadiness()">
+     <input class="mbc-time" type="time" value="08:00">
+     <input class="mbc-length" type="number" min="0" step="0.5" value="4">
+     <input class="mbc-required" type="number" min="0" step="1" value="1">
+     <input class="mbc-notes" placeholder="optional">
+     <button class="mb-call-rm" onclick="removeManualCall(this)" title="Remove call">✕</button>`;
+  wrap.appendChild(row);
+  updateManualReadiness();
+}
+
+function removeManualCall(btn){
+  btn.closest('.mb-call-row')?.remove();
+  updateManualReadiness();
+}
+
+function onManualCallName(sel){
+  const free = sel.parentElement.querySelector('.mbc-name-free');
+  if(!free) return;
+  if(sel.value === 'Other'){ free.style.display = ''; free.focus(); }
+  else { free.style.display = 'none'; free.value = ''; }
+  updateManualReadiness();
+}
+
+function mbCallNameValue(row){
+  const sel  = row.querySelector('.mbc-name');
+  const free = row.querySelector('.mbc-name-free');
+  if(sel.value === 'Other' && free && free.value.trim()) return free.value.trim();
+  return sel.value;
+}
+
+function updateManualReadiness(){
+  const name  = document.getElementById('mb-name')?.value.trim();
+  const cust  = document.getElementById('mb-customer')?.value;
+  const ctc   = document.getElementById('mb-contact')?.value;
+  const venue = document.getElementById('mb-venue')?.value;
+  const rows  = [...document.querySelectorAll('#mb-calls .mb-call-row')];
+  const callsOk = rows.every(r => mbCallNameValue(r) && r.querySelector('.mbc-date').value);
+  const btn  = document.getElementById('mb-create-btn');
+  const note = document.getElementById('mb-action-note');
+  if(!btn) return;
+  btn.disabled = !(name && cust && ctc && venue && callsOk);
+  if(!name)                    note.textContent = 'Enter a booking name';
+  else if(!cust||!ctc||!venue) note.textContent = 'Select customer, contact and venue';
+  else if(!callsOk)            note.textContent = 'Each call needs a name and date';
+  else note.textContent = rows.length ? `${rows.length} call${rows.length!==1?'s':''} ready` : 'No calls — booking only';
+}
+
+function buildManualPayload(){
+  const calls = [...document.querySelectorAll('#mb-calls .mb-call-row')].map(r => {
+    const t = r.querySelector('.mbc-time').value || '00:00';
+    return {
+      call_name:  mbCallNameValue(r),
+      start_date: r.querySelector('.mbc-date').value,
+      start_time: (t.length === 5 ? t + ':00' : t),
+      length:     parseFloat(r.querySelector('.mbc-length').value) || 0,
+      required:   parseInt(r.querySelector('.mbc-required').value) || 0,
+      notes:      r.querySelector('.mbc-notes').value || '',
+    };
+  });
+  return {
+    booking: {
+      name:              document.getElementById('mb-name').value.trim(),
+      creation_date:     document.getElementById('mb-date').value || new Date().toISOString().slice(0,10),
+      status:            0,
+      customer_id:       document.getElementById('mb-customer').value,
+      contact_id:        document.getElementById('mb-contact').value,
+      onsite_contact_id: document.getElementById('mb-onsite').value || '',
+      venue_id:          document.getElementById('mb-venue').value,
+      notes:             document.getElementById('mb-notes').value || '',
+      reference:         document.getElementById('mb-reference').value || '',
+    },
+    calls,
+  };
+}
+
+async function createManualBooking(){
+  const payload = buildManualPayload();
+  const btn   = document.getElementById('mb-create-btn');
+  const panel = document.getElementById('mb-result-panel');
+  btn.disabled = true;
+  panel.style.display = '';
+  document.getElementById('mb-result-title').textContent = 'Creating in SmartStaff...';
+  document.getElementById('mb-result-step').textContent  = `Creating booking and ${payload.calls.length} call(s)...`;
+  document.getElementById('mb-result-log').innerHTML = '';
+  document.getElementById('mb-result-link').style.display = 'none';
+  try{
+    const resp = await fetch('/api/booking/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if(data.error){
+      document.getElementById('mb-result-title').textContent = '⚠ Creation failed';
+      document.getElementById('mb-result-step').textContent  = data.error;
+      btn.disabled = false;
+      return;
+    }
+    renderManualResult(data, payload);
+  }catch(e){
+    document.getElementById('mb-result-title').textContent = '⚠ Creation failed';
+    document.getElementById('mb-result-step').textContent  = e.message;
+    btn.disabled = false;
+  }
+}
+
+function renderManualResult(data, payload){
+  const errCount = (data.call_errors||[]).length;
+  document.getElementById('mb-result-title').textContent =
+    errCount ? '⚠ Created with call errors' : '✓ Booking created';
+  document.getElementById('mb-result-step').textContent =
+    `Booking #${data.booking_id} · ${(data.call_ids||[]).length} call(s) created` +
+    (errCount ? ` · ${errCount} failed` : '');
+  const errIdx = {};
+  (data.call_errors||[]).forEach(e => { errIdx[e.index] = e.detail; });
+  document.getElementById('mb-result-log').innerHTML = payload.calls.map((c, i) => {
+    const failed = i in errIdx;
+    const cls  = failed ? 'fail' : 'ok';
+    const icon = failed ? '✗' : '✓';
+    const err  = failed ? ` — ${errIdx[i]}` : '';
+    return `<div class="icl-item ${cls}">${icon} ${escapeHtml(c.call_name)} · ${formatDisplayDate(c.start_date)}${err}</div>`;
+  }).join('');
+  const link = document.getElementById('mb-booking-link');
+  link.href = ssUrl('/bookings/' + data.booking_id);
+  link.textContent = '→ View Booking #' + data.booking_id + ' in SmartStaff';
+  document.getElementById('mb-result-link').style.display = '';
+  if(!errCount){ const a = document.getElementById('cha-ching'); if(a){ a.currentTime=0; a.play().catch(()=>{}); } }
+}
+
+function resetManualBooking(){
+  ['mb-name','mb-reference','mb-notes','mb-customer','mb-contact','mb-onsite','mb-venue'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.value = '';
+  });
+  document.getElementById('mb-calls').innerHTML = '';
+  addManualCall();
+  document.getElementById('mb-result-panel').style.display = 'none';
+  updateManualReadiness();
 }
 
 
@@ -4273,7 +4553,7 @@ function renderSchedule(){
           <div style="min-width:0">
             <div style="font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;
                         color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px"
-                 title="${booking.booking_name}">${booking.booking_name}
+                 title="${booking.booking_name}"><span onclick="event.stopPropagation();openSmartStaffBooking('${booking.calls[0].booking_id}')" style="cursor:pointer" title="Open booking in SmartStaff">${booking.booking_name}</span>
               ${hasNotes ? `<span title="Some calls have notes" style="font-size:9px;color:var(--muted);opacity:.7">📝</span>` : ''}
             </div>
             <div style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-top:1px">
@@ -4332,7 +4612,7 @@ function renderSchedule(){
                onmouseout="this.style.background='${isToday?'rgba(212,175,55,0.06)':'var(--bg)'}'">
             <div style="display:flex;align-items:center;gap:8px">
               ${isToday?'<span style="font-size:8px;background:var(--accent);color:#000;padding:1px 5px;border-radius:2px;font-family:\'Share Tech Mono\',monospace;letter-spacing:.05em;flex-shrink:0">TODAY</span>':''}
-              <span style="font-size:11px;font-weight:600;color:${isToday?'var(--accent)':'var(--text)'}">${call.call_name}</span>
+              <span onclick="event.stopPropagation();openSmartStaffCall('${call.booking_id}','${call.call_id}')" style="font-size:11px;font-weight:600;cursor:pointer;color:${isToday?'var(--accent)':'var(--text)'}" title="Open call in SmartStaff">${call.call_name}</span>
               <span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted)">
                 ${call.time} · ${call.length}h
               </span>
@@ -4358,17 +4638,7 @@ function renderSchedule(){
                       onmouseout="this.style.background='rgba(212,175,55,0.1)'">
                 🔍 Find Crew
               </button>
-              <button class="sched-action-btn" onclick="event.stopPropagation();schedOpenSMS('${call.booking_id}','${call.call_id}')"
-                      title="Send SMS for this call"
-                      style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);
-                             color:#22c55e;border-radius:3px;padding:2px 7px;
-                             font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:600;
-                             cursor:pointer;transition:all .15s;white-space:nowrap"
-                      onmouseover="this.style.background='rgba(34,197,94,0.18)'"
-                      onmouseout="this.style.background='rgba(34,197,94,0.08)'">
-                📱 SMS
-              </button>
-              <a class="sched-action-btn" href="https://smartstaffsolutions.com/bookings/${call.booking_id}/callsheet/${call.call_id}"
+              <a class="sched-action-btn" href="${ssUrl('/bookings/'+call.booking_id+'/callsheet/'+call.call_id)}"
                  target="_blank"
                  onclick="event.stopPropagation()"
                  title="Open callsheet in SmartStaff"
@@ -4550,13 +4820,16 @@ function toggleSchedBooking(bid){
   }
 }
 
-function schedOpenSMS(bookingId, callId){
-  if(window._cohort !== 'admin') return;   // admin-only action
-  // Open SmartStaff SMS page for this call in a new tab
-  window.open(
-    `https://smartstaffsolutions.com/bookings/${bookingId}/callsheet/${callId}`,
-    'goat_sms'
-  );
+function openSmartStaffBooking(bookingId){
+  if(window._cohort !== 'admin') return;   // admin-only (matches Schedule/Crew Finder actions)
+  if(!bookingId) return;
+  window.open(ssUrl('/bookings/' + bookingId), '_blank');
+}
+
+function openSmartStaffCall(bookingId, callId){
+  if(window._cohort !== 'admin') return;   // admin-only
+  if(!bookingId || !callId) return;
+  window.open(ssUrl('/bookings/' + bookingId + '/callsheet/' + callId), '_blank');
 }
 
 async function schedJumpToCrewFinder(bookingId, callId){
