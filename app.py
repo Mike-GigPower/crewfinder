@@ -94,7 +94,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.4"
+APP_VERSION    = "3.5.5"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -107,6 +107,7 @@ USE_BULK_ENDPOINTS = True
 USE_BULK_UNAVAILS_ENDPOINT = True
 USE_BULK_BOOKED_CREW_ENDPOINT = True
 USE_BULK_CALLS_ENDPOINT = True
+USE_BULK_IMPORT_LOOKUPS = True
 try:
     if os.path.exists(CONFIG_FILE):
         _cfg = json.load(open(CONFIG_FILE))
@@ -118,6 +119,8 @@ try:
             USE_BULK_BOOKED_CREW_ENDPOINT = bool(_cfg["use_bulk_booked_crew_endpoint"])
         if "use_bulk_calls_endpoint" in _cfg:
             USE_BULK_CALLS_ENDPOINT = bool(_cfg["use_bulk_calls_endpoint"])
+        if "use_bulk_import_lookups" in _cfg:
+            USE_BULK_IMPORT_LOOKUPS = bool(_cfg["use_bulk_import_lookups"])
 except Exception:
     pass
 
@@ -1984,6 +1987,98 @@ def fuzzy_match(name, options):
             return o
 
     return None
+
+def fetch_import_lookups(ss):
+    """Bulk fetch of the customer / venue / contact lookup lists used by the
+    Estimate Import matcher, via /ajax/crew/import-lookups-bulk.php. Replaces
+    the three paginated HTML scrapes (ss_get_customers / ss_get_venues /
+    ss_get_contacts) with one round trip.
+
+    Returns (lookups, error):
+        lookups : {"customers": [...], "venues": [...], "contacts": [...],
+                   "customer_map": [...]}  — customer/venue/contact ids are
+                   coerced to str to match the shape the scrapers returned, so
+                   the matcher and front-end are unchanged. Extra columns
+                   (phone, email, postcode, ...) ride along untouched.
+        error   : str or None
+    On any failure returns (None, err) so the caller can fall back to the
+    scrapers.
+    """
+    url = f"{BASE_URL}/ajax/crew/import-lookups-bulk.php"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+
+    def _norm(rows):
+        out = []
+        for r in (rows or []):
+            d = dict(r)
+            d["id"] = str(r.get("id"))
+            out.append(d)
+        return out
+
+    return {
+        "customers":    _norm(data.get("customers")),
+        "venues":       _norm(data.get("venues")),
+        "contacts":     _norm(data.get("contacts")),
+        "customer_map": [
+            {"customer_id": str(m.get("customer_id")),
+             "user_id":     str(m.get("user_id")),
+             "default":     int(m.get("default") or 0)}
+            for m in (data.get("customer_map") or [])
+        ],
+    }, None
+
+
+def _customer_contacts(customer_id, contacts, customer_map):
+    """Given a matched customer id, return (scoped_contacts, default_contact):
+    the subset of `contacts` linked to that customer via customer_map, plus the
+    customer's default contact (default=1) if one is linked. Returns ([], None)
+    when there's no customer match or no map — callers then fall back to
+    matching against the full contact list (pre-bulk behaviour)."""
+    if not customer_id or not customer_map:
+        return [], None
+    cid = str(customer_id)
+    linked_ids = []
+    default_id = None
+    for m in customer_map:
+        if str(m.get("customer_id")) == cid:
+            uid = str(m.get("user_id"))
+            linked_ids.append(uid)
+            if m.get("default") and default_id is None:
+                default_id = uid
+    if not linked_ids:
+        return [], None
+    by_id = {str(c["id"]): c for c in contacts}
+    scoped = [by_id[u] for u in linked_ids if u in by_id]
+    default_contact = by_id.get(default_id) if default_id else None
+    return scoped, default_contact
+
+
+def _scoped_contact_match(name, all_contacts, scoped_contacts, default_contact, use_default):
+    """Match a contact name, preferring the customer's own contacts.
+
+    Order: name match within the customer's contacts -> (optionally) that
+    customer's default contact -> name match against every contact. The final
+    fall-through is the exact pre-bulk behaviour, so a missing/empty map or an
+    unmatched customer degrades to matching against all contacts."""
+    if scoped_contacts:
+        m = fuzzy_match(name, scoped_contacts)
+        if m:
+            return m
+        if use_default and default_contact:
+            return default_contact
+    return fuzzy_match(name, all_contacts)
+
 
 def ss_create_booking(ss, booking_data):
     """POST to SmartStaff to create a booking.
@@ -4629,19 +4724,50 @@ def api_import_validate():
             ]
         })
 
-    # Scrape SmartStaff lists for matching
-    customers = ss_get_customers(ss)
-    venues    = ss_get_venues(ss)
-    contacts  = ss_get_contacts(ss)
+    # Lookup lists for matching — one bulk endpoint, falling back to the
+    # per-list HTML scrapes if it isn't deployed (same graceful-degradation
+    # pattern as the other bulk reads).
+    customer_map = []
+    if USE_BULK_ENDPOINTS and USE_BULK_IMPORT_LOOKUPS:
+        lookups, err = fetch_import_lookups(ss)
+        if err is None and lookups is not None:
+            customers    = lookups["customers"]
+            venues       = lookups["venues"]
+            contacts     = lookups["contacts"]
+            customer_map = lookups["customer_map"]
+        else:
+            app.logger.warning(f"[import-lookups] endpoint failed ({err}); falling back to scrape")
+            customers = ss_get_customers(ss)
+            venues    = ss_get_venues(ss)
+            contacts  = ss_get_contacts(ss)
+    else:
+        customers = ss_get_customers(ss)
+        venues    = ss_get_venues(ss)
+        contacts  = ss_get_contacts(ss)
 
-    customer_match        = fuzzy_match(customer["company_name"], customers)
-    venue_match           = fuzzy_match(event.get("venue_name", ""), venues)
-    contact_match         = fuzzy_match(customer.get("contact_name", ""), contacts)
+    customer_match = fuzzy_match(customer["company_name"], customers)
+    venue_match    = fuzzy_match(event.get("venue_name", ""), venues)
+
+    # Contact matching, scoped to the matched customer when the map is present:
+    # prefer the customer's own contacts (and their default), falling back to
+    # matching against every contact. With no map / no customer match this is
+    # identical to the pre-bulk behaviour.
+    scoped_contacts, default_contact = _customer_contacts(
+        customer_match["id"] if customer_match else None, contacts, customer_map)
+
+    contact_match = _scoped_contact_match(
+        customer.get("contact_name", ""), contacts,
+        scoped_contacts, default_contact, use_default=True)
+
     # Onsite contact: if the export didn't supply one, fall back to the booking
-    # contact name so the onsite field matches/displays the same person.
+    # contact name so the onsite field matches/displays the same person. Scope
+    # to the same customer but don't auto-default — onsite may be a different
+    # person than the customer's default contact.
     onsite_contact_name   = (event.get("onsite_contact") or "").strip() \
         or (customer.get("contact_name") or "").strip()
-    onsite_contact_match  = fuzzy_match(onsite_contact_name, contacts)
+    onsite_contact_match  = _scoped_contact_match(
+        onsite_contact_name, contacts,
+        scoped_contacts, default_contact, use_default=False)
 
     # Earliest date for booking date field
     dates = [ll["date"] for ll in lines if ll.get("date")]
