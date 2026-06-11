@@ -1,6 +1,6 @@
 {
-  "version": "3.5.4",
-  "release_date": "2026-06-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.4/TheGOAT.dmg",
-  "release_notes": "Backend chnages to Call data gathering."
+  "version": "3.5.5",
+  "release_date": "2026-06-11",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.5/TheGOAT.dmg",
+  "release_notes": "Update to contacts management"
 }
