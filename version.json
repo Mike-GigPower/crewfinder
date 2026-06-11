@@ -1,6 +1,6 @@
 {
-  "version": "3.5.6",
+  "version": "3.5.7",
   "release_date": "2026-06-11",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.6/TheGOAT.dmg",
-  "release_notes": "Update to venue management"
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.7/TheGOAT.dmg",
+  "release_notes": "Create Booking tab (manual + from estimate) on a direct write endpoint; clickable booking/call names open SmartStaff; base_url-aware links; per-call Schedule SMS button removed."
 }
