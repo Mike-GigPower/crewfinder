@@ -48,6 +48,7 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 CACHE_FILE  = os.path.join(BASE_DIR, "crew_cache.json")
+VENUE_CACHE_FILE = os.path.join(BASE_DIR, "venue_cache.json")  # venue geo, rebuilt with the crew cache
 # FORECAST_CACHE_FILE and UNAVAIL_CACHE_FILE removed in 3.4.5 (live reads).
 UNAVAIL_TIMES_FILE         = os.path.join(BASE_DIR, "unavail_times.json")
 # FORECAST_CACHE_MAX_AGE_HRS and UNAVAIL_CACHE_MAX_AGE_HRS removed in 3.4.5.
@@ -94,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.5"
+APP_VERSION    = "3.5.6"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -108,6 +109,7 @@ USE_BULK_UNAVAILS_ENDPOINT = True
 USE_BULK_BOOKED_CREW_ENDPOINT = True
 USE_BULK_CALLS_ENDPOINT = True
 USE_BULK_IMPORT_LOOKUPS = True
+USE_BULK_VENUES_ENDPOINT = True
 try:
     if os.path.exists(CONFIG_FILE):
         _cfg = json.load(open(CONFIG_FILE))
@@ -121,6 +123,8 @@ try:
             USE_BULK_CALLS_ENDPOINT = bool(_cfg["use_bulk_calls_endpoint"])
         if "use_bulk_import_lookups" in _cfg:
             USE_BULK_IMPORT_LOOKUPS = bool(_cfg["use_bulk_import_lookups"])
+        if "use_bulk_venues_endpoint" in _cfg:
+            USE_BULK_VENUES_ENDPOINT = bool(_cfg["use_bulk_venues_endpoint"])
 except Exception:
     pass
 
@@ -273,6 +277,14 @@ def _do_cache_refresh(ss):
                         save_cache(new_cache)
 
         save_cache(new_cache)
+
+        # Refresh the venue geo cache on the same cadence (cheap single call;
+        # never fails the crew rebuild).
+        try:
+            build_venue_cache(ss)
+        except Exception as e:
+            app.logger.warning(f"[venue-cache] build error: {e}")
+
         _refresh_progress["elapsed"] = round(time.time() - _refresh_progress["started"], 1)
 
     except Exception as e:
@@ -911,13 +923,204 @@ VENUE_POSTCODES = {
     "Mt Duneed":         "3217",   # Mount Duneed — VERIFY
 }
 
-def venue_to_coords(venue_str):
-    """Free-text SmartStaff venue tag -> (lat, lon, label) via the known-venue
-    postcode table. The tag may be the full induction name ("Festival Hall")
-    or the short code ("Forum", "JCA", "MCA"). Returns None if unrecognised."""
+def fetch_venues_bulk(ss):
+    """Bulk fetch every active venue with its geo fields via
+    list-venues-bulk.php. Returns (venues, error):
+        venues : [{id(str), name, postcode, suburb, state, has_induction}]
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/list-venues-bulk.php"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    out = []
+    for v in data.get("venues", []):
+        out.append({
+            "id":            str(v.get("id")),
+            "name":          v.get("name", "") or "",
+            "postcode":      str(v.get("postcode") or "").strip(),
+            "suburb":        (v.get("suburb") or "").strip(),
+            "state":         (v.get("state") or "").strip(),
+            "has_induction": int(v.get("has_induction") or 0),
+        })
+    return out, None
+
+
+# ── Venue geo cache ──────────────────────────────────────────────────────────
+# Real venue postcode/suburb/state from SmartStaff (list-venues-bulk.php),
+# name-keyed, rebuilt alongside the crew cache. Replaces the hand-maintained
+# VENUE_POSTCODES table (kept below only as a fallback during transition).
+
+_venue_cache = None  # in-memory {normalised_name: venue_record}
+
+def _norm_venue_key(s):
+    """Normalise a venue name for exact-key lookup. The call's venue string from
+    get-calls-bulk is the literal venues.venue value, so normalised exact match
+    is deterministic — no fuzzy matching needed."""
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+def _load_venue_cache():
+    """{normalised_name: {name, postcode, suburb, state, has_induction, id}}."""
+    global _venue_cache
+    if _venue_cache is None:
+        try:
+            with open(VENUE_CACHE_FILE) as f:
+                _venue_cache = json.load(f).get("venues", {})
+        except Exception:
+            _venue_cache = {}
+    return _venue_cache
+
+def _save_venue_cache(venues_by_name):
+    global _venue_cache
+    _venue_cache = venues_by_name
+    try:
+        with open(VENUE_CACHE_FILE, "w") as f:
+            json.dump({"saved_at": datetime.now().isoformat(), "venues": venues_by_name}, f)
+    except Exception as e:
+        app.logger.warning(f"[venue-cache] save failed: {e}")
+
+def build_venue_cache(ss):
+    """Fetch all venues via list-venues-bulk.php and persist a name-keyed geo
+    cache (venue_cache.json). Called on the crew-cache rebuild. On endpoint
+    failure it keeps the existing cache rather than wiping it."""
+    if not (USE_BULK_ENDPOINTS and USE_BULK_VENUES_ENDPOINT):
+        return
+    venues, err = fetch_venues_bulk(ss)
+    if err is not None or venues is None:
+        app.logger.warning(f"[venue-cache] endpoint failed ({err}); keeping existing cache")
+        return
+    by_name = {}
+    for v in venues:
+        key = _norm_venue_key(v.get("name"))
+        if key:
+            by_name[key] = v   # last-write-wins on duplicate names (ad-hoc venues)
+    _save_venue_cache(by_name)
+    app.logger.info(f"[venue-cache] built {len(by_name)} venues")
+
+# ── Suburb -> centroid reverse index (phase 2) ───────────────────────────────
+# Built from the bundled au_postcodes.json (postcode -> {lat,lon,suburb,state}):
+# group by (suburb, state) and average the postcode centroids. Lets venues with
+# a blank postcode but a real suburb resolve too.
+
+_suburb_index = None
+
+_STATE_ALIASES = {
+    "vic": "VIC", "victoria": "VIC",
+    "nsw": "NSW", "new south wales": "NSW",
+    "qld": "QLD", "queensland": "QLD",
+    "sa":  "SA",  "south australia": "SA",
+    "wa":  "WA",  "western australia": "WA",
+    "tas": "TAS", "tasmania": "TAS",
+    "nt":  "NT",  "northern territory": "NT",
+    "act": "ACT", "australian capital territory": "ACT",
+}
+
+def _norm_state(s):
+    s = (s or "").strip().lower()
+    return _STATE_ALIASES.get(s, s.upper())
+
+def _norm_suburb(s):
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+def _build_suburb_index():
+    """{(suburb, state): {'lat','lon'}} — centroid per suburb, averaging the
+    centroids of every postcode that lists that suburb+state."""
+    global _suburb_index
+    if _suburb_index is not None:
+        return _suburb_index
+    acc = {}  # key -> [sum_lat, sum_lon, count]
+    for rec in _load_postcodes().values():
+        try:
+            lat = float(rec.get("lat")); lon = float(rec.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        sub = _norm_suburb(rec.get("suburb"))
+        if not sub:
+            continue
+        key = (sub, _norm_state(rec.get("state")))
+        a = acc.setdefault(key, [0.0, 0.0, 0])
+        a[0] += lat; a[1] += lon; a[2] += 1
+    _suburb_index = {k: {"lat": v[0] / v[2], "lon": v[1] / v[2]} for k, v in acc.items()}
+    return _suburb_index
+
+def suburb_to_coords(suburb, state):
+    """(suburb, state) -> {'lat','lon'} centroid, or None."""
+    if not suburb:
+        return None
+    return _build_suburb_index().get((_norm_suburb(suburb), _norm_state(state)))
+
+def _venue_record_to_coords(v):
+    """Venue cache record -> (lat, lon, label). Prefers the real postcode, then
+    falls back to a suburb+state centroid when the postcode is blank."""
+    pc = (v.get("postcode") or "").strip()
+    if pc:
+        c = postcode_to_coords(pc)
+        if c:
+            return c["lat"], c["lon"], f"{v.get('name','venue')} ({pc})"
+    sub = (v.get("suburb") or "").strip()
+    if sub:
+        c = suburb_to_coords(sub, v.get("state"))
+        if c:
+            return c["lat"], c["lon"], f"{v.get('name','venue')} ({sub})"
+    return None
+
+def _cache_venue_for_code(venue_str):
+    """Resolve a short code / keyword ('Forum', 'JCA', 'rod laver arena') to a
+    cached venue record via INDUCTION_VENUE_MAP, so typed 'near' values and
+    scrape-fallback detect_venue codes resolve from real venue data too."""
     vl = (venue_str or "").strip().lower()
     if not vl:
         return None
+    vc = _load_venue_cache()
+    for code, keywords in INDUCTION_VENUE_MAP.items():
+        cl = code.lower()
+        if vl == cl or cl in vl or any(k in vl for k in keywords):
+            for nk, rec in vc.items():
+                if any(k in nk for k in keywords):
+                    return rec
+    return None
+
+def venue_to_coords(venue_str):
+    """Free-text SmartStaff venue tag -> (lat, lon, label).
+
+    Resolution order, all from real SmartStaff venue data:
+      1. Exact (normalised) venue-name match in the cache -> postcode, then
+         suburb+state centroid. This is the call's venue from get-calls-bulk.
+      2. Short code / keyword (typed 'near', scrape-fallback detect_venue code)
+         -> the matching cached venue via INDUCTION_VENUE_MAP -> its real geo.
+      3. Legacy VENUE_POSTCODES — last resort only, used before the venue cache
+         has built. No longer the source of truth; retirable once you're happy
+         the cache path covers everything in practice.
+
+    Returns (lat, lon, label) or None."""
+    vl = (venue_str or "").strip().lower()
+    if not vl:
+        return None
+
+    # 1. Exact venue-name match (real postcode, then real suburb).
+    v = _load_venue_cache().get(_norm_venue_key(venue_str))
+    if v:
+        c = _venue_record_to_coords(v)
+        if c:
+            return c
+
+    # 2. Code / keyword -> cached venue -> real geo.
+    v = _cache_venue_for_code(venue_str)
+    if v:
+        c = _venue_record_to_coords(v)
+        if c:
+            return c
+
+    # 3. Legacy hard-coded table — last resort (cache not yet built).
     for code, keywords in INDUCTION_VENUE_MAP.items():
         cl = code.lower()
         if vl == cl or cl in vl or any(k in vl for k in keywords):
@@ -925,6 +1128,7 @@ def venue_to_coords(venue_str):
             if c:
                 return c["lat"], c["lon"], f"{code} ({VENUE_POSTCODES.get(code)})"
     return None
+
 
 def resolve_origin(origin, targets):
     """origin = {"mode":"venue"} or {"mode":"postcode","postcode":"3000"}.
