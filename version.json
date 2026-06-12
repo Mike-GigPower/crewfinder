@@ -1,6 +1,6 @@
 {
-  "version": "3.5.7",
-  "release_date": "2026-06-11",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.7/TheGOAT.dmg",
-  "release_notes": "Create Booking tab (manual + from estimate) on a direct write endpoint; clickable booking/call names open SmartStaff; base_url-aware links; per-call Schedule SMS button removed."
+  "version": "3.5.8",
+  "release_date": "2026-06-12",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.8/TheGOAT.dmg",
+  "release_notes": "In-GOAT booking & call view dialogs — names open a detail view inside THE GOAT instead of SmartStaff, with per-call crew rosters and tap-to-call mobiles. Backed by a new get-booking.php endpoint."
 }
