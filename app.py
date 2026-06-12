@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.8"
+APP_VERSION    = "3.5.9"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -2499,6 +2499,77 @@ def ss_create_booking_bulk(ss, booking, calls):
     url = f"{BASE_URL}/ajax/crew/create-booking.php"
     try:
         resp = ss.post(url, json={"booking": booking, "calls": calls}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_update_booking_bulk(ss, booking_id, booking):
+    """Edit a booking's detail fields in ONE call via update-booking.php.
+
+    Plain UPDATE bookings of the detail columns. The endpoint deliberately never
+    writes the status column, so the close/invoice/lock cascade (add-booking.php
+    action=edit, status==1) can never be triggered from an edit.
+
+    booking : {name, creation_date, customer_id, contact_id, onsite_contact_id,
+               venue_id, notes, reference}  (creation_date may be ISO or unix)
+
+    Returns (result, error):
+        result : {ok, booking_id, affected_rows}
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/update-booking.php"
+    try:
+        resp = ss.post(url, params={"id": booking_id}, json={"booking": booking}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_update_call_bulk(ss, call_id, call):
+    """Edit a call's detail fields in ONE call via update-call.php.
+
+    UPDATE calls (editable subset) then re-syncs every assigned crew member's
+    calendar entry via SmartStaff's own $sss->addToCalendar — exactly what
+    add-call.php action=edit does — so booked crew don't keep stale times after a
+    time change. The endpoint never writes call_locked, so no accounting cascade.
+
+    call : {call_name, start_date, start_time, length, required, notes}
+           (start_date may be ISO or unix)
+
+    Returns (result, error):
+        result : {ok, call_id, booking_id, crew_synced, affected_rows}
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/update-call.php"
+    try:
+        resp = ss.post(url, params={"id": call_id}, json={"call": call}, timeout=60)
     except Exception as e:
         return None, f"request failed: {e}"
     if resp.status_code != 200:
@@ -5547,6 +5618,63 @@ def api_booking_create():
     booking.setdefault("status", 0)  # 0 = Active/open
 
     result, err = ss_create_booking_bulk(ss, booking, calls)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+
+@app.route("/api/booking/<booking_id>", methods=["POST"])
+@require_cohort("admin")
+def api_booking_update(booking_id):
+    """Edit a booking's detail fields from the view/edit dialog. Proxies
+    update-booking.php (admin-only); never closes the booking. Expects
+    {booking: {...}} already in endpoint shape.
+
+    Shares the path with api_booking_details (GET); Flask dispatches by method,
+    and the static /api/booking/create rule still wins over this dynamic one."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body    = request.get_json(force=True) or {}
+    booking = body.get("booking") or {}
+
+    # Friendly pre-checks (the endpoint re-validates + checks FK existence).
+    if not str(booking.get("name", "")).strip():
+        return jsonify({"error": "Booking name is required"}), 400
+    if not booking.get("customer_id"):
+        return jsonify({"error": "Customer is required"}), 400
+    if not booking.get("venue_id"):
+        return jsonify({"error": "Venue is required"}), 400
+    if not booking.get("contact_id"):
+        return jsonify({"error": "Contact is required"}), 400
+
+    result, err = ss_update_booking_bulk(ss, booking_id, booking)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+
+@app.route("/api/call/<booking_id>/<call_id>", methods=["POST"])
+@require_cohort("admin")
+def api_call_update(booking_id, call_id):
+    """Edit a call's detail fields from the call dialog. Proxies update-call.php
+    (admin-only); re-syncs assigned-crew calendars, never locks the call.
+    Expects {call: {...}} already in endpoint shape. booking_id is taken for URL
+    symmetry with the GET route; the endpoint derives bookingID from the call."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(force=True) or {}
+    call = body.get("call") or {}
+
+    if not str(call.get("call_name", "")).strip():
+        return jsonify({"error": "Call name is required"}), 400
+    if not str(call.get("start_date", "")).strip():
+        return jsonify({"error": "Call date is required"}), 400
+
+    result, err = ss_update_call_bulk(ss, call_id, call)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)

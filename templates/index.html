@@ -3422,7 +3422,8 @@ function resetManualBooking(){
 // ── ENTITY VIEW DIALOG (booking / call) ─────────────────────────────────────
 // Read-only in-GOAT view so names don't bounce to the SmartStaff login wall.
 // Data comes through THE GOAT's server session via existing endpoints, not the
-// browser's SmartStaff session. Edit mode arrives next release.
+// browser's SmartStaff session. Admin users can also edit booking/call details
+// in-place (Edit button -> prefilled form -> Save via the update-*.php endpoints).
 
 window._bookingIndex = window._bookingIndex || {};   // booking_id -> {name, venue, calls:[{call_id, call_name}]}
 
@@ -3454,11 +3455,12 @@ function crewStatusBadge(status){
 function entityBtn(label, onclick, opts){
   opts = opts||{};
   const dis = opts.disabled ? 'disabled' : '';
+  const idAttr = opts.id ? 'id="'+opts.id+'"' : '';
   const title = opts.title ? 'title="'+escapeHtml(opts.title)+'"' : '';
   const accent = opts.primary ? 'color:var(--accent);border-color:var(--border-gold)' : 'color:var(--muted)';
   const cursor = opts.disabled ? 'not-allowed' : 'pointer';
   const opacity = opts.disabled ? '0.45' : '1';
-  return '<button '+dis+' '+title+' onclick="'+(onclick||'')+'" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:'+cursor+';opacity:'+opacity+';'+accent+'">'+label+'</button>';
+  return '<button '+idAttr+' '+dis+' '+title+' onclick="'+(onclick||'')+'" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:'+cursor+';opacity:'+opacity+';'+accent+'">'+label+'</button>';
 }
 
 async function openCallDialog(bookingId, callId){
@@ -3482,13 +3484,17 @@ async function openCallDialog(bookingId, callId){
     // fall back to the booked-crew scrape (name + status only) if unavailable.
     let crew = null;
     let bookingVenue = '';
+    let editSrc = null;
     try{
       const bData = await bRes.json();
       if(bData){
         if(bData.venue && bData.venue.name) bookingVenue = bData.venue.name;
         if(bData.calls){
           const match = bData.calls.find(function(c){ return String(c.call_id) === String(callId); });
-          if(match && match.crew) crew = match.crew;
+          if(match){
+            editSrc = match;                 // machine fields for the edit form
+            if(match.crew) crew = match.crew;
+          }
         }
       }
     }catch(e){}
@@ -3499,14 +3505,15 @@ async function openCallDialog(bookingId, callId){
         crew = (cData.crew||[]);
       }catch(e){ crew = []; }
     }
-    renderCallDialog(bookingId, callId, d, crew, bookingVenue);
+    renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc);
   }catch(e){
     document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load call: '+escapeHtml(e.message)+'</div>';
     document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
   }
 }
 
-function renderCallDialog(bookingId, callId, d, crew, bookingVenue){
+function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
+  window._curCallEdit = editSrc || null;
   document.getElementById('entity-modal-title').textContent = d.call_name || 'Call';
   document.getElementById('entity-modal-sub').textContent = 'Call #'+callId+' · Booking #'+bookingId;
   const req = d.crew_required || 0;
@@ -3527,7 +3534,9 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue){
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true})
     + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')")
-    + entityBtn('✎ Edit', '', {disabled:true, title:'Editing arrives in the next update'})
+    + (window._curCallEdit
+        ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
+        : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
     + entityBtn('Close', 'closeEntityModal()');
 }
 
@@ -3569,6 +3578,7 @@ function bkCallBlock(bookingId, c){
 }
 
 function renderBookingDialog(bookingId, d, cached){
+  window._curBookingEdit = d || null;
   var name = (d && d.name) || (cached && cached.name) || 'Booking';
   document.getElementById('entity-modal-title').textContent = name;
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
@@ -3601,8 +3611,211 @@ function renderBookingDialog(bookingId, d, cached){
     + callsHtml;
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
-    + entityBtn('✎ Edit', '', {disabled:true, title:'Editing arrives in the next update'})
+    + (d
+        ? entityBtn('✎ Edit', "openBookingEditForm('"+bookingId+"')")
+        : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
     + entityBtn('Close', 'closeEntityModal()');
+}
+
+
+// ── ENTITY EDIT MODE (booking / call) ───────────────────────────────────────
+// Admin-only edit forms for the view dialogs. Prefilled from the same data the
+// view uses (get-booking.php machine fields), saved via the update-*.php write
+// endpoints. Booking edit never closes a booking; call edit re-syncs assigned
+// crew calendars and never locks the call.
+
+function _efVal(id){ var el = document.getElementById(id); return el ? el.value : ''; }
+
+async function ensureBookingLookups(){
+  if(_mbLookups) return _mbLookups;
+  const resp = await fetch('/api/booking/lookups');
+  const data = await resp.json();
+  if(data.error) throw new Error(data.error);
+  _mbLookups = data;
+  return _mbLookups;
+}
+
+function unixToYmd(u){
+  if(!u) return '';
+  var d = new Date(Number(u) * 1000);
+  if(isNaN(d.getTime())) return '';
+  var p = function(n){ return String(n).padStart(2,'0'); };
+  return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate());
+}
+
+function hms2hm(t){
+  if(!t) return '';
+  var m = String(t).match(/^(\d{1,2}):(\d{2})/);
+  return m ? (String(m[1]).padStart(2,'0') + ':' + m[2]) : '';
+}
+
+var EF_INPUT_STYLE = 'width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:7px 9px;color:var(--text);font-family:inherit;font-size:12px';
+
+function efRow(label, inner){
+  return '<div style="display:flex;gap:12px;padding:6px 0;align-items:flex-start">'
+    + '<div style="width:110px;flex-shrink:0;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-top:9px">'+label+'</div>'
+    + '<div style="flex:1">'+inner+'</div></div>';
+}
+
+function efInput(id, value, type){
+  type = type || 'text';
+  var v = (value == null) ? '' : String(value);
+  return '<input id="'+id+'" type="'+type+'" value="'+escapeHtml(v)+'" style="'+EF_INPUT_STYLE+'">';
+}
+
+function efTextarea(id, value){
+  var v = (value == null) ? '' : String(value);
+  return '<textarea id="'+id+'" rows="3" style="'+EF_INPUT_STYLE+';resize:vertical">'+escapeHtml(v)+'</textarea>';
+}
+
+function efSelect(id, items, currentId, placeholder){
+  var opts = '<option value="">'+escapeHtml(placeholder||'-- select --')+'</option>';
+  (items||[]).forEach(function(x){
+    var sel = (String(x.id) === String(currentId)) ? ' selected' : '';
+    opts += '<option value="'+x.id+'"'+sel+'>'+escapeHtml(x.name)+'</option>';
+  });
+  return '<select id="'+id+'" style="'+EF_INPUT_STYLE+'">'+opts+'</select>';
+}
+
+// ---- booking edit ----
+
+async function openBookingEditForm(bookingId){
+  var d = window._curBookingEdit;
+  if(!d) return;
+  document.getElementById('entity-modal-title').textContent = 'Edit booking';
+  document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading lists…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  var lk;
+  try{
+    lk = await ensureBookingLookups();
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load lists: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Cancel', "openBookingDialog('"+bookingId+"')");
+    return;
+  }
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Name',      efInput('be-name', d.name||'', 'text'))
+    + efRow('Date',      efInput('be-date', unixToYmd(d.creation_date), 'date'))
+    + efRow('Customer',  efSelect('be-customer', lk.customers, d.customer && d.customer.id, '-- Select customer --'))
+    + efRow('Contact',   efSelect('be-contact',  lk.contacts,  d.contact  && d.contact.id,  '-- Select contact --'))
+    + efRow('On-site',   efSelect('be-onsite',   lk.contacts,  d.onsite   && d.onsite.id,   '-- defaults to contact --'))
+    + efRow('Venue',     efSelect('be-venue',    lk.venues,    d.venue    && d.venue.id,    '-- Select venue --'))
+    + efRow('Reference', efInput('be-reference', d.reference||'', 'text'))
+    + efRow('Notes',     efTextarea('be-notes', d.notes||''))
+    + '<div id="be-status" style="font-size:11px;color:var(--muted);margin-top:8px;min-height:14px"></div>';
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('💾 Save', "saveBookingEdit('"+bookingId+"')", {primary:true, id:'be-save'})
+    + entityBtn('Cancel',  "openBookingDialog('"+bookingId+"')");
+}
+
+async function saveBookingEdit(bookingId){
+  var name = _efVal('be-name'), cust = _efVal('be-customer'),
+      ctc  = _efVal('be-contact'), ven = _efVal('be-venue');
+  var st = document.getElementById('be-status');
+  function fail(msg){ if(st){ st.style.color='var(--conflict)'; st.textContent=msg; } }
+  if(!name.trim()) return fail('Name is required');
+  if(!cust)        return fail('Customer is required');
+  if(!ctc)         return fail('Contact is required');
+  if(!ven)         return fail('Venue is required');
+
+  if(st){ st.style.color='var(--muted)'; st.textContent='Saving…'; }
+  var btn = document.getElementById('be-save'); if(btn) btn.disabled = true;
+
+  try{
+    var resp = await fetch('/api/booking/'+bookingId, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({booking:{
+        name:              name,
+        creation_date:     _efVal('be-date'),
+        customer_id:       cust,
+        contact_id:        ctc,
+        onsite_contact_id: _efVal('be-onsite'),
+        venue_id:          ven,
+        reference:         _efVal('be-reference'),
+        notes:             _efVal('be-notes')
+      }})
+    });
+    var j = await resp.json();
+    if(!resp.ok || (j && j.error)){
+      fail((j && j.error) ? j.error : ('HTTP '+resp.status));
+      if(btn) btn.disabled = false;
+      return;
+    }
+    delete window._bookingIndex[bookingId];   // drop stale cached name/venue
+    openBookingDialog(bookingId);             // re-fetch + show fresh view
+  }catch(e){
+    fail('Save failed: '+e.message);
+    if(btn) btn.disabled = false;
+  }
+}
+
+// ---- call edit ----
+
+function openCallEditForm(bookingId, callId){
+  var m = window._curCallEdit;
+  if(!m) return;
+  document.getElementById('entity-modal-title').textContent = 'Edit call';
+  document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Name',       efInput('ce-name', m.call_name||'', 'text'))
+    + efRow('Date',       efInput('ce-date', unixToYmd(m.start_date), 'date'))
+    + efRow('Time',       '<input id="ce-time" type="text" inputmode="numeric" placeholder="HH:MM (24hr)" value="'+escapeHtml(hms2hm(m.start_time))+'" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Length (h)', efInput('ce-length', (m.est_length!=null?m.est_length:''), 'number'))
+    + efRow('Required',   efInput('ce-required', (m.required!=null?m.required:0), 'number'))
+    + efRow('Notes',      efTextarea('ce-notes', m.notes||''))
+    + '<div id="ce-status" style="font-size:11px;color:var(--muted);margin-top:8px;min-height:14px"></div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">Saving re-syncs the calendar for any crew already booked on this call.</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('💾 Save', "saveCallEdit('"+bookingId+"','"+callId+"')", {primary:true, id:'ce-save'})
+    + entityBtn('Cancel',  "openCallDialog('"+bookingId+"','"+callId+"')");
+}
+
+async function saveCallEdit(bookingId, callId){
+  var name = _efVal('ce-name'), date = _efVal('ce-date');
+  var st = document.getElementById('ce-status');
+  function fail(msg){ if(st){ st.style.color='var(--conflict)'; st.textContent=msg; } }
+  if(!name.trim()) return fail('Name is required');
+  if(!date)        return fail('Date is required');
+
+  var t = _efVal('ce-time').trim();
+  if(t){
+    var tm = t.match(/^(\d{1,2}):(\d{2})$/);
+    if(!tm) return fail('Time must be 24hr HH:MM');
+    var hh = parseInt(tm[1],10), mm = parseInt(tm[2],10);
+    if(hh > 23 || mm > 59) return fail('Time out of range (00:00–23:59)');
+    t = String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0') + ':00';
+  }
+
+  if(st){ st.style.color='var(--muted)'; st.textContent='Saving…'; }
+  var btn = document.getElementById('ce-save'); if(btn) btn.disabled = true;
+
+  try{
+    var resp = await fetch('/api/call/'+bookingId+'/'+callId, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({call:{
+        call_name:  name,
+        start_date: date,
+        start_time: t,
+        length:     _efVal('ce-length'),
+        required:   _efVal('ce-required'),
+        notes:      _efVal('ce-notes')
+      }})
+    });
+    var j = await resp.json();
+    if(!resp.ok || (j && j.error)){
+      fail((j && j.error) ? j.error : ('HTTP '+resp.status));
+      if(btn) btn.disabled = false;
+      return;
+    }
+    openCallDialog(bookingId, callId);   // re-fetch + show fresh view
+  }catch(e){
+    fail('Save failed: '+e.message);
+    if(btn) btn.disabled = false;
+  }
 }
 
 
