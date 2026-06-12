@@ -1,6 +1,6 @@
 {
-  "version": "3.5.8",
+  "version": "3.5.9",
   "release_date": "2026-06-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.8/TheGOAT.dmg",
-  "release_notes": "In-GOAT booking & call view dialogs — names open a detail view inside THE GOAT instead of SmartStaff, with per-call crew rosters and tap-to-call mobiles. Backed by a new get-booking.php endpoint."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.9/TheGOAT.dmg",
+  "release_notes": "Admin edit for the in-GOAT booking & call dialogs — change details, customer/contact/venue, call times and crew counts in-place. Editing a call time re-syncs booked crew calendars. Never closes a booking or locks a call."
 }
