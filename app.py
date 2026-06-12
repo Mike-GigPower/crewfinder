@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.5.7"
+APP_VERSION    = "3.5.8"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -111,6 +111,7 @@ USE_BULK_CALLS_ENDPOINT = True
 USE_BULK_IMPORT_LOOKUPS = True
 USE_BULK_VENUES_ENDPOINT = True
 USE_CREATE_BOOKING_ENDPOINT = True
+USE_BULK_BOOKING_ENDPOINT = True
 try:
     if os.path.exists(CONFIG_FILE):
         _cfg = json.load(open(CONFIG_FILE))
@@ -128,6 +129,8 @@ try:
             USE_BULK_VENUES_ENDPOINT = bool(_cfg["use_bulk_venues_endpoint"])
         if "use_create_booking_endpoint" in _cfg:
             USE_CREATE_BOOKING_ENDPOINT = bool(_cfg["use_create_booking_endpoint"])
+        if "use_bulk_booking_endpoint" in _cfg:
+            USE_BULK_BOOKING_ENDPOINT = bool(_cfg["use_bulk_booking_endpoint"])
 except Exception:
     pass
 
@@ -1386,6 +1389,78 @@ def scrape_call_details(ss, booking_id, call_id):
         "start_str":     start_dt.strftime("%H:%M"),
         "end_str":       end_dt.strftime("%H:%M"),
     }, None
+
+def scrape_booking_details(ss, booking_id):
+    """Booking detail for the in-GOAT view dialog (read-only).
+
+    Scrapes the edit-booking form with a GET (no side effects — the edit page
+    only writes on POST with action=add). Field names mirror add-booking.php's
+    POST handler: name, creation_date, status, customer, contact, onsiteUserID,
+    venue, reference, notes.
+    """
+    resp = ss.get(f"{BASE_URL}/bookings/edit/{booking_id}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    name_el = soup.find("input", {"name": "name"})
+    if name_el is None:
+        return None, "Could not load booking (not found or session expired)"
+
+    def inp(n):
+        el = soup.find("input", {"name": n})
+        return (el.get("value") or "").strip() if el else ""
+
+    def ta(n):
+        el = soup.find("textarea", {"name": n})
+        return el.get_text().strip() if el else ""
+
+    def sel(n):
+        s = soup.find("select", {"name": n})
+        if not s:
+            return {"id": "", "name": ""}
+        chosen = None
+        for o in s.find_all("option"):
+            if o.has_attr("selected"):
+                chosen = o
+                break
+        if chosen is None:
+            return {"id": "", "name": ""}
+        return {"id": (chosen.get("value") or "").strip(),
+                "name": chosen.get_text().strip()}
+
+    return {
+        "booking_id": str(booking_id),
+        "name":      (name_el.get("value") or "").strip(),
+        "date_str":  inp("creation_date"),
+        "status":    sel("status").get("name", ""),
+        "reference": inp("reference"),
+        "notes":     ta("notes"),
+        "customer":  sel("customer"),
+        "contact":   sel("contact"),
+        "onsite":    sel("onsiteUserID"),
+        "venue":     sel("venue"),
+    }, None
+
+def fetch_booking_bulk(ss, booking_id):
+    """Bulk booking detail via get-booking.php (read-all). Returns (data, error).
+
+    Richer than scrape_booking_details: includes contact + on-site phone/mobile,
+    venue address, and a per-call crew roster (name, mobile, status) so crew
+    bosses can reach people when crew run late.
+    """
+    url = f"{BASE_URL}/ajax/crew/get-booking.php"
+    try:
+        resp = ss.get(url, params={"id": booking_id}, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
 
 def _get_all_crew(ss):
     """Unified crew-list fetcher: tries the bulk endpoint when enabled, falls
@@ -2793,6 +2868,22 @@ def api_call_details(booking_id, call_id):
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
     details, err = scrape_call_details(ss, booking_id, call_id)
+    if err:
+        return jsonify({"error": err}), 500
+    return jsonify(details)
+
+@app.route("/api/booking/<booking_id>")
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_details(booking_id):
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    if USE_BULK_ENDPOINTS and USE_BULK_BOOKING_ENDPOINT:
+        data, err = fetch_booking_bulk(ss, booking_id)
+        if err is None and data is not None:
+            return jsonify(data)
+        print(f"[bulk-booking] endpoint failed ({err}); falling back to scrape")
+    details, err = scrape_booking_details(ss, booking_id)
     if err:
         return jsonify({"error": err}), 500
     return jsonify(details)

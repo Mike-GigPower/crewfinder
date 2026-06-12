@@ -1539,6 +1539,7 @@ async function loadCalls(force=false){
     if(!bookingOrder.length){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-icon">&#128235;</div><div class="empty-sub">No unfilled calls on dashboard</div></div>';return}
     list.innerHTML=bookingOrder.map(bid=>{
       const b=bookingMap[bid];
+      window._bookingIndex[b.booking_id]={name:b.booking_name,venue:b.venue||'',calls:b.calls.map(function(c){return {call_id:c.call_id,call_name:c.call_name};})};
       const callsHtml=b.calls.map(c=>{
         const bookedOk=c.booked>=c.required;
         const safeNotes=(c.notes||'').replace(/"/g,'&quot;');
@@ -1548,7 +1549,7 @@ async function loadCalls(force=false){
           +'<div class="call-card-top">'
           +(c.unfilled?'<div class="unfilled-dot"></div>':'')
           +'<span class="call-num">#'+c.call_num+'</span>'
-          +'<span class="call-name" onclick="event.stopPropagation();openSmartStaffCall(\''+c.booking_id+'\',\''+c.call_id+'\')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="Open call in SmartStaff">'+(c.call_name||'Call')+'</span>'
+          +'<span class="call-name" onclick="event.stopPropagation();openCallDialog(\''+c.booking_id+'\',\''+c.call_id+'\')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="View call">'+(c.call_name||'Call')+'</span>'
           +'</div>'
           +'<div class="call-meta">'
           +'<span>'+c.date+'</span><span>'+c.time+'</span><span>'+c.length+'h</span>'
@@ -1561,7 +1562,7 @@ async function loadCalls(force=false){
       return '<div class="booking-group" id="bg-'+bid+'">'
         +'<div class="booking-group-header" onclick="toggleBookingGroup(this)">'
         +'<span class="booking-group-toggle">&#9660;</span>'
-        +'<span class="booking-group-name" onclick="event.stopPropagation();openSmartStaffBooking(\''+b.booking_id+'\')" style="cursor:pointer" title="Open booking in SmartStaff">'+b.booking_name+'</span>'
+        +'<span class="booking-group-name" onclick="event.stopPropagation();openBookingDialog(\''+b.booking_id+'\')" style="cursor:pointer" title="View booking">'+b.booking_name+'</span>'
         +venueTag
         +'</div>'
         +'<div class="booking-group-calls">'+callsHtml+'</div>'
@@ -3418,6 +3419,193 @@ function resetManualBooking(){
 }
 
 
+// ── ENTITY VIEW DIALOG (booking / call) ─────────────────────────────────────
+// Read-only in-GOAT view so names don't bounce to the SmartStaff login wall.
+// Data comes through THE GOAT's server session via existing endpoints, not the
+// browser's SmartStaff session. Edit mode arrives next release.
+
+window._bookingIndex = window._bookingIndex || {};   // booking_id -> {name, venue, calls:[{call_id, call_name}]}
+
+function openEntityModal(){ document.getElementById('entity-modal').style.display = 'flex'; }
+function closeEntityModal(){ document.getElementById('entity-modal').style.display = 'none'; }
+
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape'){
+    const m = document.getElementById('entity-modal');
+    if(m && m.style.display === 'flex') closeEntityModal();
+  }
+});
+
+function entityRow(label, value){
+  return '<div style="display:flex;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)">'
+    + '<div style="width:110px;flex-shrink:0;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-top:2px">'+label+'</div>'
+    + '<div style="flex:1;font-size:12px;color:var(--text)">'+value+'</div></div>';
+}
+
+function crewStatusBadge(status){
+  const s = (status||'').toLowerCase();
+  let color='var(--muted)', bg='var(--surface2)';
+  if(s==='confirmed'){ color='var(--available)'; bg='var(--avail-bg)'; }
+  else if(s==='declined'||s==='noshow'){ color='var(--conflict)'; bg='var(--conf-bg)'; }
+  else if(s==='unconfirmed'||s==='sent'||s==='waiting'){ color='#f59e0b'; bg='rgba(245,158,11,0.12)'; }
+  return '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+color+';background:'+bg+';border-radius:3px;padding:2px 7px">'+escapeHtml(status||'—')+'</span>';
+}
+
+function entityBtn(label, onclick, opts){
+  opts = opts||{};
+  const dis = opts.disabled ? 'disabled' : '';
+  const title = opts.title ? 'title="'+escapeHtml(opts.title)+'"' : '';
+  const accent = opts.primary ? 'color:var(--accent);border-color:var(--border-gold)' : 'color:var(--muted)';
+  const cursor = opts.disabled ? 'not-allowed' : 'pointer';
+  const opacity = opts.disabled ? '0.45' : '1';
+  return '<button '+dis+' '+title+' onclick="'+(onclick||'')+'" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:'+cursor+';opacity:'+opacity+';'+accent+'">'+label+'</button>';
+}
+
+async function openCallDialog(bookingId, callId){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Call';
+  document.getElementById('entity-modal-sub').textContent = 'Call #'+callId+' · Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading call…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  try{
+    const [dRes, bRes] = await Promise.all([
+      fetch('/api/call/'+bookingId+'/'+callId),
+      fetch('/api/booking/'+bookingId)
+    ]);
+    const d = await dRes.json();
+    if(d.error){
+      document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(d.error)+'</div>';
+      document.getElementById('entity-modal-actions').innerHTML = entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
+      return;
+    }
+    // Prefer the booking endpoint's per-call crew (carries mobile + status);
+    // fall back to the booked-crew scrape (name + status only) if unavailable.
+    let crew = null;
+    let bookingVenue = '';
+    try{
+      const bData = await bRes.json();
+      if(bData){
+        if(bData.venue && bData.venue.name) bookingVenue = bData.venue.name;
+        if(bData.calls){
+          const match = bData.calls.find(function(c){ return String(c.call_id) === String(callId); });
+          if(match && match.crew) crew = match.crew;
+        }
+      }
+    }catch(e){}
+    if(crew === null){
+      try{
+        const cRes = await fetch('/api/booked-crew/'+bookingId+'/'+callId);
+        const cData = await cRes.json();
+        crew = (cData.crew||[]);
+      }catch(e){ crew = []; }
+    }
+    renderCallDialog(bookingId, callId, d, crew, bookingVenue);
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load call: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  }
+}
+
+function renderCallDialog(bookingId, callId, d, crew, bookingVenue){
+  document.getElementById('entity-modal-title').textContent = d.call_name || 'Call';
+  document.getElementById('entity-modal-sub').textContent = 'Call #'+callId+' · Booking #'+bookingId;
+  const req = d.crew_required || 0;
+  const confirmedCount = crew.filter(function(c){ return (c.status||'').toLowerCase()==='confirmed'; }).length;
+  const crewRows = crew.length
+    ? crew.map(function(c){
+        var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(c.mobile)+'</a>' : '';
+        var boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.name)+boss+'</span><span style="display:flex;align-items:center;gap:4px">'+crewStatusBadge(c.status)+mob+'</span></div>'; }).join('')
+    : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
+  document.getElementById('entity-modal-body').innerHTML =
+      entityRow('Date',  escapeHtml(d.date_str||'—'))
+    + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
+    + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
+    + entityRow('Crew',  confirmedCount+' booked / '+req+' required <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>')
+    + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Booked Crew</div>'
+    + crewRows;
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true})
+    + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')")
+    + entityBtn('✎ Edit', '', {disabled:true, title:'Editing arrives in the next update'})
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+async function openBookingDialog(bookingId){
+  openEntityModal();
+  const cached = window._bookingIndex[bookingId];
+  document.getElementById('entity-modal-title').textContent = cached ? cached.name : 'Booking';
+  document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading booking…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  let d = null;
+  try{
+    const r = await fetch('/api/booking/'+bookingId);
+    const j = await r.json();
+    if(!j.error) d = j;
+  }catch(e){ d = null; }
+  renderBookingDialog(bookingId, d, cached);
+}
+
+function bkPhoneBits(o){
+  if(!o) return '';
+  var bits = [];
+  if(o.mobile) bits.push('<a href="tel:'+escapeHtml(o.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(o.mobile)+'</a>');
+  if(o.phone)  bits.push('<a href="tel:'+escapeHtml(o.phone)+'" style="color:var(--muted);text-decoration:none">☎ '+escapeHtml(o.phone)+'</a>');
+  return bits.length ? '<div style="margin-top:3px;font-size:11px">'+bits.join(' &nbsp;&nbsp; ')+'</div>' : '';
+}
+
+function bkVenueLine(v, fallback){
+  if(!v) return escapeHtml(fallback||'—');
+  var addr = [v.address, v.suburb, v.state].filter(function(x){return x;}).join(', ');
+  return escapeHtml(v.name||fallback||'—') + (addr ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(addr)+'</div>' : '');
+}
+
+function bkCallBlock(bookingId, c){
+  var conf = '<span style="font-size:10px;color:var(--muted);margin-right:10px">'+(c.confirmed||0)+' booked</span>';
+  return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)" onmouseover="this.style.borderColor=\'var(--border-gold)\'" onmouseout="this.style.borderColor=\'var(--border)\'">'
+    + '<span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+'</span>'
+    + '<span style="display:flex;align-items:center">'+conf+'<span style="font-size:10px;color:var(--accent)">view →</span></span></div>';
+}
+
+function renderBookingDialog(bookingId, d, cached){
+  var name = (d && d.name) || (cached && cached.name) || 'Booking';
+  document.getElementById('entity-modal-title').textContent = name;
+  document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
+  var rows;
+  if(d){
+    rows = entityRow('Date',     escapeHtml(d.date_str||'—'))
+         + entityRow('Status',   escapeHtml(d.status||'—'))
+         + entityRow('Customer', escapeHtml((d.customer&&d.customer.name)||'—'))
+         + entityRow('Contact',  escapeHtml((d.contact&&d.contact.name)||'—') + bkPhoneBits(d.contact))
+         + entityRow('On-site',  escapeHtml((d.onsite&&d.onsite.name)||'—') + bkPhoneBits(d.onsite))
+         + entityRow('Venue',    bkVenueLine(d.venue, cached&&cached.venue))
+         + entityRow('Reference',escapeHtml(d.reference||'—'))
+         + (d.notes ? entityRow('Notes', escapeHtml(d.notes)) : '');
+  } else {
+    rows = entityRow('Venue', escapeHtml((cached&&cached.venue)||'—'))
+         + '<div style="color:var(--muted);font-size:11px;padding:6px 0">Couldn\'t load full booking details — showing cached info.</div>';
+  }
+  var callsHtml;
+  if(d && d.calls && d.calls.length){
+    callsHtml = d.calls.map(function(c){ return bkCallBlock(bookingId, c); }).join('');
+  } else {
+    var calls = (cached && cached.calls) || [];
+    callsHtml = calls.length
+      ? calls.map(function(c){ return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+'</span><span style="font-size:10px;color:var(--accent)">view →</span></div>'; }).join('')
+      : '<div style="color:var(--muted);font-size:12px">No calls cached — open from the Schedule or Crew Finder to list calls.</div>';
+  }
+  document.getElementById('entity-modal-body').innerHTML =
+      rows
+    + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>'
+    + callsHtml;
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
+    + entityBtn('✎ Edit', '', {disabled:true, title:'Editing arrives in the next update'})
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+
 // ── FORECAST TAB ────────────────────────────────────────────────────────────
 
 let _fcData       = null;   // full API response
@@ -4478,6 +4666,7 @@ function renderSchedule(){
   let bookingIdx = 0;
   for(const booking of bookings){
     const bid = `sched-b-${bookingIdx++}`;
+    if(booking.calls && booking.calls.length){ const _bk=booking.calls[0].booking_id; window._bookingIndex[_bk]={name:booking.booking_name,venue:booking.venue||booking.calls[0].venue||'',calls:booking.calls.map(function(c){return {call_id:c.call_id,call_name:c.call_name};})}; }
     const callsByDay = {};
     dates.forEach(d => callsByDay[d] = []);
     for(const call of booking.calls){
@@ -4553,7 +4742,7 @@ function renderSchedule(){
           <div style="min-width:0">
             <div style="font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;
                         color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px"
-                 title="${booking.booking_name}"><span onclick="event.stopPropagation();openSmartStaffBooking('${booking.calls[0].booking_id}')" style="cursor:pointer" title="Open booking in SmartStaff">${booking.booking_name}</span>
+                 title="${booking.booking_name}"><span onclick="event.stopPropagation();openBookingDialog('${booking.calls[0].booking_id}')" style="cursor:pointer" title="View booking">${booking.booking_name}</span>
               ${hasNotes ? `<span title="Some calls have notes" style="font-size:9px;color:var(--muted);opacity:.7">📝</span>` : ''}
             </div>
             <div style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-top:1px">
@@ -4612,7 +4801,7 @@ function renderSchedule(){
                onmouseout="this.style.background='${isToday?'rgba(212,175,55,0.06)':'var(--bg)'}'">
             <div style="display:flex;align-items:center;gap:8px">
               ${isToday?'<span style="font-size:8px;background:var(--accent);color:#000;padding:1px 5px;border-radius:2px;font-family:\'Share Tech Mono\',monospace;letter-spacing:.05em;flex-shrink:0">TODAY</span>':''}
-              <span onclick="event.stopPropagation();openSmartStaffCall('${call.booking_id}','${call.call_id}')" style="font-size:11px;font-weight:600;cursor:pointer;color:${isToday?'var(--accent)':'var(--text)'}" title="Open call in SmartStaff">${call.call_name}</span>
+              <span onclick="event.stopPropagation();openCallDialog('${call.booking_id}','${call.call_id}')" style="font-size:11px;font-weight:600;cursor:pointer;color:${isToday?'var(--accent)':'var(--text)'}" title="View call">${call.call_name}</span>
               <span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted)">
                 ${call.time} · ${call.length}h
               </span>
@@ -5097,6 +5286,25 @@ function applyGoldRows(){
 }
 </script>
 <!-- ── UNAVAILABILITY MANAGER MODAL ── -->
+<div id="entity-modal" style="display:none;position:fixed;inset:0;z-index:99991;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeEntityModal()">
+  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+              width:560px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+                border-bottom:1px solid var(--border);background:#0a0a0a">
+      <div style="min-width:0">
+        <div id="entity-modal-title" style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.06em;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+        <div id="entity-modal-sub" style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace"></div>
+      </div>
+      <button onclick="closeEntityModal()" style="background:none;border:none;color:var(--muted);
+              font-size:20px;cursor:pointer;line-height:1;flex-shrink:0;margin-left:12px">✕</button>
+    </div>
+    <div id="entity-modal-body" style="padding:16px 18px"></div>
+    <div id="entity-modal-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;
+                padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a"></div>
+  </div>
+</div>
+
 <div id="unavail-modal" style="display:none;position:fixed;inset:0;z-index:99990;
      background:rgba(0,0,0,0.6);align-items:center;justify-content:center">
   <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
