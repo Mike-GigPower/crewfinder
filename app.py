@@ -2971,6 +2971,8 @@ def api_availability():
     min_rating      = int(data.get("min_rating", 3))
     radius_km       = data.get("radius_km")     # None => geo filter off (back-compat)
     origin          = data.get("origin")        # {"mode":"venue"} or {"mode":"postcode","postcode":"3000"}
+    only_ids        = data.get("only_crew_ids")
+    spot_ids        = set(str(x) for x in only_ids) if only_ids else None
 
     # Support both single call (legacy) and multiple calls
     # Multi-call payload: { "calls": [ {booking_id, call_id, start_dt, end_dt, venue, call_num, call_name}, ... ] }
@@ -3023,6 +3025,9 @@ def api_availability():
 
     # Load crew list and cache (prefers bulk endpoint, falls back to scraper)
     all_crew      = _get_all_crew(ss)
+     # Spot-check: narrow the roster to the requested crew before any work.
+    if spot_ids is not None:
+        all_crew = [c for c in all_crew if str(c.get("id")) in spot_ids]
     cache, _      = load_cache()
     updated_cache = dict(cache)
 
@@ -3073,22 +3078,26 @@ def api_availability():
             if cert.lower() not in groups_lower:
                 reasons.append(f"Missing: {cert}")
 
-        if reasons:
+        # Rating/group gate: applied for a normal search; bypassed for a spot-check.
+        if spot_ids is None and reasons:
             skipped.append({**crew, "reason": " | ".join(reasons)})
             continue
 
-        # Geo filter — only for crew that already pass rating/groups.
+        # Geo filter — for a normal search this excludes out-of-radius crew. For a
+        # spot-check we still compute the distance for display but never exclude.
         if geo_active:
             cpc    = crew.get("postcode") or cache.get(cid, {}).get("postcode", "")
             ccoord = postcode_to_coords(cpc)
             if not ccoord:
-                location_unknown.append({**crew, "reason": "No/unknown postcode"})
-                continue
-            dist = haversine_km(origin_coords[0], origin_coords[1], ccoord["lat"], ccoord["lon"])
-            crew["distance_km"] = round(dist, 1)
-            if dist > float(radius_km):
-                skipped.append({**crew, "reason": f"{round(dist)} km away"})
-                continue
+                if spot_ids is None:
+                    location_unknown.append({**crew, "reason": "No/unknown postcode"})
+                    continue
+            else:
+                dist = haversine_km(origin_coords[0], origin_coords[1], ccoord["lat"], ccoord["lon"])
+                crew["distance_km"] = round(dist, 1)
+                if spot_ids is None and dist > float(radius_km):
+                    skipped.append({**crew, "reason": f"{round(dist)} km away"})
+                    continue
 
         candidates.append(crew)
 
@@ -3358,6 +3367,25 @@ def api_groups():
         "Fork", "Lights", "Set/Stg", "Spot", "Truck", "Wardrobe",
         "EWP", "MCEC", "MCG", "MOPT"
     ]})
+
+@app.route("/api/crew-roster")
+@require_cohort("admin")
+def api_crew_roster():
+    """Lightweight {id, name, ein} list for the Crew Finder spot-check autocomplete.
+
+    Admin-only to match the Crew Finder tab. Sourced from the same bulk roster
+    fetch the availability search uses, sorted by name for a clean datalist.
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    roster = [
+        {"id": c.get("id"), "name": c.get("name", ""), "ein": c.get("ein", c.get("id"))}
+        for c in _get_all_crew(ss)
+        if c.get("name")
+    ]
+    roster.sort(key=lambda c: c["name"].lower())
+    return jsonify({"crew": roster})
 
 # ─── FORECAST ─────────────────────────────────────────────────────────────────
 

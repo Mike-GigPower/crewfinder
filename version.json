@@ -1,6 +1,6 @@
 {
-  "version": "3.5.9",
+  "version": "3.6.0",
   "release_date": "2026-06-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.5.9/TheGOAT.dmg",
-  "release_notes": "Admin edit for the in-GOAT booking & call dialogs — change details, customer/contact/venue, call times and crew counts in-place. Editing a call time re-syncs booked crew calendars. Never closes a booking or locks a call."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder: spot-check any individual's availability for a call, and filter results by name. Collapsible SELECTED and group-filter panels. Fixed Schedule day-column alignment on expanded bookings."
 }

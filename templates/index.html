@@ -736,7 +736,14 @@ body.cohort-readonly #unavail-add-section{display:none}
   <div class="sidebar">
     <div class="sidebar-top">
       <div class="section-label">Filters</div>
-      <div class="groups-grid" id="groups-grid"></div>
+      <!-- ── GROUP FILTER ── -->
+      <div class="geo-toggle-row">
+        <input type="checkbox" id="group-enable" onchange="toggleGroupFilter()">
+        <label for="group-enable">Filter by group</label>
+      </div>
+      <div class="geo-body" id="group-body" style="display:none">
+        <div class="groups-grid" id="groups-grid"></div>
+      </div>
       <div class="rating-row">
         <span class="rating-label">Min Rating</span>
         <input type="range" id="rating-slider" min="1" max="10" value="3" oninput="document.getElementById('rating-val').textContent=this.value">
@@ -763,6 +770,16 @@ body.cohort-readonly #unavail-add-section{display:none}
                  inputmode="numeric" style="display:none">
         </div>
       </div>
+      <!-- ── SPOT-CHECK A SPECIFIC PERSON (ignores the filters above) ── -->
+      <div class="section-label" style="margin-top:10px">Spot-check a person</div>
+      <div class="geo-origin-row">
+        <input type="text" id="cf-spotcheck-input" list="cf-roster-list"
+               class="geo-pc-input" placeholder="Type a name…" maxlength="60"
+               autocomplete="off" style="flex:1;width:auto;min-width:0"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();spotCheckCrew();}">
+        <button type="button" class="geo-mode-btn" onclick="spotCheckCrew()">Check</button>
+      </div>
+      <datalist id="cf-roster-list"></datalist>
       <button class="btn-search" id="search-btn" onclick="runSearch()" disabled>
         <div class="spinner" id="search-spinner"></div>
         <span id="search-btn-text">Select a call first</span>
@@ -794,6 +811,12 @@ body.cohort-readonly #unavail-add-section{display:none}
       <div class="stat"><span class="stat-num grey" id="cnt-skip">0</span><span class="stat-label">skipped</span></div>
       <div class="stat" id="stat-unknown" style="display:none"><span class="stat-num grey" id="cnt-unknown">0</span><span class="stat-label">no location</span></div>
       <div class="results-actions">
+        <input type="text" id="cf-name-filter" placeholder="🔍 Filter by name…"
+               autocomplete="off" oninput="applyCfNameFilter(this.value)"
+               title="Narrow the results below by name"
+               style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
+                      color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;
+                      padding:4px 8px;width:140px;outline:none">
         <button class="btn" id="view-table-btn" onclick="setView('table')">&#9776; Table</button>
         <button class="btn btn-view-active" id="view-tl-btn" onclick="setView('timeline')">&#9632; Timeline</button>
         <span style="width:1px;height:20px;background:var(--border);display:inline-block"></span>
@@ -829,7 +852,12 @@ body.cohort-readonly #unavail-add-section{display:none}
       </div>
     </div>
     <div id="sel-panel">
-      <h4>Selected &mdash; <span id="panel-call-label"></span></h4>
+      <h4 id="sel-panel-head" onclick="toggleSelPanel()" title="Click to collapse / expand"
+          style="cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px">
+        <span id="sel-chevron" style="display:inline-block;transition:transform .12s">&#9662;</span>
+        <span>Selected &mdash; <span id="panel-call-label"></span></span>
+        <span id="sel-panel-count" style="color:var(--muted);font-weight:400"></span>
+      </h4>
       <div class="chips" id="sel-chips"></div>
       <div class="panel-actions">
         <button class="btn" onclick="copyNames()">Copy Names</button>
@@ -1329,7 +1357,10 @@ let selectedCalls=new Map(), // call_id → call object
 let geoMode='venue', _geoActive=false;  // distance-filter state
 
 let _bookedCollapsed=false;             // ALREADY BOOKED panel collapse state (session-scoped)
+let _selCollapsed=false;                // SELECTED panel chips collapse state (session-scoped)
 let _sortBy=null, _sortDir='asc';       // clickable-header sort (asc → desc → off)
+let _cfRoster=[];                       // {id,name,ein} roster for the spot-check autocomplete
+let _cfNameFilter='';                   // result-list name filter (substring, case-insensitive)
 
 // ── TIMELINE CONFIG ──
 const TL_START_H=0,TL_END_H=30,TL_TOTAL_H=30,TL_TICKS=[0,4,8,12,16,20,24,28];
@@ -1498,6 +1529,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   loadGroups();
   loadCacheStatus();
   if(cohort === 'admin') loadCalls();       // Crew Finder call list — admin only
+  if(cohort === 'admin') loadCfRoster();    // spot-check autocomplete roster — admin only
   loadSchedule();
 });
 
@@ -1513,6 +1545,12 @@ function toggleGroup(el,group){
 function toggleGeo(){
   const on=document.getElementById('geo-enable').checked;
   document.getElementById('geo-body').classList.toggle('active',on);
+}
+function toggleGroupFilter(){
+  const on=document.getElementById('group-enable').checked;
+  const body=document.getElementById('group-body');
+  body.style.display = on ? '' : 'none';   // collapse entirely when off
+  body.classList.toggle('active',on);
 }
 function setGeoMode(mode){
   geoMode=mode;
@@ -1679,28 +1717,14 @@ async function runSearch(){
 
   showOverlay('Checking Availability...', 'This may take a minute');
   try{
-    const calls=[...selectedCalls.values()];
-    // Fetch details for all selected calls in parallel
-    const detailsArr=await Promise.all(calls.map(c=>
-      fetch('/api/call/'+c.booking_id+'/'+c.call_id).then(r=>r.json())
-    ));
-    // Check for errors
-    for(const d of detailsArr){if(d.error){alert('Error: '+d.error);return}}
-
-    const callPayload=calls.map((c,i)=>({
-      booking_id: c.booking_id,
-      call_id:    c.call_id,
-      call_num:   c.call_num,
-      call_name:  c.call_name,
-      start_dt:   detailsArr[i].start_dt,
-      end_dt:     detailsArr[i].end_dt,
-      venue:      c.venue || detailsArr[i].venue,  // prefer dashboard venue, fall back to callsheet
-    }));
+    const built=await buildCallPayload();
+    if(!built) return;
+    const {calls, detailsArr, callPayload}=built;
 
     const resp=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         calls: callPayload,
-        required_groups:[...activeGroups],
+        required_groups: document.getElementById('group-enable')?.checked ? [...activeGroups] : [],
         min_rating:parseInt(document.getElementById('rating-slider').value),
         ...geoFields
       })});
@@ -1721,6 +1745,7 @@ async function runSearch(){
     // Use first call's details as reference for timeline date
     _goatSpec=null;                       // fresh search clears any GOAT filter
     const gi=document.getElementById('goat-ask-input'); if(gi) gi.value='';
+    _cfNameFilter=''; const nf=document.getElementById('cf-name-filter'); if(nf) nf.value='';
     currentResult={...result, details:detailsArr[0], calls:calls};
     renderResults(result, detailsArr[0], result.targets);
   }catch(e){alert('Search error: '+e)}
@@ -1729,7 +1754,84 @@ async function runSearch(){
     restoreResults();
   }
 }
+// Build the /api/availability call payload for the currently-selected calls.
+// Returns {calls, detailsArr, callPayload}, or null if a call detail errored
+// (the alert is raised here). Shared by runSearch and spotCheckCrew.
+async function buildCallPayload(){
+  const calls=[...selectedCalls.values()];
+  const detailsArr=await Promise.all(calls.map(c=>
+    fetch('/api/call/'+c.booking_id+'/'+c.call_id).then(r=>r.json())
+  ));
+  for(const d of detailsArr){ if(d.error){ alert('Error: '+d.error); return null; } }
+  const callPayload=calls.map((c,i)=>({
+    booking_id: c.booking_id,
+    call_id:    c.call_id,
+    call_num:   c.call_num,
+    call_name:  c.call_name,
+    start_dt:   detailsArr[i].start_dt,
+    end_dt:     detailsArr[i].end_dt,
+    venue:      c.venue || detailsArr[i].venue,  // prefer dashboard venue, fall back to callsheet
+  }));
+  return {calls, detailsArr, callPayload};
+}
 
+// Load the {id,name,ein} roster once (admin only) and populate the spot-check
+// <datalist>. Best-effort — a failure just leaves autocomplete empty.
+async function loadCfRoster(){
+  try{
+    const d=await (await fetch('/api/crew-roster')).json();
+    _cfRoster=d.crew||[];
+    const dl=document.getElementById('cf-roster-list');
+    if(dl) dl.innerHTML=_cfRoster.map(c=>
+      `<option value="${(c.name||'').replace(/"/g,'&quot;')}">`).join('');
+  }catch(e){ /* leave roster empty */ }
+}
+
+// Spot-check: assess ONE named crew member against the selected call(s),
+// bypassing the group/rating/distance filters. The backend returns them in the
+// normal available/conflicts buckets, so the standard result render is reused.
+async function spotCheckCrew(){
+  const input=document.getElementById('cf-spotcheck-input');
+  const raw=(input ? input.value : '').trim();
+  if(!raw) return;
+  if(!selectedCalls.size){ alert('Select a call first, then spot-check a person against it.'); return; }
+  const match=(_cfRoster||[]).find(c=>(c.name||'').toLowerCase()===raw.toLowerCase());
+  if(!match){ alert(`No crew member named "${raw}" — pick a name from the list.`); return; }
+
+  showOverlay('Spot-checking '+match.name+'…', 'Checking this call against their schedule');
+  try{
+    const built=await buildCallPayload();
+    if(!built) return;
+    const {calls, detailsArr, callPayload}=built;
+
+    const resp=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ calls: callPayload, only_crew_ids:[match.id] })});
+    const result=await resp.json();
+    if(result.error){ alert(result.error); return; }
+
+    // Already-booked crew (single-call only), same as runSearch.
+    let bookedCrew=[];
+    if(calls.length===1){
+      try{
+        const bc=await fetch(`/api/booked-crew/${calls[0].booking_id}/${calls[0].call_id}`);
+        bookedCrew=(await bc.json()).crew||[];
+      }catch(e){}
+    }
+    result.bookedCrew=bookedCrew;
+
+    _goatSpec=null; const gi=document.getElementById('goat-ask-input'); if(gi) gi.value='';
+    _cfNameFilter=''; const nf=document.getElementById('cf-name-filter'); if(nf) nf.value='';
+    currentResult={...result, details:detailsArr[0], calls:calls};
+    renderResults(result, detailsArr[0], result.targets);
+  }catch(e){ alert('Spot-check error: '+e); }
+  finally{ hideOverlay(); restoreResults(); }
+}
+
+// Result-list name filter — re-render the current result with the substring applied.
+function applyCfNameFilter(v){
+  _cfNameFilter=(v||'').trim();
+  if(currentResult) renderResults(currentResult, currentResult.details, currentResult.targets);
+}
 function setView(view){
   currentView=view;
   document.getElementById('view-table-btn').classList.toggle('btn-view-active',view==='table');
@@ -1861,6 +1963,16 @@ function renderResults(result,details,targets){
     goatInfo={explanation:_goatSpec.explanation||'Filtered',note:_goatSpec.note||'',matched:ap.matched,total:ap.total};
   }
   updateGoatBar(goatInfo);
+  // Result-list name filter (3.6.0): narrows the rendered buckets by name
+  // substring. Composes with the GOAT filter and the header sort; the counts
+  // below recompute off the filtered result so the stats track what's shown.
+  if(_cfNameFilter){
+    const q=_cfNameFilter.toLowerCase();
+    result={...result};
+    ['available','conflicts','skipped','location_unknown'].forEach(k=>{
+      if(Array.isArray(result[k])) result[k]=result[k].filter(c=>(c.name||'').toLowerCase().includes(q));
+    });
+  }
   // Clickable-header sort: applied after any GOAT filter, within each bucket.
   if(_sortBy){
     result={...result};
@@ -2491,8 +2603,19 @@ function updateSelCount(){
   if(n===0){panel.style.display='none';return}
   panel.style.display='block';
   chips.innerHTML=[...selected.values()].map(c=>'<div class="chip"><span>'+c.name+'</span><button onclick="removeChip(\''+c.name.replace(/'/g,"\\'")+'\')">\u00d7</button></div>').join('');
+  const cnt=document.getElementById('sel-panel-count'); if(cnt) cnt.textContent=' ('+n+')';
+  applySelCollapsed();
   // Easter egg: 666 crew selected
   if(n===666) triggerDevilGoat();
+}
+// Collapse just the chips list (the part that grows tall); the action buttons
+// stay visible so Add / Confirm / SMS still work while collapsed.
+function toggleSelPanel(){ _selCollapsed=!_selCollapsed; applySelCollapsed(); }
+function applySelCollapsed(){
+  const chips=document.getElementById('sel-chips');
+  const chev=document.getElementById('sel-chevron');
+  if(chips) chips.style.display=_selCollapsed?'none':'flex';
+  if(chev)  chev.style.transform=_selCollapsed?'rotate(-90deg)':'rotate(0deg)';
 }
 function removeChip(name){
   selected.delete(name);
@@ -4985,11 +5108,12 @@ function renderSchedule(){
       const callDayCells = dates.map(d => {
         const dt = new Date(d + 'T12:00:00');
         const isWeekend = dt.getDay()===0||dt.getDay()===6;
+        const colIsToday = d === today;   // column geometry tracks the COLUMN day, NOT the call's day
         if(d === call.date_iso){
-          return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
-                              background:${isToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
+          return `<div style="flex:0 0 ${colIsToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
+                              background:${colIsToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
             <div class="sched-call-block ${cls}" style="font-size:8px;padding:2px 3px;cursor:pointer;
-                 ${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
+                 ${colIsToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
                  data-call-id-block="${call.call_id}"
                  onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
                  title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?' · ⚡ '+call.clashes.length+' clash'+(call.clashes.length>1?'es':'')+': '+call.clashes.slice(0,3).map(x=>x.name).join(', ')+(call.clashes.length>3?' +'+(call.clashes.length-3)+' more':''):''}">
@@ -4998,8 +5122,9 @@ function renderSchedule(){
             </div>
           </div>`;
         }
-        return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);
-                            background:${isWeekend?'rgba(255,255,255,0.015)':'transparent'}"></div>`;
+        return `<div style="flex:0 0 ${colIsToday?'70px':'52px'};border-right:1px solid var(--border);
+                            ${colIsToday?'border-top:1px solid rgba(212,175,55,0.3);':''}
+                            background:${colIsToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}"></div>`;
       }).join('');
 
       html += `
