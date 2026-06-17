@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.6.1"
+APP_VERSION    = "3.6.2"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -138,6 +138,7 @@ except Exception:
 _ss_sessions     = {}  # per-user SmartStaff sessions keyed by app session id
 _ss_identity     = {}  # sid -> {user_id, ein, name, usergroupID, cohort}
 _ss_creds        = {}  # sid -> {username, password} for per-session reauth
+_pre_elevation   = {}  # sid -> {ss, ident, creds} stashed during admin step-up
 _keepalive_thread    = None
 # Auto-refresh thread removed in 3.4.5 — forecast and unavail caches no longer
 # exist. The crew cache is the only persistent cache and is refreshed
@@ -2977,7 +2978,118 @@ def logout():
         _ss_sessions.pop(sid, None)
         _ss_identity.pop(sid, None)
         _ss_creds.pop(sid, None)
+        _pre_elevation.pop(sid, None)
     return redirect(url_for("login"))
+
+# ─── ADMIN STEP-UP ("sudo") ───────────────────────────────────────────────────
+# A listed crew user (whoami.can_elevate == true) elevates to admin by
+# authenticating a real usergroupID==1 account, without a separate login. The
+# crew session is stashed and swapped for a freshly-authenticated admin session;
+# Exit Admin restores it. The allow-list only governs who may *attempt* this —
+# the grant always comes from verifying admin credentials here, so the cohort
+# field still can never confer admin on its own.
+
+@app.route("/api/elevate", methods=["POST"])
+def api_elevate():
+    sid = session.get("sid")
+    if not sid or not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Defence in depth: only a listed crew user may even attempt this. The real
+    # gate is the admin credential check below.
+    if not (current_identity() or {}).get("can_elevate"):
+        return jsonify({"error": "Not permitted to elevate"}), 403
+
+    body = request.get_json(silent=True) or {}
+    username = (body.get("username") or "").strip()
+    password = (body.get("password") or "").strip()
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+
+    # Authenticate the supplied account as a SEPARATE SmartStaff session.
+    ss_admin, err = create_ss_session(username, password)
+    if err or not ss_admin:
+        return jsonify({"error": "Invalid admin credentials"}), 401
+
+    # It must actually be an admin (usergroupID == 1 -> cohort 'admin').
+    admin_ident = fetch_whoami(ss_admin)
+    if not admin_ident or admin_ident.get("cohort") != "admin":
+        return jsonify({"error": "That account is not an admin"}), 403
+
+    # Stash the crew session/identity/creds once, then swap in the admin one.
+    if sid not in _pre_elevation:
+        _pre_elevation[sid] = {
+            "ss":    _ss_sessions.get(sid),
+            "ident": _ss_identity.get(sid),
+            "creds": _ss_creds.get(sid),
+        }
+    _ss_sessions[sid] = ss_admin
+    _ss_identity[sid] = admin_ident
+    # Session-only creds so an expired elevated session re-auths as admin.
+    # NOT persisted to config.json — elevation is transient.
+    _ss_creds[sid] = {"username": username, "password": password}
+
+    # Operator views need the crew cache, which only an admin/leadership session
+    # can build — kick it off now that we're admin.
+    trigger_cache_refresh(ss_admin)
+    start_cache_autorefresh()
+
+    return jsonify({"ok": True, "cohort": "admin",
+                    "name": admin_ident.get("name", "")})
+
+
+@app.route("/api/exit-admin", methods=["POST"])
+def api_exit_admin():
+    sid = session.get("sid")
+    if not sid:
+        return jsonify({"error": "Not logged in"}), 401
+
+    pre = _pre_elevation.pop(sid, None)
+    if pre:
+        # Restore the crew session/identity/creds. If the crew SmartStaff
+        # session expired while elevated, get_ss_session() will re-auth it from
+        # the restored crew creds on the next call.
+        if pre.get("ss") is not None:
+            _ss_sessions[sid] = pre["ss"]
+        if pre.get("ident") is not None:
+            _ss_identity[sid] = pre["ident"]
+        if pre.get("creds") is not None:
+            _ss_creds[sid] = pre["creds"]
+
+    ident = current_identity() or {}
+    return jsonify({"ok": True, "cohort": ident.get("cohort", "crew"),
+                    "name": ident.get("name", "")})
+
+@app.route("/api/elevators", methods=["GET", "POST"])
+@require_cohort("admin")
+def api_elevators():
+    """Admin-only proxy to SmartStaff's manage-elevators.php. The browser can't
+    reach SmartStaff directly, so list/add/remove of the admin-elevation EIN
+    allow-list goes through the server-side admin session. 'add' also sets the
+    user's cohort to 'operations' (done in the PHP), since elevators are
+    operations by policy."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    if request.method == "GET":
+        params = {"action": "list"}
+    else:
+        body = request.get_json(silent=True) or {}
+        action = body.get("action")
+        if action not in ("add", "remove"):
+            return jsonify({"error": "action must be 'add' or 'remove'"}), 400
+        ein = str(body.get("ein", "")).strip()
+        if not ein.isdigit():
+            return jsonify({"error": "a numeric ein is required"}), 400
+        params = {"action": action, "ein": ein}
+
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/manage-elevators.php",
+                      params=params, timeout=15)
+        return (resp.text, resp.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return jsonify({"error": f"elevators request failed: {e}"}), 502
 
 @app.route("/api/calls")
 @require_cohort("admin")
@@ -5136,10 +5248,12 @@ def api_whoami():
         return jsonify({"error": "Not logged in"}), 401
     ident = current_identity() or {}
     return jsonify({
-        "name":   ident.get("name", ""),
-        "ein":    ident.get("ein", ""),
-        "cohort": ident.get("cohort", "crew"),
-        "ss_base": BASE_URL,
+        "name":        ident.get("name", ""),
+        "ein":         ident.get("ein", ""),
+        "cohort":      ident.get("cohort", "crew"),
+        "can_elevate": bool(ident.get("can_elevate", False)),
+        "elevated":    session.get("sid") in _pre_elevation,
+        "ss_base":     BASE_URL,
     })
 
 

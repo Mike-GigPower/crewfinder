@@ -713,6 +713,9 @@ body.cohort-readonly #unavail-add-section{display:none}
       <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
       Ask THE GOAT
     </button>
+    <button id="btn-elevate" class="btn-logout" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="openElevateModal()">🔑 Admin</button>
+    <button id="btn-exit-admin" class="btn-logout" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="exitAdmin()">⤓ Exit Admin</button>
+    <button id="btn-manage-access" class="btn-logout" style="display:none" onclick="openElevatorsModal()">⚙ Admin Access</button>
     <a href="/logout" class="btn-logout">Sign out</a>
   </div>
 </nav>
@@ -791,7 +794,7 @@ body.cohort-readonly #unavail-add-section{display:none}
       <button class="btn-refresh" onclick="loadCalls(true)">&#8635; Refresh</button>
     </div>
     <div class="calls-search">
-      <input type="text" id="calls-search-input" placeholder="Search bookings..." oninput="filterCalls(this.value)">
+      <input type="text" id="calls-search-input" placeholder="Search bookings..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="filterCalls(this.value)">
     </div>
     <div class="call-select-hint" id="call-select-hint">Click to select &bull; Cmd/Shift+click for multi</div>
     <div class="selected-calls-bar" id="selected-calls-bar" style="display:none">
@@ -812,7 +815,7 @@ body.cohort-readonly #unavail-add-section{display:none}
       <div class="stat" id="stat-unknown" style="display:none"><span class="stat-num grey" id="cnt-unknown">0</span><span class="stat-label">no location</span></div>
       <div class="results-actions">
         <input type="text" id="cf-name-filter" placeholder="🔍 Filter by name…"
-               autocomplete="off" oninput="applyCfNameFilter(this.value)"
+               autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="applyCfNameFilter(this.value)"
                title="Narrow the results below by name"
                style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
                       color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;
@@ -885,7 +888,7 @@ body.cohort-readonly #unavail-add-section{display:none}
                oninput="this.value=Math.min(28,Math.max(1,this.value||1))">
         <span style="font-size:10px;color:var(--muted)">days</span>
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
-        <input type="text" id="sched-search" placeholder="Search bookings..."
+        <input type="text" id="sched-search" placeholder="Search bookings..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')"
                style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
                       padding:5px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;
                       font-size:11px;outline:none;width:160px"
@@ -929,7 +932,7 @@ body.cohort-readonly #unavail-add-section{display:none}
   <div class="tab-panel" id="tab-induction-checker">
     <div class="ind-panel">
       <div class="ind-toolbar">
-        <span class="ind-filter-label">Name:</span><input class="ind-search" id="ind-name-search" type="text" placeholder="Search..." oninput="renderInductionTable()"><span class="ind-filter-label">Group:</span>
+        <span class="ind-filter-label">Name:</span><input class="ind-search" id="ind-name-search" type="text" placeholder="Search..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="renderInductionTable()"><span class="ind-filter-label">Group:</span>
         <div class="ind-group-chips" id="ind-group-chips"></div>
         <div class="venue-selector" id="venue-selector">
           <button class="venue-selector-btn" onclick="toggleVenueDropdown()">
@@ -1247,7 +1250,7 @@ body.cohort-readonly #unavail-add-section{display:none}
 
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
 
-        <input type="text" class="fc-search" id="fc-search" placeholder="Search name..." oninput="renderForecastTable()">
+        <input type="text" class="fc-search" id="fc-search" placeholder="Search name..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="renderForecastTable()">
 
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
 
@@ -1410,6 +1413,15 @@ function applyCohort(d){
   const cohort = d.cohort || 'crew';
   document.body.classList.add('cohort-'+cohort);
   if(window.isReadOnlyCohort(cohort)) document.body.classList.add('cohort-readonly');
+  // Admin step-up controls: "Admin" shows for a listed crew/ops user who isn't
+  // already elevated; "Exit Admin" shows while elevated. Visibility only — the
+  // server enforces the actual grant on /api/elevate.
+  const _elevBtn = document.getElementById('btn-elevate');
+  const _exitBtn = document.getElementById('btn-exit-admin');
+  if(_elevBtn) _elevBtn.style.display = (d.can_elevate && !d.elevated) ? '' : 'none';
+  if(_exitBtn) _exitBtn.style.display = d.elevated ? '' : 'none';
+  const _mgrBtn = document.getElementById('btn-manage-access');
+  if(_mgrBtn) _mgrBtn.style.display = (cohort === 'admin') ? '' : 'none';
   const hide = id => { const el=document.getElementById(id); if(el) el.style.display='none'; };
   // My Status hello line — shown to anyone who can open the panel (crew + leadership)
   const sub = document.getElementById('ms-hello-sub');
@@ -1429,6 +1441,112 @@ function applyCohort(d){
   const bar = document.querySelector('.tab-bar'); if(bar) bar.style.display='none';
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   const ms = document.getElementById('tab-my-status'); if(ms) ms.classList.add('active');
+}
+
+// ── Admin step-up ("sudo") ──────────────────────────────────────────────────
+// Elevate by authenticating an admin account; on success we reload so the whole
+// UI re-renders fresh for the new cohort (applyCohort adds body classes / hides
+// tabs cumulatively, so an in-place re-apply would leave stale state). Exit the
+// same way.
+function openElevateModal(){
+  const m=document.getElementById('elevate-modal'); if(!m) return;
+  document.getElementById('elevate-msg').textContent='';
+  // Pre-fill from remembered credentials if the user opted in, else just the
+  // remembered username. NOTE: when "remember" is on, the password is held in
+  // this browser's localStorage in PLAIN TEXT (see submitElevate).
+  let u='', p='', remember=false;
+  try{
+    const raw=localStorage.getItem('goat_elevate_creds');
+    if(raw){ const c=JSON.parse(raw); u=c.u||''; p=c.p||''; remember=true; }
+    else { u=localStorage.getItem('goat_elevate_user')||''; }
+  }catch(e){}
+  document.getElementById('elevate-user').value=u;
+  document.getElementById('elevate-pass').value=p;
+  const rc=document.getElementById('elevate-remember'); if(rc) rc.checked=remember;
+  m.style.display='flex';
+  setTimeout(()=>{
+    const id = (u && !p) ? 'elevate-pass' : (u && p ? 'elevate-go' : 'elevate-user');
+    const f=document.getElementById(id); if(f) f.focus();
+  }, 30);
+}
+function closeElevateModal(){
+  const m=document.getElementById('elevate-modal'); if(m) m.style.display='none';
+}
+async function submitElevate(){
+  const u=document.getElementById('elevate-user').value.trim();
+  const p=document.getElementById('elevate-pass').value;
+  const msg=document.getElementById('elevate-msg');
+  const go=document.getElementById('elevate-go');
+  if(!u||!p){ msg.style.color='var(--conflict)'; msg.textContent='Enter your admin username and password.'; return; }
+  msg.style.color='var(--muted)'; msg.textContent='Verifying…'; if(go) go.disabled=true;
+  try{
+    const r=await fetch('/api/elevate',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(!r.ok||!d.ok){ msg.style.color='var(--conflict)'; msg.textContent=d.error||'Elevation failed.'; if(go) go.disabled=false; return; }
+    msg.style.color='var(--accent)'; msg.textContent='Switching to admin…';
+    try{
+      const rc=document.getElementById('elevate-remember');
+      if(rc && rc.checked){ localStorage.setItem('goat_elevate_creds', JSON.stringify({u:u, p:p})); }
+      else { localStorage.removeItem('goat_elevate_creds'); localStorage.setItem('goat_elevate_user', u); }
+    }catch(e){}
+    location.reload();                       // re-render the whole UI as admin
+  }catch(e){ msg.style.color='var(--conflict)'; msg.textContent='Error: '+e.message; if(go) go.disabled=false; }
+}
+async function exitAdmin(){
+  try{ await fetch('/api/exit-admin',{method:'POST'}); }catch(e){}
+  location.reload();                          // re-render fresh as the base cohort
+}
+
+// ── Admin access list (who can step up) ─────────────────────────────────────
+// Admin-only. Backed by /api/elevators -> manage-elevators.php. Adding an EIN
+// also sets that user to the operations cohort (server-side), so elevators get
+// the read-only operator base view in the same action.
+function openElevatorsModal(){
+  const m=document.getElementById('elevators-modal'); if(!m) return;
+  document.getElementById('elev-add-ein').value='';
+  document.getElementById('elev-msg').textContent='';
+  m.style.display='flex';
+  loadElevators();
+}
+function closeElevatorsModal(){ const m=document.getElementById('elevators-modal'); if(m) m.style.display='none'; }
+async function loadElevators(){
+  const box=document.getElementById('elev-list');
+  box.innerHTML='<div style="color:var(--muted);font-size:12px;font-family:Share Tech Mono,monospace">Loading…</div>';
+  try{
+    const d=await (await fetch('/api/elevators')).json();
+    const list=d.elevators||[];
+    if(!list.length){ box.innerHTML='<div style="color:var(--muted);font-size:12px;font-family:Share Tech Mono,monospace">No one has admin-elevation access yet.</div>'; return; }
+    box.innerHTML=list.map(e=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:13px">${e.name||'—'} <span style="color:var(--muted);font-size:11px;font-family:Share Tech Mono,monospace">· EIN ${e.ein}</span></span>
+      <button class="btn-logout" style="border-color:var(--conflict);color:var(--conflict)" onclick="removeElevator(${e.ein})">Remove</button>
+    </div>`).join('');
+  }catch(err){ box.innerHTML=`<div style="color:var(--conflict);font-size:12px">Error: ${err.message}</div>`; }
+}
+async function addElevator(){
+  const ein=document.getElementById('elev-add-ein').value.trim();
+  const msg=document.getElementById('elev-msg');
+  if(!/^\d+$/.test(ein)){ msg.style.color='var(--conflict)'; msg.textContent='Enter a numeric EIN.'; return; }
+  msg.style.color='var(--muted)'; msg.textContent='Adding…';
+  try{
+    const r=await fetch('/api/elevators',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'add',ein})});
+    const d=await r.json();
+    if(!r.ok||!d.ok){ msg.style.color='var(--conflict)'; msg.textContent=d.error||'Add failed.'; return; }
+    msg.style.color='var(--accent)'; msg.textContent='Added — set to operations.';
+    document.getElementById('elev-add-ein').value='';
+    loadElevators();
+  }catch(err){ msg.style.color='var(--conflict)'; msg.textContent='Error: '+err.message; }
+}
+async function removeElevator(ein){
+  const msg=document.getElementById('elev-msg');
+  msg.style.color='var(--muted)'; msg.textContent='Removing…';
+  try{
+    const r=await fetch('/api/elevators',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove',ein})});
+    const d=await r.json();
+    if(!r.ok||!d.ok){ msg.style.color='var(--conflict)'; msg.textContent=d.error||'Remove failed.'; return; }
+    msg.style.color='var(--accent)'; msg.textContent='Removed.';
+    loadElevators();
+  }catch(err){ msg.style.color='var(--conflict)'; msg.textContent='Error: '+err.message; }
 }
 
 // ── My Status data loaders ──────────────────────────────────────────────────
@@ -5797,6 +5915,67 @@ function applyGoldRows(){
     <div id="entity-modal-body" style="padding:16px 18px"></div>
     <div id="entity-modal-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;
                 padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a"></div>
+  </div>
+</div>
+
+<div id="elevate-modal" style="display:none;position:fixed;inset:0;z-index:99992;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeElevateModal()">
+  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+              width:420px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+                border-bottom:1px solid var(--border);background:#0a0a0a">
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.1em;color:var(--accent)">ADMIN ACCESS</div>
+      <button onclick="closeElevateModal()" style="background:none;border:none;color:var(--muted);
+              font-size:20px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <div style="padding:16px 18px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;font-family:'Share Tech Mono',monospace">
+        Sign in with your admin account to switch into operator mode.
+      </div>
+      <input id="elevate-user" type="text" placeholder="Admin username" autocomplete="off"
+             style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:8px 10px;background:#0a0a0a;
+                    border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'Share Tech Mono',monospace">
+      <input id="elevate-pass" type="password" placeholder="Admin password" autocomplete="off"
+             style="width:100%;box-sizing:border-box;padding:8px 10px;background:#0a0a0a;
+                    border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'Share Tech Mono',monospace"
+             onkeydown="if(event.key==='Enter')submitElevate()">
+      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace;cursor:pointer">
+        <input type="checkbox" id="elevate-remember" style="accent-color:var(--accent);cursor:pointer"> Remember on this device
+      </label>
+      <div id="elevate-msg" style="font-size:11px;color:var(--conflict);margin-top:8px;min-height:14px;font-family:'Share Tech Mono',monospace"></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a">
+      <button class="btn-logout" onclick="closeElevateModal()">Cancel</button>
+      <button class="btn-logout" id="elevate-go" style="border-color:var(--accent);color:var(--accent)" onclick="submitElevate()">Elevate</button>
+    </div>
+  </div>
+</div>
+
+<div id="elevators-modal" style="display:none;position:fixed;inset:0;z-index:99992;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeElevatorsModal()">
+  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+              width:480px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+                border-bottom:1px solid var(--border);background:#0a0a0a">
+      <div>
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.1em;color:var(--accent)">ADMIN ACCESS</div>
+        <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace">Who can step up to admin · added users become operations</div>
+      </div>
+      <button onclick="closeElevatorsModal()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <div style="padding:16px 18px">
+      <div style="display:flex;gap:8px;margin-bottom:6px">
+        <input id="elev-add-ein" type="text" inputmode="numeric" placeholder="EIN to grant"
+               style="flex:1;box-sizing:border-box;padding:8px 10px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'Share Tech Mono',monospace"
+               onkeydown="if(event.key==='Enter')addElevator()">
+        <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="addElevator()">Add</button>
+      </div>
+      <div id="elev-msg" style="font-size:11px;min-height:14px;margin-bottom:10px;font-family:'Share Tech Mono',monospace"></div>
+      <div id="elev-list"></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a">
+      <button class="btn-logout" onclick="closeElevatorsModal()">Close</button>
+    </div>
   </div>
 </div>
 
