@@ -992,10 +992,10 @@ body.cohort-readonly #unavail-add-section{display:none}
           <div class="import-section-head"><span class="import-section-title">🔗 Customer / Venue</span><span id="mb-lookup-status" style="font-size:10px;color:var(--muted)"></span></div>
           <div class="import-section-body">
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
-              <div class="import-field"><label>Customer *</label><select id="mb-customer" onchange="updateManualReadiness()"></select></div>
-              <div class="import-field"><label>Contact *</label><select id="mb-contact" onchange="updateManualReadiness()"></select></div>
+              <div class="import-field"><label>Customer * <a href="#" onclick="openAddEntity('customer');return false;" style="color:var(--accent);text-transform:none;letter-spacing:0;text-decoration:none">+ Add</a></label><select id="mb-customer" onchange="updateManualReadiness()"></select></div>
+              <div class="import-field"><label>Contact * <a href="#" onclick="openAddEntity('contact');return false;" style="color:var(--accent);text-transform:none;letter-spacing:0;text-decoration:none">+ Add</a></label><select id="mb-contact" onchange="updateManualReadiness()"></select></div>
               <div class="import-field"><label>On-site Contact</label><select id="mb-onsite"></select></div>
-              <div class="import-field"><label>Venue *</label><select id="mb-venue" onchange="updateManualReadiness()"></select></div>
+              <div class="import-field"><label>Venue * <a href="#" onclick="openAddEntity('venue');return false;" style="color:var(--accent);text-transform:none;letter-spacing:0;text-decoration:none">+ Add</a></label><select id="mb-venue" onchange="updateManualReadiness()"></select></div>
             </div>
             <div style="font-size:10px;color:var(--muted);margin-top:4px">On-site contact defaults to the booking contact if left blank.</div>
           </div>
@@ -3389,7 +3389,164 @@ function fillMbSelect(id, items, placeholder){
   sel.innerHTML = `<option value="">${placeholder}</option>` +
     (items||[]).map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
 }
+// ── Quick-add Customer / Contact / Venue from the manual Booking form ──────
+const AE_ERR = '<div id="ae-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0 122px;min-height:14px"></div>';
+const AE_NOTE = function(t){ return '<div style="font-size:10px;color:var(--muted);padding:4px 0 0 122px">'+t+'</div>'; };
 
+function openAddEntity(kind){
+  openEntityModal();
+  const body = document.getElementById('entity-modal-body');
+  const acts = document.getElementById('entity-modal-actions');
+  const sub  = document.getElementById('entity-modal-sub');
+  const focusOn = function(id){ setTimeout(function(){ var f=document.getElementById(id); if(f) f.focus(); }, 50); };
+
+  if(kind === 'venue'){
+    document.getElementById('entity-modal-title').textContent = 'New venue';
+    sub.textContent = 'Adds to SmartStaff and selects it here';
+    body.innerHTML =
+        efRow('Venue name *', efInput('ae-venue', ''))
+      + efRow('Suburb',       efInput('ae-suburb', ''))
+      + efRow('State',        efInput('ae-state', ''))
+      + efRow('Postcode',     efInput('ae-postcode', ''))
+      + efRow('Address',      efInput('ae-address', ''))
+      + AE_ERR;
+    acts.innerHTML = entityBtn('Cancel', 'closeEntityModal()')
+      + entityBtn('Create venue', "submitAddEntity('venue')", {primary:true, id:'ae-submit'});
+    focusOn('ae-venue');
+
+  } else if(kind === 'customer'){
+    document.getElementById('entity-modal-title').textContent = 'New customer';
+    sub.textContent = 'Adds to SmartStaff and selects it here';
+    body.innerHTML =
+        efRow('Customer name *', efInput('ae-cust-name', ''))
+      + efRow('Phone',          efInput('ae-cust-phone', ''))
+      + efRow('Email',          efInput('ae-cust-email', ''))
+      + AE_NOTE('Created as Active.')
+      + AE_ERR;
+    acts.innerHTML = entityBtn('Cancel', 'closeEntityModal()')
+      + entityBtn('Create customer', "submitAddEntity('customer')", {primary:true, id:'ae-submit'});
+    focusOn('ae-cust-name');
+
+  } else if(kind === 'contact'){
+    document.getElementById('entity-modal-title').textContent = 'New contact';
+    const custSel  = document.getElementById('mb-customer');
+    const custId   = custSel.value;
+    const custName = (custSel.selectedOptions[0] ? custSel.selectedOptions[0].textContent : '').trim();
+    if(!custId){
+      sub.textContent = '';
+      body.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0">Select a customer first — a new contact is linked to that customer.</div>';
+      acts.innerHTML = entityBtn('Close', 'closeEntityModal()');
+      return;
+    }
+    sub.textContent = 'Linked to ' + custName;
+    body.innerHTML =
+        efRow('First name', efInput('ae-ct-first', ''))
+      + efRow('Last name',  efInput('ae-ct-last', ''))
+      + efRow('Username *', efInput('ae-ct-user', ''))
+      + efRow('Mobile',     efInput('ae-ct-mobile', ''))
+      + efRow('Email',      efInput('ae-ct-email', ''))
+      + AE_NOTE('Username must be unique. Created as Active.')
+      + AE_ERR;
+    acts.innerHTML = entityBtn('Cancel', 'closeEntityModal()')
+      + entityBtn('Create contact', "submitAddEntity('contact')", {primary:true, id:'ae-submit'});
+    // suggest firstname.lastname as username until the field is edited by hand
+    setTimeout(function(){
+      var fn=document.getElementById('ae-ct-first'),
+          ln=document.getElementById('ae-ct-last'),
+          un=document.getElementById('ae-ct-user');
+      function suggest(){
+        if(un && !un.dataset.touched){
+          un.value = (fn.value.trim()+'.'+ln.value.trim())
+            .replace(/\s+/g,'').toLowerCase().replace(/^\.|\.$/g,'');
+        }
+      }
+      if(fn) fn.addEventListener('input', suggest);
+      if(ln) ln.addEventListener('input', suggest);
+      if(un) un.addEventListener('input', function(){ un.dataset.touched='1'; });
+      if(fn) fn.focus();
+    }, 50);
+  }
+}
+
+async function submitAddEntity(kind){
+  const err = document.getElementById('ae-error');
+  const btn = document.getElementById('ae-submit');
+  if(err) err.textContent = '';
+
+  const CFG = {
+    venue:    {url:'/api/booking/venue',    listKey:'venues',
+               selects:[['mb-venue','-- Select venue --']],          primary:'mb-venue',    ok:'Create venue'},
+    customer: {url:'/api/booking/customer', listKey:'customers',
+               selects:[['mb-customer','-- Select customer --']],    primary:'mb-customer', ok:'Create customer'},
+    contact:  {url:'/api/booking/contact',  listKey:'contacts',
+               selects:[['mb-contact','-- Select contact --'],['mb-onsite','-- defaults to contact --']],
+               primary:'mb-contact', ok:'Create contact'}
+  };
+  const cfg = CFG[kind];
+  if(!cfg) return;
+
+  let payload;
+  if(kind === 'venue'){
+    const name = document.getElementById('ae-venue').value.trim();
+    if(!name){ if(err) err.textContent = 'Venue name is required.'; return; }
+    payload = {
+      venue:    name,
+      suburb:   document.getElementById('ae-suburb').value.trim(),
+      state:    document.getElementById('ae-state').value.trim(),
+      postcode: document.getElementById('ae-postcode').value.trim(),
+      address:  document.getElementById('ae-address').value.trim(),
+      active:   true
+    };
+  } else if(kind === 'customer'){
+    const name = document.getElementById('ae-cust-name').value.trim();
+    if(!name){ if(err) err.textContent = 'Customer name is required.'; return; }
+    payload = {
+      customer_name: name,
+      phone: document.getElementById('ae-cust-phone').value.trim(),
+      email: document.getElementById('ae-cust-email').value.trim(),
+      active: true
+    };
+  } else if(kind === 'contact'){
+    const custId = document.getElementById('mb-customer').value;
+    if(!custId){ if(err) err.textContent = 'Select a customer first.'; return; }
+    const username = document.getElementById('ae-ct-user').value.trim();
+    if(!username){ if(err) err.textContent = 'Username is required.'; return; }
+    payload = {
+      customer_id: custId,
+      username:    username,
+      firstname:   document.getElementById('ae-ct-first').value.trim(),
+      lastname:    document.getElementById('ae-ct-last').value.trim(),
+      mobile:      document.getElementById('ae-ct-mobile').value.trim(),
+      email:       document.getElementById('ae-ct-email').value.trim(),
+      active: true
+    };
+  }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Creating…'; }
+  try{
+    const r = await fetch(cfg.url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _mbLookups[cfg.listKey].push({id:String(d.id), name:d.name});
+    _mbLookups[cfg.listKey].sort((a,b)=>a.name.localeCompare(b.name));
+    cfg.selects.forEach(function(s){
+      const sel = document.getElementById(s[0]);
+      const keep = sel.value;                       // preserve other dropdown's choice
+      fillMbSelect(s[0], _mbLookups[cfg.listKey], s[1]);
+      sel.value = keep;
+    });
+    document.getElementById(cfg.primary).value = String(d.id);
+    closeEntityModal();
+    if(typeof updateManualReadiness === 'function') updateManualReadiness();
+  }catch(e){
+    if(err) err.textContent = e.message || 'Create failed';
+    if(btn){ btn.disabled = false; btn.textContent = cfg.ok; }
+  }
+}
 function addManualCall(){
   const wrap = document.getElementById('mb-calls');
   const lastDate = wrap.querySelector('.mb-call-row:last-child .mbc-date')?.value

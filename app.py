@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.6.0"
+APP_VERSION    = "3.6.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -2481,6 +2481,89 @@ def ss_create_call(ss, booking_id, call_data):
         return "created", None
 
     return None, f"Call creation failed — unexpected response: {resp.url}"
+
+def ss_create_venue(ss, data):
+    """Create a venue via SmartStaff venues/add in ajax mode (returns bare id).
+    data keys: venue (required), active(bool), address, suburb, state, postcode, has_induction(bool)
+    Returns (venue_id, error_str). add-venue.php has no required-field validation,
+    so a non-numeric response means auth/permission failure, not a field error."""
+    post = {
+        "action":   "add",
+        "ajax":     "1",
+        "venue":    (data.get("venue") or "").strip(),
+        "address":  data.get("address", ""),
+        "suburb":   data.get("suburb", ""),
+        "state":    data.get("state", ""),
+        "postcode": data.get("postcode", ""),
+    }
+    # add-venue.php checkboxes are presence-based (isset), so only send when on
+    if data.get("active", True):
+        post["active"] = "1"
+    if data.get("has_induction"):
+        post["has_induction"] = "1"
+
+    resp = ss.post(f"{BASE_URL}/venues/add", data=post, allow_redirects=True)
+    txt = (resp.text or "").strip()
+    if txt.isdigit():
+        return txt, None
+    return None, f"Venue creation failed — unexpected response: {txt[:200]}"
+
+def ss_create_customer(ss, data):
+    """Quick-add a customer via SmartStaff customer/add in ajax mode (returns id).
+    Option (a): lean path — only customer_name is meaningful. add-customer.php still
+    inserts a linked portal users row (usergroupID 42) from the blank username/password
+    we send; accepted side effect of reusing the existing endpoint.
+    data keys: customer_name (required), active(bool), phone, email
+    Returns (customer_id, error_str)."""
+    post = {
+        "action":            "add",
+        "ajax":              "1",
+        "customer_name":     (data.get("customer_name") or "").strip(),
+        "customer_username": "",
+        "customer_password": "",
+        "phone":             data.get("phone", ""),
+        "email":             data.get("email", ""),
+        "active":            "1" if data.get("active", True) else "",
+    }
+    resp = ss.post(f"{BASE_URL}/customer/add", data=post, allow_redirects=True)
+    txt = (resp.text or "").strip()
+    if txt.isdigit():
+        return txt, None
+    # add-customer.php reads ->info_hash off a null object on new adds; if the PHP
+    # config emits notices before the ajax die(), the id is still the trailing token.
+    m = re.search(r"(\d+)\s*$", txt)
+    if m and "fatal error" not in txt.lower():
+        return m.group(1), None
+    return None, f"Customer creation failed — unexpected response: {txt[:200]}"
+
+def ss_create_contact(ss, customer_id, data):
+    """Quick-add a contact via SmartStaff contact/add (customerID rides in the
+    query string). add-contact.php maps the new user to the customer via
+    customer_map and returns the bare user id in ajax mode. A username collision
+    (or any validation error) makes the PHP re-render the full add-contact page
+    instead of an id, so a non-numeric response is treated as failure.
+    data keys: username (required, unique), firstname, lastname, mobile, phone, email, active(bool)
+    Returns (contact_id, error_str)."""
+    post = {
+        "action":    "add",
+        "ajax":      "1",
+        "username":  (data.get("username") or "").strip(),
+        "firstname": data.get("firstname", ""),
+        "lastname":  data.get("lastname", ""),
+        "mobile":    data.get("mobile", ""),
+        "phone":     data.get("phone", ""),
+        "email":     data.get("email", ""),
+        "active":    "1" if data.get("active", True) else "",
+    }
+    url = f"{BASE_URL}/contact/add?customerID={customer_id}"
+    resp = ss.post(url, data=post, allow_redirects=True)
+    txt = (resp.text or "").strip()
+    if txt.isdigit():
+        return txt, None
+    # add-contact.php does not echo its error text; the usual cause of a non-id
+    # response is a duplicate username (note: a blank username collides with the
+    # credential-less portal users created by lean customer quick-adds).
+    return None, "Couldn't create contact — the username may already be in use. Try a different username."
 
 def ss_create_booking_bulk(ss, booking, calls):
     """Create a booking and all of its calls in ONE call via create-booking.php,
@@ -5649,6 +5732,72 @@ def api_booking_create():
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
+
+
+@app.route("/api/booking/venue", methods=["POST"])
+@require_cohort("admin")
+def api_booking_create_venue():
+    """Quick-add a venue from the manual Booking form. Returns {id, name}."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(force=True) or {}
+    name = str(body.get("venue", "")).strip()
+    if not name:
+        return jsonify({"error": "Venue name is required"}), 400
+
+    vid, err = ss_create_venue(ss, body)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"id": vid, "name": name})
+
+
+@app.route("/api/booking/customer", methods=["POST"])
+@require_cohort("admin")
+def api_booking_create_customer():
+    """Quick-add a customer from the manual Booking form. Returns {id, name}."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(force=True) or {}
+    name = str(body.get("customer_name", "")).strip()
+    if not name:
+        return jsonify({"error": "Customer name is required"}), 400
+
+    cid, err = ss_create_customer(ss, body)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"id": cid, "name": name})
+
+
+@app.route("/api/booking/contact", methods=["POST"])
+@require_cohort("admin")
+def api_booking_create_contact():
+    """Quick-add a contact (linked to a customer) from the manual Booking form.
+    Returns {id, name}."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(force=True) or {}
+    customer_id = str(body.get("customer_id", "")).strip()
+    username    = str(body.get("username", "")).strip()
+    if not customer_id.isdigit():
+        return jsonify({"error": "Select a customer first"}), 400
+    if not username:
+        return jsonify({"error": "Username is required"}), 400
+
+    cid, err = ss_create_contact(ss, customer_id, body)
+    if err:
+        return jsonify({"error": err}), 502
+
+    name = " ".join(p for p in [
+        str(body.get("firstname", "")).strip(),
+        str(body.get("lastname", "")).strip(),
+    ] if p) or username
+    return jsonify({"id": cid, "name": name})
 
 
 @app.route("/api/booking/<booking_id>", methods=["POST"])
