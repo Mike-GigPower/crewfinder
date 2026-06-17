@@ -1,6 +1,6 @@
 {
-  "version": "3.6.0",
-  "release_date": "2026-06-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.0/TheGOAT.dmg",
-  "release_notes": "Crew Finder: spot-check any individual's availability for a call, and filter results by name. Collapsible SELECTED and group-filter panels. Fixed Schedule day-column alignment on expanded bookings."
+  "version": "3.6.1",
+  "release_date": "2026-06-17",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.1/TheGOAT.dmg",
+  "release_notes": "ou can now add a new Customer, Contact, or Venue straight from the booking form — look for the "+ Add" next to each field. No more ducking over to SmartStaff mid-booking."
 }
