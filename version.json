@@ -1,6 +1,6 @@
 {
-  "version": "3.6.1",
+  "version": "3.6.2",
   "release_date": "2026-06-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.1/TheGOAT.dmg",
-  "release_notes": "You can now add a new Customer, Contact, or Venue straight from the booking form — look for the + Add next to each field. No more ducking over to SmartStaff mid-booking."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.2/TheGOAT.dmg",
+  "release_notes": "Admin step-up: operations users can elevate to admin in-session via the Admin button (Exit Admin to drop back), so no second login is needed. Admins manage who can elevate from the Admin Access panel. Also fixes the browser autofilling your EIN into the booking/search boxes."
 }
