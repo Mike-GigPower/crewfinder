@@ -1,6 +1,6 @@
 {
-  "version": "3.6.2",
+  "version": "3.6.3",
   "release_date": "2026-06-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.2/TheGOAT.dmg",
-  "release_notes": "Admin step-up: operations users can elevate to admin in-session via the Admin button (Exit Admin to drop back), so no second login is needed. Admins manage who can elevate from the Admin Access panel. Also fixes the browser autofilling your EIN into the booking/search boxes."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.3/TheGOAT.dmg",
+  "release_notes": "New THE GOAT branding across the app header, login screen and dock icon, with a sharper, more readable header. The Ask THE GOAT button has moved onto the tab bar, and the login screen now shows the correct version. Click the goat emblem for a little surprise."
 }
