@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.6.2"
+APP_VERSION    = "3.6.4"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -2670,7 +2670,44 @@ def ss_update_call_bulk(ss, call_id, call):
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
     return data, None
+def ss_update_crew_status(ss, call_id, user_id, status):
+    """Set one crew member's status on a call in ONE request via
+    update-crew-status.php.
 
+    Writes call_crew_map.status, then (status 5 ONLY) re-syncs that crew
+    member's calendar via SmartStaff's own $sss->addToCalendar — byte-identical
+    to add-call.php action=confirm. Decline/no-show/pending/unconfirmed leave the
+    calendar untouched (matches native; keeps declined entries visible). No SMS
+    is ever sent.
+
+    status : one of 0 (unconfirmed), 1 (pending), 5 (confirmed), 6 (declined),
+             8 (no-show). The endpoint owns the whitelist and re-validates.
+
+    Returns (result, error):
+        result : {ok, call_id, booking_id, user_id, status, calendar_synced,
+                  affected_rows}
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/update-crew-status.php"
+    try:
+        resp = ss.post(url, params={"id": call_id},
+                       json={"userID": user_id, "status": status}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
 
 def _build_import_payload(booking_data, lines, non_labour, resolved_call_names, earliest_date):
     """Map the import's booking_data + labour lines + non-labour items into the
@@ -2968,7 +3005,8 @@ def login():
     cfg = load_config()
     return render_template("login.html",
         error=error,
-        saved_username=cfg.get("username", "")
+        saved_username=cfg.get("username", ""),
+        version=APP_VERSION
     )
 
 @app.route("/logout")
@@ -5969,7 +6007,30 @@ def api_call_update(booking_id, call_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
+@app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/status", methods=["POST"])
+@require_cohort("admin")
+def api_call_crew_status(booking_id, call_id, user_id):
+    """Set one crew member's status on a call from the call dialog. Proxies
+    update-crew-status.php (admin-only): writes call_crew_map.status and, on
+    status 5 (confirmed) only, re-syncs that crew member's calendar via
+    SmartStaff's own addToCalendar — byte-identical to a native confirm.
+    Decline/no-show/pending/unconfirmed leave the calendar untouched, so a
+    declined entry stays visible. booking_id is taken for URL symmetry with the
+    other call routes; the endpoint derives bookingID from the call."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
 
+    body   = request.get_json(force=True) or {}
+    status = body.get("status")
+
+    if status is None or str(status).strip() == "":
+        return jsonify({"error": "status is required"}), 400
+
+    result, err = ss_update_crew_status(ss, call_id, user_id, status)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5001, debug=False, threaded=True)

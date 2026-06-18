@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>THE GOAT — Gig Power Operations Platform</title>
+<title>THE GOAT — Gig Power Ops, Admin, Tasking</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -33,7 +33,7 @@ nav{display:flex;align-items:center;gap:16px;padding:0 20px;height:58px;backgrou
 .nav-logo img{height:36px;width:36px;object-fit:contain;background:#000;border-radius:4px;padding:2px}
 .nav-goat-wordmark{display:flex;flex-direction:column;line-height:1}
 .nav-goat-title{font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--accent);letter-spacing:.12em;line-height:1}
-.nav-goat-sub{font-family:'Share Tech Mono',monospace;font-size:8px;color:var(--muted);letter-spacing:.2em;text-transform:uppercase}
+.nav-goat-sub{font-family:'Share Tech Mono',monospace;font-size:8px;color:#fff;letter-spacing:.2em;text-transform:uppercase}
 .nav-appname{font-family:'Bebas Neue',sans-serif;font-size:15px;font-weight:800;color:var(--accent)}
 .nav-div{width:1px;height:24px;background:var(--border-gold);opacity:.3}
 .nav-title{font-size:12px;color:var(--muted)}
@@ -261,6 +261,7 @@ tr.skipped{opacity:.6}
 .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);background:rgba(212,175,55,0.05)}
 .tab-panel{display:none;flex:1;overflow:hidden;flex-direction:row;min-height:0}
 .tab-panel.active{display:flex}
+@keyframes goat-run{0%{transform:translateX(-12vw) translateY(0)}25%{transform:translateX(28vw) translateY(-10px)}50%{transform:translateX(56vw) translateY(0)}75%{transform:translateX(84vw) translateY(-10px)}100%{transform:translateX(116vw) translateY(0)}}
 /* ── CALLS SEARCH ── */
 .calls-search{padding:6px 10px;border-bottom:1px solid var(--border);flex-shrink:0}
 .calls-search input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:5px 9px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;outline:none;transition:border-color .15s}
@@ -698,21 +699,17 @@ body.cohort-readonly #unavail-add-section{display:none}
     <img src="/static/logo.png" alt="Gig Power" style="height:36px;width:auto;object-fit:contain">
   </div>
   <div style="position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px">
-    <img src="/static/goat-logo.png" alt="THE GOAT"
-         style="height:46px;width:46px;object-fit:contain;
+    <img src="/static/the-goat-emblem.png" alt="THE GOAT" onclick="goatStampede()" title="🐐"
+         style="height:46px;width:46px;object-fit:contain;cursor:pointer;
                 filter:drop-shadow(0 0 10px rgba(212,175,55,0.5))">
     <div class="nav-goat-wordmark">
       <span class="nav-goat-title">THE GOAT</span>
-      <span class="nav-goat-sub">Gig Power Operations Platform</span>
+      <span class="nav-goat-sub">Gig Power Ops, Admin, Tasking</span>
     </div>
     <span id="nav-version" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;align-self:flex-end;padding-bottom:2px"></span>
   </div>
   <div class="nav-right">
     <div class="cache-badge" id="cache-badge" onclick="refreshCache()">Loading cache...</div>
-    <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat">
-      <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
-      Ask THE GOAT
-    </button>
     <button id="btn-elevate" class="btn-logout" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="openElevateModal()">🔑 Admin</button>
     <button id="btn-exit-admin" class="btn-logout" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="exitAdmin()">⤓ Exit Admin</button>
     <button id="btn-manage-access" class="btn-logout" style="display:none" onclick="openElevatorsModal()">⚙ Admin Access</button>
@@ -732,6 +729,10 @@ body.cohort-readonly #unavail-add-section{display:none}
   <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
   <button class="tab-btn" id="tab-btn-import" onclick="switchTab('import')">📋 Create Booking</button>
   <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
+  <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat" style="margin-left:auto;align-self:center;margin-right:10px">
+    <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
+    Ask THE GOAT
+  </button>
 </div>
 <div class="main">
   <!-- ── CREW FINDER TAB ── -->
@@ -1549,6 +1550,31 @@ async function removeElevator(ein){
   }catch(err){ msg.style.color='var(--conflict)'; msg.textContent='Error: '+err.message; }
 }
 
+// ── Easter egg: click the GOAT emblem -> bray + stampede ─────────────────────
+function goatBleat(){
+  const a = document.getElementById('goat-bray');
+  if(!a) return;
+  try{ a.currentTime = 0; a.volume = 0.8; a.play().catch(()=>{}); }catch(e){}
+}
+function goatStampede(){
+  goatBleat();
+  const layer = document.createElement('div');
+  layer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:99999;overflow:hidden';
+  document.body.appendChild(layer);
+  for(let i=0;i<14;i++){
+    const g = document.createElement('div');
+    g.innerHTML = '<span style="display:inline-block;transform:scaleX(-1)">🐐</span>';
+    const size  = 28 + Math.random()*38;
+    const top   = 8  + Math.random()*80;
+    const dur   = 1.6 + Math.random()*1.5;
+    const delay = Math.random()*0.8;
+    g.style.cssText = 'position:absolute;top:'+top+'vh;left:0;font-size:'+size+'px;will-change:transform;'
+                    + 'animation:goat-run '+dur+'s linear '+delay+'s 1 forwards';
+    layer.appendChild(g);
+  }
+  setTimeout(()=>layer.remove(), 4500);
+}
+
 // ── My Status data loaders ──────────────────────────────────────────────────
 async function loadMyStatus(){ loadMyInductions(); loadMyShifts(); loadMyUnavail(); }
 
@@ -2297,7 +2323,7 @@ function _positionCrewCard(el,anchor){
   });
 }
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-
+function decodeEntities(s){if(s==null)return '';var t=document.createElement('textarea');t.innerHTML=String(s);return t.value;}
 function showCrewCard(anchor,crew){
   if(!crew) return;
   const el=_ensureCrewCardEl();
@@ -2751,71 +2777,57 @@ function showFeedback(msg){const el=document.getElementById('feedback');el.textC
 // ── SMARTSTAFF ACTIONS ──
 async function addSelected(confirm){
   const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
-  const targets=currentResult?.targets||[];
-  const action=confirm?'confcrew':'addcrew';
-  const btnId=confirm?'btn-confirm':'btn-add';
-  const btn=document.getElementById(btnId);const orig=btn.textContent;btn.disabled=true;
-
-  // Build all URLs: every crew member × every call
-  const urls=[];
-  targets.forEach(t=>{
-    crew.forEach(c=>{
-      urls.push({url:ssUrl('/add-call.php?action='+action+'&id='+t.call_id+'&userID='+c.crewId),callId:t.call_id,bookingId:t.booking_id});
+  const targets=currentResult?.targets||[];if(!targets.length)return;
+  const btn=document.getElementById(confirm?'btn-confirm':'btn-add');
+  const orig=btn.textContent;btn.disabled=true;btn.textContent=confirm?'Confirming…':'Adding…';
+  // Server-side via THE GOAT's own SmartStaff session (no browser popup, no
+  // callsheet page). Mirrors the ASK THE GOAT add-crew path.
+  try{
+    const r=await fetch('/api/goat/add-crew',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        crew:crew.map(c=>({name:c.name,crew_id:String(c.crewId)})),
+        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||''})),
+        confirm:!!confirm
+      })
     });
-  });
-
-  const tab=window.open(urls[0].url,'gp_add');
-  if(!tab){alert('Please allow popups.');btn.textContent=orig;btn.disabled=false;return}
-  for(let i=1;i<urls.length;i++){
-    btn.textContent=(i+1)+'/'+urls.length+'...';
-    await new Promise(r=>setTimeout(r,1200));
-    try{tab.location.href=urls[i].url}catch(e){break}
+    const j=await r.json();
+    if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
+    const results=j.results||[];const ok=results.filter(x=>x.success).length;
+    btn.textContent='Done - '+ok+' added'+(results.length>ok?' ('+(results.length-ok)+' failed)':'');
+  }catch(e){
+    btn.textContent='Failed';
+    alert((confirm?'Add & Confirm':'Add')+' failed: '+(e.message||e));
+  }finally{
+    setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},4000);
   }
-  await new Promise(r=>setTimeout(r,1200));
-  // Navigate to first call's callsheet when done
-  const last=urls[urls.length-1];
-  try{tab.location.href=ssUrl('/bookings/'+last.bookingId+'/callsheet/'+last.callId)}catch(e){}
-  const total=crew.length*targets.length;
-  btn.textContent='Done - '+total+' added ('+(targets.length>1?crew.length+' crew × '+targets.length+' calls':crew.length+' crew')+')';
-  setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},4000);
 }
 
 async function sendSMS(){
   const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
-  const targets=currentResult?.targets||[];
-  const btn=document.getElementById('btn-sms');const orig=btn.textContent;btn.disabled=true;
-
-  // Step 1: add crew to all calls
-  const addUrls=[];
-  targets.forEach(t=>{
-    crew.forEach(c=>{
-      addUrls.push({url:ssUrl('/add-call.php?action=addcrew&id='+t.call_id+'&userID='+c.crewId)});
+  const targets=currentResult?.targets||[];if(!targets.length)return;
+  const btn=document.getElementById('btn-sms');
+  const orig=btn.textContent;btn.disabled=true;btn.textContent='Sending…';
+  // Server-side: the endpoint adds the crew then sends the SMS through THE
+  // GOAT's SmartStaff session. No popup, no callsheet page.
+  try{
+    const r=await fetch('/api/goat/send-sms',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        crew:crew.map(c=>({name:c.name,crew_id:String(c.crewId)})),
+        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||''}))
+      })
     });
-  });
-
-  const tab=window.open(addUrls[0].url,'gp_sms');
-  if(!tab){alert('Please allow popups.');btn.textContent=orig;btn.disabled=false;return}
-  for(let i=1;i<addUrls.length;i++){
-    btn.textContent='Adding '+(i+1)+'/'+addUrls.length+'...';
-    await new Promise(r=>setTimeout(r,1200));
-    try{tab.location.href=addUrls[i].url}catch(e){break}
+    const j=await r.json();
+    if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
+    const results=j.results||[];const ok=results.filter(x=>x.success).length;
+    btn.textContent='SMS sent ('+ok+' call'+(ok===1?'':'s')+', '+crew.length+' crew)';
+  }catch(e){
+    btn.textContent='Failed';
+    alert('Send SMS failed: '+(e.message||e));
+  }finally{
+    setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},3500);
   }
-
-  // Step 2: send SMS for each call in sequence
-  // SmartStaff expects crewSelectList as a single comma-separated value
-  // (it splices into a SQL IN(...) clause). Repeated params don't work —
-  // PHP keeps only the last value so only one crew member gets the SMS.
-  const params='crewSelectList='+crew.map(c=>c.crewId).join(',');
-  for(let i=0;i<targets.length;i++){
-    const t=targets[i];
-    btn.textContent='SMS '+(i+1)+'/'+targets.length+'...';
-    await new Promise(r=>setTimeout(r,1200));
-    try{tab.location.href=ssUrl('/add-call.php?action=sendsms&id='+t.call_id+'&bookingID='+t.booking_id+'&'+params)}catch(e){break}
-  }
-  await new Promise(r=>setTimeout(r,800));
-
-  btn.textContent='SMS sent ('+targets.length+' call'+(targets.length>1?'s':'')+', '+crew.length+' crew)';
-  setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},3500);
 }
 
 // ── TABS ──
@@ -3849,7 +3861,82 @@ function crewStatusBadge(status){
   else if(s==='unconfirmed'||s==='sent'||s==='waiting'){ color='#f59e0b'; bg='rgba(245,158,11,0.12)'; }
   return '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+color+';background:'+bg+';border-radius:3px;padding:2px 7px">'+escapeHtml(status||'—')+'</span>';
 }
+// ── Crew status editing (admin only) ─────────────────────────
+// Status labels <-> SmartStaff call_crew_map.status ints. The endpoint owns the
+// authoritative whitelist; this map only drives the select + its colour.
+var CREW_STATUS_OPTS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[8,'No-show'],[0,'Unconfirmed']];
 
+function crewStatusInt(status){
+  var s = (status||'').toLowerCase();
+  if(s==='confirmed')             return 5;
+  if(s==='sent'||s==='pending')   return 1;
+  if(s==='declined')              return 6;
+  if(s==='noshow'||s==='no-show') return 8;
+  return 0;   // unconfirmed / waiting / unknown
+}
+
+function crewStatusColors(v){
+  if(v===5)        return ['var(--available)','var(--avail-bg)'];
+  if(v===6||v===8) return ['var(--conflict)','var(--conf-bg)'];
+  if(v===1||v===0) return ['#f59e0b','rgba(245,158,11,0.12)'];
+  return ['var(--muted)','var(--surface2)'];
+}
+
+// Admins with a resolved user id get an editable select; leadership/operations,
+// and crew that arrived via the name-only scrape fallback (no id), get the
+// read-only badge.
+function crewStatusControl(c, bookingId, callId){
+  if(window._cohort !== 'admin' || !c.id) return crewStatusBadge(c.status);
+  var cur  = crewStatusInt(c.status);
+  var cols = crewStatusColors(cur);
+  var opts = CREW_STATUS_OPTS.map(function(o){
+    return '<option value="'+o[0]+'"'+(o[0]===cur?' selected':'')+'>'+o[1]+'</option>';
+  }).join('');
+  return '<select id="crew-status-'+callId+'-'+c.id+'" data-prev="'+cur+'"'
+    + ' onchange="changeCrewStatus(\''+bookingId+'\',\''+callId+'\','+c.id+',this)"'
+    + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+cols[0]+';background:'+cols[1]
+    + ';border:1px solid '+cols[0]+';border-radius:3px;padding:2px 6px;font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">'
+    + opts + '</select>';
+}
+
+async function changeCrewStatus(bookingId, callId, userId, sel){
+  var next = parseInt(sel.value,10);
+  var prev = parseInt(sel.getAttribute('data-prev'),10);
+  if(next === prev) return;
+  sel.disabled = true;
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({status: next})
+    });
+    var j = await r.json();
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    var cols = crewStatusColors(next);
+    sel.style.color = cols[0];
+    sel.style.background = cols[1];
+    sel.style.borderColor = cols[0];
+    sel.setAttribute('data-prev', next);
+    refreshCallCrewSummary(callId);
+  }catch(e){
+    sel.value = String(prev);
+    alert('Couldn\'t update status: '+(e.message||e));
+  }finally{
+    sel.disabled = false;
+  }
+}
+
+// Recompute the "x booked / y required" confirmed count from the live selects
+// after an in-place status change (no full dialog re-fetch).
+function refreshCallCrewSummary(callId){
+  var el = document.getElementById('call-confirmed-count-'+callId);
+  if(!el) return;
+  var confirmed = 0;
+  document.querySelectorAll('[id^="crew-status-'+callId+'-"]').forEach(function(s){
+    if(parseInt(s.value,10)===5) confirmed++;
+  });
+  el.textContent = confirmed;
+}
 function entityBtn(label, onclick, opts){
   opts = opts||{};
   const dis = opts.disabled ? 'disabled' : '';
@@ -3920,13 +4007,13 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     ? crew.map(function(c){
         var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(c.mobile)+'</a>' : '';
         var boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.name)+boss+'</span><span style="display:flex;align-items:center;gap:4px">'+crewStatusBadge(c.status)+mob+'</span></div>'; }).join('')
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+'</span><span style="display:flex;align-items:center;gap:4px">'+crewStatusControl(c, bookingId, callId)+mob+'</span></div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
     + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
-    + entityRow('Crew',  confirmedCount+' booked / '+req+' required <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>')
+    + entityRow('Crew',  '<span id="call-confirmed-count-'+callId+'">'+confirmedCount+'</span> booked / '+req+' required <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>')
     + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Booked Crew</div>'
     + crewRows;
   document.getElementById('entity-modal-actions').innerHTML =
