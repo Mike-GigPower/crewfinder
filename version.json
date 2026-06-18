@@ -1,6 +1,6 @@
 {
-  "version": "3.6.3",
-  "release_date": "2026-06-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.3/TheGOAT.dmg",
-  "release_notes": "New THE GOAT branding across the app header, login screen and dock icon, with a sharper, more readable header. The Ask THE GOAT button has moved onto the tab bar, and the login screen now shows the correct version. Click the goat emblem for a little surprise."
+  "version": "3.6.4",
+  "release_date": "2026-06-18",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.4/TheGOAT.dmg",
+  "release_notes": "Crew status is now editable right from the call popup. Set someone to confirmed, declined, no-show and more without opening SmartStaff, and the booked count updates as you go. In Crew Finder, the Add, Add & Confirm and Send SMS buttons no longer pop open a SmartStaff page. Crew names with apostrophes (like O'Brien) now display correctly."
 }
