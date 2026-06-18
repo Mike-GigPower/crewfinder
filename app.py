@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.6.4"
+APP_VERSION    = "3.6.5"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -3466,7 +3466,7 @@ def api_availability():
         "available":   available,
         "conflicts":   conflicts,
         "skipped":     skipped,
-        "targets":     [{"call_id": t["call_id"], "call_num": t["call_num"],
+        "targets":     [{"call_id": t["call_id"], "booking_id": t["booking_id"], "call_num": t["call_num"],
                          "call_name": t["call_name"], "start_dt": t["start"].isoformat(),
                          "end_dt": t["end"].isoformat(), "venue": t["venue"]} for t in targets],
         # Legacy single-call fields for backward compat
