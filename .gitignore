@@ -20,3 +20,4 @@ build_secrets.json
 output/
 venv/
 venue_cache.json
+smartstaff/goat-service-key.php

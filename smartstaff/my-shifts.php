@@ -4,6 +4,7 @@
 	/* global file */
 
 	include('../../global.php');
+	include('cohort.php');
 
 	/*
 	/* JSON response */
@@ -23,13 +24,8 @@
 	/*   type = 2  -> confirmed shift   (call FK populated)
 	*/
 
-	if (!$user->checkSession())
-	{
-		http_response_code(401);
-		die('{"error":"Not logged in"}');
-	}
 
-	$userID = (int) $_SESSION[SITE_KEY]['userID'];
+	$userID = goat_acting_user_id();
 
 	/*
 	/* validate input — start, end: YYYY-MM-DD (inclusive start, exclusive end)
