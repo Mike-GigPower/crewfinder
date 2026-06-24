@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.6.5"
+APP_VERSION    = "3.7.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -2566,6 +2566,84 @@ def ss_create_contact(ss, customer_id, data):
     # credential-less portal users created by lean customer quick-adds).
     return None, "Couldn't create contact — the username may already be in use. Try a different username."
 
+# Temp password applied to a newly-created crew member. Username is their EIN,
+# so the record is portal-ready immediately; new_employee is set on the add path
+# (add-crew.php), which can drive a first-login change prompt. NOTE: this repo is
+# public — if you'd rather the default not live in source, read it from config.json
+# instead (e.g. CONFIG.get("new_crew_temp_password", "12345")).
+NEW_CREW_TEMP_PASSWORD = "12345"
+
+
+def ss_create_crew(ss, data, ein, password, photo=None):
+    """Create a crew member (usergroupID 3) via SmartStaff crew/add in ajax mode.
+    Username is set to the EIN and a temp password applied. add-crew.php force-sets
+    usergroupID=3, active=1, rating=1, start_date and new_employee on the add path;
+    we supply the person fields, crew-group memberships and credentials.
+    Returns (user_id, error_str). A non-numeric body is a failure — the patched
+    add-crew.php returns 'ERROR: ...' for a username/EIN collision."""
+    post = {
+        "action":            "add",
+        "ajax":              "1",
+        "username":          str(ein),
+        "password":          password,
+        "ein":               str(ein),
+        "active":            "1",
+        "rating":            "1",
+        "firstname":         data.get("firstname", ""),
+        "lastname":          data.get("lastname", ""),
+        "mobile":            data.get("mobile", ""),
+        "phone":             "",
+        "phone_work":        "",
+        "dob":               data.get("dob", ""),        # YYYY-MM-DD; add-crew.php strtotime()s it
+        "address":           data.get("address", ""),
+        "suburb":            data.get("suburb", ""),
+        "state":             data.get("state", ""),
+        "postcode":          data.get("postcode", ""),
+        "email":             data.get("email", ""),
+        "emergency_contact": data.get("emergency_contact", ""),
+        "emergency_phone":   data.get("emergency_phone", ""),
+        "notes":             data.get("notes", ""),
+    }
+    # groupsList[] is a repeated key (one per selected crew group id), so build a
+    # list of tuples rather than a dict.
+    payload = list(post.items())
+    for gid in (data.get("groups") or []):
+        payload.append(("groupsList[]", str(gid)))
+
+    # Optional profile picture. Sent as a real multipart file part so PHP's
+    # is_uploaded_file() passes and add-crew.php's phpThumb step writes
+    # crewimg_<id>.jpg. With files=None requests falls back to urlencoded, i.e.
+    # the no-photo path is byte-for-byte the old behaviour.
+    files = None
+    if photo is not None and getattr(photo, "filename", ""):
+        files = {"profilepic": (photo.filename, photo.stream,
+                                photo.mimetype or "application/octet-stream")}
+
+    resp = ss.post(f"{BASE_URL}/crew/add", data=payload, files=files, allow_redirects=True)
+    txt = (resp.text or "").strip()
+    if txt.isdigit():
+        return txt, None
+    if txt.upper().startswith("ERROR:"):
+        return None, (txt[6:].strip() or "Crew creation failed.")
+    return None, f"Crew creation failed — unexpected response: {txt[:200]}"
+
+
+def ss_crew_lookups(ss):
+    """Crew-group options + next EIN for the Add User form, via the admin-gated
+    /ajax/crew/crew-lookups.php endpoint. Returns (data_dict, error_str)."""
+    url = f"{BASE_URL}/ajax/crew/crew-lookups.php"
+    try:
+        resp = ss.get(url, timeout=15)
+    except Exception as e:
+        return None, f"crew-lookups request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"crew-lookups returned HTTP {resp.status_code}"
+    try:
+        return resp.json(), None
+    except Exception:
+        return None, "crew-lookups returned a non-JSON body"
+
+
 def ss_create_booking_bulk(ss, booking, calls):
     """Create a booking and all of its calls in ONE call via create-booking.php,
     replacing the per-record scrape-and-POST path. No form scrape, no per-call
@@ -3128,6 +3206,37 @@ def api_elevators():
         return (resp.text, resp.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return jsonify({"error": f"elevators request failed: {e}"}), 502
+
+@app.route("/api/cohort", methods=["GET", "POST"])
+@require_cohort("admin")
+def api_cohort():
+    """Admin-only proxy to manage-cohort.php. GET lists crew currently in a
+    non-default cohort (operations/leadership); POST sets a crew member's cohort
+    to operations / leadership / crew. 'admin' is never settable here (that is
+    usergroupID == 1). The PHP independently re-gates on admin and scopes writes
+    to usergroupID == 3."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    if request.method == "GET":
+        params = {"action": "list"}
+    else:
+        body   = request.get_json(silent=True) or {}
+        ein    = str(body.get("ein", "")).strip()
+        cohort = str(body.get("cohort", "")).strip().lower()
+        if not ein.isdigit():
+            return jsonify({"error": "a numeric ein is required"}), 400
+        if cohort not in ("operations", "leadership", "crew"):
+            return jsonify({"error": "cohort must be operations, leadership or crew"}), 400
+        params = {"action": "set", "ein": ein, "cohort": cohort}
+
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/manage-cohort.php",
+                      params=params, timeout=15)
+        return (resp.text, resp.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return jsonify({"error": f"cohort request failed: {e}"}), 502
 
 @app.route("/api/calls")
 @require_cohort("admin")
@@ -5950,6 +6059,86 @@ def api_booking_create_contact():
         str(body.get("lastname", "")).strip(),
     ] if p) or username
     return jsonify({"id": cid, "name": name})
+
+
+@app.route("/api/admin/crew-lookups")
+@require_cohort("admin")
+def api_admin_crew_lookups():
+    """Crew-group options + next EIN for the Administration > Add User form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_crew_lookups(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    if isinstance(data, dict):
+        data["temp_password"] = NEW_CREW_TEMP_PASSWORD   # single source -> form note
+    return jsonify(data)
+
+
+@app.route("/api/admin/add-user", methods=["POST"])
+@require_cohort("admin")
+def api_admin_add_user():
+    """Create a new crew member (usergroupID 3) from the Administration tab.
+    Username is the auto-assigned EIN; a temp password is applied so the record is
+    portal-ready (changed on first login). Returns {id, ein, username}."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    form  = request.form
+    first = str(form.get("firstname", "")).strip()
+    last  = str(form.get("lastname", "")).strip()
+    if not first or not last:
+        return jsonify({"error": "First and last name are required"}), 400
+
+    # Optional profile picture (multipart). Validated here; the SmartStaff side
+    # turns it into crewimg_<id>.jpg.
+    photo = request.files.get("profilepic")
+    if photo and photo.filename:
+        if not (photo.mimetype or "").startswith("image/"):
+            return jsonify({"error": "Profile picture must be an image file"}), 400
+        photo.stream.seek(0, os.SEEK_END)
+        size = photo.stream.tell()
+        photo.stream.seek(0)
+        if size > 10 * 1024 * 1024:
+            return jsonify({"error": "Profile picture must be under 10 MB"}), 400
+    else:
+        photo = None
+
+    data = {
+        "firstname":         first,
+        "lastname":          last,
+        "mobile":            form.get("mobile", ""),
+        "email":             form.get("email", ""),
+        "dob":               form.get("dob", ""),
+        "address":           form.get("address", ""),
+        "suburb":            form.get("suburb", ""),
+        "state":             form.get("state", ""),
+        "postcode":          form.get("postcode", ""),
+        "emergency_contact": form.get("emergency_contact", ""),
+        "emergency_phone":   form.get("emergency_phone", ""),
+        "notes":             form.get("notes", ""),
+        "groups":            form.getlist("groups"),
+    }
+
+    # The EIN is fetched server-side at submit (not trusted from the client), so
+    # two operators adding at once can't collide on a stale prefill value.
+    look, err = ss_crew_lookups(ss)
+    if err:
+        return jsonify({"error": f"Couldn't assign an EIN: {err}"}), 502
+    try:
+        ein = int(look.get("next_ein") or 0)
+    except (TypeError, ValueError):
+        ein = 0
+    if ein <= 0:
+        return jsonify({"error": "Couldn't determine the next EIN"}), 502
+
+    uid, err = ss_create_crew(ss, data, ein, NEW_CREW_TEMP_PASSWORD, photo=photo)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"id": uid, "ein": ein, "username": str(ein),
+                    "temp_password": NEW_CREW_TEMP_PASSWORD})
 
 
 @app.route("/api/booking/<booking_id>", methods=["POST"])

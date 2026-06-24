@@ -63,22 +63,14 @@
 	$cohort = goat_user_cohort();
 
 	/*
-	/* can_elevate — is this caller's EIN on the GOAT admin-elevation list?
-	/* Purely a UI hint (whether THE GOAT shows the step-up "Admin" button).
-	/* Grants NOTHING on its own: elevation still requires authenticating a real
-	/* usergroupID == 1 account. Tolerates the goat_elevators table being absent
-	/* (mysql_query returns false -> stays false), so it is safe to deploy this
-	/* endpoint before the table is created.
+	/* can_elevate — is this caller in the OPERATIONS cohort? Operations are the
+	/* trusted ops staff, so they get the step-up "Admin" button directly; there
+	/* is no separate allow-list. Purely a UI hint — grants NOTHING on its own:
+	/* elevation still requires authenticating a real usergroupID == 1 account.
+	/* (Replaces the old goat_elevators EIN allow-list, now vestigial.)
 	*/
 
-	$ein_int     = (int) $row->ein;
-	$can_elevate = false;
-	if ($ein_int > 0)
-	{
-		$er = mysql_query("SELECT 1 FROM goat_elevators WHERE ein = $ein_int LIMIT 1");
-		if ($er !== false && mysql_num_rows($er) > 0)
-			$can_elevate = true;
-	}
+	$can_elevate = ($cohort === 'operations');
 
 	/*
 	/* "Lastname, Firstname" — matches list-crew-bulk.php / get-shifts-bulk.php

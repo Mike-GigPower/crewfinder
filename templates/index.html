@@ -686,6 +686,22 @@ body.cohort-readonly .sched-action-btn{display:none!important}
 .ms-add-btn{background:var(--accent);color:#000;border:none;border-radius:3px;padding:6px 14px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:.06em;text-transform:uppercase}
 /* leadership & operations are read-only: hide unavailability editing in the admin manager */
 body.cohort-readonly #unavail-add-section{display:none}
+/* ── Administration tab (admin-only hub) ── */
+#tab-administration .admin-hub{max-width:880px;margin:0 auto;padding:26px 22px 40px}
+.admin-hub-head{margin-bottom:8px}
+.admin-hub-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
+.admin-hub-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin-top:6px;max-width:560px}
+#admin-hub-note{display:none;margin:14px 0 0;padding:9px 13px;border:1px solid var(--accent);border-radius:5px;background:rgba(212,175,55,0.08);color:var(--accent);font-family:'Rajdhani',sans-serif;font-size:13px}
+.admin-hub-section{font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin:26px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px}
+.admin-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.admin-card{display:flex;gap:13px;align-items:flex-start;text-align:left;padding:15px;background:var(--surface);border:1px solid var(--border);border-radius:7px;cursor:pointer;font-family:inherit;transition:border-color .12s,background .12s}
+.admin-card:hover{border-color:var(--accent);background:var(--surface2)}
+.admin-card-icon{font-size:22px;line-height:1;flex-shrink:0;margin-top:1px}
+.admin-card-title{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;color:var(--text);letter-spacing:.02em}
+.admin-card-desc{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);margin-top:3px;line-height:1.35}
+.admin-card-soon{display:inline-block;margin-left:7px;font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--warn);border:1px solid var(--warn);border-radius:3px;padding:1px 5px;vertical-align:middle}
+.admin-card.is-soon{opacity:.72}
+.admin-card.is-soon:hover{border-color:var(--warn)}
 </style>
 </head>
 <body>
@@ -712,7 +728,6 @@ body.cohort-readonly #unavail-add-section{display:none}
     <div class="cache-badge" id="cache-badge" onclick="refreshCache()">Loading cache...</div>
     <button id="btn-elevate" class="btn-logout" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="openElevateModal()">🔑 Admin</button>
     <button id="btn-exit-admin" class="btn-logout" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="exitAdmin()">⤓ Exit Admin</button>
-    <button id="btn-manage-access" class="btn-logout" style="display:none" onclick="openElevatorsModal()">⚙ Admin Access</button>
     <a href="/logout" class="btn-logout">Sign out</a>
   </div>
 </nav>
@@ -728,6 +743,7 @@ body.cohort-readonly #unavail-add-section{display:none}
   <button class="tab-btn" id="tab-btn-forecast" onclick="switchTab('forecast')">📊 Crew Utilization</button>
   <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
   <button class="tab-btn" id="tab-btn-import" onclick="switchTab('import')">📋 Create Booking</button>
+  <button class="tab-btn" id="tab-btn-administration" onclick="switchTab('administration')">⚙ Administration</button>
   <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
   <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat" style="margin-left:auto;align-self:center;margin-right:10px">
     <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
@@ -1351,6 +1367,59 @@ body.cohort-readonly #unavail-add-section{display:none}
       </div>
     </div>
   </div>
+  <!-- ── ADMINISTRATION (admin-only hub) ── -->
+  <div class="tab-panel" id="tab-administration">
+    <div class="admin-hub">
+      <div class="admin-hub-head">
+        <div class="admin-hub-title">Administration</div>
+        <div class="admin-hub-sub">Maintain GOAT / SmartStaff records &mdash; add people and places, and manage who can access THE GOAT.</div>
+      </div>
+      <div id="admin-hub-note"></div>
+
+      <div class="admin-hub-section">Records</div>
+      <div class="admin-card-grid">
+        <button class="admin-card" onclick="adminAddUser()">
+          <div class="admin-card-icon">👤</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Add Crew Member</div>
+            <div class="admin-card-desc">Create a new crew member in SmartStaff.</div>
+          </div>
+        </button>
+        <button class="admin-card" onclick="openAddEntity('customer', true)">
+          <div class="admin-card-icon">🏢</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Add Customer</div>
+            <div class="admin-card-desc">Create a new customer record.</div>
+          </div>
+        </button>
+        <button class="admin-card" onclick="openAddEntity('venue', true)">
+          <div class="admin-card-icon">📍</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Add Venue</div>
+            <div class="admin-card-desc">Create a new venue record.</div>
+          </div>
+        </button>
+        <button class="admin-card" onclick="adminAddContact()">
+          <div class="admin-card-icon">📇</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Add Contact</div>
+            <div class="admin-card-desc">Create a new contact linked to a customer.</div>
+          </div>
+        </button>
+      </div>
+
+      <div class="admin-hub-section">Access</div>
+      <div class="admin-card-grid">
+        <button class="admin-card" onclick="adminManageCohorts()">
+          <div class="admin-card-icon">🧭</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Manage Cohorts</div>
+            <div class="admin-card-desc">Assign users to Operations, Leadership or Crew.</div>
+          </div>
+        </button>
+      </div>
+    </div>
+  </div><!-- end tab-administration -->
 </div>
 <script>
 // ── STATE ──
@@ -1421,8 +1490,6 @@ function applyCohort(d){
   const _exitBtn = document.getElementById('btn-exit-admin');
   if(_elevBtn) _elevBtn.style.display = (d.can_elevate && !d.elevated) ? '' : 'none';
   if(_exitBtn) _exitBtn.style.display = d.elevated ? '' : 'none';
-  const _mgrBtn = document.getElementById('btn-manage-access');
-  if(_mgrBtn) _mgrBtn.style.display = (cohort === 'admin') ? '' : 'none';
   const hide = id => { const el=document.getElementById(id); if(el) el.style.display='none'; };
   // My Status hello line — shown to anyone who can open the panel (crew + leadership)
   const sub = document.getElementById('ms-hello-sub');
@@ -1431,6 +1498,7 @@ function applyCohort(d){
   if(window.isReadOnlyCohort(cohort)){
     hide('tab-btn-crew-finder');                 // Crew Finder is admin-only
     hide('tab-btn-import');                       // Estimate Import is admin-only
+    hide('tab-btn-administration');               // Administration is admin-only
     // My Status tab stays: leadership are crew too — own inductions/shifts and
     // can add/remove their own availability (the /api/me/* routes are any-cohort).
     switchTab('schedule');                        // never land on a hidden tab
@@ -1499,56 +1567,7 @@ async function exitAdmin(){
   location.reload();                          // re-render fresh as the base cohort
 }
 
-// ── Admin access list (who can step up) ─────────────────────────────────────
-// Admin-only. Backed by /api/elevators -> manage-elevators.php. Adding an EIN
-// also sets that user to the operations cohort (server-side), so elevators get
-// the read-only operator base view in the same action.
-function openElevatorsModal(){
-  const m=document.getElementById('elevators-modal'); if(!m) return;
-  document.getElementById('elev-add-ein').value='';
-  document.getElementById('elev-msg').textContent='';
-  m.style.display='flex';
-  loadElevators();
-}
-function closeElevatorsModal(){ const m=document.getElementById('elevators-modal'); if(m) m.style.display='none'; }
-async function loadElevators(){
-  const box=document.getElementById('elev-list');
-  box.innerHTML='<div style="color:var(--muted);font-size:12px;font-family:Share Tech Mono,monospace">Loading…</div>';
-  try{
-    const d=await (await fetch('/api/elevators')).json();
-    const list=d.elevators||[];
-    if(!list.length){ box.innerHTML='<div style="color:var(--muted);font-size:12px;font-family:Share Tech Mono,monospace">No one has admin-elevation access yet.</div>'; return; }
-    box.innerHTML=list.map(e=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
-      <span style="font-size:13px">${e.name||'—'} <span style="color:var(--muted);font-size:11px;font-family:Share Tech Mono,monospace">· EIN ${e.ein}</span></span>
-      <button class="btn-logout" style="border-color:var(--conflict);color:var(--conflict)" onclick="removeElevator(${e.ein})">Remove</button>
-    </div>`).join('');
-  }catch(err){ box.innerHTML=`<div style="color:var(--conflict);font-size:12px">Error: ${err.message}</div>`; }
-}
-async function addElevator(){
-  const ein=document.getElementById('elev-add-ein').value.trim();
-  const msg=document.getElementById('elev-msg');
-  if(!/^\d+$/.test(ein)){ msg.style.color='var(--conflict)'; msg.textContent='Enter a numeric EIN.'; return; }
-  msg.style.color='var(--muted)'; msg.textContent='Adding…';
-  try{
-    const r=await fetch('/api/elevators',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'add',ein})});
-    const d=await r.json();
-    if(!r.ok||!d.ok){ msg.style.color='var(--conflict)'; msg.textContent=d.error||'Add failed.'; return; }
-    msg.style.color='var(--accent)'; msg.textContent='Added — set to operations.';
-    document.getElementById('elev-add-ein').value='';
-    loadElevators();
-  }catch(err){ msg.style.color='var(--conflict)'; msg.textContent='Error: '+err.message; }
-}
-async function removeElevator(ein){
-  const msg=document.getElementById('elev-msg');
-  msg.style.color='var(--muted)'; msg.textContent='Removing…';
-  try{
-    const r=await fetch('/api/elevators',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove',ein})});
-    const d=await r.json();
-    if(!r.ok||!d.ok){ msg.style.color='var(--conflict)'; msg.textContent=d.error||'Remove failed.'; return; }
-    msg.style.color='var(--accent)'; msg.textContent='Removed.';
-    loadElevators();
-  }catch(err){ msg.style.color='var(--conflict)'; msg.textContent='Error: '+err.message; }
-}
+
 
 // ── Easter egg: click the GOAT emblem -> bray + stampede ─────────────────────
 function goatBleat(){
@@ -3519,11 +3538,289 @@ function fillMbSelect(id, items, placeholder){
   sel.innerHTML = `<option value="">${placeholder}</option>` +
     (items||[]).map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
 }
+// ── Administration tab (admin-only hub) ───────────────────────────────────
+// All Administration actions are live (Add Crew Member, Customer, Venue, Contact, Cohorts).
+// Manage Cohorts is previewed and lands in a later commit.
+function adminComingSoon(name){
+  const host = document.getElementById('admin-hub-note');
+  if(!host) return;
+  host.textContent = name + ' is coming in an upcoming update.';
+  host.style.display = 'block';
+  clearTimeout(host._t);
+  host._t = setTimeout(function(){ host.style.display = 'none'; }, 4000);
+}
+function auGroupsHtml(groups){
+  if(!groups || !groups.length) return '<div style="font-size:11px;color:var(--muted);padding-top:4px">No crew groups found.</div>';
+  return '<div style="display:flex;flex-wrap:wrap;gap:6px 14px;padding-top:4px">'
+    + groups.map(function(g){
+        return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);cursor:pointer">'
+          + '<input type="checkbox" class="au-group" value="'+g.id+'"> '+escapeHtml(g.name)+'</label>';
+      }).join('')
+    + '</div>';
+}
+
+async function adminAddUser(){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Add Crew Member';
+  document.getElementById('entity-modal-sub').textContent   = 'Creates a new crew member in SmartStaff';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  let look;
+  try{
+    const r = await fetch('/api/admin/crew-lookups');
+    look = await r.json();
+    if(!r.ok || look.error) throw new Error(look.error || ('HTTP '+r.status));
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load the form: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+
+  const ein = look.next_ein;
+  const tempPw = String(look.temp_password || '');
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('First name *',    efInput('au-first',''))
+    + efRow('Last name *',     efInput('au-last',''))
+    + efRow('Mobile',          efInput('au-mobile','','tel'))
+    + efRow('Email',           efInput('au-email','','email'))
+    + efRow('Date of birth',   efInput('au-dob','','date'))
+    + efRow('Street address',  efInput('au-address',''))
+    + efRow('Suburb',          efInput('au-suburb',''))
+    + efRow('State',           efInput('au-state',''))
+    + efRow('Postcode',        efInput('au-postcode',''))
+    + efRow('Emergency name',  efInput('au-ec-name',''))
+    + efRow('Emergency phone', efInput('au-ec-phone','','tel'))
+    + efRow('Crew groups',     auGroupsHtml(look.crew_groups))
+    + efRow('Notes',           efTextarea('au-notes',''))
+    + efRow('Profile picture', '<input id="au-photo" type="file" accept="image/*" style="width:100%;color:var(--text);font-size:12px;font-family:inherit"> <span style="font-size:10px;color:var(--muted)">optional &mdash; cropped to a thumbnail</span>')
+    + '<div style="font-size:10px;color:var(--muted);padding:6px 0 0 122px">EIN <b style="color:var(--accent)">'+escapeHtml(String(ein))+'</b> will be assigned. Username = EIN, temp password <b>'+escapeHtml(tempPw)+'</b> (change on first login).</div>'
+    + '<div id="au-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0 122px;min-height:14px"></div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel','closeEntityModal()')
+    + entityBtn('Create crew member','submitAddUser()',{primary:true, id:'au-submit'});
+  setTimeout(function(){ var f=document.getElementById('au-first'); if(f) f.focus(); }, 50);
+}
+
+async function submitAddUser(){
+  const err = document.getElementById('au-error');
+  const btn = document.getElementById('au-submit');
+  if(err) err.textContent = '';
+  const val = function(id){ var el=document.getElementById(id); return el ? el.value.trim() : ''; };
+  const first = val('au-first'), last = val('au-last');
+  if(!first || !last){ if(err) err.textContent = 'First and last name are required.'; return; }
+
+  const groups = Array.from(document.querySelectorAll('.au-group:checked')).map(function(c){ return c.value; });
+  const fd = new FormData();
+  fd.append('firstname', first); fd.append('lastname', last);
+  fd.append('mobile', val('au-mobile')); fd.append('email', val('au-email')); fd.append('dob', val('au-dob'));
+  fd.append('address', val('au-address')); fd.append('suburb', val('au-suburb'));
+  fd.append('state', val('au-state')); fd.append('postcode', val('au-postcode'));
+  fd.append('emergency_contact', val('au-ec-name')); fd.append('emergency_phone', val('au-ec-phone'));
+  fd.append('notes', val('au-notes'));
+  groups.forEach(function(g){ fd.append('groups', g); });
+  const photoEl = document.getElementById('au-photo');
+  if(photoEl && photoEl.files && photoEl.files[0]) fd.append('profilepic', photoEl.files[0]);
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Creating\u2026'; }
+  try{
+    const r = await fetch('/api/admin/add-user', {method:'POST', body: fd});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    document.getElementById('entity-modal-title').textContent = 'Crew member created';
+    document.getElementById('entity-modal-sub').textContent   = '';
+    document.getElementById('entity-modal-body').innerHTML =
+        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.7">'
+      + escapeHtml(first+' '+last)+' was added to SmartStaff.<br>'
+      + 'EIN / username: <b style="color:var(--accent)">'+escapeHtml(String(d.ein))+'</b><br>'
+      + 'Temp password: <b>'+escapeHtml(String(d.temp_password||''))+'</b> &mdash; they should change it on first login.'
+      + '</div>';
+    document.getElementById('entity-modal-actions').innerHTML =
+        entityBtn('Add another','adminAddUser()')
+      + entityBtn('Done','closeEntityModal()',{primary:true});
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Create crew member'; }
+  }
+}
+async function adminAddContact(){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Add Contact';
+  document.getElementById('entity-modal-sub').textContent   = 'Creates a contact linked to a customer';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  let look;
+  try{
+    look = await ensureBookingLookups();
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load customers: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+  const customers = (look && look.customers) ? look.customers : [];
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Customer *',  efSelect('ac-customer', customers, '', '-- Select customer --'))
+    + efRow('First name',  efInput('ac-first',''))
+    + efRow('Last name',   efInput('ac-last',''))
+    + efRow('Username *',  efInput('ac-user',''))
+    + efRow('Mobile',      efInput('ac-mobile','','tel'))
+    + efRow('Email',       efInput('ac-email','','email'))
+    + '<div style="font-size:10px;color:var(--muted);padding:6px 0 0 122px">A new contact is linked to the chosen customer. Username must be unique. Created as Active.</div>'
+    + '<div id="ac-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0 122px;min-height:14px"></div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel','closeEntityModal()')
+    + entityBtn('Create contact','submitAddContactAdmin()',{primary:true, id:'ac-submit'});
+
+  // Suggest firstname.lastname as the username until it's edited by hand.
+  setTimeout(function(){
+    var fn=document.getElementById('ac-first'), ln=document.getElementById('ac-last'), un=document.getElementById('ac-user');
+    function suggest(){
+      if(un && !un.dataset.touched){
+        un.value = (fn.value.trim()+'.'+ln.value.trim()).replace(/\s+/g,'').toLowerCase().replace(/^\.|\.$/g,'');
+      }
+    }
+    if(fn) fn.addEventListener('input', suggest);
+    if(ln) ln.addEventListener('input', suggest);
+    if(un) un.addEventListener('input', function(){ un.dataset.touched='1'; });
+    var c=document.getElementById('ac-customer'); if(c) c.focus();
+  }, 50);
+}
+
+async function submitAddContactAdmin(){
+  const err = document.getElementById('ac-error');
+  const btn = document.getElementById('ac-submit');
+  if(err) err.textContent = '';
+  const val = function(id){ var el=document.getElementById(id); return el ? el.value.trim() : ''; };
+  const customerId = val('ac-customer');
+  const username   = val('ac-user');
+  if(!customerId){ if(err) err.textContent = 'Select a customer.'; return; }
+  if(!username){ if(err) err.textContent = 'Username is required.'; return; }
+
+  const payload = {
+    customer_id: customerId,
+    username:    username,
+    firstname:   val('ac-first'),
+    lastname:    val('ac-last'),
+    mobile:      val('ac-mobile'),
+    email:       val('ac-email')
+  };
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Creating…'; }
+  try{
+    const r = await fetch('/api/booking/contact', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    document.getElementById('entity-modal-title').textContent = 'Contact created';
+    document.getElementById('entity-modal-sub').textContent   = '';
+    document.getElementById('entity-modal-body').innerHTML =
+        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.6">'
+      + escapeHtml(d.name||username)+' was added to SmartStaff.</div>';
+    document.getElementById('entity-modal-actions').innerHTML =
+        entityBtn('Add another','adminAddContact()')
+      + entityBtn('Done','closeEntityModal()',{primary:true});
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Create contact'; }
+  }
+}
+function adminManageCohorts(){ openCohortModal(); }
+
+async function openCohortModal(){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Manage Cohorts';
+  document.getElementById('entity-modal-sub').textContent   = 'Operations / Leadership / Crew \u00b7 takes effect on the person\u2019s next login';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = entityBtn('Close','closeEntityModal()');
+
+  let roster, members;
+  try{
+    const [rr, mr] = await Promise.all([
+      fetch('/api/crew-roster').then(function(r){ return r.json(); }),
+      fetch('/api/cohort').then(function(r){ return r.json(); })
+    ]);
+    if(rr.error) throw new Error(rr.error);
+    if(mr.error) throw new Error(mr.error);
+    roster  = rr.crew || [];
+    members = mr.members || [];
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+
+  const cohortSel = function(id, current){
+    const opts = ['operations','leadership','crew'].map(function(v){
+      const label = v.charAt(0).toUpperCase()+v.slice(1);
+      return '<option value="'+v+'"'+(v===current?' selected':'')+'>'+label+'</option>';
+    }).join('');
+    return '<select id="'+id+'" style="'+EF_INPUT_STYLE+';width:auto">'+opts+'</select>';
+  };
+
+  const dl = roster.map(function(c){
+    return '<option value="'+escapeHtml(c.name)+' \u00b7 EIN '+escapeHtml(String(c.ein))+'"></option>';
+  }).join('');
+
+  const listHtml = members.length
+    ? members.map(function(m){
+        return '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">'
+          + '<div style="flex:1;font-size:13px;color:var(--text)">'+escapeHtml(m.name||('EIN '+m.ein))+' <span style="color:var(--muted);font-size:11px">EIN '+m.ein+'</span></div>'
+          + cohortSel('coh-row-'+m.ein, m.cohort)
+          + '<button class="btn-logout" onclick="applyCohortChange('+m.ein+')">Save</button>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No one is in Operations or Leadership yet.</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:11px;color:var(--muted);line-height:1.5;padding:0 0 10px">Crew default to <b>Crew</b> (personal view only). Assign <b>Operations</b> or <b>Leadership</b> for read-all access in THE GOAT. <b>Admin</b> is granted by promoting the SmartStaff account to Super Admin \u2014 not here. Cohort is shared with the crew portal.</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:8px">'
+      + '<input id="coh-assign-name" list="coh-roster" placeholder="Find crew by name\u2026" style="'+EF_INPUT_STYLE+';flex:1">'
+      + '<datalist id="coh-roster">'+dl+'</datalist>'
+      + cohortSel('coh-assign-cohort','operations')
+      + '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="assignCohort()">Assign</button>'
+    + '</div>'
+    + '<div id="coh-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-bottom:6px"></div>'
+    + '<div id="coh-list">'+listHtml+'</div>';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+}
+
+function _cohParseEin(s){
+  const m = String(s||'').match(/EIN\s*(\d+)\s*$/i);
+  return m ? m[1] : '';
+}
+
+async function assignCohort(){
+  const err = document.getElementById('coh-error'); if(err) err.textContent = '';
+  const ein = _cohParseEin(document.getElementById('coh-assign-name').value);
+  const cohort = document.getElementById('coh-assign-cohort').value;
+  if(!ein){ if(err) err.textContent = 'Pick a crew member from the list.'; return; }
+  await _cohortSet(ein, cohort);
+}
+
+async function applyCohortChange(ein){
+  const sel = document.getElementById('coh-row-'+ein);
+  if(!sel) return;
+  await _cohortSet(String(ein), sel.value);
+}
+
+async function _cohortSet(ein, cohort){
+  const err = document.getElementById('coh-error'); if(err) err.textContent = '';
+  try{
+    const r = await fetch('/api/cohort', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ein:ein, cohort:cohort})});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openCohortModal();   // re-render the list with the new state
+  }catch(e){
+    if(err) err.textContent = e.message;
+  }
+}
+
 // ── Quick-add Customer / Contact / Venue from the manual Booking form ──────
 const AE_ERR = '<div id="ae-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0 122px;min-height:14px"></div>';
 const AE_NOTE = function(t){ return '<div style="font-size:10px;color:var(--muted);padding:4px 0 0 122px">'+t+'</div>'; };
 
-function openAddEntity(kind){
+function openAddEntity(kind, fromAdmin){
+  window._aeFromAdmin = !!fromAdmin;  // Admin tab: skip booking-form wiring
   openEntityModal();
   const body = document.getElementById('entity-modal-body');
   const acts = document.getElementById('entity-modal-actions');
@@ -3661,6 +3958,26 @@ async function submitAddEntity(kind){
     });
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    // Launched from the Administration tab (or before the booking form loaded):
+    // no dropdowns to feed, so just confirm the create and stop.
+    if(window._aeFromAdmin || !_mbLookups){
+      // Keep the cached lookups fresh (so a follow-up Add Contact sees a new
+      // customer) WITHOUT touching the hidden booking dropdowns.
+      if(_mbLookups && _mbLookups[cfg.listKey]){
+        _mbLookups[cfg.listKey].push({id:String(d.id), name:d.name});
+        _mbLookups[cfg.listKey].sort(function(a,b){ return a.name.localeCompare(b.name); });
+      }
+      const niceKind = kind.charAt(0).toUpperCase() + kind.slice(1);
+      document.getElementById('entity-modal-title').textContent = niceKind + ' created';
+      document.getElementById('entity-modal-sub').textContent   = '';
+      document.getElementById('entity-modal-body').innerHTML =
+        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.6">'
+        + escapeHtml(d.name||'') + ' was added to SmartStaff.</div>';
+      document.getElementById('entity-modal-actions').innerHTML =
+        entityBtn('Add another', "openAddEntity('"+kind+"', true)")
+        + entityBtn('Done', 'closeEntityModal()', {primary:true});
+      return;
+    }
     _mbLookups[cfg.listKey].push({id:String(d.id), name:d.name});
     _mbLookups[cfg.listKey].sort((a,b)=>a.name.localeCompare(b.name));
     cfg.selects.forEach(function(s){
@@ -6038,33 +6355,7 @@ function applyGoldRows(){
   </div>
 </div>
 
-<div id="elevators-modal" style="display:none;position:fixed;inset:0;z-index:99992;
-     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeElevatorsModal()">
-  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
-              width:480px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
-                border-bottom:1px solid var(--border);background:#0a0a0a">
-      <div>
-        <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.1em;color:var(--accent)">ADMIN ACCESS</div>
-        <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace">Who can step up to admin · added users become operations</div>
-      </div>
-      <button onclick="closeElevatorsModal()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1">✕</button>
-    </div>
-    <div style="padding:16px 18px">
-      <div style="display:flex;gap:8px;margin-bottom:6px">
-        <input id="elev-add-ein" type="text" inputmode="numeric" placeholder="EIN to grant"
-               style="flex:1;box-sizing:border-box;padding:8px 10px;background:#0a0a0a;border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:'Share Tech Mono',monospace"
-               onkeydown="if(event.key==='Enter')addElevator()">
-        <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="addElevator()">Add</button>
-      </div>
-      <div id="elev-msg" style="font-size:11px;min-height:14px;margin-bottom:10px;font-family:'Share Tech Mono',monospace"></div>
-      <div id="elev-list"></div>
-    </div>
-    <div style="display:flex;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a">
-      <button class="btn-logout" onclick="closeElevatorsModal()">Close</button>
-    </div>
-  </div>
-</div>
+
 
 <div id="unavail-modal" style="display:none;position:fixed;inset:0;z-index:99990;
      background:rgba(0,0,0,0.6);align-items:center;justify-content:center">
