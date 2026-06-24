@@ -1,6 +1,6 @@
 {
-  "version": "3.6.5",
-  "release_date": "2026-06-18",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.6.5/TheGOAT.dmg",
-  "release_notes": "Hotfix: the Crew Finder Send SMS button works again. It was failing to send and silently adding crew as Unconfirmed instead. Sending now goes through cleanly."
+  "version": "3.7.0",
+  "release_date": "2026-06-24",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.7.0/TheGOAT.dmg",
+  "release_notes": "This release contains the new Admin page for managing the addition of crew members, customers, contacts and venues."
 }
