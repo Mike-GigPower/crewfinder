@@ -1,6 +1,6 @@
 {
-  "version": "3.7.0",
+  "version": "3.7.1",
   "release_date": "2026-06-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.7.0/TheGOAT.dmg",
-  "release_notes": "This release contains the new Admin page for managing the addition of crew members, customers, contacts and venues."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.7.1/TheGOAT.dmg",
+  "release_notes": "Fixes the FULLY CREWED starburst easter egg — stars, flash and fanfare now fire again when the schedule tips into fully crewed."
 }
