@@ -5552,7 +5552,7 @@ let _schedData = null;   // declared up-front: switchTab('schedule') reads it
                          // lands on Schedule at load); an undeclared read threw
                          // a ReferenceError that loadWhoami swallowed -> crew.
 let _schedFilter   = 'all'; // 'all' | 'full' | 'partial' | 'empty'
-
+let _schedFirstLoad = true;  // seed the starburst baseline once, on first load only
 function setSchedFilter(f){
   _schedFilter = f;
   ['all','open'].forEach(s => {
@@ -5599,13 +5599,15 @@ async function loadSchedule(force=false){
         }
       });
     });
-    // Seed the all-full baseline from this freshly loaded data so the starburst
-    // egg fires only when a *subsequent* change tips the schedule into fully crewed,
-    // not when an already-full schedule is first displayed.
-    {
+    // Seed the all-full baseline ONLY on the first load, so opening an
+    // already-full schedule doesn't fire the egg. On every later refresh we
+    // leave _schedAllFull untouched, so checkSchedAllBooked() can see a real
+    // "was not full -> now full" transition and fire the starburst.
+    if(_schedFirstLoad){
       const _calls = (_schedData.bookings || []).reduce((a,b)=>a.concat(b.calls||[]),[]);
       const _staffable = _calls.filter(c => (c.required||0) > 0);
       _schedAllFull = _staffable.length > 0 && _staffable.every(c => c.full);
+      _schedFirstLoad = false;
     }
     renderSchedule();
   } catch(e){
