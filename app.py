@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.7.1"
+APP_VERSION    = "3.8.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -580,6 +580,60 @@ def fetch_unavailabilities(crew_id):
                     "end":    ev.get("end"),
                     "reason": ev.get("title", "") or "Unavailable",
                 })
+            return out, None
+        except Exception as e:
+            return None, str(e)
+        finally:
+            _release(ss)
+
+
+def fetch_crew_inductions(crew_id):
+    """Read a crew member's full induction venue list + status on the operator's
+    behalf, via brief impersonation of that crew member's SmartStaff session.
+    my-induction-venues.php self-scopes to the acquired session user, so the
+    impersonated GET returns exactly that crew member's inductions.
+    Returns (venues_list, error)."""
+    with _unavail_write_lock:                      # serialise impersonation ops
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return None, err
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/crew/my-induction-venues.php",
+                          allow_redirects=True)
+            data = json.loads(resp.text or "{}")
+            if isinstance(data, dict) and data.get("error"):
+                return None, data["error"]
+            return data.get("venues", []), None
+        except Exception as e:
+            return None, str(e)
+        finally:
+            _release(ss)
+
+
+def add_crew_induction(crew_id, venue_ids, complete_date, cert):
+    """Upload an induction certificate on a crew member's behalf, fanning the one
+    PDF across one or more venues, via impersonation. `cert` is the uploaded
+    FileStorage; `venue_ids` is a comma-separated string. add-my-induction.php
+    self-scopes to the acquired session user. Returns (result_dict, error)."""
+    with _unavail_write_lock:                      # serialise impersonated writes
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return None, err
+        try:
+            pdf_bytes = cert.read()
+            files = {"certificate": (cert.filename or "certificate.pdf",
+                                     pdf_bytes, "application/pdf")}
+            data = {"confirmation": "1",
+                    "complete_date": complete_date,
+                    "venue_ids": venue_ids}
+            resp = ss.post(f"{BASE_URL}/ajax/crew/add-my-induction.php",
+                           data=data, files=files, allow_redirects=True)
+            try:
+                out = json.loads(resp.text or "{}")
+            except Exception:
+                return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+            if isinstance(out, dict) and out.get("error"):
+                return None, out["error"]
             return out, None
         except Exception as e:
             return None, str(e)
@@ -6346,6 +6400,35 @@ def api_admin_update_crew(crew_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(data)
+
+
+@app.route("/api/admin/crew/<crew_id>/inductions")
+@require_cohort("admin")
+def api_admin_crew_inductions(crew_id):
+    """One crew member's full induction status (on-behalf, via impersonation)."""
+    venues, err = fetch_crew_inductions(crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"venues": venues})
+
+
+@app.route("/api/admin/crew/<crew_id>/inductions", methods=["POST"])
+@require_cohort("admin")
+def api_admin_add_crew_induction(crew_id):
+    """Record an induction certificate on a crew member's behalf (fan-out)."""
+    venue_ids     = (request.form.get("venue_ids") or "").strip()
+    complete_date = (request.form.get("complete_date") or "").strip()
+    cert          = request.files.get("certificate")
+    if not venue_ids:
+        return jsonify({"error": "Select at least one venue"}), 400
+    if not complete_date:
+        return jsonify({"error": "Completion date required"}), 400
+    if not cert:
+        return jsonify({"error": "Certificate PDF required"}), 400
+    out, err = add_crew_induction(crew_id, venue_ids, complete_date, cert)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
 
 
 if __name__ == "__main__":

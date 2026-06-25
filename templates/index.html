@@ -3847,6 +3847,102 @@ async function _loadCrewList(){
   _renderCrewList();
 }
 
+async function openCrewInductions(id){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Inductions';
+  document.getElementById('entity-modal-sub').textContent   = window._crewEditName || ('ID '+id);
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading inductions\u2026</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+  let data;
+  try{
+    const r = await fetch('/api/admin/crew/'+encodeURIComponent(id)+'/inductions');
+    data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.error || ('HTTP '+r.status));
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load inductions: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Back to edit', "openCrewEdit('"+String(id)+"')") + entityBtn('Close','closeEntityModal()');
+    return;
+  }
+  const venues = data.venues || [];
+  const order = {'Expired':0,'Expiring Soon':1,'Incomplete':2,'Complete':3};
+  venues.sort(function(a,b){
+    var oa = order[a.status]!==undefined?order[a.status]:9, ob = order[b.status]!==undefined?order[b.status]:9;
+    if(oa!==ob) return oa-ob;
+    return String(a.venue||'').localeCompare(String(b.venue||''));
+  });
+  function pill(s){
+    var col = s==='Complete' ? '#1f8f4e' : s==='Expiring Soon' ? '#b8860b' : s==='Expired' ? 'var(--conflict)' : '#555';
+    return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+col+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(s)+'</span>';
+  }
+  var counts = {Expired:0,'Expiring Soon':0,Incomplete:0,Complete:0};
+  venues.forEach(function(v){ if(counts[v.status]!==undefined) counts[v.status]++; });
+  var summary = [];
+  if(counts.Expired) summary.push(counts.Expired+' expired');
+  if(counts['Expiring Soon']) summary.push(counts['Expiring Soon']+' expiring soon');
+  if(counts.Incomplete) summary.push(counts.Incomplete+' incomplete');
+  if(counts.Complete) summary.push(counts.Complete+' complete');
+  var rows = venues.length
+    ? venues.map(function(v){
+        return '<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="display:flex;align-items:center;gap:9px;min-width:0">'
+          +   '<input type="checkbox" class="ind-venue" value="'+v.venue_id+'">'
+          +   '<div style="min-width:0"><div style="font-size:13px;color:var(--text)">'+escapeHtml(v.venue||'')+'</div>'
+          +   (v.completed ? '<div style="font-size:10px;color:var(--muted)">Completed '+escapeHtml(v.completed)+'</div>' : '')
+          +   '</div>'
+          + '</div>' + pill(v.status||'') + '</label>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No induction venues found.</div>';
+  var uploadForm = venues.length ? (
+      '<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:12px">'
+    + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Record an induction</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Tick one or more venues above, then attach the certificate. The one PDF is recorded against every ticked venue, so you can cover a precinct like Melbourne Park in a single upload.</div>'
+    + efRow('Completion date', '<input id="ind-date" type="date" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Certificate (PDF)', '<input id="ind-file" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'">')
+    + '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text);cursor:pointer;padding:4px 0 2px"><input type="checkbox" id="ind-confirm" style="margin-top:2px"> I confirm this crew member has completed the ticked induction(s).</label>'
+    + '<div id="ind-status" style="font-size:11px;min-height:14px;padding:4px 0"></div>'
+    + '</div>'
+  ) : '';
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+(summary.length?escapeHtml(summary.join(' \u00b7 ')):'No inductions on record')+'</div>'
+    + rows + uploadForm;
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Back to edit', "openCrewEdit('"+String(id)+"')")
+    + (venues.length ? entityBtn('Upload certificate', "submitCrewInduction('"+String(id)+"')", {primary:true, id:'ind-upload-btn'}) : '')
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+async function submitCrewInduction(id){
+  var status = document.getElementById('ind-status');
+  var btn = document.getElementById('ind-upload-btn');
+  function fail(msg){ if(status){ status.style.color='var(--conflict)'; status.textContent=msg; } }
+  if(status){ status.style.color='var(--muted)'; status.textContent=''; }
+  var vids = Array.from(document.querySelectorAll('.ind-venue:checked')).map(function(x){return x.value;});
+  var date = (document.getElementById('ind-date')||{value:''}).value;
+  var fileEl = document.getElementById('ind-file');
+  var file = (fileEl && fileEl.files) ? fileEl.files[0] : null;
+  var confirmed = (document.getElementById('ind-confirm')||{checked:false}).checked;
+  if(!vids.length) return fail('Tick at least one venue.');
+  if(!date) return fail('Choose the completion date.');
+  if(!file) return fail('Attach the certificate PDF.');
+  if(!confirmed) return fail('Tick the confirmation before uploading on their behalf.');
+  var fd = new FormData();
+  fd.append('venue_ids', vids.join(','));
+  fd.append('complete_date', date);
+  fd.append('certificate', file);
+  if(btn) btn.disabled = true;
+  if(status){ status.style.color='var(--muted)'; status.textContent='Uploading...'; }
+  try{
+    var r = await fetch('/api/admin/crew/'+encodeURIComponent(id)+'/inductions', {method:'POST', body:fd});
+    var out = await r.json();
+    if(!r.ok || out.error) throw new Error(out.error || ('HTTP '+r.status));
+    if(status){ status.style.color='#1f8f4e'; status.textContent='Saved '+((out.venues||[]).length)+' induction(s). Refreshing...'; }
+    setTimeout(function(){ openCrewInductions(id); }, 800);
+  }catch(e){
+    if(btn) btn.disabled = false;
+    fail('Upload failed: '+e.message);
+  }
+}
+
 async function openCrewEdit(id){
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Edit Crew Member';
@@ -3865,6 +3961,7 @@ async function openCrewEdit(id){
     return;
   }
 
+  window._crewEditName = ((c.firstname||'')+' '+(c.lastname||'')).trim();
   const activeSel = '<select id="ce-active" style="'+EF_INPUT_STYLE+'">'
     + '<option value="1"'+(String(c.active)==='1'?' selected':'')+'>Active</option>'
     + '<option value="0"'+(String(c.active)==='0'?' selected':'')+'>Inactive</option>'
@@ -3903,6 +4000,7 @@ async function openCrewEdit(id){
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Cancel', 'openCrewListModal(_crewListActive)')
+    + entityBtn('Inductions', "openCrewInductions('"+String(c.id)+"')")
     + entityBtn('Save changes', "submitCrewEdit('"+String(c.id)+"')", {primary:true, id:'ce-submit'});
 }
 
