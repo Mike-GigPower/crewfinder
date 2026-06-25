@@ -1,6 +1,6 @@
 {
-  "version": "3.8.0",
-  "release_date": "2026-06-25",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.8.0/TheGOAT.dmg",
-  "release_notes": "Manage Crew (edit crew records, groups, password reset), a rebuilt Crew Finder filter toolbar with chips and reactive search, and on-behalf crew Inductions — view a crew member's induction status and upload a certificate for them straight from Manage Crew."
+  "version": "3.9.0",
+  "release_date": "2026-06-26",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.9.0/TheGOAT.dmg",
+  "release_notes": "v3.9.0 - Edit Crew Member is now tabbed (Details / Inductions / Calls / Unavailability) with the crew member's name in the header. New Calls tab lists every call ever assigned with its status (Confirmed / Declined / Offered), newest first. 'All day' checkbox added to unavailability entry on the admin dialog and the crew My Status form."
 }
