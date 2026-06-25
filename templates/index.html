@@ -137,6 +137,26 @@ tr.partial .name-cell{border-left-color:var(--warn)}
 .cf-legend-item{display:flex;align-items:center;gap:6px}
 .cf-legend-swatch{width:20px;height:10px;border-radius:2px;flex-shrink:0}
 .goat-ask-bar{display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
+.cf-toolbar{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.cf-tool-ico{font-size:13px;flex-shrink:0}
+.cf-tool-name{display:flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:4px 9px;width:175px;flex-shrink:0}
+.cf-tool-name input{background:transparent;border:0;outline:0;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;width:100%}
+.cf-tool-ask{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
+.cf-tool-ask .goat-ask-input{flex:1;min-width:0}
+.cf-tool-filters{position:relative;flex-shrink:0}
+.cf-filters-btn{display:flex;align-items:center;gap:7px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:5px;color:var(--accent);font-weight:700;letter-spacing:.05em;text-transform:uppercase;font-size:12px;padding:6px 12px;cursor:pointer;white-space:nowrap}
+.cf-fb-count{background:var(--accent);color:var(--bg);border-radius:9px;min-width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;padding:0 5px}
+.cf-dropdown{position:absolute;left:0;top:calc(100% + 6px);width:440px;max-width:90vw;background:var(--surface);border:1px solid var(--accent);border-radius:8px;padding:14px;z-index:60;display:none;box-shadow:0 8px 28px rgba(0,0,0,.55)}
+.cf-dropdown.open{display:block}
+.cf-dd-sec{margin-bottom:14px}
+.cf-dd-sec:last-child{margin-bottom:0}
+.cf-dd-lbl{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:7px}
+.cf-dd-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);cursor:pointer}
+.cf-chips{display:none;flex-wrap:wrap;gap:7px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--bg)}
+.cf-chip{display:inline-flex;align-items:center;gap:7px;background:var(--surface2);border:1px solid var(--border);border-radius:14px;font-size:12px;color:var(--text);padding:4px 6px 4px 11px}
+.cf-chip b{color:var(--accent);font-weight:600}
+.cf-chip .cf-x{cursor:pointer;width:16px;height:16px;border-radius:50%;background:var(--border);color:#bbb;display:inline-flex;align-items:center;justify-content:center;font-size:11px;line-height:1}
+.cf-chips .cf-clr{font-size:11px;color:var(--muted);cursor:pointer;letter-spacing:.05em;text-transform:uppercase;margin-left:2px}
 .goat-ask-icon{font-size:15px;flex-shrink:0}
 .goat-ask-input{flex:1;min-width:240px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 11px;font-family:'Rajdhani',sans-serif;font-size:13px}
 .goat-ask-input:focus{outline:none;border-color:var(--border-gold)}
@@ -755,42 +775,7 @@ body.cohort-readonly #unavail-add-section{display:none}
   <div class="tab-panel" id="tab-crew-finder">
   <div class="sidebar">
     <div class="sidebar-top">
-      <div class="section-label">Filters</div>
-      <!-- ── GROUP FILTER ── -->
-      <div class="geo-toggle-row">
-        <input type="checkbox" id="group-enable" onchange="toggleGroupFilter()">
-        <label for="group-enable">Filter by group</label>
-      </div>
-      <div class="geo-body" id="group-body" style="display:none">
-        <div class="groups-grid" id="groups-grid"></div>
-      </div>
-      <div class="rating-row">
-        <span class="rating-label">Min Rating</span>
-        <input type="range" id="rating-slider" min="1" max="10" value="3" oninput="document.getElementById('rating-val').textContent=this.value">
-        <span class="rating-val" id="rating-val">3</span>
-      </div>
-      <!-- ── DISTANCE / GEO FILTER ── -->
-      <div class="geo-toggle-row">
-        <input type="checkbox" id="geo-enable" onchange="toggleGeo()">
-        <label for="geo-enable">Filter by distance</label>
-      </div>
-      <div class="geo-body" id="geo-body">
-        <div class="rating-row" style="margin-bottom:8px">
-          <span class="rating-label">Within</span>
-          <input type="range" id="radius-slider" min="5" max="100" step="5" value="25"
-                 oninput="document.getElementById('radius-val').textContent=this.value">
-          <span class="rating-val" id="radius-val">25</span>
-          <span class="rating-label">km</span>
-        </div>
-        <div class="geo-origin-row">
-          <span class="rating-label">Origin</span>
-          <button type="button" class="geo-mode-btn active" id="geo-mode-venue" onclick="setGeoMode('venue')">Venue</button>
-          <button type="button" class="geo-mode-btn" id="geo-mode-postcode" onclick="setGeoMode('postcode')">Postcode</button>
-          <input type="text" id="geo-postcode" class="geo-pc-input" placeholder="3000" maxlength="4"
-                 inputmode="numeric" style="display:none">
-        </div>
-      </div>
-      <!-- ── SPOT-CHECK A SPECIFIC PERSON (ignores the filters above) ── -->
+      <!-- ── SPOT-CHECK A SPECIFIC PERSON (ignores the filters) ── -->
       <div class="section-label" style="margin-top:10px">Spot-check a person</div>
       <div class="geo-origin-row">
         <input type="text" id="cf-spotcheck-input" list="cf-roster-list"
@@ -800,7 +785,7 @@ body.cohort-readonly #unavail-add-section{display:none}
         <button type="button" class="geo-mode-btn" onclick="spotCheckCrew()">Check</button>
       </div>
       <datalist id="cf-roster-list"></datalist>
-      <button class="btn-search" id="search-btn" onclick="runSearch()" disabled>
+      <button class="btn-search" id="search-btn" onclick="runSearch()" style="margin-top:16px" disabled>
         <div class="spinner" id="search-spinner"></div>
         <span id="search-btn-text">Select a call first</span>
       </button>
@@ -825,18 +810,61 @@ body.cohort-readonly #unavail-add-section{display:none}
     </div>
   </div>
   <div class="results-panel">
+    <div class="cf-toolbar" id="cf-toolbar">
+      <div class="cf-tool-name">
+        <span class="cf-tool-ico">🔍</span>
+        <input type="text" id="cf-name-filter" placeholder="Filter by name…" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="applyCfNameFilter(this.value)" title="Narrow the results below by name">
+      </div>
+      <div class="cf-tool-filters">
+        <button type="button" class="cf-filters-btn" id="cf-filters-btn" onclick="cfToggleFilters(event)">⚙ Filters <span class="cf-fb-count" id="cf-filters-count" style="display:none">0</span> ▾</button>
+        <div class="cf-dropdown" id="cf-dropdown">
+          <div class="cf-dd-sec">
+            <div class="cf-dd-lbl">Filter by group</div>
+            <div class="groups-grid" id="groups-grid"></div>
+          </div>
+          <div class="cf-dd-sec">
+            <div class="cf-dd-lbl">Minimum rating</div>
+            <div class="rating-row">
+              <input type="range" id="rating-slider" min="1" max="10" value="3" oninput="document.getElementById('rating-val').textContent=this.value;cfRenderChips()" onchange="cfReSearchIfActive()">
+              <span class="rating-val" id="rating-val">3</span>
+            </div>
+          </div>
+          <div class="cf-dd-sec">
+            <label class="cf-dd-check"><input type="checkbox" id="exclude-pt" onchange="cfRenderChips();cfReSearchIfActive()"> Exclude public-transport-only crew</label>
+          </div>
+          <div class="cf-dd-sec">
+            <label class="cf-dd-check"><input type="checkbox" id="geo-enable" onchange="toggleGeo();cfReSearchIfActive()"> Filter by distance</label>
+            <div class="geo-body" id="geo-body" style="margin-top:8px">
+              <div class="rating-row" style="margin-bottom:8px">
+                <span class="rating-label">Within</span>
+                <input type="range" id="radius-slider" min="5" max="100" step="5" value="25" oninput="document.getElementById('radius-val').textContent=this.value;cfRenderChips()" onchange="cfReSearchIfActive()">
+                <span class="rating-val" id="radius-val">25</span>
+                <span class="rating-label">km</span>
+              </div>
+              <div class="geo-origin-row">
+                <span class="rating-label">Origin</span>
+                <button type="button" class="geo-mode-btn active" id="geo-mode-venue" onclick="setGeoMode('venue')">Venue</button>
+                <button type="button" class="geo-mode-btn" id="geo-mode-postcode" onclick="setGeoMode('postcode')">Postcode</button>
+                <input type="text" id="geo-postcode" class="geo-pc-input" placeholder="3000" maxlength="4" inputmode="numeric" style="display:none">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="cf-tool-ask">
+        <span class="cf-tool-ico">🐐</span>
+        <input id="goat-ask-input" class="goat-ask-input" autocomplete="off" placeholder="Ask the GOAT to filter or sort — e.g. &ldquo;lots of RLA experience&rdquo;, &ldquo;sort by hours at Marvel&rdquo;" onkeydown="if(event.key==='Enter')askGoatCrew()">
+        <button id="goat-ask-btn" class="btn" onclick="askGoatCrew()">Ask</button>
+        <div id="goat-ask-status" class="goat-ask-status" style="display:none"></div>
+      </div>
+    </div>
+    <div class="cf-chips" id="cf-chips"></div>
     <div class="results-header" id="results-header" style="display:none">
       <div class="stat"><span class="stat-num green" id="cnt-avail">0</span><span class="stat-label">available</span></div>
       <div class="stat"><span class="stat-num red" id="cnt-conf">0</span><span class="stat-label">conflicts</span></div>
       <div class="stat"><span class="stat-num grey" id="cnt-skip">0</span><span class="stat-label">skipped</span></div>
       <div class="stat" id="stat-unknown" style="display:none"><span class="stat-num grey" id="cnt-unknown">0</span><span class="stat-label">no location</span></div>
       <div class="results-actions">
-        <input type="text" id="cf-name-filter" placeholder="🔍 Filter by name…"
-               autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="applyCfNameFilter(this.value)"
-               title="Narrow the results below by name"
-               style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
-                      color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;
-                      padding:4px 8px;width:140px;outline:none">
         <button class="btn" id="view-table-btn" onclick="setView('table')">&#9776; Table</button>
         <button class="btn btn-view-active" id="view-tl-btn" onclick="setView('timeline')">&#9632; Timeline</button>
         <span style="width:1px;height:20px;background:var(--border);display:inline-block"></span>
@@ -847,14 +875,6 @@ body.cohort-readonly #unavail-add-section{display:none}
         <button class="btn btn-confirm" id="btn-confirm" disabled onclick="addSelected(true)">&#10003; Add &amp; Confirm</button>
         <button class="btn btn-sms" id="btn-sms" disabled onclick="sendSMS()">&#9993; Send SMS</button>
       </div>
-    </div>
-    <div class="goat-ask-bar" id="goat-ask-bar" style="display:none">
-      <span class="goat-ask-icon">🐐</span>
-      <input id="goat-ask-input" class="goat-ask-input" autocomplete="off"
-             placeholder="Ask the GOAT to filter or sort — e.g. &ldquo;lots of RLA experience&rdquo;, &ldquo;experience with ProStage&rdquo;, &ldquo;sort by hours at Marvel&rdquo;"
-             onkeydown="if(event.key==='Enter')askGoatCrew()">
-      <button id="goat-ask-btn" class="btn" onclick="askGoatCrew()">Ask</button>
-      <div id="goat-ask-status" class="goat-ask-status" style="display:none"></div>
     </div>
     <div class="cf-legend" id="cf-legend" style="display:none">
       <span class="cf-legend-title">Shift bars:</span>
@@ -1372,17 +1392,17 @@ body.cohort-readonly #unavail-add-section{display:none}
     <div class="admin-hub">
       <div class="admin-hub-head">
         <div class="admin-hub-title">Administration</div>
-        <div class="admin-hub-sub">Maintain GOAT / SmartStaff records &mdash; add people and places, and manage who can access THE GOAT.</div>
+        <div class="admin-hub-sub">Maintain crew, customer, venue and contact records, and manage who can access THE GOAT.</div>
       </div>
       <div id="admin-hub-note"></div>
 
       <div class="admin-hub-section">Records</div>
       <div class="admin-card-grid">
-        <button class="admin-card" onclick="adminAddUser()">
-          <div class="admin-card-icon">👤</div>
+        <button class="admin-card" onclick="adminCrewList()">
+          <div class="admin-card-icon">📋</div>
           <div class="admin-card-body">
-            <div class="admin-card-title">Add Crew Member</div>
-            <div class="admin-card-desc">Create a new crew member in SmartStaff.</div>
+            <div class="admin-card-title">Manage Crew</div>
+            <div class="admin-card-desc">Search, view and edit crew records.</div>
           </div>
         </button>
         <button class="admin-card" onclick="openAddEntity('customer', true)">
@@ -1700,26 +1720,67 @@ async function loadGroups(){
   const resp=await fetch('/api/groups'),data=await resp.json();
   allGroups=data.groups;
   document.getElementById('groups-grid').innerHTML=allGroups.map(g=>`<button class="group-chip" onclick="toggleGroup(this,'${g}')">${g}</button>`).join('');
+  cfRenderChips();
 }
 function toggleGroup(el,group){
   if(activeGroups.has(group)){activeGroups.delete(group);el.classList.remove('active')}
   else{activeGroups.add(group);el.classList.add('active')}
+  cfRenderChips();
+  cfReSearchIfActive();
 }
 function toggleGeo(){
   const on=document.getElementById('geo-enable').checked;
   document.getElementById('geo-body').classList.toggle('active',on);
+  cfRenderChips();
 }
-function toggleGroupFilter(){
-  const on=document.getElementById('group-enable').checked;
-  const body=document.getElementById('group-body');
-  body.style.display = on ? '' : 'none';   // collapse entirely when off
-  body.classList.toggle('active',on);
+function cfToggleFilters(e){ if(e) e.stopPropagation(); document.getElementById('cf-dropdown').classList.toggle('open'); }
+var _cfSearchTimer=null;
+function cfReSearchIfActive(){
+  const rh=document.getElementById('results-header');
+  if(!(rh && rh.style.display && rh.style.display!=='none' && selectedCalls.size)) return;
+  if(_cfSearchTimer) clearTimeout(_cfSearchTimer);
+  _cfSearchTimer=setTimeout(function(){ _cfSearchTimer=null; runSearch(); }, 300);
 }
+function cfRenderChips(){
+  const box=document.getElementById('cf-chips'); if(!box) return;
+  const chips=[];
+  activeGroups.forEach(function(g){ chips.push('<span class="cf-chip">Group <b>'+escapeHtml(g)+'</b><span class="cf-x" data-act="group" data-val="'+escapeHtml(g)+'">×</span></span>'); });
+  const rs=document.getElementById('rating-slider'); const rating=rs?(parseInt(rs.value)||1):1;
+  if(rating>1) chips.push('<span class="cf-chip">Min rating <b>'+rating+'</b><span class="cf-x" data-act="rating">×</span></span>');
+  const px=document.getElementById('exclude-pt'); if(px&&px.checked) chips.push('<span class="cf-chip"><b>Exclude PT-only</b><span class="cf-x" data-act="pt">×</span></span>');
+  const gx=document.getElementById('geo-enable');
+  if(gx&&gx.checked){ const km=(document.getElementById('radius-slider')||{value:25}).value; const origin=(typeof geoMode!=='undefined'&&geoMode==='postcode')?'postcode':'venue'; chips.push('<span class="cf-chip"><b>≤'+km+'km</b> from '+origin+'<span class="cf-x" data-act="dist">×</span></span>'); }
+  const cnt=document.getElementById('cf-filters-count'); if(cnt){ cnt.textContent=chips.length; cnt.style.display=chips.length?'inline-flex':'none'; }
+  if(chips.length){ box.innerHTML=chips.join('')+'<span class="cf-clr">clear all</span>'; box.style.display='flex'; }
+  else { box.innerHTML=''; box.style.display='none'; }
+}
+function cfRemoveGroup(g){ activeGroups.delete(g); const grid=document.getElementById('groups-grid'); if(grid) grid.querySelectorAll('.group-chip').forEach(function(b){ if(b.textContent===g) b.classList.remove('active'); }); cfRenderChips(); cfReSearchIfActive(); }
+function cfResetRating(){ const s=document.getElementById('rating-slider'); if(s){ s.value=1; document.getElementById('rating-val').textContent='1'; } cfRenderChips(); cfReSearchIfActive(); }
+function cfClearExcludePt(){ const c=document.getElementById('exclude-pt'); if(c) c.checked=false; cfRenderChips(); cfReSearchIfActive(); }
+function cfClearDistance(){ const c=document.getElementById('geo-enable'); if(c){ c.checked=false; toggleGeo(); } else { cfRenderChips(); } cfReSearchIfActive(); }
+function cfClearAllFilters(){ activeGroups.clear(); const grid=document.getElementById('groups-grid'); if(grid) grid.querySelectorAll('.group-chip').forEach(function(b){ b.classList.remove('active'); }); const s=document.getElementById('rating-slider'); if(s){ s.value=1; document.getElementById('rating-val').textContent='1'; } const px=document.getElementById('exclude-pt'); if(px) px.checked=false; const gx=document.getElementById('geo-enable'); if(gx&&gx.checked){ gx.checked=false; toggleGeo(); } else { cfRenderChips(); } cfReSearchIfActive(); }
+document.addEventListener('click', function(e){
+  const t=e.target;
+  if(t&&t.classList){
+    if(t.classList.contains('cf-clr')){ cfClearAllFilters(); return; }
+    if(t.classList.contains('cf-x')&&t.dataset&&t.dataset.act){
+      const a=t.dataset.act;
+      if(a==='group') cfRemoveGroup(t.dataset.val);
+      else if(a==='rating') cfResetRating();
+      else if(a==='pt') cfClearExcludePt();
+      else if(a==='dist') cfClearDistance();
+      return;
+    }
+  }
+  const dd=document.getElementById('cf-dropdown'), btn=document.getElementById('cf-filters-btn');
+  if(dd&&dd.classList.contains('open')&&!dd.contains(t)&&btn&&!btn.contains(t)){ dd.classList.remove('open'); }
+});
 function setGeoMode(mode){
   geoMode=mode;
   document.getElementById('geo-mode-venue').classList.toggle('active',mode==='venue');
   document.getElementById('geo-mode-postcode').classList.toggle('active',mode==='postcode');
   document.getElementById('geo-postcode').style.display = mode==='postcode' ? 'inline-block' : 'none';
+  cfRenderChips();
 }
 
 async function loadCalls(force=false){
@@ -1887,8 +1948,9 @@ async function runSearch(){
     const resp=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         calls: callPayload,
-        required_groups: document.getElementById('group-enable')?.checked ? [...activeGroups] : [],
+        required_groups: [...activeGroups],
         min_rating:parseInt(document.getElementById('rating-slider').value),
+        exclude_pt: !!(document.getElementById('exclude-pt') && document.getElementById('exclude-pt').checked),
         ...geoFields
       })});
     const result=await resp.json();
@@ -2157,7 +2219,7 @@ function renderResults(result,details,targets){
   }
   document.getElementById('results-header').style.display='flex';
   document.getElementById('cf-legend').style.display='flex';
-  document.getElementById('goat-ask-bar').style.display='flex';
+  cfRenderChips();
   selected.clear();updateSelCount();
 
   // Build booked crew section
@@ -3562,7 +3624,7 @@ function auGroupsHtml(groups){
 async function adminAddUser(){
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Add Crew Member';
-  document.getElementById('entity-modal-sub').textContent   = 'Creates a new crew member in SmartStaff';
+  document.getElementById('entity-modal-sub').textContent   = 'Creates a new crew member';
   document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div>';
   document.getElementById('entity-modal-actions').innerHTML  = '';
 
@@ -3725,6 +3787,211 @@ async function submitAddContactAdmin(){
     if(btn){ btn.disabled = false; btn.textContent = 'Create contact'; }
   }
 }
+
+// ── Administration: Crew list ────────────────────────────────────────────────
+// Read-only roster browser (batch 1). Per-row actions (inductions, make
+// inactive) arrive in a later commit. Mirrors the Manage Cohorts modal idiom.
+let _crewListData   = [];    // rows currently loaded from the server
+let _crewListActive = true;  // true = Active set, false = Inactive set
+
+function adminCrewList(){ openCrewListModal(true); }
+
+async function openCrewListModal(active){
+  _crewListActive = (active !== false);
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Manage Crew';
+  document.getElementById('entity-modal-sub').textContent   = 'Search the roster \u00b7 view EIN, phone and status';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-body').innerHTML =
+      _crewListControls()
+    + '<div id="crew-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div></div>';
+  await _loadCrewList();
+}
+
+function _crewListControls(){
+  const seg = function(label, isActive){
+    const on = (isActive === _crewListActive);
+    return '<button class="btn-logout" onclick="_crewListSetActive('+(isActive?'true':'false')+')" '
+      + 'style="'+(on?'border-color:var(--accent);color:var(--accent)':'')+'">'+label+'</button>';
+  };
+  return '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%;margin-bottom:10px" onclick="adminAddUser()">+ Add Crew Member</button>'
+    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+    + '<input id="crew-list-search" oninput="_renderCrewList()" placeholder="Search name, EIN or phone\u2026" style="'+EF_INPUT_STYLE+';flex:1">'
+    + seg('Active', true)
+    + seg('Inactive', false)
+    + '</div>'
+    + '<div id="crew-list-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>';
+}
+
+async function _crewListSetActive(active){
+  if(_crewListActive === active) return;
+  _crewListActive = active;
+  document.getElementById('entity-modal-body').innerHTML =
+      _crewListControls()
+    + '<div id="crew-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div></div>';
+  await _loadCrewList();
+}
+
+async function _loadCrewList(){
+  try{
+    const url = '/api/admin/crew-list' + (_crewListActive ? '' : '?active=0');
+    const r = await fetch(url);
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    _crewListData = d.crew || [];
+  }catch(e){
+    const rows = document.getElementById('crew-list-rows');
+    if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load crew: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  _renderCrewList();
+}
+
+async function openCrewEdit(id){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Edit Crew Member';
+  document.getElementById('entity-modal-sub').textContent   = '';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  let c;
+  try{
+    const r = await fetch('/api/admin/crew/'+encodeURIComponent(id));
+    c = await r.json();
+    if(!r.ok || c.error) throw new Error(c.error || ('HTTP '+r.status));
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load crew member: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+
+  const activeSel = '<select id="ce-active" style="'+EF_INPUT_STYLE+'">'
+    + '<option value="1"'+(String(c.active)==='1'?' selected':'')+'>Active</option>'
+    + '<option value="0"'+(String(c.active)==='0'?' selected':'')+'>Inactive</option>'
+    + '</select>';
+
+  const groupGrid = '<div style="display:flex;flex-wrap:wrap;gap:6px 14px;padding:4px 0">'
+    + ((c.all_groups||[]).length
+        ? (c.all_groups||[]).map(function(g){
+            var on = (c.group_ids||[]).indexOf(g.id) >= 0;
+            return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);white-space:nowrap;cursor:pointer">'
+              + '<input type="checkbox" class="ce-group" value="'+g.id+'"'+(on?' checked':'')+'> '
+              + escapeHtml(g.name) + '</label>';
+          }).join('')
+        : '<span style="color:var(--muted);font-size:12px">No groups defined.</span>')
+    + '</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:10px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:6px">EIN '+escapeHtml(String(c.ein||''))+' \u00b7 ID '+escapeHtml(String(c.id))+'</div>'
+    + efRow('First name',      efInput('ce-first', c.firstname))
+    + efRow('Last name',       efInput('ce-last', c.lastname))
+    + efRow('Mobile',          efInput('ce-mobile', c.mobile, 'tel'))
+    + efRow('Phone',           efInput('ce-phone', c.phone, 'tel'))
+    + efRow('Email',           efInput('ce-email', c.email, 'email'))
+    + efRow('Date of birth',   efInput('ce-dob', c.dob, 'date'))
+    + efRow('Street address',  efInput('ce-address', c.address))
+    + efRow('Suburb',          efInput('ce-suburb', c.suburb))
+    + efRow('State',           efInput('ce-state', c.state))
+    + efRow('Postcode',        efInput('ce-postcode', c.postcode))
+    + efRow('Emergency name',  efInput('ce-ec-name', c.emergency_contact))
+    + efRow('Emergency phone', efInput('ce-ec-phone', c.emergency_phone, 'tel'))
+    + efRow('Rating (0-10)',   efInput('ce-rating', c.rating, 'number'))
+    + efRow('Status',          activeSel)
+    + efRow('Groups',          groupGrid)
+    + efRow('Notes',           efTextarea('ce-notes', c.notes))
+    + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
+    + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel', 'openCrewListModal(_crewListActive)')
+    + entityBtn('Save changes', "submitCrewEdit('"+String(c.id)+"')", {primary:true, id:'ce-submit'});
+}
+
+async function submitCrewEdit(id){
+  const err = document.getElementById('ce-error');
+  const btn = document.getElementById('ce-submit');
+  if(err) err.textContent = '';
+  const val = function(eid){ var el=document.getElementById(eid); return el ? el.value.trim() : ''; };
+
+  const payload = {
+    firstname: val('ce-first'),
+    lastname: val('ce-last'),
+    mobile: val('ce-mobile'),
+    phone: val('ce-phone'),
+    email: val('ce-email'),
+    dob: val('ce-dob'),
+    address: val('ce-address'),
+    suburb: val('ce-suburb'),
+    state: val('ce-state'),
+    postcode: val('ce-postcode'),
+    emergency_contact: val('ce-ec-name'),
+    emergency_phone: val('ce-ec-phone'),
+    rating: val('ce-rating'),
+    active: (document.getElementById('ce-active')||{value:'1'}).value,
+    notes: val('ce-notes'),
+    groups: Array.from(document.querySelectorAll('.ce-group:checked')).map(function(x){return x.value;}).join(',')
+  };
+  const pw = val('ce-password');
+  if(pw) payload.password = pw;   // only sent when set; blank leaves login unchanged
+
+  if(!payload.firstname || !payload.lastname){
+    if(err) err.textContent = 'First and last name are required.';
+    return;
+  }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving\u2026'; }
+  try{
+    const r = await fetch('/api/admin/crew/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openCrewListModal(_crewListActive);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+  }
+}
+
+// ── _renderCrewList — rows are now click-to-edit ─────────────────────────────
+function _renderCrewList(){
+  const box = document.getElementById('crew-list-search');
+  const q = box ? box.value : '';
+  const needle = q.toLowerCase().trim();
+  const rows = needle
+    ? _crewListData.filter(function(c){
+        return (c.name||'').toLowerCase().indexOf(needle) >= 0
+            || String(c.ein||'').indexOf(needle) >= 0
+            || (c.phone||'').toLowerCase().indexOf(needle) >= 0;
+      })
+    : _crewListData;
+
+  const cnt = document.getElementById('crew-list-count');
+  if(cnt) cnt.textContent = rows.length + ' of ' + _crewListData.length + ' shown';
+
+  const html = rows.length
+    ? rows.map(function(c){
+        const status = c.active
+          ? '<span style="color:var(--ok,#10b981);font-size:11px">Active</span>'
+          : '<span style="color:var(--muted);font-size:11px">Inactive</span>';
+        const tel = (c.phone||'').replace(/\s+/g,'');
+        const phoneHtml = c.phone
+          ? ' \u00b7 <a href="tel:'+escapeHtml(tel)+'" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">'+escapeHtml(c.phone)+'</a>'
+          : '';
+        return '<div onclick="openCrewEdit(\''+String(c.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="flex:1;min-width:0">'
+            + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.name||'')+'</div>'
+            + '<div style="font-size:11px;color:var(--muted)">EIN '+escapeHtml(String(c.ein||''))+phoneHtml+'</div>'
+          + '</div>'
+          + status
+          + '<span style="color:var(--muted);font-size:14px">\u203a</span>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No crew match \u201c'+escapeHtml(q)+'\u201d.</div>';
+
+  const target = document.getElementById('crew-list-rows');
+  if(target) target.innerHTML = html;
+}
+
 function adminManageCohorts(){ openCohortModal(); }
 
 async function openCohortModal(){

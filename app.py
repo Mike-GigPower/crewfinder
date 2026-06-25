@@ -3311,6 +3311,7 @@ def api_availability():
     data            = request.json
     required_groups = data.get("required_groups", [])
     min_rating      = int(data.get("min_rating", 3))
+    exclude_pt      = bool(data.get("exclude_pt", False))  # drop public-transport-only crew
     radius_km       = data.get("radius_km")     # None => geo filter off (back-compat)
     origin          = data.get("origin")        # {"mode":"venue"} or {"mode":"postcode","postcode":"3000"}
     only_ids        = data.get("only_crew_ids")
@@ -3419,6 +3420,10 @@ def api_availability():
         for cert in required_groups:
             if cert.lower() not in groups_lower:
                 reasons.append(f"Missing: {cert}")
+        # PT-only crew rely on public transport -- exclude on request so they
+        # are not offered for venues/times they cannot reasonably reach.
+        if exclude_pt and "pt only" in groups_lower:
+            reasons.append("PT-only (excluded)")
 
         # Rating/group gate: applied for a normal search; bypassed for a spot-check.
         if spot_ids is None and reasons:
@@ -3704,11 +3709,25 @@ def api_version():
 @app.route("/api/groups")
 @require_cohort(*READ_ALL_COHORTS)
 def api_groups():
-    return jsonify({"groups": [
-        "W.B.", "PhD.", "CI Card", "JOAT", "Audio", "Backline",
-        "Fork", "Lights", "Set/Stg", "Spot", "Truck", "Wardrobe",
-        "EWP", "MCEC", "MCG", "MOPT"
-    ]})
+    # Live crew_groups list (names) for the Crew Finder filter chips. Falls back
+    # to a static list if SmartStaff is unreachable or list-groups.php is absent,
+    # so the sidebar still renders rather than erroring.
+    fallback = ["W.B.", "PhD.", "CI Card", "JOAT", "Audio", "Backline",
+                "Fork", "Lights", "Set/Stg", "Spot", "Truck", "Wardrobe",
+                "EWP", "MCEC", "MCG", "MOPT"]
+    ss = get_ss_session()
+    if ss:
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/crew/list-groups.php",
+                          allow_redirects=True, timeout=15)
+            if resp.status_code == 200:
+                data  = json.loads(resp.text or "{}")
+                names = [g.get("name") for g in data.get("groups", []) if g.get("name")]
+                if names:
+                    return jsonify({"groups": names})
+        except Exception:
+            pass
+    return jsonify({"groups": fallback})
 
 @app.route("/api/crew-roster")
 @require_cohort("admin")
@@ -6075,7 +6094,35 @@ def api_admin_crew_lookups():
         data["temp_password"] = NEW_CREW_TEMP_PASSWORD   # single source -> form note
     return jsonify(data)
 
+@app.route("/api/admin/crew-list")
+@require_cohort("admin")
+def api_admin_crew_list():
+    """Crew list for the Administration tab: {id, name, ein, phone, active}.
 
+    ?active=0 returns inactive crew; default (or ?active=1) returns active.
+    id is the internal SmartStaff userId — the same one /crew/manage and
+    aquire-id use, so the list rows can drive both view/edit and login-as.
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    want_active = request.args.get("active", "1") != "0"
+    crew, err = fetch_crew_bulk(ss, include_inactive=(not want_active))
+    if err:
+        return jsonify({"error": err}), 502
+    rows = [
+        {
+            "id":     c["id"],
+            "name":   c.get("name", ""),
+            "ein":    c.get("ein") or c["id"],
+            "phone":  c.get("phone", "") or "",
+            "active": int(c.get("active", 1)),
+        }
+        for c in (crew or [])
+        if int(c.get("active", 1)) == (1 if want_active else 0)
+    ]
+    rows.sort(key=lambda r: (r["name"] or "").lower())
+    return jsonify({"crew": rows})
 @app.route("/api/admin/add-user", methods=["POST"])
 @require_cohort("admin")
 def api_admin_add_user():
@@ -6220,6 +6267,86 @@ def api_call_crew_status(booking_id, call_id, user_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
+
+def ss_get_crew(ss, crew_id):
+    """Fetch one crew member's editable fields via get-crew.php. Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-crew.php"
+    try:
+        resp = ss.get(url, params={"id": int(crew_id)}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_update_crew(ss, crew_id, fields):
+    """Update one crew member's record via update-crew.php (form-encoded, so the
+    endpoint's $_POST reads it). Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/update-crew.php"
+    payload = dict(fields or {})
+    payload["id"] = int(crew_id)
+    try:
+        resp = ss.post(url, data=payload, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/admin/crew/<crew_id>")
+@require_cohort("admin")
+def api_admin_get_crew(crew_id):
+    """One crew member's editable fields, to pre-fill the admin edit form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_crew(ss, crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/api/admin/crew/<crew_id>", methods=["POST"])
+@require_cohort("admin")
+def api_admin_update_crew(crew_id):
+    """Update one crew member's record from the admin edit form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    allowed = ("firstname", "lastname", "mobile", "phone", "dob", "address", "suburb", "state",
+               "postcode", "email", "emergency_contact", "emergency_phone",
+               "notes", "active", "rating", "groups", "password")
+    body = request.get_json(silent=True) or {}
+    fields = dict((k, body[k]) for k in allowed if k in body and body[k] is not None)
+    data, err = ss_update_crew(ss, crew_id, fields)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5001, debug=False, threaded=True)
