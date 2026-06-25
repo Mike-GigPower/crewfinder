@@ -1,6 +1,6 @@
 {
-  "version": "3.7.1",
-  "release_date": "2026-06-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.7.1/TheGOAT.dmg",
-  "release_notes": "Fixes the FULLY CREWED starburst easter egg — stars, flash and fanfare now fire again when the schedule tips into fully crewed."
+  "version": "3.8.0",
+  "release_date": "2026-06-25",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.8.0/TheGOAT.dmg",
+  "release_notes": "Manage Crew (edit crew records, groups, password reset), a rebuilt Crew Finder filter toolbar with chips and reactive search, and on-behalf crew Inductions — view a crew member's induction status and upload a certificate for them straight from Manage Crew."
 }
