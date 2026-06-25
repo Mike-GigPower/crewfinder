@@ -1370,6 +1370,12 @@ body.cohort-readonly #unavail-add-section{display:none}
         <div class="ms-card-body">
           <div id="ms-unavail-list"><div class="ms-empty">Loading…</div></div>
           <div id="ms-unavail-add" style="display:none;border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+            <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);
+                          margin-bottom:10px;cursor:pointer;user-select:none">
+              <input type="checkbox" id="ms-un-allday" onchange="msToggleAllDay()"
+                     style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">
+              All day <span style="color:var(--muted);font-size:10px">(00:00 – 23:59)</span>
+            </label>
             <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
               <div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">From</label>
                 <input type="date" id="ms-un-start-date" class="ms-mini-input">
@@ -1668,18 +1674,32 @@ async function loadMyUnavail(){
   }catch(e){ box.innerHTML=`<div class="ms-empty">Error: ${e.message}</div>`; }
 }
 
+function msToggleAllDay(){
+  const on = !!(document.getElementById('ms-un-allday') && document.getElementById('ms-un-allday').checked);
+  const stt = document.getElementById('ms-un-start-time'), ett = document.getElementById('ms-un-end-time');
+  if(on){ if(stt) stt.value='00:00'; if(ett) ett.value='23:59'; }
+  [stt, ett].forEach(function(el){ if(el){ el.disabled = on; el.style.opacity = on ? '0.4' : '1'; } });
+}
+
 function msToggleAddUnavail(){
   const f=document.getElementById('ms-unavail-add');
   const show = (f.style.display==='none'||!f.style.display);
   f.style.display = show ? 'block' : 'none';
-  if(show) setTimeout(()=>f.scrollIntoView({behavior:'smooth',block:'end'}), 30);
+  if(show){
+    const ad=document.getElementById('ms-un-allday');
+    if(ad){ ad.checked=false; if(typeof msToggleAllDay==='function') msToggleAllDay(); }
+    setTimeout(()=>f.scrollIntoView({behavior:'smooth',block:'end'}), 30);
+  }
 }
 
 async function msSubmitUnavail(){
   const msg=document.getElementById('ms-un-msg');
-  const sd=document.getElementById('ms-un-start-date').value, st=document.getElementById('ms-un-start-time').value||'00:00';
-  const ed=document.getElementById('ms-un-end-date').value, et=document.getElementById('ms-un-end-time').value||'23:59';
+  const sd=document.getElementById('ms-un-start-date').value;
+  const ed=document.getElementById('ms-un-end-date').value;
   const reason=document.getElementById('ms-un-reason').value.trim();
+  const allDay=!!(document.getElementById('ms-un-allday') && document.getElementById('ms-un-allday').checked);
+  const st = allDay ? '00:00' : (document.getElementById('ms-un-start-time').value||'00:00');
+  const et = allDay ? '23:59' : (document.getElementById('ms-un-end-time').value||'23:59');
   if(!sd||!ed||!reason){ msg.style.color='var(--conflict)'; msg.textContent='Fill in both dates and a reason.'; return; }
   const sp=st.split(':').map(Number), ep=et.split(':').map(Number);
   msg.style.color='var(--muted)'; msg.textContent='Saving…';
@@ -3936,11 +3956,16 @@ async function submitCrewInduction(id){
     var out = await r.json();
     if(!r.ok || out.error) throw new Error(out.error || ('HTTP '+r.status));
     if(status){ status.style.color='#1f8f4e'; status.textContent='Saved '+((out.venues||[]).length)+' induction(s). Refreshing...'; }
-    setTimeout(function(){ openCrewInductions(id); }, 800);
+    setTimeout(function(){ ceLoadInductions(id); }, 800);
   }catch(e){
     if(btn) btn.disabled = false;
     fail('Upload failed: '+e.message);
   }
+}
+
+function openCrewUnavail(id){
+  closeEntityModal();
+  openUnavailManager(id, window._crewEditNameLF || window._crewEditName || '');
 }
 
 async function openCrewEdit(id){
@@ -3962,6 +3987,7 @@ async function openCrewEdit(id){
   }
 
   window._crewEditName = ((c.firstname||'')+' '+(c.lastname||'')).trim();
+  window._crewEditNameLF = [c.lastname, c.firstname].filter(Boolean).join(', ');
   const activeSel = '<select id="ce-active" style="'+EF_INPUT_STYLE+'">'
     + '<option value="1"'+(String(c.active)==='1'?' selected':'')+'>Active</option>'
     + '<option value="0"'+(String(c.active)==='0'?' selected':'')+'>Inactive</option>'
@@ -3978,9 +4004,12 @@ async function openCrewEdit(id){
         : '<span style="color:var(--muted);font-size:12px">No groups defined.</span>')
     + '</div>';
 
-  document.getElementById('entity-modal-body').innerHTML =
-      '<div style="font-size:10px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:6px">EIN '+escapeHtml(String(c.ein||''))+' \u00b7 ID '+escapeHtml(String(c.id))+'</div>'
-    + efRow('First name',      efInput('ce-first', c.firstname))
+  // header carries name + EIN + ID
+  document.getElementById('entity-modal-title').textContent = (window._crewEditNameLF || window._crewEditName || 'Edit Crew Member');
+  document.getElementById('entity-modal-sub').textContent   = 'EIN '+String(c.ein||'')+' \u00b7 ID '+String(c.id);
+
+  const detailsHtml =
+      efRow('First name',      efInput('ce-first', c.firstname))
     + efRow('Last name',       efInput('ce-last', c.lastname))
     + efRow('Mobile',          efInput('ce-mobile', c.mobile, 'tel'))
     + efRow('Phone',           efInput('ce-phone', c.phone, 'tel'))
@@ -3998,10 +4027,27 @@ async function openCrewEdit(id){
     + efRow('Notes',           efTextarea('ce-notes', c.notes))
     + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
+
+  window._ceLoaded = {inductions:false, shifts:false, unavail:false};
+
+  const ceTabBar =
+      '<div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap">'
+    + [['details','Details'],['inductions','Inductions'],['shifts','Calls'],['unavail','Unavailability']].map(function(t){
+        return '<button type="button" id="ce-tabbtn-'+t[0]+'" onclick="ceShowTab(\''+String(c.id)+'\',\''+t[0]+'\')" '
+          + 'style="background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:\'Rajdhani\',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer">'+t[1]+'</button>';
+      }).join('')
+    + '</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      ceTabBar
+    + '<div id="ce-panel-details">'+detailsHtml+'</div>'
+    + '<div id="ce-panel-inductions" style="display:none"></div>'
+    + '<div id="ce-panel-shifts" style="display:none"></div>'
+    + '<div id="ce-panel-unavail" style="display:none"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Cancel', 'openCrewListModal(_crewListActive)')
-    + entityBtn('Inductions', "openCrewInductions('"+String(c.id)+"')")
     + entityBtn('Save changes', "submitCrewEdit('"+String(c.id)+"')", {primary:true, id:'ce-submit'});
+  ceShowTab(String(c.id), 'details');
 }
 
 async function submitCrewEdit(id){
@@ -4048,6 +4094,222 @@ async function submitCrewEdit(id){
     if(err) err.textContent = e.message;
     if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
   }
+}
+
+// ── Edit Crew Member: tabbed panels (Details / Inductions / Shifts / Unavailability) ──
+function ceShowTab(id, tab){
+  ['details','inductions','shifts','unavail'].forEach(function(t){
+    var panel = document.getElementById('ce-panel-'+t);
+    var btn   = document.getElementById('ce-tabbtn-'+t);
+    var on    = (t===tab);
+    if(panel) panel.style.display = on ? 'block' : 'none';
+    if(btn){
+      btn.style.color = on ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottomColor = on ? 'var(--accent)' : 'transparent';
+    }
+  });
+  window._ceLoaded = window._ceLoaded || {};
+  if(tab==='inductions' && !window._ceLoaded.inductions){ window._ceLoaded.inductions = true; ceLoadInductions(id); }
+  if(tab==='shifts'     && !window._ceLoaded.shifts){     window._ceLoaded.shifts = true;     ceLoadShifts(id); }
+  if(tab==='unavail'    && !window._ceLoaded.unavail){    window._ceLoaded.unavail = true;    ceLoadUnavail(id); }
+}
+
+async function ceLoadInductions(id){
+  var panel = document.getElementById('ce-panel-inductions');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading inductions\u2026</div>';
+  var data;
+  try{
+    var r = await fetch('/api/admin/crew/'+encodeURIComponent(id)+'/inductions');
+    data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.error || ('HTTP '+r.status));
+  }catch(e){
+    panel.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load inductions: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  var venues = data.venues || [];
+  var order = {'Expired':0,'Expiring Soon':1,'Incomplete':2,'Complete':3};
+  venues.sort(function(a,b){
+    var oa = order[a.status]!==undefined?order[a.status]:9, ob = order[b.status]!==undefined?order[b.status]:9;
+    if(oa!==ob) return oa-ob;
+    return String(a.venue||'').localeCompare(String(b.venue||''));
+  });
+  function pill(s){
+    var col = s==='Complete' ? '#1f8f4e' : s==='Expiring Soon' ? '#b8860b' : s==='Expired' ? 'var(--conflict)' : '#555';
+    return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+col+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(s)+'</span>';
+  }
+  var counts = {Expired:0,'Expiring Soon':0,Incomplete:0,Complete:0};
+  venues.forEach(function(v){ if(counts[v.status]!==undefined) counts[v.status]++; });
+  var summary = [];
+  if(counts.Expired) summary.push(counts.Expired+' expired');
+  if(counts['Expiring Soon']) summary.push(counts['Expiring Soon']+' expiring soon');
+  if(counts.Incomplete) summary.push(counts.Incomplete+' incomplete');
+  if(counts.Complete) summary.push(counts.Complete+' complete');
+  var rows = venues.length
+    ? venues.map(function(v){
+        return '<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="display:flex;align-items:center;gap:9px;min-width:0">'
+          +   '<input type="checkbox" class="ind-venue" value="'+v.venue_id+'">'
+          +   '<div style="min-width:0"><div style="font-size:13px;color:var(--text)">'+escapeHtml(v.venue||'')+'</div>'
+          +   (v.completed ? '<div style="font-size:10px;color:var(--muted)">Completed '+escapeHtml(v.completed)+'</div>' : '')
+          +   '</div>'
+          + '</div>' + pill(v.status||'') + '</label>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No induction venues found.</div>';
+  var uploadForm = venues.length ? (
+      '<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:12px">'
+    + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Record an induction</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">Tick one or more venues above, then attach the certificate. The one PDF is recorded against every ticked venue, so you can cover a precinct like Melbourne Park in a single upload.</div>'
+    + efRow('Completion date', '<input id="ind-date" type="date" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Certificate (PDF)', '<input id="ind-file" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'">')
+    + '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text);cursor:pointer;padding:4px 0 2px"><input type="checkbox" id="ind-confirm" style="margin-top:2px"> I confirm this crew member has completed the ticked induction(s).</label>'
+    + '<div id="ind-status" style="font-size:11px;min-height:14px;padding:4px 0"></div>'
+    + '<div style="padding-top:4px">'+entityBtn('Upload certificate', "submitCrewInduction('"+String(id)+"')", {primary:true, id:'ind-upload-btn'})+'</div>'
+    + '</div>'
+  ) : '';
+  panel.innerHTML =
+      '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+(summary.length?escapeHtml(summary.join(' \u00b7 ')):'No inductions on record')+'</div>'
+    + rows + uploadForm;
+}
+
+async function ceLoadShifts(id){
+  var panel = document.getElementById('ce-panel-shifts');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading calls\u2026</div>';
+  var data;
+  try{
+    var r = await fetch('/api/admin/crew/'+encodeURIComponent(id)+'/shifts');
+    data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.error || ('HTTP '+r.status));
+  }catch(e){
+    panel.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load calls: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  var shifts = data.shifts || [];
+  if(!shifts.length){ panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No calls on record.</div>'; return; }
+  function spill(s){
+    var st = s.status;
+    var col = st===5 ? '#1f8f4e' : st===6 ? 'var(--conflict)' : (st===0||st===1) ? '#b8860b' : '#555';
+    return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+col+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(s.status_label||'')+'</span>';
+  }
+  var counts = {};
+  shifts.forEach(function(s){ counts[s.status_label] = (counts[s.status_label]||0)+1; });
+  var summaryParts = Object.keys(counts).map(function(k){ return counts[k]+' '+String(k).toLowerCase(); });
+  var rows = shifts.map(function(s){
+    var title = escapeHtml(s.booking_name||s.call_name||'Call');
+    var sub = [];
+    if(s.venue) sub.push(escapeHtml(s.venue));
+    if(s.call_name && s.call_name!==s.booking_name) sub.push(escapeHtml(s.call_name));
+    var meta = escapeHtml(s.date||'') + (s.time? ' \u00b7 '+escapeHtml(s.time):'') + (s.length? ' \u00b7 '+s.length+'h':'');
+    var boss = s.is_call_boss ? ' <span style="font-size:9px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;vertical-align:middle">CALL BOSS</span>' : '';
+    return '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+      + '<div style="min-width:0">'
+      +   '<div style="font-size:13px;color:var(--text)">'+title+boss+'</div>'
+      +   (sub.length?'<div style="font-size:11px;color:var(--muted)">'+sub.join(' \u00b7 ')+'</div>':'')
+      +   '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+meta+'</div>'
+      + '</div>'
+      + spill(s) + '</div>';
+  }).join('');
+  panel.innerHTML =
+      '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+escapeHtml(shifts.length+' call'+(shifts.length===1?'':'s')+(summaryParts.length?'  \u00b7  '+summaryParts.join(' \u00b7 '):''))+'</div>'
+    + rows;
+}
+
+async function ceLoadUnavail(id){
+  var panel = document.getElementById('ce-panel-unavail');
+  if(!panel) return;
+  var today = new Date().toISOString().slice(0,10);
+  var inp = 'background:#0a0a0a;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px;display:block;margin-bottom:5px;width:160px;box-sizing:border-box';
+  panel.innerHTML =
+      '<div id="ceu-list" style="margin-bottom:16px"><div style="color:var(--muted);font-size:12px">Loading\u2026</div></div>'
+    + '<div style="border-top:1px solid var(--border);padding-top:12px">'
+    + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Add a period</div>'
+    + '<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);margin-bottom:10px;cursor:pointer;user-select:none">'
+    +   '<input type="checkbox" id="ceu-allday" onchange="ceUnavailToggleAllDay()" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer"> All day <span style="color:var(--muted);font-size:10px">(00:00 \u2013 23:59)</span>'
+    + '</label>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start">'
+    +   '<div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">From</label>'
+    +     '<input type="date" id="ceu-sd" value="'+today+'" style="'+inp+'">'
+    +     '<input type="time" id="ceu-st" value="00:00" style="'+inp+'"></div>'
+    +   '<div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">To</label>'
+    +     '<input type="date" id="ceu-ed" value="'+today+'" style="'+inp+'">'
+    +     '<input type="time" id="ceu-et" value="23:59" style="'+inp+'"></div>'
+    + '</div>'
+    + efRow('Reason', '<input type="text" id="ceu-reason" placeholder="e.g. Uni lectures, On leave" style="'+EF_INPUT_STYLE+'">')
+    + '<div id="ceu-msg" style="font-size:11px;margin-top:8px;min-height:14px"></div>'
+    + '<div style="padding-top:4px">'+entityBtn('Add unavailability', "ceUnavailAdd('"+String(id)+"')", {primary:true, id:'ceu-add-btn'})+'</div>'
+    + '</div>';
+  ceUnavailReload(id);
+}
+
+async function ceUnavailReload(id){
+  var box = document.getElementById('ceu-list');
+  if(!box) return;
+  box.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading\u2026</div>';
+  try{
+    var resp = await fetch('/api/unavailability/'+encodeURIComponent(id));
+    var data = await resp.json();
+    if(data.error){ box.innerHTML = '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(data.error)+'</div>'; return; }
+    var list = data.unavailabilities || [];
+    if(!list.length){ box.innerHTML = '<div style="color:var(--muted);font-size:12px">No unavailability periods.</div>'; return; }
+    var fmt = function(iso){ var d=new Date(iso); return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false}); };
+    box.innerHTML = list.map(function(p){
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 9px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;background:rgba(168,85,247,0.06)">'
+        + '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">'+escapeHtml(p.reason||'Unavailable')+'</div>'
+        + '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(fmt(p.start))+' \u2192 '+escapeHtml(fmt(p.end))+'</div></div>'
+        + '<button onclick="ceUnavailDelete(\''+String(id)+'\','+Number(p.id)+')" style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:\'Rajdhani\',sans-serif;font-weight:600">\u2715 Remove</button>'
+        + '</div>';
+    }).join('');
+  }catch(e){ box.innerHTML = '<div style="color:var(--conflict);font-size:12px">Error: '+escapeHtml(e.message)+'</div>'; }
+}
+
+function ceUnavailToggleAllDay(){
+  var on = !!(document.getElementById('ceu-allday') && document.getElementById('ceu-allday').checked);
+  var st = document.getElementById('ceu-st'), et = document.getElementById('ceu-et');
+  if(on){ if(st) st.value='00:00'; if(et) et.value='23:59'; }
+  [st,et].forEach(function(el){ if(el){ el.disabled=on; el.style.opacity = on?'0.4':'1'; } });
+}
+
+async function ceUnavailAdd(id){
+  var msg = document.getElementById('ceu-msg');
+  function set(t,ok){ if(msg){ msg.style.color = ok?'var(--accent)':'var(--conflict)'; msg.textContent=t; } }
+  var sd=(document.getElementById('ceu-sd')||{value:''}).value;
+  var ed=(document.getElementById('ceu-ed')||{value:''}).value;
+  var reason=((document.getElementById('ceu-reason')||{value:''}).value||'').trim();
+  var allDay=!!(document.getElementById('ceu-allday') && document.getElementById('ceu-allday').checked);
+  var st = allDay ? '00:00' : ((document.getElementById('ceu-st')||{value:'00:00'}).value||'00:00');
+  var et = allDay ? '23:59' : ((document.getElementById('ceu-et')||{value:'23:59'}).value||'23:59');
+  if(!sd||!ed){ set('Pick start and end dates.',false); return; }
+  if(!reason){ set('A reason is required.',false); return; }
+  var sp=st.split(':').map(Number), ep=et.split(':').map(Number);
+  var startTs=new Date(sd+'T'+st), endTs=new Date(ed+'T'+et);
+  if(endTs<=startTs){ set('End must be after start.',false); return; }
+  var btn=document.getElementById('ceu-add-btn');
+  if(btn) btn.disabled=true;
+  if(msg){ msg.style.color='var(--muted)'; msg.textContent='Adding\u2026'; }
+  try{
+    var r=await fetch('/api/unavailability/add',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({crew_id:id,start_date:sd,start_hour:sp[0],start_min:sp[1],end_date:ed,end_hour:ep[0],end_min:ep[1],reason:reason})});
+    var d=await r.json();
+    if(!r.ok||d.error){ set('\u2717 '+(d.error||'Failed to add.'),false); if(btn) btn.disabled=false; return; }
+    set('\u2713 Added.',true);
+    var rs=document.getElementById('ceu-reason'); if(rs) rs.value='';
+    var ad=document.getElementById('ceu-allday'); if(ad){ ad.checked=false; ceUnavailToggleAllDay(); }
+    ceUnavailReload(id);
+    if(typeof loadForecast==='function'){ try{ loadForecast(true); }catch(e){} }
+  }catch(e){ set('\u2717 '+e.message,false); }
+  finally{ if(btn) btn.disabled=false; }
+}
+
+async function ceUnavailDelete(id, eventId){
+  if(!confirm('Remove this unavailability period?')) return;
+  try{
+    var r=await fetch('/api/unavailability/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({crew_id:id,event_id:eventId})});
+    var d=await r.json();
+    if(d.success){ ceUnavailReload(id); if(typeof loadForecast==='function'){ try{ loadForecast(true); }catch(e){} } }
+    else { var m=document.getElementById('ceu-msg'); if(m){ m.style.color='var(--conflict)'; m.textContent='\u2717 '+(d.error||'Failed to remove.'); } }
+  }catch(e){ var m=document.getElementById('ceu-msg'); if(m){ m.style.color='var(--conflict)'; m.textContent='\u2717 '+e.message; } }
 }
 
 // ── _renderCrewList — rows are now click-to-edit ─────────────────────────────
@@ -5778,6 +6040,22 @@ async function executeUnavailAction(cardId){
 let _unavailCrewId = null;
 let _unavailCrewName = null;
 
+function _unavailToggleAllDay(){
+  const on = !!(document.getElementById('unavail-allday') && document.getElementById('unavail-allday').checked);
+  ['unavail-start-hour','unavail-start-min','unavail-end-hour','unavail-end-min'].forEach(function(id){
+    const el = document.getElementById(id); if(el) el.disabled = on;
+  });
+  ['unavail-start-time-cell','unavail-end-time-cell'].forEach(function(id){
+    const c = document.getElementById(id);
+    if(c){ c.style.opacity = on ? '0.4' : '1'; c.style.pointerEvents = on ? 'none' : 'auto'; }
+  });
+  if(on){
+    const sh=document.getElementById('unavail-start-hour'), sm=document.getElementById('unavail-start-min'),
+          eh=document.getElementById('unavail-end-hour'),  em=document.getElementById('unavail-end-min');
+    if(sh) sh.value='0'; if(sm) sm.value='0'; if(eh) eh.value='23'; if(em) em.value='45';
+  }
+}
+
 function _populateUnavailSelects(){
   const hsel = document.querySelectorAll('.unavail-hsel');
   const msel = document.querySelectorAll('.unavail-msel');
@@ -5806,6 +6084,8 @@ async function openUnavailManager(crewId, crewName){
   document.getElementById('unavail-start-date').value = today;
   document.getElementById('unavail-end-date').value = today;
   document.getElementById('unavail-reason').value = '';
+  const _ad = document.getElementById('unavail-allday');
+  if(_ad){ _ad.checked = false; if(typeof _unavailToggleAllDay==='function') _unavailToggleAllDay(); }
   document.getElementById('unavail-modal').style.display = 'flex';
   await loadUnavailList();
 }
@@ -5856,11 +6136,13 @@ function _unavailMsg(text, ok){
 async function submitUnavailAdd(){
   const sd = document.getElementById('unavail-start-date').value;
   const ed = document.getElementById('unavail-end-date').value;
-  const sh = document.getElementById('unavail-start-hour').value;
-  const sm = document.getElementById('unavail-start-min').value;
-  const eh = document.getElementById('unavail-end-hour').value;
-  const em = document.getElementById('unavail-end-min').value;
+  let sh = document.getElementById('unavail-start-hour').value;
+  let sm = document.getElementById('unavail-start-min').value;
+  let eh = document.getElementById('unavail-end-hour').value;
+  let em = document.getElementById('unavail-end-min').value;
   const reason = document.getElementById('unavail-reason').value.trim();
+  const allDay = !!(document.getElementById('unavail-allday') && document.getElementById('unavail-allday').checked);
+  if(allDay){ sh='0'; sm='0'; eh='23'; em='59'; }   // full day, bypasses the 15-min select cap
   if(!sd || !ed){ _unavailMsg('Pick start and end dates.', false); return; }
   if(!reason){ _unavailMsg('A reason is required.', false); return; }
   // basic ordering guard
@@ -5883,6 +6165,8 @@ async function submitUnavailAdd(){
     if(data.success){
       _unavailMsg('✓ Added.', true);
       document.getElementById('unavail-reason').value = '';
+      const _ad = document.getElementById('unavail-allday');
+      if(_ad){ _ad.checked = false; if(typeof _unavailToggleAllDay==='function') _unavailToggleAllDay(); }
       await loadUnavailList();
       if(typeof loadForecast==='function'){ try{ loadForecast(true); }catch(e){} }
     } else {
@@ -6750,13 +7034,19 @@ function applyGoldRows(){
       <div id="unavail-add-section">
       <div style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace;
                   letter-spacing:.1em;margin-bottom:8px;border-top:1px solid var(--border);padding-top:14px">ADD A PERIOD</div>
+      <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);
+                    margin-bottom:10px;cursor:pointer;user-select:none">
+        <input type="checkbox" id="unavail-allday" onchange="_unavailToggleAllDay()"
+               style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">
+        All day <span style="color:var(--muted);font-size:10px;font-family:'Share Tech Mono',monospace">(00:00 – 23:59)</span>
+      </label>
       <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
         <div>
           <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">Start date</label>
           <input type="date" id="unavail-start-date" style="background:#0a0a0a;border:1px solid var(--border);
                  color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px">
         </div>
-        <div>
+        <div id="unavail-start-time-cell">
           <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">Start time</label>
           <div style="display:flex;gap:3px">
             <select id="unavail-start-hour" class="unavail-hsel"></select>
@@ -6770,7 +7060,7 @@ function applyGoldRows(){
           <input type="date" id="unavail-end-date" style="background:#0a0a0a;border:1px solid var(--border);
                  color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px">
         </div>
-        <div>
+        <div id="unavail-end-time-cell">
           <label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">End time</label>
           <div style="display:flex;gap:3px">
             <select id="unavail-end-hour" class="unavail-hsel"></select>

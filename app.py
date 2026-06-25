@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.8.0"
+APP_VERSION    = "3.9.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -6345,6 +6345,30 @@ def ss_get_crew(ss, crew_id):
     return data, None
 
 
+def ss_get_crew_shifts(ss, crew_id):
+    """Every shift (call assignment) ever made to one crew member, with status,
+    newest first, via get-crew-shifts.php. Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-crew-shifts.php"
+    try:
+        resp = ss.get(url, params={"id": int(crew_id)}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
 def ss_update_crew(ss, crew_id, fields):
     """Update one crew member's record via update-crew.php (form-encoded, so the
     endpoint's $_POST reads it). Returns (data, error)."""
@@ -6410,6 +6434,19 @@ def api_admin_crew_inductions(crew_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify({"venues": venues})
+
+
+@app.route("/api/admin/crew/<crew_id>/shifts")
+@require_cohort("admin")
+def api_admin_crew_shifts(crew_id):
+    """Every shift ever assigned to one crew member, with status, newest first."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_crew_shifts(ss, crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
 
 
 @app.route("/api/admin/crew/<crew_id>/inductions", methods=["POST"])
