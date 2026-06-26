@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.10.0"
+APP_VERSION    = "3.11.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -4189,11 +4189,12 @@ def api_schedule():
     if not force and cached and (datetime.now() - cached["at"]).total_seconds() < 120:
         return jsonify(cached["data"])
 
-    # Leadership can't scrape the admin /bookings pages, so it reads the call
-    # list from the DB-backed bulk endpoint. Admin keeps the proven scrape.
-    if current_cohort() in LEADERSHIP_COHORTS:
-        calls = fetch_calls_bulk(ss, days=days)
-    else:
+    # Both cohorts read the Schedule from the DB-backed get-calls-bulk.php now —
+    # leadership can't scrape the admin /bookings pages, and admin no longer needs
+    # to. Admin keeps the scrape only as a fallback if the bulk endpoint returns
+    # nothing (graceful degradation, same pattern as the other bulk migrations).
+    calls = fetch_calls_bulk(ss, days=days)
+    if not calls and current_cohort() not in LEADERSHIP_COHORTS:
         calls = scrape_schedule(ss, days=days)
 
     # Group by booking_id
@@ -4203,9 +4204,9 @@ def api_schedule():
         if bid not in bookings:
             bookings[bid] = {
                 "booking_id":   bid,
-                "booking_name": c["booking_name"],
-                "venue":        c["venue"],
-                "contact":      c["contact"],
+                "booking_name": c.get("booking_name", ""),
+                "venue":        c.get("venue", ""),
+                "contact":      c.get("contact", ""),
                 "calls":        [],
             }
         bookings[bid]["calls"].append(c)
@@ -6329,6 +6330,151 @@ def api_call_crew_status(booking_id, call_id, user_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
+
+def ss_get_call_times(ss, call_id):
+    """Booked crew with their CURRENT actual times / paygrade / late / note, plus
+    the paygrade option list, via get-call-times.php (admin-only). Used to prefill
+    the call-dialog times grid. Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-call-times.php"
+    try:
+        resp = ss.get(url, params={"id": int(call_id)}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_update_call_times(ss, call_id, rows):
+    """Write per-crew ACTUAL TIMES for a call via update-call-times.php (admin-only).
+    Each row writes only the keys it carries: on/break/break_night/off, the paygrade
+    + its four derived rates, late and goat_note. The endpoint never touches status,
+    user_entered_times, times_filled or call_locked. Returns (data, error).
+
+    rows : list of {user_id, on, off, break, break_night, callpaygradeID, late, note}
+    """
+    url = f"{BASE_URL}/ajax/crew/update-call-times.php"
+    try:
+        resp = ss.post(url, params={"id": int(call_id)}, json={"rows": rows}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/call/<booking_id>/<call_id>/times")
+@require_cohort("admin")
+def api_call_times(booking_id, call_id):
+    """Booked crew with current actual-times/paygrade/late/note + paygrade options,
+    to prefill the call-dialog times grid. Proxies get-call-times.php (admin-only).
+    booking_id is taken for URL symmetry with the other call routes; the endpoint
+    derives bookingID from the call. Distinct path from /api/call/<b>/<c>, so no
+    collision with api_call_details (GET) or api_call_update (POST)."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_call_times(ss, call_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/times", methods=["POST"])
+@require_cohort("admin")
+def api_call_times_save(booking_id, call_id):
+    """Write per-crew actual times from the call-dialog times grid. Proxies
+    update-call-times.php (admin-only). Body {rows:[...]}. booking_id is for URL
+    symmetry; the endpoint derives bookingID from the call."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body = request.get_json(force=True) or {}
+    rows = body.get("rows")
+    if not isinstance(rows, list):
+        return jsonify({"error": "Body must be {rows:[...]}"}), 400
+    result, err = ss_update_call_times(ss, call_id, rows)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+
+def ss_get_bookings_bulk(ss, limit=50, offset=0, q=""):
+    """Chronological list of all bookings (most recent first) via
+    get-bookings-bulk.php (admin-only), for the All Bookings tab. Booking-level
+    rows; the front-end fetches a booking's calls on expand via get-booking.php.
+    Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-bookings-bulk.php"
+    params = {"limit": int(limit), "offset": int(offset)}
+    if q:
+        params["q"] = q
+    try:
+        resp = ss.get(url, params=params, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/bookings/all")
+@require_cohort("admin")
+def api_bookings_all():
+    """Chronological list of all bookings (past + future), most recent first, for
+    the All Bookings tab. Proxies get-bookings-bulk.php (admin-only). Query params:
+    limit (default 50, max 100), offset (default 0), q (optional booking-name
+    search). The front-end fetches a booking's calls on expand via
+    /api/booking/<id>."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    q = (request.args.get("q") or "").strip()
+    data, err = ss_get_bookings_bulk(ss, limit=limit, offset=offset, q=q)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
 
 def ss_get_crew(ss, crew_id):
     """Fetch one crew member's editable fields via get-crew.php. Returns (data, error)."""

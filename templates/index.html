@@ -759,6 +759,7 @@ body.cohort-readonly #unavail-add-section{display:none}
 </div>
 <div class="tab-bar">
   <button class="tab-btn active" id="tab-btn-schedule" onclick="switchTab('schedule')">📅 Schedule</button>
+  <button class="tab-btn" id="tab-btn-all-bookings" onclick="switchTab('all-bookings')">📚 All Bookings</button>
   <button class="tab-btn" id="tab-btn-crew-finder" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
   <button class="tab-btn" id="tab-btn-forecast" onclick="switchTab('forecast')">📊 Crew Utilization</button>
   <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
@@ -964,6 +965,20 @@ body.cohort-readonly #unavail-add-section{display:none}
 
     </div>
   </div><!-- end tab-schedule -->
+
+  <!-- ── ALL BOOKINGS TAB ── -->
+  <div class="tab-panel" id="tab-all-bookings">
+    <div style="display:flex;flex-direction:column;height:100%;padding:16px 20px;gap:12px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;flex-wrap:wrap">
+        <span style="font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:.05em;color:var(--text);font-size:15px">All Bookings</span>
+        <input id="ab-search" type="text" placeholder="Search booking name…" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="abSearchDebounced()" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;padding:6px 10px;min-width:220px">
+        <span id="ab-count" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
+        <button class="btn" onclick="loadAllBookings(true)">&#8635; Refresh</button>
+      </div>
+      <div id="ab-list" style="flex:1;overflow-y:auto"><div class="empty-state"><div class="empty-sub">Loading bookings…</div></div></div>
+      <div id="ab-more" style="flex-shrink:0;text-align:center"></div>
+    </div>
+  </div><!-- end tab-all-bookings -->
 
   <!-- ── INDUCTION CHECKER TAB ── -->
   <div class="tab-panel" id="tab-induction-checker">
@@ -1523,6 +1538,7 @@ function applyCohort(d){
   if(cohort === 'admin'){ hide('tab-btn-my-status'); return; }  // shared admin login — no personal view
   if(window.isReadOnlyCohort(cohort)){
     hide('tab-btn-crew-finder');                 // Crew Finder is admin-only
+    hide('tab-btn-all-bookings');                 // All Bookings is admin-only
     hide('tab-btn-import');                       // Estimate Import is admin-only
     hide('tab-btn-administration');               // Administration is admin-only
     // My Status tab stays: leadership are crew too — own inductions/shifts and
@@ -2945,6 +2961,7 @@ function switchTab(tab){
   if(tab==='import'){ loadImportHistory(); initManualBooking(); }
   if(tab==='forecast') initForecast();
   if(tab==='schedule') { initSchedule(); if(!_schedData) loadSchedule(); }
+  if(tab==='all-bookings') loadAllBookings();
   if(tab==='my-status') loadMyStatus();
 }
 
@@ -4966,7 +4983,331 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     + (window._curCallEdit
         ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
+    + entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')")
     + entityBtn('Close', 'closeEntityModal()');
+}
+
+
+// ── CALL TIMES GRID ─────────────────────────────────────────────────────────
+// Admin-only post-show actual-times entry, launched from the call dialog. Fetches
+// its own data from /api/call/<b>/<c>/times (booked crew + current times / paygrade
+// / late / note + paygrade options) so it does NOT depend on the dialog's crew
+// roster shape. Save posts to the same path; the endpoint writes on / break /
+// break_night / off, the paygrade + its four derived rates, late and goat_note —
+// and never status, times_filled or call_locked. No-show stays on the existing
+// crew status control. Reuses escapeHtml / decodeEntities / hms2hm / entityBtn /
+// closeEntityModal / openCallDialog already defined in index.html.
+
+let _ctState = null;  // {bookingId, callId, crew:[...], paygrades:[...], locked}
+
+function _ctTimeOk(s){
+  if(s === '' || s == null) return true;            // blank allowed
+  const m = String(s).match(/^(\d{1,2}):(\d{2})$/);
+  if(!m) return false;
+  const h = +m[1], mi = +m[2];
+  return h >= 0 && h <= 23 && mi >= 0 && mi <= 59;
+}
+
+function _ctStatusBadge(st){
+  const map = {5:['Confirmed','var(--ok,#10b981)'], 6:['Declined','var(--conflict,#ef4444)'],
+               8:['No-show','var(--conflict,#ef4444)'], 1:['Sent','var(--muted)'], 0:['—','var(--muted)']};
+  const e = map[st] || ['—','var(--muted)'];
+  return '<span style="font-size:9px;letter-spacing:.5px;color:'+e[1]+'">'+e[0]+'</span>';
+}
+
+async function openCallTimes(bookingId, callId){
+  document.getElementById('entity-modal-title').textContent = 'Enter Times';
+  document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading times…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+  try{
+    const res  = await fetch('/api/call/'+bookingId+'/'+callId+'/times');
+    const data = await res.json();
+    if(data.error){
+      document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(data.error)+'</div>';
+      document.getElementById('entity-modal-actions').innerHTML = entityBtn('‹ Back to call',"openCallDialog('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
+      return;
+    }
+    _ctState = {bookingId:bookingId, callId:callId, crew:data.crew||[], paygrades:data.paygrades||[], locked:!!data.call_locked};
+    renderCallTimesGrid();
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load times: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('‹ Back to call',"openCallDialog('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
+  }
+}
+
+function renderCallTimesGrid(){
+  const s   = _ctState;
+  const dis = s.locked ? ' disabled' : '';
+  const lockNote = s.locked
+    ? '<div style="color:var(--conflict);font-size:11px;padding:6px 0">This call is locked — times can\'t be edited. Unlock it in SmartStaff first.</div>'
+    : '';
+
+  const pgOpts = function(sel){
+    return s.paygrades.map(function(p){
+      const lbl = (p.day_desc && String(p.day_desc).trim()) ? p.day_desc : ('Grade '+p.id);
+      return '<option value="'+p.id+'"'+(p.id===sel?' selected':'')+'>'+escapeHtml(lbl)+'</option>';
+    }).join('');
+  };
+
+  const inp = function(id, val, ph){
+    return '<input id="'+id+'" value="'+escapeHtml(val||'')+'" placeholder="'+(ph||'')+'"'+dis+
+           ' style="width:58px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;'+
+           'color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px;text-align:center">';
+  };
+
+  const rows = s.crew.length ? s.crew.map(function(c){
+    const uid   = c.user_id;
+    const name  = escapeHtml(decodeEntities((c.lastname||'')+', '+(c.firstname||'')));
+    const pgSel = (c.callpaygradeID && c.callpaygradeID > 0) ? c.callpaygradeID : c.user_paygradeID;
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-off-'+uid,  hms2hm(c.off), 'HH:MM')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center"><select id="ct-pg-'+uid+'"'+dis+' style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px">'+pgOpts(pgSel)+'</select></td>'
+      + '<td style="padding:6px 4px;text-align:center"><input type="checkbox" id="ct-late-'+uid+'"'+(c.late?' checked':'')+dis+'></td>'
+      + '<td style="padding:6px 4px"><input id="ct-note-'+uid+'" value="'+escapeHtml(c.note||'')+'"'+dis+' placeholder="note" style="width:140px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;padding:4px 6px"></td>'
+      + '</tr>';
+  }).join('') : '<tr><td colspan="8" style="padding:10px;color:var(--muted);font-size:12px">No crew booked on this call.</td></tr>';
+
+  const th = function(t){ return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">'+t+'</th>'; };
+
+  document.getElementById('entity-modal-body').innerHTML =
+      lockNote
+    + '<div id="ct-result" style="font-size:11px;padding:0 0 6px"></div>'
+    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%">'
+    + '<thead><tr style="border-bottom:1px solid var(--border)">'
+    + th('Crew')+th('On')+th('Day Break')+th('Night Break')+th('Off')+th('Rate')+th('Late')+th('Note')
+    + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
+    + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). Saving writes times, rate, late and note — it does <b>not</b> tick “Times filled” or lock the call; that stays your review step in SmartStaff.</div>';
+
+  const actions = s.locked
+    ? entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()')
+    : entityBtn('Save Times',"saveCallTimes()",{primary:true, id:'ct-save-btn'}) + entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-actions').innerHTML = actions;
+}
+
+async function saveCallTimes(){
+  const s = _ctState;
+  if(!s || s.locked) return;
+  const result = document.getElementById('ct-result');
+
+  const rows = [];
+  const bad  = [];
+  s.crew.forEach(function(c){
+    const uid  = c.user_id;
+    const on   = (document.getElementById('ct-on-'+uid)   || {}).value   || '';
+    const brk  = (document.getElementById('ct-brk-'+uid)  || {}).value   || '';
+    const brkn = (document.getElementById('ct-brkn-'+uid) || {}).value   || '';
+    const off  = (document.getElementById('ct-off-'+uid)  || {}).value   || '';
+    const pg   = +(((document.getElementById('ct-pg-'+uid) || {}).value) || 0);
+    const late = (document.getElementById('ct-late-'+uid) || {}).checked ? 1 : 0;
+    const note = (document.getElementById('ct-note-'+uid) || {}).value   || '';
+    [['On',on],['Day Break',brk],['Night Break',brkn],['Off',off]].forEach(function(f){
+      if(!_ctTimeOk(f[1])) bad.push((c.lastname||'')+' — '+f[0]+' "'+f[1]+'"');
+    });
+    const row = {user_id:uid, on:on, break:brk, break_night:brkn, off:off, late:late, note:note};
+    if(pg > 0) row.callpaygradeID = pg;   // omit if no grade, so we never write 0
+    rows.push(row);
+  });
+
+  if(bad.length){
+    result.style.color = 'var(--conflict)';
+    result.innerHTML   = 'Fix these (use 24-hour HH:MM): '+escapeHtml(bad.join('; '));
+    return;
+  }
+
+  result.style.color = 'var(--muted)';
+  result.textContent = 'Saving…';
+  const saveBtn = document.getElementById('ct-save-btn');
+  if(saveBtn) saveBtn.disabled = true;
+
+  try{
+    const res = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/times', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({rows:rows})
+    });
+    const data = await res.json();
+    if(data.error){
+      result.style.color = 'var(--conflict)';
+      result.innerHTML   = escapeHtml(data.error);
+      if(saveBtn) saveBtn.disabled = false;
+      return;
+    }
+    const fails = (data.rows||[]).filter(function(r){ return !r.ok; });
+    if(fails.length){
+      result.style.color = 'var(--conflict)';
+      result.innerHTML   = 'Saved with issues: '+escapeHtml(fails.map(function(r){ return r.user_id+': '+r.error; }).join('; '));
+    } else {
+      result.style.color = 'var(--ok,#10b981)';
+      result.innerHTML   = '✓ Times saved for '+(data.rows||[]).length+' crew.';
+    }
+  }catch(e){
+    result.style.color = 'var(--conflict)';
+    result.innerHTML   = 'Save failed: '+escapeHtml(e.message);
+  }finally{
+    if(saveBtn) saveBtn.disabled = false;
+  }
+}
+
+
+// ── ALL BOOKINGS TAB ────────────────────────────────────────────────────────
+// Chronological list of every booking (most recent first), so finished shows —
+// which the future-only Schedule can't reach — are openable for times entry.
+// Booking rows expand to list their calls (fetched on demand via /api/booking/<id>,
+// the existing get-booking.php); each call opens the call dialog where ⏱ Enter Times
+// lives. Admin-only (the tab button is hidden for read-only cohorts). Reuses
+// escapeHtml / openCallDialog already defined in index.html.
+
+let _abState = {loaded:false, offset:0, limit:50, q:'', total:0, shown:0};
+let _abSearchTimer = null;
+
+function loadAllBookings(force){
+  if(_abState.loaded && !force) return;
+  _abState = {loaded:true, offset:0, limit:50, q:(document.getElementById('ab-search')||{}).value || '', total:0, shown:0};
+  const list = document.getElementById('ab-list');
+  if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Loading bookings…</div></div>';
+  const more = document.getElementById('ab-more');
+  if(more) more.innerHTML = '';
+  abFetch(false);
+}
+
+function abSearchDebounced(){
+  clearTimeout(_abSearchTimer);
+  _abSearchTimer = setTimeout(function(){
+    _abState.offset = 0;
+    _abState.shown  = 0;
+    _abState.q      = (document.getElementById('ab-search')||{}).value || '';
+    const list = document.getElementById('ab-list');
+    if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Searching…</div></div>';
+    abFetch(false);
+  }, 300);
+}
+
+async function abFetch(append){
+  const params = new URLSearchParams({limit:String(_abState.limit), offset:String(_abState.offset)});
+  if(_abState.q) params.set('q', _abState.q);
+  const more = document.getElementById('ab-more');
+  try{
+    const res  = await fetch('/api/bookings/all?'+params.toString());
+    const data = await res.json();
+    if(data.error){
+      document.getElementById('ab-list').innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:10px">'+escapeHtml(data.error)+'</div>';
+      if(more) more.innerHTML = '';
+      return;
+    }
+    _abState.total = data.total || 0;
+    const rows = (data.bookings||[]).map(abRow).join('');
+    const list = document.getElementById('ab-list');
+    if(append){
+      list.insertAdjacentHTML('beforeend', rows);
+    } else {
+      list.innerHTML = rows || '<div style="color:var(--muted);font-size:12px;padding:10px">No bookings'+(_abState.q?(' match “'+escapeHtml(_abState.q)+'”'):'')+'.</div>';
+    }
+    _abState.shown += (data.bookings||[]).length;
+
+    const count = document.getElementById('ab-count');
+    if(count) count.textContent = _abState.total ? (_abState.shown+' of '+_abState.total) : '';
+
+    if(more){
+      if(_abState.shown < _abState.total){
+        more.innerHTML = '<button class="btn" onclick="abShowMore()">Show 50 more</button>';
+      } else {
+        more.innerHTML = '';
+      }
+    }
+  }catch(e){
+    document.getElementById('ab-list').innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:10px">Couldn\'t load bookings: '+escapeHtml(e.message)+'</div>';
+    if(more) more.innerHTML = '';
+  }
+}
+
+function abShowMore(){
+  _abState.offset += _abState.limit;
+  const more = document.getElementById('ab-more');
+  if(more) more.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:6px">Loading…</div>';
+  abFetch(true);
+}
+
+function abRow(b){
+  const id     = b.booking_id;
+  const name   = escapeHtml(b.name || '(unnamed booking)');
+  const meta    = [b.date_str, b.venue, b.customer].filter(Boolean).map(escapeHtml).join(' · ');
+  const stColor = b.status_id === 0 ? 'var(--ok,#10b981)' : 'var(--muted)';
+  const status  = escapeHtml(b.status || '');
+  const ncalls  = (b.call_count||0)+' call'+((b.call_count===1)?'':'s');
+  return '<div class="ab-row" style="border:1px solid var(--border);border-radius:6px;margin-bottom:8px;background:var(--surface2);overflow:hidden">'
+    + '<div onclick="abToggle('+id+')" style="display:flex;align-items:center;gap:12px;padding:10px 12px;cursor:pointer">'
+      + '<span id="ab-chev-'+id+'" style="color:var(--muted);font-size:11px;width:10px;display:inline-block;transition:transform .15s">▸</span>'
+      + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+name+'</div>'
+        + '<div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(meta||'—')+'</div>'
+      + '</div>'
+      + '<span style="font-size:10px;color:'+stColor+';white-space:nowrap">'+status+'</span>'
+      + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">'+ncalls+'</span>'
+    + '</div>'
+    + '<div id="ab-calls-'+id+'" data-loaded="0" style="display:none;border-top:1px solid var(--border);padding:6px 12px 10px 34px"></div>'
+    + '</div>';
+}
+
+async function abToggle(bookingId){
+  const body = document.getElementById('ab-calls-'+bookingId);
+  const chev = document.getElementById('ab-chev-'+bookingId);
+  if(!body) return;
+  const open = body.style.display !== 'none';
+  if(open){
+    body.style.display = 'none';
+    if(chev) chev.style.transform = 'rotate(0deg)';
+    return;
+  }
+  body.style.display = '';
+  if(chev) chev.style.transform = 'rotate(90deg)';
+  if(body.getAttribute('data-loaded') === '1') return;   // fetched already
+
+  body.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:4px">Loading calls…</div>';
+  try{
+    const res  = await fetch('/api/booking/'+bookingId);
+    const data = await res.json();
+    if(data.error){
+      body.innerHTML = '<div style="color:var(--conflict);font-size:11px;padding:4px">'+escapeHtml(data.error)+'</div>';
+      return;
+    }
+    const calls = data.calls || [];
+    if(!calls.length){
+      body.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:4px">No calls on this booking.</div>';
+      body.setAttribute('data-loaded','1');
+      return;
+    }
+    body.innerHTML = calls.map(function(c){
+      const when = _abCallWhen(c.start_date, c.start_time);
+      const counts = (typeof c.booked !== 'undefined') ? (' · '+(c.confirmed||0)+'/'+(c.required||0)) : '';
+      return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-top:5px;cursor:pointer;background:var(--surface)">'
+        + '<span style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.call_name||'Call')+'</span>'
+        + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">'+escapeHtml(when)+counts+'</span>'
+        + '<span style="font-size:10px;color:var(--accent);white-space:nowrap">⏱ Enter Times →</span>'
+        + '</div>';
+    }).join('');
+    body.setAttribute('data-loaded','1');
+  }catch(e){
+    body.innerHTML = '<div style="color:var(--conflict);font-size:11px;padding:4px">Couldn\'t load calls: '+escapeHtml(e.message)+'</div>';
+  }
+}
+
+function _abCallWhen(startUnix, startTime){
+  let out = '';
+  if(startUnix){
+    const d = new Date(Number(startUnix)*1000);
+    if(!isNaN(d.getTime())){
+      out = d.toLocaleDateString(undefined, {day:'2-digit', month:'short', year:'numeric'});
+    }
+  }
+  if(startTime){
+    const m = String(startTime).match(/^(\d{1,2}):(\d{2})/);
+    if(m) out = (out?out+' ':'')+m[1].padStart(2,'0')+':'+m[2];
+  }
+  return out;
 }
 
 async function openBookingDialog(bookingId){
