@@ -95,7 +95,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.9.0"
+APP_VERSION    = "3.10.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -5077,12 +5077,20 @@ def execute_goat_tool(tool_name, tool_input, ss):
             cache, _ = load_cache()
             venue_filter = tool_input.get("venue_filter", "").lower()
             summary = {"compliant": [], "expiring": [], "expired": [], "incomplete": []}
-            for cid, info in list(cache.items())[:100]:
-                inductions = info.get("inductions", {})
-                for venue_name, ind in inductions.items():
+            # Use the SAME expiry computation as the Induction Checker page
+            # (/api/inductions -> _compute_induction_status), so the GOAT and the
+            # page can never disagree. The raw cached status is only Complete/
+            # Incomplete (SmartStaff doesn't compute expiry); Expired/Expiring
+            # Soon are derived from the completion date here. No [:100] cap — the
+            # page covers the whole roster, so this must too, or the totals won't
+            # reconcile.
+            for cid, info in cache.items():
+                inductions   = info.get("inductions", {})
+                venue_status = _compute_induction_status(inductions)
+                for venue_name, vs in venue_status.items():
                     if venue_filter and venue_filter not in venue_name.lower():
                         continue
-                    status = ind.get("status", "")
+                    status = vs.get("status", "")
                     entry = {"name": info.get("name",""), "venue": venue_name}
                     if status == "Complete":
                         summary["compliant"].append(entry)
@@ -6421,6 +6429,403 @@ def api_admin_update_crew(crew_id):
     body = request.get_json(silent=True) or {}
     fields = dict((k, body[k]) for k in allowed if k in body and body[k] is not None)
     data, err = ss_update_crew(ss, crew_id, fields)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+# ── Manage Venues ────────────────────────────────────────────────────────────
+# Authored-endpoint pattern, mirroring Manage Crew: get-venue.php (read one,
+# admin-gated, includes inactive venues) + update-venue.php (partial write,
+# success gated on mysql_error()). The browse list reuses the existing
+# ss_get_venues scrape ({id, name}); the click opens the full record.
+
+def ss_get_venue(ss, venue_id):
+    """Fetch one venue's editable fields via get-venue.php. Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-venue.php"
+    try:
+        resp = ss.get(url, params={"id": int(venue_id)}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_update_venue(ss, venue_id, fields):
+    """Update one venue's record via update-venue.php (form-encoded, so the
+    endpoint's $_POST reads it). Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/update-venue.php"
+    payload = dict(fields or {})
+    payload["id"] = int(venue_id)
+    try:
+        resp = ss.post(url, data=payload, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_list_venues(ss):
+    """All venues {id, name, active} via list-venues.php (admin call, no scrape).
+    Returns (list, error)."""
+    url = f"{BASE_URL}/ajax/crew/list-venues.php"
+    try:
+        resp = ss.get(url, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return (data.get("venues") or []), None
+
+
+@app.route("/api/admin/venue-list")
+@require_cohort("admin")
+def api_admin_venue_list():
+    """Venue list for the Manage Venues UI: {id, name, active}, filtered by
+    ?active= (default active-only, ?active=0 for inactive), name-sorted."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    want_active = request.args.get("active", "1") != "0"
+    venues, err = ss_list_venues(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    rows = [v for v in venues if int(v.get("active", 1)) == (1 if want_active else 0)]
+    rows.sort(key=lambda v: (v.get("name") or "").lower())
+    return jsonify({"venues": rows})
+
+
+@app.route("/api/admin/venue/<venue_id>")
+@require_cohort("admin")
+def api_admin_get_venue(venue_id):
+    """One venue's editable fields, to pre-fill the admin edit form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_venue(ss, venue_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/api/admin/venue/<venue_id>", methods=["POST"])
+@require_cohort("admin")
+def api_admin_update_venue(venue_id):
+    """Update one venue from the admin edit form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    allowed = ("venue", "address", "suburb", "state", "postcode", "active", "has_induction")
+    body = request.get_json(silent=True) or {}
+    fields = dict((k, body[k]) for k in allowed if k in body and body[k] is not None)
+    if "venue" in fields and not str(fields["venue"]).strip():
+        return jsonify({"error": "venue name required"}), 400
+    # Normalise the INT flag fields to '1'/'0' strings so update-venue.php's
+    # ($_POST[...] === '1') check works regardless of how the client sends them
+    # (bool, int, or string).
+    for flag in ("active", "has_induction"):
+        if flag in fields:
+            v = fields[flag]
+            fields[flag] = "1" if (v is True or str(v).strip().lower() in ("1", "true", "on")) else "0"
+    data, err = ss_update_venue(ss, venue_id, fields)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+# ── Manage Customers ─────────────────────────────────────────────────────────
+# Same authored-endpoint pattern as venues. customers is a standalone table
+# (no relationships): list-customers.php (browse), get-customer.php (read one,
+# incl. inactive), update-customer.php (partial write). customers.active is INT.
+
+def ss_list_customers(ss):
+    """All customers {id, name, active} via list-customers.php. Returns (list, error)."""
+    url = f"{BASE_URL}/ajax/crew/list-customers.php"
+    try:
+        resp = ss.get(url, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return (data.get("customers") or []), None
+
+
+def ss_get_customer(ss, customer_id):
+    """Fetch one customer's editable fields via get-customer.php. Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-customer.php"
+    try:
+        resp = ss.get(url, params={"id": int(customer_id)}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_update_customer(ss, customer_id, fields):
+    """Update one customer's record via update-customer.php (form-encoded).
+    Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/update-customer.php"
+    payload = dict(fields or {})
+    payload["id"] = int(customer_id)
+    try:
+        resp = ss.post(url, data=payload, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/admin/customer-list")
+@require_cohort("admin")
+def api_admin_customer_list():
+    """Customer list for the Manage Customers UI: {id, name, active}, filtered by
+    ?active= (default active-only, ?active=0 for inactive), name-sorted."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    want_active = request.args.get("active", "1") != "0"
+    customers, err = ss_list_customers(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    rows = [c for c in customers if int(c.get("active", 1)) == (1 if want_active else 0)]
+    rows.sort(key=lambda c: (c.get("name") or "").lower())
+    return jsonify({"customers": rows})
+
+
+@app.route("/api/admin/customer/<customer_id>")
+@require_cohort("admin")
+def api_admin_get_customer(customer_id):
+    """One customer's editable fields, to pre-fill the admin edit form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_customer(ss, customer_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/api/admin/customer/<customer_id>", methods=["POST"])
+@require_cohort("admin")
+def api_admin_update_customer(customer_id):
+    """Update one customer from the admin edit form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    allowed = ("customer_name", "phone", "email", "address", "suburb", "state", "postcode", "active")
+    body = request.get_json(silent=True) or {}
+    fields = dict((k, body[k]) for k in allowed if k in body and body[k] is not None)
+    if "customer_name" in fields and not str(fields["customer_name"]).strip():
+        return jsonify({"error": "customer name required"}), 400
+    # Normalise active to '1'/'0' so update-customer.php's ($_POST['active'] === '1')
+    # check works regardless of how the client sends it.
+    if "active" in fields:
+        v = fields["active"]
+        fields["active"] = "1" if (v is True or str(v).strip().lower() in ("1", "true", "on")) else "0"
+    data, err = ss_update_customer(ss, customer_id, fields)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+# ── Manage Contacts ──────────────────────────────────────────────────────────
+# Contacts are users in usergroup 4, linked to customers via customer_map.
+# list-contacts.php (scoped to usergroup 4, with default customer), get-contact.php
+# (one contact + default customer), update-contact.php (fields + password + the
+# editable customer_map default link). The customer picker reuses customer-list.
+
+def ss_list_contacts(ss):
+    """All contacts {id, name, active, customer_id, customer_name} via
+    list-contacts.php. Returns (list, error)."""
+    url = f"{BASE_URL}/ajax/crew/list-contacts.php"
+    try:
+        resp = ss.get(url, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return (data.get("contacts") or []), None
+
+
+def ss_get_contact(ss, contact_id):
+    """Fetch one contact's editable fields + default customer via get-contact.php.
+    Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-contact.php"
+    try:
+        resp = ss.get(url, params={"id": int(contact_id)}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_update_contact(ss, contact_id, fields):
+    """Update one contact's record via update-contact.php (form-encoded).
+    Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/update-contact.php"
+    payload = dict(fields or {})
+    payload["id"] = int(contact_id)
+    try:
+        resp = ss.post(url, data=payload, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/admin/contact-list")
+@require_cohort("admin")
+def api_admin_contact_list():
+    """Contact list for the Manage Contacts UI: {id, name, active, customer_id,
+    customer_name}, filtered by ?active= (default active-only), name-sorted."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    want_active = request.args.get("active", "1") != "0"
+    contacts, err = ss_list_contacts(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    rows = [c for c in contacts if int(c.get("active", 1)) == (1 if want_active else 0)]
+    rows.sort(key=lambda c: (c.get("name") or "").lower())
+    return jsonify({"contacts": rows})
+
+
+@app.route("/api/admin/contact/<contact_id>")
+@require_cohort("admin")
+def api_admin_get_contact(contact_id):
+    """One contact's editable fields + default customer, to pre-fill the edit form."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_contact(ss, contact_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/api/admin/contact/<contact_id>", methods=["POST"])
+@require_cohort("admin")
+def api_admin_update_contact(contact_id):
+    """Update one contact from the admin edit form (incl. the customer link)."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    allowed = ("username", "firstname", "lastname", "mobile", "phone", "email",
+               "active", "notes", "password", "customer_id")
+    body = request.get_json(silent=True) or {}
+    fields = dict((k, body[k]) for k in allowed if k in body and body[k] is not None)
+    if "username" in fields and not str(fields["username"]).strip():
+        return jsonify({"error": "username required"}), 400
+    # Normalise active to '1'/'0' (users.active is VARCHAR).
+    if "active" in fields:
+        v = fields["active"]
+        fields["active"] = "1" if (v is True or str(v).strip().lower() in ("1", "true", "on")) else "0"
+    data, err = ss_update_contact(ss, contact_id, fields)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(data)

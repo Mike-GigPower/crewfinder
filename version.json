@@ -1,6 +1,6 @@
 {
-  "version": "3.9.0",
+  "version": "3.10.0",
   "release_date": "2026-06-26",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.9.0/TheGOAT.dmg",
-  "release_notes": "v3.9.0 - Edit Crew Member is now tabbed (Details / Inductions / Calls / Unavailability) with the crew member's name in the header. New Calls tab lists every call ever assigned with its status (Confirmed / Declined / Offered), newest first. 'All day' checkbox added to unavailability entry on the admin dialog and the crew My Status form."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.10.0/TheGOAT.dmg",
+  "release_notes": "v3.10.0 - Management of Venues, Customers and Contacts added"
 }
