@@ -6476,6 +6476,198 @@ def api_bookings_all():
     return jsonify(data)
 
 
+@app.route("/api/booking/<booking_id>/import-times/preview", methods=["POST"])
+@require_cohort("admin")
+def api_import_times_preview(booking_id):
+    """Parse an uploaded timesheet workbook and build a per-call preview against
+    this booking. Read-only: writes nothing. Auto-maps each call tab to a call by
+    comparing the tab's scheduled time (J2) to each call's start, then matches
+    sheet rows to booked crew by EIN (exact). Multipart body, single .xlsx part
+    named 'file'.
+
+    Returns per mapped call: matched (ready to write), skipped (no-show / no times),
+    unmatched (EIN not booked on the call), roster_only (booked but absent from the
+    sheet); plus unmapped_tabs and skipped_tabs.
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    up = request.files.get("file")
+    if up is None:
+        return jsonify({"error": "No file uploaded (expected a multipart 'file' part)"}), 400
+
+    try:
+        from timesheet_import import parse_timesheet_workbook
+        parsed = parse_timesheet_workbook(up.read())
+    except Exception as e:
+        return jsonify({"error": f"Couldn't read workbook: {e}"}), 400
+
+    booking, err = fetch_booking_bulk(ss, booking_id)
+    if err:
+        return jsonify({"error": f"Couldn't load booking: {err}"}), 502
+    calls = booking.get("calls", []) if isinstance(booking, dict) else []
+
+    def _call_sched_dt(c):
+        sd = c.get("start_date")
+        st = c.get("start_time") or "00:00:00"
+        if not sd:
+            return None
+        try:
+            d = datetime.fromtimestamp(int(sd))
+        except Exception:
+            return None
+        mt = re.match(r"(\d{1,2}):(\d{2})", str(st))
+        hh = int(mt.group(1)) if mt else 0
+        mm = int(mt.group(2)) if mt else 0
+        return datetime(d.year, d.month, d.day, hh, mm)
+
+    # Pre-fetch every call's roster once (get-call-times.php) — used both to
+    # disambiguate the tab->call mapping by EIN overlap and to match rows. Several
+    # calls can share a start time (a Fork call and a Load Out call both at 22:30),
+    # so time alone can't tell them apart; the crew rosters can.
+    rosters    = {}   # call_id -> {ein: {user_id, name}}
+    call_index = []
+    for c in calls:
+        cid = c.get("call_id")
+        cd  = _call_sched_dt(c)
+        ein_map = {}
+        ct, cterr = ss_get_call_times(ss, cid)
+        if cterr is None and isinstance(ct, dict):
+            for cm in ct.get("crew", []):
+                try:
+                    e = int(cm.get("ein"))
+                except (TypeError, ValueError):
+                    e = None
+                if e is not None:
+                    nm = ((cm.get("lastname") or "") + ", " + (cm.get("firstname") or "")).strip(", ")
+                    cpg = cm.get("callpaygradeID") or 0
+                    upg = cm.get("user_paygradeID") or 0
+                    pg  = cpg if (cpg and cpg > 0) else upg
+                    ein_map[e] = {"user_id": cm.get("user_id"), "name": nm, "pg": pg}
+        rosters[cid] = ein_map
+        call_index.append({
+            "call_id":   cid,
+            "call_name": c.get("call_name"),
+            "dt":        cd,
+            "iso":       cd.isoformat() if cd else None,
+            "eins":      set(ein_map.keys()),
+        })
+
+    out_calls = []
+    unmapped  = []
+
+    for tab in parsed.get("tabs", []):
+        if not tab.get("rows"):
+            continue  # empty / master template tab
+
+        tab_eins = set(r["ein"] for r in tab["rows"] if r.get("ein") is not None)
+
+        tdt = None
+        if tab.get("call_time"):
+            try:
+                tdt = datetime.fromisoformat(tab["call_time"])
+            except Exception:
+                tdt = None
+
+        def _delta(ci):
+            if tdt is None or ci["dt"] is None:
+                return None
+            return abs(int((ci["dt"] - tdt).total_seconds() // 60))
+
+        # Primary: map to the call with the most shared EINs. Tie-break (and the
+        # zero-overlap fallback) on closest scheduled time.
+        best, best_overlap, best_delta = None, -1, None
+        for ci in call_index:
+            overlap = len(tab_eins & ci["eins"])
+            delta = _delta(ci)
+            take = False
+            if overlap > best_overlap:
+                take = True
+            elif overlap == best_overlap and overlap > 0:
+                if delta is not None and (best_delta is None or delta < best_delta):
+                    take = True
+            if take:
+                best, best_overlap, best_delta = ci, overlap, delta
+
+        if best is None or best_overlap <= 0:
+            # no crew overlap with any call -> fall back to nearest time
+            nearest, nd = None, None
+            for ci in call_index:
+                d = _delta(ci)
+                if d is None:
+                    continue
+                if nearest is None or d < nd:
+                    nearest, nd = ci, d
+            if nearest is None:
+                unmapped.append({
+                    "tab_name":   tab["tab_name"],
+                    "call_time":  tab.get("call_time"),
+                    "crew_count": len(tab["rows"]),
+                })
+                continue
+            best, best_overlap, best_delta = nearest, 0, nd
+
+        roster_ein = rosters.get(best["call_id"], {})
+        matched_eins = set()
+        rows_matched, rows_skipped, rows_unmatched = [], [], []
+
+        for r in tab["rows"]:
+            ein = r.get("ein")
+            nm  = ((r.get("lastname") or "") + ", " + (r.get("firstname") or "")).strip(", ")
+            if r.get("no_show") or not r.get("on"):
+                rows_skipped.append({"ein": ein, "name": nm,
+                                     "reason": ("No Show" if r.get("no_show") else "no times in sheet")})
+                continue
+            if ein is not None and ein in roster_ein:
+                matched_eins.add(ein)
+                m = roster_ein[ein]
+                mrow = {
+                    "user_id":     m["user_id"],
+                    "ein":         ein,
+                    "name":        m["name"],
+                    "on":          r.get("on"),
+                    "off":         r.get("off"),
+                    "break":       r.get("break"),
+                    "break_night": r.get("break_night"),
+                    "late":        r.get("late"),
+                    "note":        r.get("note"),
+                }
+                if m.get("pg"):
+                    mrow["callpaygradeID"] = m["pg"]
+                rows_matched.append(mrow)
+            else:
+                rows_unmatched.append({"ein": ein, "name": nm})
+
+        roster_only = [{"user_id": v["user_id"], "ein": k, "name": v["name"]}
+                       for k, v in roster_ein.items() if k not in matched_eins]
+
+        out_calls.append({
+            "tab_name":      tab["tab_name"],
+            "tab_call_time": tab.get("call_time"),
+            "call_id":       best["call_id"],
+            "call_name":     best["call_name"],
+            "call_time":     best["iso"],
+            "delta_min":     best_delta,
+            "overlap":       best_overlap,
+            "tab_ein_count": len(tab_eins),
+            "matched":       rows_matched,
+            "skipped":       rows_skipped,
+            "unmatched":     rows_unmatched,
+            "roster_only":   roster_only,
+        })
+
+    return jsonify({
+        "booking_id":     booking_id,
+        "booking_name":   booking.get("name") if isinstance(booking, dict) else None,
+        "calls":          out_calls,
+        "unmapped_tabs":  unmapped,
+        "skipped_tabs":   parsed.get("skipped_tabs", []),
+        "available_calls": [{"call_id": ci["call_id"], "call_name": ci["call_name"],
+                             "call_time": ci["iso"]} for ci in call_index],
+    })
+
+
 def ss_get_crew(ss, crew_id):
     """Fetch one crew member's editable fields via get-crew.php. Returns (data, error)."""
     url = f"{BASE_URL}/ajax/crew/get-crew.php"

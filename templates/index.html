@@ -5366,7 +5366,8 @@ async function abToggle(bookingId){
       body.setAttribute('data-loaded','1');
       return;
     }
-    body.innerHTML = calls.map(function(c){
+    const importBtn = '<div onclick="openEntityModal();openTimesImport(\''+bookingId+'\')" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;margin-top:5px;margin-bottom:2px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📥 Import times from timesheet</div>';
+    body.innerHTML = importBtn + calls.map(function(c){
       const when = _abCallWhen(c.start_date, c.start_time);
       const counts = (typeof c.booked !== 'undefined') ? (' · '+(c.confirmed||0)+'/'+(c.required||0)) : '';
       return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-top:5px;cursor:pointer;background:var(--surface)">'
@@ -5394,6 +5395,142 @@ function _abCallWhen(startUnix, startTime){
     if(m) out = (out?out+' ':'')+m[1].padStart(2,'0')+':'+m[2];
   }
   return out;
+}
+
+
+// ── TIMESHEET IMPORT ────────────────────────────────────────────────────────
+// Admin-only. Drop the event's timesheet workbook (.xlsx) on a booking; the
+// server parses it, maps each call tab to a call by EIN overlap, and matches crew
+// by EIN. We preview matched / unmatched / skipped per call, let you include or
+// exclude each call, then write the matched rows through the proven
+// /api/call/<b>/<c>/times endpoint. Reuses escapeHtml / entityBtn /
+// openBookingDialog / closeEntityModal.
+
+let _tiState = null;  // {bookingId, data, include:{call_id:bool}}
+
+function openTimesImport(bookingId){
+  document.getElementById('entity-modal-title').textContent = 'Import Times';
+  document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="padding:10px 0">'
+    + '<div style="font-size:12px;color:var(--muted);padding-bottom:10px">Drop the event\'s completed timesheet workbook (.xlsx). Each call tab is matched to a call and crew matched by EIN — you\'ll review everything before anything is written.</div>'
+    + '<input id="ti-file" type="file" accept=".xlsx" onchange="tiHandleFile(this,\''+bookingId+'\')" style="font-size:12px;color:var(--text)">'
+    + '<div id="ti-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
+    + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('‹ Back to booking',"openBookingDialog('"+bookingId+"')") + entityBtn('Close','closeEntityModal()');
+}
+
+async function tiHandleFile(input, bookingId){
+  if(!input.files || !input.files[0]) return;
+  const status = document.getElementById('ti-status');
+  status.style.color = 'var(--muted)';
+  status.textContent = 'Reading ' + input.files[0].name + '…';
+  try{
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    const res  = await fetch('/api/booking/'+bookingId+'/import-times/preview', {method:'POST', body: fd});
+    const data = await res.json();
+    if(data.error){ status.style.color='var(--conflict)'; status.textContent = data.error; return; }
+    _tiState = {bookingId: bookingId, data: data, include: {}};
+    (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
+    renderImportPreview();
+  }catch(e){
+    status.style.color = 'var(--conflict)';
+    status.textContent = 'Upload failed: ' + e.message;
+  }
+}
+
+function renderImportPreview(){
+  const s = _tiState, d = s.data;
+  const calls = d.calls || [];
+  const totalWrite = calls.reduce(function(n,c){ return n + (s.include[c.call_id] ? c.matched.length : 0); }, 0);
+
+  const cards = calls.map(function(c){
+    const inc  = !!s.include[c.call_id];
+    const conf = c.overlap + '/' + c.tab_ein_count;
+
+    const matchedList = c.matched.map(function(m){
+      const brk = (m.break !== '00:00' || m.break_night !== '00:00') ? (' brk '+m.break+'/'+m.break_night) : '';
+      return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;color:var(--text)">'
+        + '<span>'+escapeHtml(m.name)+(m.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')+'</span>'
+        + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml((m.on||'—')+'–'+(m.off||'—')+brk)+'</span>'
+        + '</div>';
+    }).join('');
+
+    const extras = [];
+    if(c.unmatched.length)   extras.push(c.unmatched.length+' on sheet, not booked on this call');
+    if(c.skipped.length)     extras.push(c.skipped.length+' with no times (no-show / blank)');
+    if(c.roster_only.length) extras.push(c.roster_only.length+' booked but absent from sheet');
+
+    return '<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:10px;background:var(--surface2);padding:10px 12px">'
+      + '<div style="display:flex;align-items:center;gap:10px">'
+      + '<input type="checkbox" '+(inc?'checked':'')+(c.matched.length?'':' disabled')+' onchange="tiToggleCall('+c.call_id+',this)">'
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="font-size:13px;color:var(--text)">'+escapeHtml(c.tab_name)+' <span style="color:var(--muted)">→</span> '+escapeHtml(c.call_name||('Call '+c.call_id))+'</div>'
+      + '<div style="font-size:10px;color:var(--muted)">EIN overlap '+conf+' · '+c.matched.length+' to write'+(c.delta_min?(' · '+c.delta_min+'min off'):'')+'</div>'
+      + '</div></div>'
+      + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>')
+      + (extras.length ? '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'+extras.map(escapeHtml).join(' · ')+'</div>' : '')
+      + '</div>';
+  }).join('');
+
+  document.getElementById('entity-modal-title').textContent = 'Import Times — review';
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div id="ti-result" style="font-size:12px;padding:0 0 8px"></div>'
+    + (d.unmapped_tabs && d.unmapped_tabs.length
+        ? '<div style="font-size:11px;color:var(--conflict);padding-bottom:8px">Tabs with no matching call: '+escapeHtml(d.unmapped_tabs.map(function(t){return t.tab_name;}).join(', '))+'</div>'
+        : '')
+    + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found in this workbook.</div>')
+    + '<div style="font-size:11px;color:var(--muted);padding-top:4px">Ignored support tabs: '+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>';
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Write '+totalWrite+' times', "writeTimesImport()", {primary:true, id:'ti-write-btn'})
+    + entityBtn('↻ Choose another', "openTimesImport('"+s.bookingId+"')")
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+function tiToggleCall(callId, el){
+  if(_tiState){ _tiState.include[callId] = el.checked; renderImportPreview(); }
+}
+
+async function writeTimesImport(){
+  const s = _tiState, d = s.data;
+  const result = document.getElementById('ti-result');
+  const btn = document.getElementById('ti-write-btn');
+
+  const targets = (d.calls||[]).filter(function(c){ return s.include[c.call_id] && c.matched.length; });
+  if(!targets.length){
+    result.style.color = 'var(--conflict)';
+    result.innerHTML = 'Nothing selected to write.';
+    return;
+  }
+  if(btn) btn.disabled = true;
+  result.style.color = 'var(--muted)';
+
+  let done = 0, wrote = 0, failed = 0;
+  for(const c of targets){
+    result.textContent = 'Writing '+(done+1)+'/'+targets.length+' — '+(c.call_name||('call '+c.call_id))+'…';
+    const rows = c.matched.map(function(m){
+      const row = {user_id:m.user_id, on:m.on, off:m.off, break:m.break, break_night:m.break_night, late:m.late, note:m.note};
+      if(m.callpaygradeID) row.callpaygradeID = m.callpaygradeID;
+      return row;
+    });
+    try{
+      const res = await fetch('/api/call/'+s.bookingId+'/'+c.call_id+'/times', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({rows:rows})
+      });
+      const j = await res.json();
+      if(j.error){ failed++; }
+      else { wrote += (j.rows||[]).filter(function(r){ return r.ok; }).length; }
+    }catch(e){ failed++; }
+    done++;
+  }
+
+  result.style.color = failed ? 'var(--conflict)' : 'var(--ok,#10b981)';
+  result.innerHTML = '✓ Wrote times for '+wrote+' crew across '+(targets.length-failed)+' call'+((targets.length-failed)===1?'':'s')
+                   + (failed?(' · '+failed+' call(s) failed'):'') + '.';
+  if(btn) btn.disabled = false;
 }
 
 async function openBookingDialog(bookingId){
@@ -5470,6 +5607,7 @@ function renderBookingDialog(bookingId, d, cached){
     + (d
         ? entityBtn('✎ Edit', "openBookingEditForm('"+bookingId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
+    + entityBtn('📥 Import Times', "openTimesImport('"+bookingId+"')")
     + entityBtn('Close', 'closeEntityModal()');
 }
 
