@@ -5050,8 +5050,9 @@ function renderCallTimesGrid(){
     }).join('');
   };
 
-  const inp = function(id, val, ph){
-    return '<input id="'+id+'" value="'+escapeHtml(val||'')+'" placeholder="'+(ph||'')+'"'+dis+
+  const inp = function(id, val, ph, type){
+    const ob = type ? (' onblur="ctNormalize(this,\''+type+'\')"') : '';
+    return '<input id="'+id+'" value="'+escapeHtml(val||'')+'" placeholder="'+(ph||'')+'"'+dis+ob+
            ' style="width:58px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;'+
            'color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px;text-align:center">';
   };
@@ -5062,10 +5063,10 @@ function renderCallTimesGrid(){
     const pgSel = (c.callpaygradeID && c.callpaygradeID > 0) ? c.callpaygradeID : c.user_paygradeID;
     return '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM')+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00')+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00')+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-off-'+uid,  hms2hm(c.off), 'HH:MM')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00', 'dur')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00', 'dur')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-off-'+uid,  hms2hm(c.off), 'HH:MM', 'clock')+'</td>'
       + '<td style="padding:6px 4px;text-align:center"><select id="ct-pg-'+uid+'"'+dis+' style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px">'+pgOpts(pgSel)+'</select></td>'
       + '<td style="padding:6px 4px;text-align:center"><input type="checkbox" id="ct-late-'+uid+'"'+(c.late?' checked':'')+dis+'></td>'
       + '<td style="padding:6px 4px"><input id="ct-note-'+uid+'" value="'+escapeHtml(c.note||'')+'"'+dis+' placeholder="note" style="width:140px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;padding:4px 6px"></td>'
@@ -5073,13 +5074,21 @@ function renderCallTimesGrid(){
   }).join('') : '<tr><td colspan="8" style="padding:10px;color:var(--muted);font-size:12px">No crew booked on this call.</td></tr>';
 
   const th = function(t){ return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">'+t+'</th>'; };
+  // Header with a fill-down arrow: copies the top row's value down to every crew member — for
+  // large calls where everyone shares the same times. Shown only when editable and >1 crew row.
+  const thFill = function(t, col){
+    const arrow = (!s.locked && s.crew.length > 1)
+      ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top row down to all crew" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
+      : '';
+    return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;white-space:nowrap">'+t+arrow+'</th>';
+  };
 
   document.getElementById('entity-modal-body').innerHTML =
       lockNote
     + '<div id="ct-result" style="font-size:11px;padding:0 0 6px"></div>'
     + '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%">'
     + '<thead><tr style="border-bottom:1px solid var(--border)">'
-    + th('Crew')+th('On')+th('Day Break')+th('Night Break')+th('Off')+th('Rate')+th('Late')+th('Note')
+    + th('Crew')+thFill('On','on')+thFill('Day Break','break')+thFill('Night Break','break_night')+thFill('Off','off')+thFill('Rate','rate')+th('Late')+th('Note')
     + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
     + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). Saving writes times, rate, late and note — it does <b>not</b> tick “Times filled” or lock the call; that stays your review step in SmartStaff.</div>';
 
@@ -5087,6 +5096,79 @@ function renderCallTimesGrid(){
     ? entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()')
     : entityBtn('Save Times',"saveCallTimes()",{primary:true, id:'ct-save-btn'}) + entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()');
   document.getElementById('entity-modal-actions').innerHTML = actions;
+}
+
+function _ctPad(n){ return (n < 10 ? '0' : '') + n; }
+
+// Parse a loose CLOCK entry (On/Off) into 24-hour "HH:MM". Accepts 15:00, 1500,
+// 3pm, 3:30pm, 9 (=09:00), 930 (=09:30), 3p/3a. Returns '' for blank, null if
+// unparseable.
+function _ctParseClock(raw){
+  let s = String(raw == null ? '' : raw).trim().toLowerCase().replace(/\s+/g, '');
+  if(s === '') return '';
+  let mer = null;
+  const m = s.match(/([ap])m?$/);
+  if(m){ mer = m[1]; s = s.slice(0, m.index); }
+  let h, mm;
+  if(s.indexOf(':') >= 0 || s.indexOf('.') >= 0){
+    const p = s.split(/[:.]/);
+    h = parseInt(p[0], 10); mm = parseInt(p[1] || '0', 10);
+  } else if(/^\d+$/.test(s)){
+    if(s.length <= 2){ h = parseInt(s, 10); mm = 0; }
+    else if(s.length === 3){ h = parseInt(s.slice(0, 1), 10); mm = parseInt(s.slice(1), 10); }
+    else if(s.length === 4){ h = parseInt(s.slice(0, 2), 10); mm = parseInt(s.slice(2), 10); }
+    else return null;
+  } else return null;
+  if(isNaN(h) || isNaN(mm)) return null;
+  if(mer === 'p' && h < 12) h += 12;
+  if(mer === 'a' && h === 12) h = 0;
+  if(h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return _ctPad(h) + ':' + _ctPad(mm);
+}
+
+// Parse a loose DURATION entry (Day/Night Break) into "HH:MM". Accepts 01:30,
+// 1:30, 1.5 (=01:30), 1 (=01:00), 0.5/.5 (=00:30). Returns '' for blank, null if
+// unparseable (incl. a bare number resolving to >23h, e.g. "30").
+function _ctParseDuration(raw){
+  let s = String(raw == null ? '' : raw).trim().toLowerCase().replace(/\s+/g, '');
+  if(s === '') return '';
+  let h, mm;
+  if(s.indexOf(':') >= 0){
+    const p = s.split(':');
+    h = parseInt(p[0] || '0', 10); mm = parseInt(p[1] || '0', 10);
+    if(isNaN(h) || isNaN(mm)) return null;
+  } else if(/^\d+(\.\d+)?$/.test(s) || /^\.\d+$/.test(s)){
+    const hours = parseFloat(s);
+    if(isNaN(hours)) return null;
+    const total = Math.round(hours * 60);
+    h = Math.floor(total / 60); mm = total % 60;
+  } else return null;
+  if(h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return _ctPad(h) + ':' + _ctPad(mm);
+}
+
+// onblur live-normalise: rewrite the field to canonical form if it parses; leave
+// blank blank and leave unparseable text for save-time validation to flag.
+function ctNormalize(el, type){
+  const out = (type === 'clock') ? _ctParseClock(el.value) : _ctParseDuration(el.value);
+  if(out) el.value = out;
+}
+
+function ctFillDown(col){
+  const s = _ctState;
+  if(!s || s.locked || s.crew.length < 2) return;
+  const prefix = {on:'ct-on-', break:'ct-brk-', break_night:'ct-brkn-', off:'ct-off-', rate:'ct-pg-'}[col];
+  if(!prefix) return;
+  const first = document.getElementById(prefix + s.crew[0].user_id);
+  if(!first) return;
+  let val = first.value;
+  if(col === 'on' || col === 'off'){ const p = _ctParseClock(val); if(p) val = p; }
+  else if(col === 'break' || col === 'break_night'){ const p = _ctParseDuration(val); if(p) val = p; }
+  if(col !== 'rate') first.value = val;   // normalise the source too, so the column reads consistently
+  for(let i=1;i<s.crew.length;i++){
+    const el = document.getElementById(prefix + s.crew[i].user_id);
+    if(el) el.value = val;
+  }
 }
 
 async function saveCallTimes(){
@@ -5105,17 +5187,21 @@ async function saveCallTimes(){
     const pg   = +(((document.getElementById('ct-pg-'+uid) || {}).value) || 0);
     const late = (document.getElementById('ct-late-'+uid) || {}).checked ? 1 : 0;
     const note = (document.getElementById('ct-note-'+uid) || {}).value   || '';
-    [['On',on],['Day Break',brk],['Night Break',brkn],['Off',off]].forEach(function(f){
-      if(!_ctTimeOk(f[1])) bad.push((c.lastname||'')+' — '+f[0]+' "'+f[1]+'"');
+    const onP   = _ctParseClock(on);
+    const offP  = _ctParseClock(off);
+    const brkP  = _ctParseDuration(brk);
+    const brknP = _ctParseDuration(brkn);
+    [['On',on,onP],['Off',off,offP],['Day Break',brk,brkP],['Night Break',brkn,brknP]].forEach(function(f){
+      if(f[2] === null) bad.push((c.lastname||'')+' — '+f[0]+' "'+f[1]+'"');
     });
-    const row = {user_id:uid, on:on, break:brk, break_night:brkn, off:off, late:late, note:note};
+    const row = {user_id:uid, on:(onP||''), break:(brkP||''), break_night:(brknP||''), off:(offP||''), late:late, note:note};
     if(pg > 0) row.callpaygradeID = pg;   // omit if no grade, so we never write 0
     rows.push(row);
   });
 
   if(bad.length){
     result.style.color = 'var(--conflict)';
-    result.innerHTML   = 'Fix these (use 24-hour HH:MM): '+escapeHtml(bad.join('; '));
+    result.innerHTML   = 'Couldn\'t read these — On/Off take 15:00 · 1500 · 3pm, breaks take 1:30 · 1.5: '+escapeHtml(bad.join('; '));
     return;
   }
 
