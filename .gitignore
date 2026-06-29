@@ -21,3 +21,8 @@ output/
 venv/
 venue_cache.json
 smartstaff/goat-service-key.php
+google_service_account.json
+google_oauth_client.json
+google_token.json
+Timesheet_GENERATED_sample_*.xlsx
+~$*.xlsx

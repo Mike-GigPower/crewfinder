@@ -14,7 +14,7 @@ import math
 import threading
 import functools
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, render_template, session, redirect, url_for
+from flask import Flask, jsonify, request, render_template, session, redirect, url_for, Response
 from bs4 import BeautifulSoup
 import requests as http
 
@@ -64,6 +64,7 @@ except Exception:
     pass
 CACHE_MAX_AGE_HRS = 24
 IMPORT_LOG_FILE = os.path.join(BASE_DIR, "import_log.json")
+TIMESHEET_TEMPLATE_FILE = os.path.join(BASE_DIR, "crew_master_template.xlsx")  # bundled; cloned per call by the generator
 
 VALID_CALL_NAMES = {
     "Load In", "Load Out", "LX", "SX", "VX", "Backline", "Show Call",
@@ -95,7 +96,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.11.0"
+APP_VERSION    = "3.13.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -6666,6 +6667,131 @@ def api_import_times_preview(booking_id):
         "available_calls": [{"call_id": ci["call_id"], "call_name": ci["call_name"],
                              "call_time": ci["iso"]} for ci in call_index],
     })
+
+
+def _gather_timesheet_calls(ss, booking_id):
+    """(booking_name, gen_calls, error) for the timesheet generators. gen_calls is
+    one dict per call with its CONFIRMED crew (last, first, EIN, phone). EIN + split
+    names come from get-call-times (status 5 = confirmed); phone from the booking
+    roster, joined on user id."""
+    booking, err = fetch_booking_bulk(ss, booking_id)
+    if err:
+        return None, None, err
+    booking_name = (booking.get("name") if isinstance(booking, dict) else None) or ("Booking " + str(booking_id))
+    bcalls = booking.get("calls", []) if isinstance(booking, dict) else []
+
+    def _call_sched_dt(c):
+        sd = c.get("start_date")
+        st = c.get("start_time") or "00:00:00"
+        if not sd:
+            return None
+        try:
+            d = datetime.fromtimestamp(int(sd))
+        except Exception:
+            return None
+        mt = re.match(r"(\d{1,2}):(\d{2})", str(st))
+        hh = int(mt.group(1)) if mt else 0
+        mm = int(mt.group(2)) if mt else 0
+        return datetime(d.year, d.month, d.day, hh, mm)
+
+    gen_calls = []
+    for c in bcalls:
+        cid = c.get("call_id")
+        phone_by_uid = {}
+        for cr in c.get("crew", []):
+            phone_by_uid[cr.get("id")] = (cr.get("mobile") or cr.get("phone") or "")
+        crew_out = []
+        ct, cterr = ss_get_call_times(ss, cid)
+        if cterr is None and isinstance(ct, dict):
+            for m in ct.get("crew", []):
+                try:
+                    st = int(m.get("status") or 0)
+                except (TypeError, ValueError):
+                    st = 0
+                if st != 5:
+                    continue  # confirmed only
+                uid = m.get("user_id")
+                crew_out.append({
+                    "lastname":  m.get("lastname") or "",
+                    "firstname": m.get("firstname") or "",
+                    "ein":       m.get("ein"),
+                    "phone":     phone_by_uid.get(uid, ""),
+                })
+        gen_calls.append({
+            "call_id":   cid,
+            "call_name": c.get("call_name") or ("Call " + str(cid)),
+            "call_time": _call_sched_dt(c),
+            "crew":      crew_out,
+        })
+    return booking_name, gen_calls, None
+
+
+@app.route("/api/booking/<booking_id>/generate-timesheet", methods=["GET"])
+@require_cohort("admin")
+def api_generate_timesheet(booking_id):
+    """Build a pre-filled crew-master workbook and return it as a download (offline
+    path). One Master-cloned tab per call, stamped with Call ID and GIG Call Time,
+    pre-filled with that call's CONFIRMED crew."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    booking_name, gen_calls, err = _gather_timesheet_calls(ss, booking_id)
+    if err:
+        return jsonify({"error": "Couldn't load booking: %s" % err}), 502
+
+    if not os.path.exists(TIMESHEET_TEMPLATE_FILE):
+        return jsonify({"error": "Timesheet template not found on this machine (crew_master_template.xlsx)"}), 500
+
+    try:
+        from timesheet_generate import generate_timesheet_workbook
+        xlsx = generate_timesheet_workbook(TIMESHEET_TEMPLATE_FILE, gen_calls)
+    except Exception as e:
+        return jsonify({"error": "Generation failed: %s" % e}), 500
+
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", booking_name).strip("_") or "booking"
+    fname = "Timesheet_%s.xlsx" % safe
+    return Response(
+        xlsx,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname},
+    )
+
+
+@app.route("/api/booking/<booking_id>/generate-gsheet", methods=["GET"])
+@require_cohort("admin")
+def api_generate_gsheet(booking_id):
+    """Generate a native Google Sheet timesheet (online path): copy the crew master
+    sheet, duplicate the Master tab per call with CONFIRMED crew pre-filled and the
+    Call ID stamped, share it to the configured Ops email, and return its URL.
+    Config (config.json): crew_master_template_id, gsheet_share_email,
+    google_service_account_file (defaults to google_service_account.json)."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    cfg = load_config()
+    template_id = (cfg.get("crew_master_template_id") or "").strip()
+    share_email = (cfg.get("gsheet_share_email") or "").strip()
+    token_file  = (cfg.get("google_oauth_token_file") or "google_token.json").strip()
+    token_path  = token_file if os.path.isabs(token_file) else os.path.join(BASE_DIR, token_file)
+
+    if not template_id:
+        return jsonify({"error": "crew_master_template_id not set in config.json"}), 500
+    if not os.path.exists(token_path):
+        return jsonify({"error": "Google not authorized yet — run 'python3 gsheet_authorize.py' in your gigpower folder, then try again"}), 500
+
+    booking_name, gen_calls, err = _gather_timesheet_calls(ss, booking_id)
+    if err:
+        return jsonify({"error": "Couldn't load booking: %s" % err}), 502
+
+    try:
+        from timesheet_gsheet import generate_timesheet_gsheet
+        result = generate_timesheet_gsheet(token_path, template_id, share_email, booking_name, gen_calls)
+    except Exception as e:
+        return jsonify({"error": "Google Sheet generation failed: %s" % e}), 500
+
+    return jsonify(result)
 
 
 def ss_get_crew(ss, crew_id):

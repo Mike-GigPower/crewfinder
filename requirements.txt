@@ -4,3 +4,6 @@ beautifulsoup4>=4.12.0
 rumps>=0.4.0
 anthropic>=0.105.2
 openpyxl
+google-api-python-client
+google-auth
+google-auth-oauthlib
