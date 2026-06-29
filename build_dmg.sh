@@ -34,6 +34,21 @@ pyinstaller \
   --add-data "static:static" \
   --hidden-import AppKit \
   --hidden-import PyObjCTools \
+  --hidden-import openpyxl \
+  --hidden-import googleapiclient \
+  --hidden-import googleapiclient.discovery \
+  --hidden-import google.auth \
+  --hidden-import google.auth.transport.requests \
+  --hidden-import google.oauth2 \
+  --hidden-import google.oauth2.credentials \
+  --collect-submodules googleapiclient \
+  --collect-submodules google.auth \
+  --copy-metadata google-api-python-client \
+  --hidden-import timesheet_common \
+  --hidden-import timesheet_import \
+  --hidden-import timesheet_generate \
+  --hidden-import timesheet_gsheet \
+  --hidden-import timesheet_gsheet_read \
   dock_launcher.py
 
 if [ ! -d "$BUNDLE" ]; then
@@ -81,6 +96,26 @@ if [ ! -f "au_postcodes.json" ]; then
 fi
 echo "▶ Bundling au_postcodes.json..."
 cp au_postcodes.json "dist/${APP_NAME}.app/Contents/MacOS/au_postcodes.json"
+# Bundle the crew master template beside the executable (BASE_DIR) too — the
+# offline Excel timesheet generator clones its Master tab from here.
+if [ ! -f "crew_master_template.xlsx" ]; then
+  echo "✗ crew_master_template.xlsx not found in repo root — Excel timesheet generation would break. Aborting."
+  exit 1
+fi
+echo "▶ Bundling crew_master_template.xlsx..."
+cp crew_master_template.xlsx "dist/${APP_NAME}.app/Contents/MacOS/crew_master_template.xlsx"
+# Bundle the shared Google token (authorized as gigpower@gmail.com) so every Ops
+# install can generate/read sheets without each person running gsheet_authorize.py.
+# Same trust model as the baked Anthropic key. The app refreshes this token in place
+# at runtime (just like crew_cache.json), so it lives beside the executable.
+# Gitignored — present only on this build machine.
+if [ ! -f "google_token.json" ]; then
+  echo "✗ google_token.json not found — Ops installs couldn't generate sheets."
+  echo "  Authorize as gigpower@gmail.com first:  python3 gsheet_authorize.py"
+  exit 1
+fi
+echo "▶ Bundling google_token.json (shared gigpower@gmail.com)..."
+cp google_token.json "dist/${APP_NAME}.app/Contents/MacOS/google_token.json"
 # ─── Code signing (Developer ID + hardened runtime) ──────────────────────
 # Must run AFTER config.json and au_postcodes.json are copied in — signing
 # seals the bundle, so adding files afterward would break the signature.

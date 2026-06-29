@@ -66,11 +66,21 @@ def _serial(dt):
     return (dt - _SHEETS_EPOCH).total_seconds() / 86400.0
 
 
-def generate_timesheet_gsheet(token_path, template_id, share_email, booking_name, calls):
+def generate_timesheet_gsheet(token_path, template_id, share_email, booking_name,
+                              calls, booking_id=None, dest_folder_id=None):
     """Copy the crew master, add a Master-cloned tab per call (crew pre-filled, Call
-    ID stamped), and return {'url', 'spreadsheet_id'}. The file is created in the
-    authorized user's Drive (they own it); share_email is added as an editor if it
-    differs from the owner.
+    ID stamped), and return {'url', 'spreadsheet_id'}. share_email is added as an
+    editor if it differs from the owner.
+
+    booking_id (optional): tagged into the file name as " [#<id>]" so humans can find
+    the sheet and the live importer can recover it from Drive by name when no local
+    link exists.
+
+    dest_folder_id (optional): a Drive folder (My Drive folder OR a Shared Drive /
+    Shared-Drive folder) to create the sheet in. When set, the copy lands there — so
+    on a Shared Drive the org owns the sheet, not the authorising individual. When
+    empty/None, the sheet is created in the authorising account's My Drive root (the
+    old behaviour).
 
     calls: [{call_id, call_name, call_time(datetime|None),
              crew:[{lastname, firstname, ein, phone}]}]  (confirmed crew only)
@@ -81,10 +91,16 @@ def generate_timesheet_gsheet(token_path, template_id, share_email, booking_name
     drive  = build("drive",  "v3", credentials=creds, cache_discovery=False)
     sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
-    # 1. native copy of the template
+    # 1. native copy of the template, into dest_folder_id if configured
+    name = "Timesheet — " + (booking_name or "Booking")
+    if booking_id is not None:
+        name += " [#%s]" % booking_id
+    copy_body = {"name": name}
+    if dest_folder_id:
+        copy_body["parents"] = [dest_folder_id]
     copied = drive.files().copy(
         fileId=template_id,
-        body={"name": "Timesheet — " + (booking_name or "Booking")},
+        body=copy_body,
         supportsAllDrives=True,
     ).execute()
     ss_id = copied["id"]

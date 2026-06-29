@@ -5401,12 +5401,12 @@ function _abCallWhen(startUnix, startTime){
 
 
 // ── TIMESHEET IMPORT ────────────────────────────────────────────────────────
-// Admin-only. Drop the event's timesheet workbook (.xlsx) on a booking; the
-// server parses it, maps each call tab to a call by EIN overlap, and matches crew
-// by EIN. We preview matched / unmatched / skipped per call, let you include or
-// exclude each call, then write the matched rows through the proven
-// /api/call/<b>/<c>/times endpoint. Reuses escapeHtml / entityBtn /
-// openBookingDialog / closeEntityModal.
+// Admin-only. Pull actual times back onto a booking's calls — either by reading
+// the live Google Sheet THE GOAT generated (mapped tab→call by the Call ID stamped
+// in B1) or by uploading a finished .xlsx (mapped by EIN overlap). Both land on the
+// same review screen: matched / unmatched / skipped per call, include or exclude
+// each call, then write the matched rows through the proven /api/call/<b>/<c>/times
+// endpoint. Reuses escapeHtml / entityBtn / openBookingDialog / closeEntityModal.
 
 let _tiState = null;  // {bookingId, data, include:{call_id:bool}}
 
@@ -5414,13 +5414,34 @@ function openTimesImport(bookingId){
   document.getElementById('entity-modal-title').textContent = 'Import Times';
   document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML =
-      '<div style="padding:10px 0">'
-    + '<div style="font-size:12px;color:var(--muted);padding-bottom:10px">Drop the event\'s completed timesheet workbook (.xlsx). Each call tab is matched to a call and crew matched by EIN — you\'ll review everything before anything is written.</div>'
+      '<div style="padding:6px 0">'
+    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Pull the actual times worked back onto each call. Read the Google Sheet THE GOAT generated, or upload a finished workbook — you\'ll review everything before anything is written.</div>'
+    + '<div onclick="tiLoadLive(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:12px">📊 Import from the Google Sheet</div>'
+    + '<div style="font-size:11px;color:var(--muted);padding:0 0 6px">or upload a finished workbook (.xlsx)</div>'
     + '<input id="ti-file" type="file" accept=".xlsx" onchange="tiHandleFile(this,\''+bookingId+'\')" style="font-size:12px;color:var(--text)">'
     + '<div id="ti-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
     + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('‹ Back to booking',"openBookingDialog('"+bookingId+"')") + entityBtn('Close','closeEntityModal()');
+}
+
+async function tiLoadLive(bookingId){
+  const status = document.getElementById('ti-status');
+  if(status){ status.style.color = 'var(--muted)'; status.textContent = 'Reading the Google Sheet…'; }
+  try{
+    const res  = await fetch('/api/booking/'+bookingId+'/import-times/preview-live');
+    const data = await res.json();
+    if(res.status === 404 && data.error === 'no_linked_sheet'){
+      if(status){ status.style.color='var(--conflict)'; status.textContent = data.message || 'No generated Google Sheet is linked to this booking on this machine. Generate one first, or upload the finished workbook below.'; }
+      return;
+    }
+    if(data.error){ if(status){ status.style.color='var(--conflict)'; status.textContent = data.error; } return; }
+    _tiState = {bookingId: bookingId, data: data, include: {}, source: 'gsheet'};
+    (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
+    renderImportPreview();
+  }catch(e){
+    if(status){ status.style.color='var(--conflict)'; status.textContent = 'Couldn\'t read the sheet: ' + e.message; }
+  }
 }
 
 async function tiHandleFile(input, bookingId){
@@ -5434,7 +5455,7 @@ async function tiHandleFile(input, bookingId){
     const res  = await fetch('/api/booking/'+bookingId+'/import-times/preview', {method:'POST', body: fd});
     const data = await res.json();
     if(data.error){ status.style.color='var(--conflict)'; status.textContent = data.error; return; }
-    _tiState = {bookingId: bookingId, data: data, include: {}};
+    _tiState = {bookingId: bookingId, data: data, include: {}, source: 'file'};
     (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
     renderImportPreview();
   }catch(e){
@@ -5450,7 +5471,9 @@ function renderImportPreview(){
 
   const cards = calls.map(function(c){
     const inc  = !!s.include[c.call_id];
-    const conf = c.overlap + '/' + c.tab_ein_count;
+    const mappedBy = (c.map_by === 'call_id')
+      ? 'matched by Call ID'
+      : ('EIN overlap '+c.overlap+'/'+c.tab_ein_count+(c.delta_min?(' · '+c.delta_min+'min off'):''));
 
     const matchedList = c.matched.map(function(m){
       const brk = (m.break !== '00:00' || m.break_night !== '00:00') ? (' brk '+m.break+'/'+m.break_night) : '';
@@ -5470,7 +5493,7 @@ function renderImportPreview(){
       + '<input type="checkbox" '+(inc?'checked':'')+(c.matched.length?'':' disabled')+' onchange="tiToggleCall('+c.call_id+',this)">'
       + '<div style="flex:1;min-width:0">'
       + '<div style="font-size:13px;color:var(--text)">'+escapeHtml(c.tab_name)+' <span style="color:var(--muted)">→</span> '+escapeHtml(c.call_name||('Call '+c.call_id))+'</div>'
-      + '<div style="font-size:10px;color:var(--muted)">EIN overlap '+conf+' · '+c.matched.length+' to write'+(c.delta_min?(' · '+c.delta_min+'min off'):'')+'</div>'
+      + '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(mappedBy)+' · '+c.matched.length+' to write</div>'
       + '</div></div>'
       + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>')
       + (extras.length ? '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'+extras.map(escapeHtml).join(' · ')+'</div>' : '')
@@ -5480,10 +5503,16 @@ function renderImportPreview(){
   document.getElementById('entity-modal-title').textContent = 'Import Times — review';
   document.getElementById('entity-modal-body').innerHTML =
       '<div id="ti-result" style="font-size:12px;padding:0 0 8px"></div>'
+    + (d.source && d.source.url
+        ? '<div style="font-size:11px;padding:0 0 8px"><a href="'+escapeHtml(d.source.url)+'" target="_blank" style="color:var(--accent);text-decoration:none">📊 Source Google Sheet ↗</a></div>'
+        : '')
+    + (d.foreign_tabs && d.foreign_tabs.length
+        ? '<div style="font-size:11px;color:var(--conflict);padding-bottom:8px">⚠ Tabs from a different booking — not written: '+escapeHtml(d.foreign_tabs.map(function(t){return t.tab_name+' (call '+t.call_id+')';}).join(', '))+'</div>'
+        : '')
     + (d.unmapped_tabs && d.unmapped_tabs.length
         ? '<div style="font-size:11px;color:var(--conflict);padding-bottom:8px">Tabs with no matching call: '+escapeHtml(d.unmapped_tabs.map(function(t){return t.tab_name;}).join(', '))+'</div>'
         : '')
-    + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found in this workbook.</div>')
+    + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found.</div>')
     + '<div style="font-size:11px;color:var(--muted);padding-top:4px">Ignored support tabs: '+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>';
 
   document.getElementById('entity-modal-actions').innerHTML =

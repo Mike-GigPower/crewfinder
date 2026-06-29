@@ -13,6 +13,7 @@ import re
 import math
 import threading
 import functools
+import time
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template, session, redirect, url_for, Response
 from bs4 import BeautifulSoup
@@ -96,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.13.0"
+APP_VERSION    = "3.14.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -6476,62 +6477,99 @@ def api_bookings_all():
         return jsonify({"error": err}), 502
     return jsonify(data)
 
+# ── Timesheet sheet links (booking -> the Google Sheet THE GOAT generated) ──────
+# Machine-local, gitignored — same idea as config.json / google_token.json. Lets the
+# live importer find the sheet later. Name-search + paste-URL are the fallbacks when
+# this file doesn't have the booking (different machine / pre-3.14 sheet).
+TIMESHEET_LINKS_FILE = os.path.join(BASE_DIR, "timesheet_links.json")
 
-@app.route("/api/booking/<booking_id>/import-times/preview", methods=["POST"])
-@require_cohort("admin")
-def api_import_times_preview(booking_id):
-    """Parse an uploaded timesheet workbook and build a per-call preview against
-    this booking. Read-only: writes nothing. Auto-maps each call tab to a call by
-    comparing the tab's scheduled time (J2) to each call's start, then matches
-    sheet rows to booked crew by EIN (exact). Multipart body, single .xlsx part
-    named 'file'.
 
-    Returns per mapped call: matched (ready to write), skipped (no-show / no times),
-    unmatched (EIN not booked on the call), roster_only (booked but absent from the
-    sheet); plus unmapped_tabs and skipped_tabs.
-    """
-    ss = get_ss_session()
-    if not ss:
-        return jsonify({"error": "Not logged in"}), 401
-
-    up = request.files.get("file")
-    if up is None:
-        return jsonify({"error": "No file uploaded (expected a multipart 'file' part)"}), 400
-
+def _load_timesheet_links():
     try:
-        from timesheet_import import parse_timesheet_workbook
-        parsed = parse_timesheet_workbook(up.read())
-    except Exception as e:
-        return jsonify({"error": f"Couldn't read workbook: {e}"}), 400
+        with open(TIMESHEET_LINKS_FILE) as f:
+            return json.load(f)
+    except (IOError, ValueError):
+        return {}
 
+
+def _save_timesheet_link(booking_id, spreadsheet_id, url):
+    links = _load_timesheet_links()
+    links[str(booking_id)] = {"spreadsheet_id": spreadsheet_id, "url": url,
+                              "created_at": int(time.time())}
+    try:
+        with open(TIMESHEET_LINKS_FILE, "w") as f:
+            json.dump(links, f, indent=2)
+    except IOError:
+        pass  # a convenience cache; never fatal
+
+
+def _lookup_timesheet_link(booking_id):
+    return _load_timesheet_links().get(str(booking_id))
+
+
+def _gsheet_token_path():
+    cfg = load_config()
+    tf = (cfg.get("google_oauth_token_file") or "google_token.json").strip()
+    return tf if os.path.isabs(tf) else os.path.join(BASE_DIR, tf)
+
+
+def _find_sheet_by_name(booking_id):
+    """Recover the spreadsheet id from Drive by the '#<booking_id>' tag generation
+    embeds in the sheet name, when no local link exists. Returns id or None."""
+    try:
+        from googleapiclient.discovery import build
+        from timesheet_gsheet import _user_creds
+        drive = build("drive", "v3", credentials=_user_creds(_gsheet_token_path()),
+                      cache_discovery=False)
+        q = ("name contains '#%d' and trashed = false and "
+             "mimeType = 'application/vnd.google-apps.spreadsheet'") % int(booking_id)
+        files = drive.files().list(
+            q=q, fields="files(id,name,modifiedTime)",
+            orderBy="modifiedTime desc", pageSize=5,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+        ).execute().get("files", [])
+        return files[0]["id"] if files else None
+    except Exception:
+        return None
+
+
+# ── Shared import-preview builder (both .xlsx upload and live Google Sheet) ──────
+def _call_sched_dt(c):
+    """A call's scheduled start as a datetime (start_date unix + start_time HH:MM)."""
+    sd = c.get("start_date")
+    st = c.get("start_time") or "00:00:00"
+    if not sd:
+        return None
+    try:
+        d = datetime.fromtimestamp(int(sd))
+    except Exception:
+        return None
+    mt = re.match(r"(\d{1,2}):(\d{2})", str(st))
+    hh = int(mt.group(1)) if mt else 0
+    mm = int(mt.group(2)) if mt else 0
+    return datetime(d.year, d.month, d.day, hh, mm)
+
+
+def _build_import_preview(ss, booking_id, parsed):
+    """Shared matcher / preview-shaper for BOTH import sources. `parsed` is the
+    {tabs, skipped_tabs} structure produced by timesheet_import.parse_timesheet_workbook
+    (file upload) OR timesheet_gsheet_read.read_timesheet (live sheet). Each tab may
+    carry an explicit `call_id` (generated sheets) -> maps EXACTLY; otherwise falls
+    back to EIN-overlap + nearest-time (hand-made sheets). Read-only.
+
+    Returns (preview_dict, None) or (None, error_str). Output keys are unchanged from
+    the original inline route, plus per-call `map_by` and a top-level `foreign_tabs`
+    (the round-trip guard: a stamped Call ID that isn't a call on this booking)."""
     booking, err = fetch_booking_bulk(ss, booking_id)
     if err:
-        return jsonify({"error": f"Couldn't load booking: {err}"}), 502
+        return None, "Couldn't load booking: %s" % err
     calls = booking.get("calls", []) if isinstance(booking, dict) else []
 
-    def _call_sched_dt(c):
-        sd = c.get("start_date")
-        st = c.get("start_time") or "00:00:00"
-        if not sd:
-            return None
-        try:
-            d = datetime.fromtimestamp(int(sd))
-        except Exception:
-            return None
-        mt = re.match(r"(\d{1,2}):(\d{2})", str(st))
-        hh = int(mt.group(1)) if mt else 0
-        mm = int(mt.group(2)) if mt else 0
-        return datetime(d.year, d.month, d.day, hh, mm)
-
-    # Pre-fetch every call's roster once (get-call-times.php) — used both to
-    # disambiguate the tab->call mapping by EIN overlap and to match rows. Several
-    # calls can share a start time (a Fork call and a Load Out call both at 22:30),
-    # so time alone can't tell them apart; the crew rosters can.
-    rosters    = {}   # call_id -> {ein: {user_id, name}}
-    call_index = []
+    # Pre-fetch every call's roster once (get-call-times.php): EIN -> crew + paygrade.
+    rosters, call_index = {}, []
     for c in calls:
         cid = c.get("call_id")
-        cd  = _call_sched_dt(c)
+        cd = _call_sched_dt(c)
         ein_map = {}
         ct, cterr = ss_get_call_times(ss, cid)
         if cterr is None and isinstance(ct, dict):
@@ -6544,7 +6582,7 @@ def api_import_times_preview(booking_id):
                     nm = ((cm.get("lastname") or "") + ", " + (cm.get("firstname") or "")).strip(", ")
                     cpg = cm.get("callpaygradeID") or 0
                     upg = cm.get("user_paygradeID") or 0
-                    pg  = cpg if (cpg and cpg > 0) else upg
+                    pg = cpg if (cpg and cpg > 0) else upg
                     ein_map[e] = {"user_id": cm.get("user_id"), "name": nm, "pg": pg}
         rosters[cid] = ein_map
         call_index.append({
@@ -6554,9 +6592,15 @@ def api_import_times_preview(booking_id):
             "iso":       cd.isoformat() if cd else None,
             "eins":      set(ein_map.keys()),
         })
+    by_id = {ci["call_id"]: ci for ci in call_index}
 
-    out_calls = []
-    unmapped  = []
+    def _norm_id(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return v
+
+    out_calls, unmapped, foreign = [], [], []
 
     for tab in parsed.get("tabs", []):
         if not tab.get("rows"):
@@ -6564,50 +6608,63 @@ def api_import_times_preview(booking_id):
 
         tab_eins = set(r["ein"] for r in tab["rows"] if r.get("ein") is not None)
 
-        tdt = None
-        if tab.get("call_time"):
-            try:
-                tdt = datetime.fromisoformat(tab["call_time"])
-            except Exception:
-                tdt = None
+        explicit = tab.get("call_id")
+        best, map_by, best_overlap, best_delta = None, None, -1, None
 
-        def _delta(ci):
-            if tdt is None or ci["dt"] is None:
-                return None
-            return abs(int((ci["dt"] - tdt).total_seconds() // 60))
-
-        # Primary: map to the call with the most shared EINs. Tie-break (and the
-        # zero-overlap fallback) on closest scheduled time.
-        best, best_overlap, best_delta = None, -1, None
-        for ci in call_index:
-            overlap = len(tab_eins & ci["eins"])
-            delta = _delta(ci)
-            take = False
-            if overlap > best_overlap:
-                take = True
-            elif overlap == best_overlap and overlap > 0:
-                if delta is not None and (best_delta is None or delta < best_delta):
-                    take = True
-            if take:
-                best, best_overlap, best_delta = ci, overlap, delta
-
-        if best is None or best_overlap <= 0:
-            # no crew overlap with any call -> fall back to nearest time
-            nearest, nd = None, None
-            for ci in call_index:
-                d = _delta(ci)
-                if d is None:
-                    continue
-                if nearest is None or d < nd:
-                    nearest, nd = ci, d
-            if nearest is None:
-                unmapped.append({
-                    "tab_name":   tab["tab_name"],
-                    "call_time":  tab.get("call_time"),
-                    "crew_count": len(tab["rows"]),
-                })
+        if explicit is not None:
+            # Exact map by the stamped Call ID (B1). int/str tolerant.
+            ci = by_id.get(explicit)
+            if ci is None:
+                ci = by_id.get(_norm_id(explicit))
+            if ci is None:
+                # round-trip guard: this tab belongs to a different booking
+                foreign.append({"tab_name": tab["tab_name"], "call_id": explicit,
+                                "crew_count": len(tab["rows"])})
                 continue
-            best, best_overlap, best_delta = nearest, 0, nd
+            best, map_by = ci, "call_id"
+            best_overlap = len(tab_eins & ci["eins"])   # informational only
+            best_delta = None
+        else:
+            # Legacy: most shared EINs, tie-break / fallback on closest start time.
+            map_by = "ein_overlap"
+            tdt = None
+            if tab.get("call_time"):
+                try:
+                    tdt = datetime.fromisoformat(tab["call_time"])
+                except Exception:
+                    tdt = None
+
+            def _delta(ci):
+                if tdt is None or ci["dt"] is None:
+                    return None
+                return abs(int((ci["dt"] - tdt).total_seconds() // 60))
+
+            for ci in call_index:
+                overlap = len(tab_eins & ci["eins"])
+                delta = _delta(ci)
+                take = False
+                if overlap > best_overlap:
+                    take = True
+                elif overlap == best_overlap and overlap > 0:
+                    if delta is not None and (best_delta is None or delta < best_delta):
+                        take = True
+                if take:
+                    best, best_overlap, best_delta = ci, overlap, delta
+
+            if best is None or best_overlap <= 0:
+                nearest, nd = None, None
+                for ci in call_index:
+                    d = _delta(ci)
+                    if d is None:
+                        continue
+                    if nearest is None or d < nd:
+                        nearest, nd = ci, d
+                if nearest is None:
+                    unmapped.append({"tab_name": tab["tab_name"],
+                                     "call_time": tab.get("call_time"),
+                                     "crew_count": len(tab["rows"])})
+                    continue
+                best, best_overlap, best_delta = nearest, 0, nd
 
         roster_ein = rosters.get(best["call_id"], {})
         matched_eins = set()
@@ -6615,7 +6672,7 @@ def api_import_times_preview(booking_id):
 
         for r in tab["rows"]:
             ein = r.get("ein")
-            nm  = ((r.get("lastname") or "") + ", " + (r.get("firstname") or "")).strip(", ")
+            nm = ((r.get("lastname") or "") + ", " + (r.get("firstname") or "")).strip(", ")
             if r.get("no_show") or not r.get("on"):
                 rows_skipped.append({"ein": ein, "name": nm,
                                      "reason": ("No Show" if r.get("no_show") else "no times in sheet")})
@@ -6652,21 +6709,84 @@ def api_import_times_preview(booking_id):
             "delta_min":     best_delta,
             "overlap":       best_overlap,
             "tab_ein_count": len(tab_eins),
+            "map_by":        map_by,
             "matched":       rows_matched,
             "skipped":       rows_skipped,
             "unmatched":     rows_unmatched,
             "roster_only":   roster_only,
         })
 
-    return jsonify({
-        "booking_id":     booking_id,
-        "booking_name":   booking.get("name") if isinstance(booking, dict) else None,
-        "calls":          out_calls,
-        "unmapped_tabs":  unmapped,
-        "skipped_tabs":   parsed.get("skipped_tabs", []),
+    return ({
+        "booking_id":      booking_id,
+        "booking_name":    booking.get("name") if isinstance(booking, dict) else None,
+        "calls":           out_calls,
+        "unmapped_tabs":   unmapped,
+        "foreign_tabs":    foreign,
+        "skipped_tabs":    parsed.get("skipped_tabs", []),
         "available_calls": [{"call_id": ci["call_id"], "call_name": ci["call_name"],
                              "call_time": ci["iso"]} for ci in call_index],
-    })
+    }, None)
+
+@app.route("/api/booking/<booking_id>/import-times/preview", methods=["POST"])
+@require_cohort("admin")
+def api_import_times_preview(booking_id):
+    """Parse an uploaded timesheet workbook (.xlsx) and build a per-call preview
+    against this booking. Read-only. Generated sheets exported to .xlsx still carry
+    the A1/B1 Call ID, so they map exactly; hand-made sheets fall back to EIN-overlap."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    up = request.files.get("file")
+    if up is None:
+        return jsonify({"error": "No file uploaded (expected a multipart 'file' part)"}), 400
+
+    try:
+        from timesheet_import import parse_timesheet_workbook
+        parsed = parse_timesheet_workbook(up.read())
+    except Exception as e:
+        return jsonify({"error": "Couldn't read workbook: %s" % e}), 400
+
+    preview, err = _build_import_preview(ss, booking_id, parsed)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(preview)
+
+
+@app.route("/api/booking/<booking_id>/import-times/preview-live", methods=["GET"])
+@require_cohort("admin")
+def api_import_times_preview_live(booking_id):
+    """Read the LIVE Google Sheet THE GOAT generated for this booking and build the
+    same per-call preview (read-only). No file upload — tabs map to calls by the Call
+    ID stamped in B1. Finds the sheet via the saved link, else by Drive name-search.
+    Trigger is an Operations member clicking Import; the click is the 'finished'
+    signal, so there's no submitted-flag to check."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    link = _lookup_timesheet_link(booking_id)
+    ssid = (link or {}).get("spreadsheet_id") or _find_sheet_by_name(booking_id)
+    if not ssid:
+        return jsonify({
+            "error": "no_linked_sheet",
+            "message": "No generated Google Sheet is linked to this booking on this "
+                       "machine. Generate one first, or use file upload / paste the "
+                       "sheet URL.",
+        }), 404
+
+    try:
+        from timesheet_gsheet_read import read_timesheet
+        parsed = read_timesheet(ssid, _gsheet_token_path())
+    except Exception as e:
+        return jsonify({"error": "Couldn't read the Google Sheet: %s" % e}), 502
+
+    preview, err = _build_import_preview(ss, booking_id, parsed)
+    if err:
+        return jsonify({"error": err}), 502
+
+    preview["source"] = {"spreadsheet_id": ssid, "url": (link or {}).get("url")}
+    return jsonify(preview)
 
 
 def _gather_timesheet_calls(ss, booking_id):
@@ -6765,7 +6885,9 @@ def api_generate_gsheet(booking_id):
     sheet, duplicate the Master tab per call with CONFIRMED crew pre-filled and the
     Call ID stamped, share it to the configured Ops email, and return its URL.
     Config (config.json): crew_master_template_id, gsheet_share_email,
-    google_service_account_file (defaults to google_service_account.json)."""
+    gsheet_dest_folder_id (optional — Drive/Shared-Drive folder the sheet is created
+    in; empty = the authorising account's My Drive root), google_oauth_token_file
+    (defaults to google_token.json)."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
@@ -6773,6 +6895,7 @@ def api_generate_gsheet(booking_id):
     cfg = load_config()
     template_id = (cfg.get("crew_master_template_id") or "").strip()
     share_email = (cfg.get("gsheet_share_email") or "").strip()
+    dest_folder = (cfg.get("gsheet_dest_folder_id") or "").strip()
     token_file  = (cfg.get("google_oauth_token_file") or "google_token.json").strip()
     token_path  = token_file if os.path.isabs(token_file) else os.path.join(BASE_DIR, token_file)
 
@@ -6787,9 +6910,13 @@ def api_generate_gsheet(booking_id):
 
     try:
         from timesheet_gsheet import generate_timesheet_gsheet
-        result = generate_timesheet_gsheet(token_path, template_id, share_email, booking_name, gen_calls)
+        result = generate_timesheet_gsheet(token_path, template_id, share_email,
+                                           booking_name, gen_calls, booking_id, dest_folder)
     except Exception as e:
         return jsonify({"error": "Google Sheet generation failed: %s" % e}), 500
+
+    if isinstance(result, dict) and result.get("spreadsheet_id"):
+        _save_timesheet_link(booking_id, result["spreadsheet_id"], result.get("url"))
 
     return jsonify(result)
 

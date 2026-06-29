@@ -26,3 +26,5 @@ google_oauth_client.json
 google_token.json
 Timesheet_GENERATED_sample_*.xlsx
 ~$*.xlsx
+timesheet_links.json
+google_token*
