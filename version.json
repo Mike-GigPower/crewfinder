@@ -1,6 +1,6 @@
 {
-  "version": "3.10.0",
-  "release_date": "2026-06-26",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.10.0/TheGOAT.dmg",
-  "release_notes": "v3.10.0 - Management of Venues, Customers and Contacts added"
+  "version": "3.14.0",
+  "release_date": "2026-06-29",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.14.0/TheGOAT.dmg",
+  "release_notes": "v3.14.0 - Live Google Sheets timesheet import"
 }
