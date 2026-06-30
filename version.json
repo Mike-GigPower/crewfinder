@@ -1,6 +1,6 @@
 {
-  "version": "3.14.0",
-  "release_date": "2026-06-29",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.14.0/TheGOAT.dmg",
-  "release_notes": "v3.14.0 - Live Google Sheets timesheet import"
+  "version": "3.15.0",
+  "release_date": "2026-06-30",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.15.0/TheGOAT.dmg",
+  "release_notes": "v3.15.0 - crew removal, vaccination, ASK THE GOAT inductions, 24hr booking time, All Bookings filters"
 }
