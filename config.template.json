@@ -2,5 +2,6 @@
   "username": "",
   "password": "",
   "anthropic_api_key": "",
+  "gp_push_secret": "",
   "goat_glossary": {}
 }

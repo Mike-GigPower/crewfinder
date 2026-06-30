@@ -100,6 +100,45 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 APP_VERSION    = "3.15.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
+# ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
+GP_PUSH_URL       = "https://crew.gigpower.com/api/push/offer"
+GP_PUSH_SECRET = os.environ.get("GP_PUSH_SECRET", "") or load_config().get("gp_push_secret", "")
+GP_PUSH_DEDUP_TTL = 900   # seconds; suppress a repeat push for the same crew+call
+
+_gp_offer_notified = {}   # (crew_id, call_id) -> last-sent epoch; in-memory dedup
+
+def gp_notify_offer(crew_id, call):
+    """Fire-and-forget push to the Crew Hub when a crew member is offered a call.
+    crew_id = SmartStaff internal userID (the portal resolves it to an EIN).
+    Deduped per (crew_id, call_id) for GP_PUSH_DEDUP_TTL seconds. Never raises —
+    the offer (and any SMS) already happened; a push must not break the loop."""
+    try:
+        call_id = call.get("call_id")
+        key = (str(crew_id), str(call_id))
+        now = time.time()
+        if now - _gp_offer_notified.get(key, 0) < GP_PUSH_DEDUP_TTL:
+            return
+        _gp_offer_notified[key] = now
+        if len(_gp_offer_notified) > 5000:                 # bound memory
+            cutoff = now - GP_PUSH_DEDUP_TTL
+            for k in [k for k, v in list(_gp_offer_notified.items()) if v < cutoff]:
+                _gp_offer_notified.pop(k, None)
+        http.post(
+            GP_PUSH_URL,
+            json={
+                "user_id":      crew_id,
+                "call_name":    call.get("call_name", ""),
+                "booking_name": call.get("booking_name", ""),  # "" until Phase 2
+                "venue":        call.get("venue", ""),          # "" until Phase 2
+                "start":        call.get("start_dt", ""),       # "" until Phase 2
+                "call_id":      call_id,
+            },
+            headers={"X-Push-Secret": GP_PUSH_SECRET},
+            timeout=4,
+        )
+    except Exception:
+        pass   # never let a push break the offer/SMS loop
+
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
 # When True, the app will try the new bulk SmartStaff endpoints first and fall
 # back to HTML scraping on any failure. Safe to leave True even before the
@@ -5459,11 +5498,16 @@ def api_goat_add_crew():
             url = f"{BASE_URL}/add-call.php?action={action}&id={call['call_id']}&userID={c['crew_id']}"
             try:
                 resp = ss.get(url, allow_redirects=True)
+                ok = resp.status_code == 200
                 results.append({
                     "crew":    c["name"],
                     "call":    call.get("call_name", call["call_id"]),
-                    "success": resp.status_code == 200,
+                    "success": ok,
                 })
+                # Crew Hub push: an offer row was just written at status 0.
+                # Only on a plain add — "Add & Confirm" (confcrew) is not an offer.
+                if ok and action == "addcrew":
+                    gp_notify_offer(c["crew_id"], call)
             except Exception as e:
                 results.append({
                     "crew":    c["name"],
@@ -5511,10 +5555,15 @@ def api_goat_send_sms():
         url = f"{BASE_URL}/add-call.php?action=sendsms&id={call['call_id']}&bookingID={call['booking_id']}&{crew_params}"
         try:
             resp = ss.get(url, allow_redirects=True)
+            ok = resp.status_code == 200
             results.append({
                 "call":    call.get("call_name", call["call_id"]),
-                "success": resp.status_code == 200,
+                "success": ok,
             })
+            # Crew Hub push: SMS offer just went out to these crew for this call.
+            if ok:
+                for c in crew:
+                    gp_notify_offer(c["crew_id"], call)
         except Exception as e:
             results.append({
                 "call":    call.get("call_name", call["call_id"]),
@@ -5524,7 +5573,6 @@ def api_goat_send_sms():
         time.sleep(0.8)
 
     return jsonify({"results": results})
-
 
 
 # ── UNAVAILABILITY ENDPOINTS ─────────────────────────────────────────────────
