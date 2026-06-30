@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.14.0"
+APP_VERSION    = "3.15.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -707,6 +707,8 @@ def _compute_induction_status(inductions):
     Induction Checker and the crew self-view so they can never diverge."""
     venue_status = {}
     for venue_name, ind_data in (inductions or {}).items():
+        if venue_name.strip().lower() in INDUCTION_EXCLUDE:
+            continue
         if isinstance(ind_data, str):
             status, completed = ind_data, ""
         else:
@@ -925,6 +927,42 @@ INDUCTION_VENUE_MAP = {
 # Venues with 24-month induction validity (all others are 12 months)
 # Matches against lowercase venue name from SmartStaff
 INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne"}
+
+# Induction labels THE GOAT no longer monitors. SmartStaff still stores them
+# per-crew; we strip them at ingestion so they never reach the cache, the
+# Induction Checker, the Crew Finder, or the GOAT assistant, and also guard the
+# status computation for the one path that reads live (uncached) data. This is
+# "stop monitoring", not "delete" — the SmartStaff records are untouched.
+# Compared case-insensitively after trimming.
+INDUCTION_EXCLUDE = {"vaccination status"}
+
+def _filter_inductions(inductions):
+    """Drop INDUCTION_EXCLUDE labels from a {venue: {...}} inductions dict."""
+    return {k: v for k, v in (inductions or {}).items()
+            if k.strip().lower() not in INDUCTION_EXCLUDE}
+
+def _induction_code_for_venue_name(venue_name):
+    """Reverse INDUCTION_VENUE_MAP: a venue NAME ('Rod Laver Arena') -> its code
+    ('RLA'). None if the venue isn't in the induction map."""
+    vl = (venue_name or "").lower()
+    for code, kws in INDUCTION_VENUE_MAP.items():
+        if any(k in vl for k in kws):
+            return code
+    return None
+
+def _resolve_induction_venue_query(q):
+    """A venue filter ('RLA', 'rod laver', 'Rod Laver Arena', 'Marvel') ->
+    (code, keywords). (None, []) if unrecognised."""
+    ql = (q or "").strip().lower()
+    if not ql:
+        return None, []
+    for code, kws in INDUCTION_VENUE_MAP.items():
+        if code.lower() == ql:
+            return code, kws
+    for code, kws in INDUCTION_VENUE_MAP.items():
+        if ql in code.lower() or any(ql in k or k in ql for k in kws):
+            return code, kws
+    return None, []
 
 # ─── GEO / POSTCODE RADIUS SEARCH ─────────────────────────────────────────────
 # Crew home postcodes (from the users table, via list-crew-bulk.php) and venue
@@ -1633,7 +1671,7 @@ def scrape_crew_inductions(ss, crew_id):
             if venue_name and status_text in ("Complete", "Incomplete", "Expired", "Expiring Soon"):
                 inductions[venue_name] = {"status": status_text, "completed": completed}
 
-    return inductions
+    return _filter_inductions(inductions)
 
 def get_crew_shifts(ss, crew_id, today):
     """DEPRECATED (Crew Finder migration): superseded by fetch_shifts_bulk /
@@ -1958,7 +1996,7 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "paygradeID": int(c.get("paygradeID") or 0),
             "active":     int(c.get("active") or 0),
             "groups":     c.get("groups", []) or [],
-            "inductions": c.get("inductions", {}) or {},
+            "inductions": _filter_inductions(c.get("inductions", {})),
             "ein":        c.get("ein") or c.get("id"),  # prefer endpoint EIN; fall back to userID
             "postcode":   str(c.get("postcode") or "").strip(),
             "notes":      c.get("notes") or "",          # users.notes — for the name-hover card
@@ -3700,6 +3738,7 @@ def api_inductions():
         venue_name
         for data in cache.values()
         for venue_name in data.get("inductions", {})
+        if venue_name.strip().lower() not in INDUCTION_EXCLUDE
     })
 
     result = []
@@ -4737,6 +4776,25 @@ GOAT_TOOLS = [
         }
     },
     {
+        "name": "check_assignment_inductions",
+        "description": "Check whether crew CONFIRMED on upcoming calls are properly inducted for the venue they are booked to work. This is the ONLY tool that joins call rosters to induction status -- get_inductions by itself does NOT know who is assigned to which call. Use it for questions like 'do we have anyone with expired or missing inductions assigned to calls at RLA?'. Returns non-compliant assignments grouped by call, each crew member tagged Expired / Expiring Soon / No induction.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "venue": {
+                    "type": "string",
+                    "description": "Optional venue name or code to limit the check to (e.g. 'RLA', 'Rod Laver Arena', 'Marvel', 'MCG'). Omit to sweep every venue with upcoming calls."
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "How many days ahead to check. Default 14, max 30.",
+                    "default": 14
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "get_forecast",
         "description": "Get crew utilization forecast showing bookings over a date range.",
         "input_schema": {
@@ -4913,7 +4971,7 @@ GOAT_SYSTEM = """You are THE GOAT — the Gig Power Operations and Administratio
 
 Your personality: confident, sharp, occasionally cocky (you are, after all, The GOAT). You have deep knowledge of the live events industry — bump ins, load outs, stagehands, crew bosses, venues, SmartStaff, rosters, inductions. You speak like a seasoned ops person who also happens to be an AI. You're direct, occasionally funny, never waste words. Australian English.
 
-You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data. When someone asks for crew near a place — "riggers within 20km of the Forum", "who's available near Geelong" — call search_availability with radius_km and near (a 4-digit postcode or a venue name). Crew too far away come back in skipped with their distance, and anyone with no known postcode lands in location_unknown — mention them, don't pretend they're not there.
+You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data. For "who is assigned to calls at <venue> without a valid induction" or "anyone with expired inductions on upcoming calls", use check_assignment_inductions -- get_inductions alone does NOT know call rosters. When someone asks for crew near a place — "riggers within 20km of the Forum", "who's available near Geelong" — call search_availability with radius_km and near (a 4-digit postcode or a venue name). Crew too far away come back in skipped with their distance, and anyone with no known postcode lands in location_unknown — mention them, don't pretend they're not there.
 
 CRITICAL — WRITE ACTION RULES:
 - ALWAYS call lookup_crew_id for each crew member before calling add_crew_to_call, send_sms_to_crew, add_unavailability, delete_unavailability, or get_unavailabilities. Never use an ID from a previous search result without verifying it first — name formats differ between SmartStaff and what the operator types.
@@ -5114,6 +5172,68 @@ def execute_goat_tool(tool_name, tool_input, ss):
             })
         except Exception as e:
             return f"Error fetching inductions: {e}"
+
+    elif tool_name == "check_assignment_inductions":
+        try:
+            venue_q = (tool_input.get("venue") or "").strip()
+            days    = min(30, max(1, int(tool_input.get("days", 14) or 14)))
+
+            filt_code, filt_kws = _resolve_induction_venue_query(venue_q)
+            if venue_q and not filt_code:
+                return _json.dumps({"error": "Don't recognise venue '" + venue_q
+                    + "'. Known: " + ", ".join(INDUCTION_VENUE_MAP.keys())})
+
+            with app.test_request_context():
+                calls = fetch_unfilled_calls(ss, horizon_days=days)
+            if filt_code:
+                calls = [c for c in calls
+                         if any(k in (c.get("venue") or "").lower() for k in filt_kws)]
+
+            cache, _ = load_cache()
+            ind_by_uid = {}
+            for e in cache.values():
+                uid = str(e.get("user_id", ""))
+                if uid:
+                    ind_by_uid[uid] = e.get("inductions", {}) or {}
+
+            import time as _t
+            noncompliant, unassessable, checked = [], [], 0
+            for c in calls[:30]:
+                venue = c.get("venue") or ""
+                code  = filt_code or _induction_code_for_venue_name(venue)
+                if not code:
+                    unassessable.append({"call_id": c.get("call_id"),
+                        "call_name": c.get("call_name"), "venue": venue})
+                    continue
+                ct, err = ss_get_call_times(ss, c.get("call_id"))
+                if err or not ct:
+                    continue
+                checked += 1
+                flagged = []
+                for cm in ct.get("crew", []):
+                    if int(cm.get("status", 0) or 0) != 5:   # confirmed only
+                        continue
+                    st, _m = induction_status_for_venue(ind_by_uid.get(str(cm.get("user_id","")), {}), code)
+                    label = "No induction" if (st is None or st == "Incomplete") else st
+                    if label in ("No induction", "Expired", "Expiring Soon"):
+                        nm = (str(cm.get("firstname","")) + " " + str(cm.get("lastname",""))).strip()
+                        flagged.append({"ein": cm.get("ein"), "name": nm, "induction": label})
+                if flagged:
+                    noncompliant.append({"call_id": c.get("call_id"),
+                        "call_name": c.get("call_name"), "venue": venue,
+                        "date": c.get("date", ""), "crew": flagged})
+                _t.sleep(0.3)
+
+            out = {"window_days": days, "venue_filter": filt_code or "ALL",
+                   "calls_checked": checked, "noncompliant_calls": len(noncompliant),
+                   "noncompliant": noncompliant,
+                   "note": "Confirmed crew only (status 5). 'No induction' = never inducted at that venue."}
+            if unassessable:
+                out["unassessable_calls"] = unassessable[:10]
+                out["note"] += " Calls at venues not in the induction map can't be assessed."
+            return _json.dumps(out)
+        except Exception as e:
+            return f"Error checking assignment inductions: {e}"
 
     elif tool_name == "get_forecast":
         try:
@@ -6329,6 +6449,39 @@ def api_call_crew_status(booking_id, call_id, user_id):
         return jsonify({"error": "status is required"}), 400
 
     result, err = ss_update_crew_status(ss, call_id, user_id, status)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+def ss_remove_crew_from_call(ss, call_id, user_id):
+    """Remove a crew member from a call ENTIRELY (not a status change) via
+    SmartStaff's native add-call.php?action=remove -- the same request the admin
+    UI fires. Deletes the call_crew_map row and clears the crew member's calendar
+    entry for the call. crewSelectList takes the crew member's userID (single
+    value here; SmartStaff accepts a comma-separated list for multiples). Returns
+    ({"ok": True}, None) or (None, error)."""
+    url = f"{BASE_URL}/add-call.php"
+    try:
+        resp = ss.get(url, params={"action": "remove", "id": int(call_id),
+                                   "crewSelectList": str(user_id)},
+                      allow_redirects=True, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    return {"ok": True}, None
+
+@app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>", methods=["DELETE"])
+@require_cohort("admin")
+def api_call_crew_remove(booking_id, call_id, user_id):
+    """Remove a crew member from a call entirely (NOT a decline). For fixing
+    wrong-person assignments. Proxies SmartStaff's native remove, which also
+    clears the calendar entry. booking_id is taken for URL symmetry with the
+    other call routes."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    result, err = ss_remove_crew_from_call(ss, call_id, user_id)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)

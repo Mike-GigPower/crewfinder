@@ -110,6 +110,13 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .induction-warn.red{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
 .induction-expired{font-size:10px;font-weight:600;color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
 .induction-expiring{font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
+.crew-remove-btn{background:none;border:none;color:var(--muted);font-size:13px;line-height:1;cursor:pointer;padding:0 4px;border-radius:3px;opacity:.6}
+.crew-remove-btn:hover{color:#ef4444;background:rgba(239,68,68,0.12);opacity:1}
+.crew-remove-btn:disabled{opacity:.3;cursor:default}
+.mbc-time-bad{border-color:#ef4444 !important;outline:none}
+.ab-fchip{background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--muted);font-size:11px;padding:5px 9px;cursor:pointer;font-family:inherit;white-space:nowrap;line-height:1}
+.ab-fchip:hover{color:var(--text);border-color:var(--accent)}
+.ab-fchip.ab-on{color:var(--accent);border-color:var(--accent);background:rgba(245,158,11,0.08)}
 tr.partial .name-cell{border-left-color:var(--warn)}
 .call-breakdown{display:flex;gap:3px;flex-wrap:wrap}
 .cb-pill{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600}
@@ -972,6 +979,14 @@ body.cohort-readonly #unavail-add-section{display:none}
       <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;flex-wrap:wrap">
         <span style="font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:.05em;color:var(--text);font-size:15px">All Bookings</span>
         <input id="ab-search" type="text" placeholder="Search booking name…" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="abSearchDebounced()" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;padding:6px 10px;min-width:220px">
+        <span id="ab-filters" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+          <button class="ab-fchip" id="ab-active-chip" onclick="abToggleActive()" title="Show only Active bookings">● Active</button>
+          <span style="width:1px;height:16px;background:var(--border);margin:0 3px"></span>
+          <button class="ab-fchip ab-on" data-win="0" onclick="abSetWindow(0)">All time</button>
+          <button class="ab-fchip" data-win="30" onclick="abSetWindow(30)">30d</button>
+          <button class="ab-fchip" data-win="60" onclick="abSetWindow(60)">60d</button>
+          <button class="ab-fchip" data-win="90" onclick="abSetWindow(90)">90d</button>
+        </span>
         <span id="ab-count" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
         <button class="btn" onclick="loadAllBookings(true)">&#8635; Refresh</button>
       </div>
@@ -4638,6 +4653,39 @@ async function submitAddEntity(kind){
     if(btn){ btn.disabled = false; btn.textContent = cfg.ok; }
   }
 }
+// Flexible 24-hour time parser for manual booking call times. Accepts "8.30pm",
+// "10:30", "1030", "830", "8pm", "20:30", "2030" -> "HH:MM" (24hr), or null if
+// it can't be made sense of. macOS WebKit renders <input type=time> as AM/PM, so
+// we use a plain text field + this parser instead.
+function parseFlexTime(raw){
+  if(raw==null) return null;
+  var s=String(raw).trim().toLowerCase();
+  if(!s) return null;
+  var ap=null, m=s.match(/(a|p)\.?m?\.?$/);
+  if(m){ ap=m[1]; s=s.slice(0,m.index).trim(); }
+  s=s.replace(/[.\s]+/g,':');
+  var hh,mm;
+  if(s.indexOf(':')>=0){
+    var p=s.split(':').filter(function(x){return x!=='';});
+    if(!p.length||!/^\d+$/.test(p[0])) return null;
+    hh=parseInt(p[0],10); mm=p.length>1?parseInt(p[1],10):0;
+  } else {
+    if(!/^\d+$/.test(s)) return null;
+    if(s.length<=2){ hh=parseInt(s,10); mm=0; }
+    else if(s.length===3){ hh=parseInt(s.slice(0,1),10); mm=parseInt(s.slice(1),10); }
+    else { hh=parseInt(s.slice(0,2),10); mm=parseInt(s.slice(2,4),10); }
+  }
+  if(isNaN(hh)||isNaN(mm)) return null;
+  if(ap==='p'&&hh<12) hh+=12;
+  if(ap==='a'&&hh===12) hh=0;
+  if(hh>23||mm>59) return null;
+  return String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0');
+}
+function normalizeMbcTime(el){
+  var p=parseFlexTime(el.value);
+  if(p){ el.value=p; el.classList.remove('mbc-time-bad'); }
+  else if(el.value.trim()){ el.classList.add('mbc-time-bad'); }
+}
 function addManualCall(){
   const wrap = document.getElementById('mb-calls');
   const lastDate = wrap.querySelector('.mb-call-row:last-child .mbc-date')?.value
@@ -4652,7 +4700,7 @@ function addManualCall(){
        <input class="mbc-name-free" placeholder="custom name" style="display:none;margin-top:4px" oninput="updateManualReadiness()">
      </div>
      <input class="mbc-date" type="date" value="${lastDate}" onchange="updateManualReadiness()">
-     <input class="mbc-time" type="time" value="08:00">
+     <input class="mbc-time" type="text" placeholder="e.g. 8.30pm or 2030" value="08:00" onblur="normalizeMbcTime(this)">
      <input class="mbc-length" type="number" min="0" step="0.5" value="4">
      <input class="mbc-required" type="number" min="0" step="1" value="1">
      <input class="mbc-notes" placeholder="optional">
@@ -4687,24 +4735,24 @@ function updateManualReadiness(){
   const ctc   = document.getElementById('mb-contact')?.value;
   const venue = document.getElementById('mb-venue')?.value;
   const rows  = [...document.querySelectorAll('#mb-calls .mb-call-row')];
-  const callsOk = rows.every(r => mbCallNameValue(r) && r.querySelector('.mbc-date').value);
+  const callsOk = rows.every(r => mbCallNameValue(r) && r.querySelector('.mbc-date').value && parseFlexTime(r.querySelector('.mbc-time').value));
   const btn  = document.getElementById('mb-create-btn');
   const note = document.getElementById('mb-action-note');
   if(!btn) return;
   btn.disabled = !(name && cust && ctc && venue && callsOk);
   if(!name)                    note.textContent = 'Enter a booking name';
   else if(!cust||!ctc||!venue) note.textContent = 'Select customer, contact and venue';
-  else if(!callsOk)            note.textContent = 'Each call needs a name and date';
+  else if(!callsOk)            note.textContent = 'Each call needs a name, date and valid time';
   else note.textContent = rows.length ? `${rows.length} call${rows.length!==1?'s':''} ready` : 'No calls — booking only';
 }
 
 function buildManualPayload(){
   const calls = [...document.querySelectorAll('#mb-calls .mb-call-row')].map(r => {
-    const t = r.querySelector('.mbc-time').value || '00:00';
+    const t = parseFlexTime(r.querySelector('.mbc-time').value) || '00:00';
     return {
       call_name:  mbCallNameValue(r),
       start_date: r.querySelector('.mbc-date').value,
-      start_time: (t.length === 5 ? t + ':00' : t),
+      start_time: t + ':00',
       length:     parseFloat(r.querySelector('.mbc-length').value) || 0,
       required:   parseInt(r.querySelector('.mbc-required').value) || 0,
       notes:      r.querySelector('.mbc-notes').value || '',
@@ -4898,6 +4946,30 @@ function refreshCallCrewSummary(callId){
   });
   el.textContent = confirmed;
 }
+// Admin-only crew remove (the X). Removes a person from the call ENTIRELY (not a
+// status change / decline) -- for fixing wrong-person assignments. Hits our
+// DELETE route, which proxies SmartStaff's native add-call.php?action=remove and
+// also clears the calendar entry. Confirms first; reloads the dialog on success.
+function crewRemoveControl(c, bookingId, callId){
+  if(window._cohort !== 'admin' || !c.id) return '';
+  return '<button type="button" class="crew-remove-btn" title="Remove from this call"'
+    + ' data-name="'+escapeHtml(decodeEntities(c.name))+'"'
+    + ' onclick="removeCrewFromCall(\''+bookingId+'\',\''+callId+'\','+c.id+',this)">&#10005;</button>';
+}
+async function removeCrewFromCall(bookingId, callId, userId, btn){
+  var name = (btn && btn.dataset && btn.dataset.name) ? btn.dataset.name : 'this crew member';
+  if(!confirm('Remove '+name+' from this call?\n\nThis removes them from the call entirely (not a decline) and cannot be undone.')) return;
+  if(btn) btn.disabled = true;
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId, {method:'DELETE'});
+    var j = await r.json();
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    openCallDialog(bookingId, callId);
+  }catch(e){
+    if(btn) btn.disabled = false;
+    alert('Could not remove: '+(e.message||e));
+  }
+}
 function entityBtn(label, onclick, opts){
   opts = opts||{};
   const dis = opts.disabled ? 'disabled' : '';
@@ -4968,7 +5040,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     ? crew.map(function(c){
         var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(c.mobile)+'</a>' : '';
         var boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+'</span><span style="display:flex;align-items:center;gap:4px">'+crewStatusControl(c, bookingId, callId)+mob+'</span></div>'; }).join('')
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+'</span><span style="display:flex;align-items:center;gap:4px">'+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       entityRow('Date',  escapeHtml(d.date_str||'—'))
@@ -5247,75 +5319,140 @@ async function saveCallTimes(){
 // lives. Admin-only (the tab button is hidden for read-only cohorts). Reuses
 // escapeHtml / openCallDialog already defined in index.html.
 
-let _abState = {loaded:false, offset:0, limit:50, q:'', total:0, shown:0};
+let _abState = {loaded:false, q:'', activeOnly:false, windowDays:0, all:[], offset:0, limit:100, total:0, done:false, loading:false};
 let _abSearchTimer = null;
+
+function _abCutoff(){ return _abState.windowDays ? (Date.now()/1000 - _abState.windowDays*86400) : null; }
 
 function loadAllBookings(force){
   if(_abState.loaded && !force) return;
-  _abState = {loaded:true, offset:0, limit:50, q:(document.getElementById('ab-search')||{}).value || '', total:0, shown:0};
+  _abState = {loaded:true, q:(document.getElementById('ab-search')||{}).value || '',
+              activeOnly:false, windowDays:0, all:[], offset:0, limit:100,
+              total:0, done:false, loading:false};
+  abUpdateFilterChips();
   const list = document.getElementById('ab-list');
-  if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Loading bookings…</div></div>';
+  if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Loading bookings...</div></div>';
   const more = document.getElementById('ab-more');
   if(more) more.innerHTML = '';
-  abFetch(false);
+  abFetchNext();
 }
 
 function abSearchDebounced(){
   clearTimeout(_abSearchTimer);
   _abSearchTimer = setTimeout(function(){
-    _abState.offset = 0;
-    _abState.shown  = 0;
-    _abState.q      = (document.getElementById('ab-search')||{}).value || '';
+    _abState.q = (document.getElementById('ab-search')||{}).value || '';
+    _abState.all = []; _abState.offset = 0; _abState.total = 0; _abState.done = false;
     const list = document.getElementById('ab-list');
-    if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Searching…</div></div>';
-    abFetch(false);
+    if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Searching...</div></div>';
+    abFetchNext();
   }, 300);
 }
 
-async function abFetch(append){
+// All Bookings filters (Active status + last 30/60/90 days). The list is
+// server-paginated newest-first by creation_date, so filters can't just act on
+// what's on screen. We accumulate fetched pages in _abState.all, filter
+// client-side, and for a date window keep auto-loading until the oldest loaded
+// booking predates the cutoff (window fully covered). Active bookings are
+// inherently recent, so they surface in the first pages.
+function abToggleActive(){ _abState.activeOnly = !_abState.activeOnly; abUpdateFilterChips(); abRender(); abAutoContinue(); }
+function abSetWindow(days){ _abState.windowDays = Number(days)||0; abUpdateFilterChips(); abRender(); abAutoContinue(); }
+
+function abUpdateFilterChips(){
+  const a = document.getElementById('ab-active-chip');
+  if(a) a.classList.toggle('ab-on', !!_abState.activeOnly);
+  document.querySelectorAll('#ab-filters [data-win]').forEach(function(el){
+    el.classList.toggle('ab-on', Number(el.getAttribute('data-win')) === Number(_abState.windowDays));
+  });
+}
+
+function abFiltered(){
+  const cut = _abCutoff();
+  // "Last N days" means the PAST N days; future-dated bookings are excluded.
+  // Upper bound is end of today so today's bookings always count.
+  const top = _abState.windowDays ? ((Math.floor(Date.now()/86400000)+1)*86400) : null;
+  return _abState.all.filter(function(b){
+    if(_abState.activeOnly && Number(b.status_id) !== 0) return false;
+    if(cut !== null && Number(b.creation_date) < cut) return false;
+    if(top !== null && Number(b.creation_date) > top) return false;
+    return true;
+  });
+}
+
+function abWindowCovered(){
+  const cut = _abCutoff();
+  if(cut === null) return true;
+  if(_abState.done) return true;
+  const last = _abState.all[_abState.all.length - 1];
+  return last ? (Number(last.creation_date) < cut) : false;
+}
+
+function abRender(){
+  const list = document.getElementById('ab-list');
+  const rows = abFiltered();
+  if(list){
+    list.innerHTML = rows.length
+      ? rows.map(abRow).join('')
+      : '<div style="color:var(--muted);font-size:12px;padding:10px">'+(_abState.loading?'Loading...':'No bookings match the current filters.')+'</div>';
+  }
+  const count = document.getElementById('ab-count');
+  if(count){
+    var plus = (!_abState.done && !(_abState.windowDays && abWindowCovered()));
+    var txt = rows.length + (plus?'+':'') + ' shown';
+    if(_abState.total) txt += ' \u00b7 ' + _abState.total + ' total';
+    if(_abState.loading) txt += ' \u00b7 loading...';
+    count.textContent = txt;
+  }
+  abFooter();
+}
+
+function abAutoContinue(){
+  if(_abState.windowDays && !abWindowCovered() && !_abState.loading && !_abState.done && _abState.all.length < 5000){
+    abFetchNext();
+  } else {
+    abFooter();
+  }
+}
+
+function abFooter(){
+  const more = document.getElementById('ab-more');
+  if(!more) return;
+  if(_abState.loading){ more.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:6px">Loading...</div>'; return; }
+  if(!_abState.windowDays && !_abState.done){
+    more.innerHTML = '<button class="btn" onclick="abShowMore()">Show more</button>';
+  } else {
+    more.innerHTML = '';
+  }
+}
+
+async function abFetchNext(){
+  if(_abState.loading || _abState.done){ abFooter(); return; }
+  _abState.loading = true;
+  abFooter();
   const params = new URLSearchParams({limit:String(_abState.limit), offset:String(_abState.offset)});
   if(_abState.q) params.set('q', _abState.q);
-  const more = document.getElementById('ab-more');
   try{
     const res  = await fetch('/api/bookings/all?'+params.toString());
     const data = await res.json();
     if(data.error){
+      _abState.loading = false;
       document.getElementById('ab-list').innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:10px">'+escapeHtml(data.error)+'</div>';
-      if(more) more.innerHTML = '';
       return;
     }
     _abState.total = data.total || 0;
-    const rows = (data.bookings||[]).map(abRow).join('');
-    const list = document.getElementById('ab-list');
-    if(append){
-      list.insertAdjacentHTML('beforeend', rows);
-    } else {
-      list.innerHTML = rows || '<div style="color:var(--muted);font-size:12px;padding:10px">No bookings'+(_abState.q?(' match “'+escapeHtml(_abState.q)+'”'):'')+'.</div>';
-    }
-    _abState.shown += (data.bookings||[]).length;
-
-    const count = document.getElementById('ab-count');
-    if(count) count.textContent = _abState.total ? (_abState.shown+' of '+_abState.total) : '';
-
-    if(more){
-      if(_abState.shown < _abState.total){
-        more.innerHTML = '<button class="btn" onclick="abShowMore()">Show 50 more</button>';
-      } else {
-        more.innerHTML = '';
-      }
-    }
+    const batch = data.bookings || [];
+    _abState.all = _abState.all.concat(batch);
+    _abState.offset += batch.length;
+    if(batch.length < _abState.limit || _abState.offset >= _abState.total) _abState.done = true;
+    _abState.loading = false;
+    abRender();
+    abAutoContinue();
   }catch(e){
+    _abState.loading = false;
     document.getElementById('ab-list').innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:10px">Couldn\'t load bookings: '+escapeHtml(e.message)+'</div>';
-    if(more) more.innerHTML = '';
   }
 }
 
-function abShowMore(){
-  _abState.offset += _abState.limit;
-  const more = document.getElementById('ab-more');
-  if(more) more.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:6px">Loading…</div>';
-  abFetch(true);
-}
+function abShowMore(){ abFetchNext(); }
 
 function abRow(b){
   const id     = b.booking_id;
@@ -6224,13 +6361,20 @@ function appendGoatEasterEggResponse(egg){
 
 function isSillyGoatQuestion(text){
   const t=text.toLowerCase();
-  const w=[/\b(book(ing)?|call|crew|staff|worker|shift|venue|event|show|gig|tour|concert|festival)\b/,
-    /\b(load\s*(in|out)|bump.?(in|out)|show\s*call|lx|sx|vx|backline|wardrobe|rigger|fork|ewp)\b/,
-    /\b(customer|client|contact|invoice|quote|estimat|import|schedule|roster|availab)\b/,
-    /\b(smartstaff|gigpower|crewfinder|induction|certif|licence|whs|ohs|safety)\b/,
-    /\b(date|time|start|finish|duration|hour|week|tomorrow|today|tonight|weekend)\b/,
-    /\b(sms|message|notif|send|confirm|cancel|assign|add|remov|creat|updat|delet)\b/,
-    /\b(who|which|when|where|how many|how long|list|find|show me|search|check)\b/];
+  // Real requests must reach the assistant. Anything phrased as a question, or
+  // mentioning any business term, is forwarded. Stems are matched as PREFIXES
+  // (no trailing \b) so plurals/conjugations count too: call/calls,
+  // induction/inductions, assign/assigned, remov(e/ed). The REALLY? easter egg
+  // only fires for genuinely off-topic, non-question input.
+  if(/\?/.test(text)) return false;
+  if(/\b(do|does|did|is|are|was|were|can|could|would|will|should|who|whose|what|when|where|why|how|which|any|list|find|show|search|check|get|give)/.test(t)) return false;
+  const w=[/\b(book|call|crew|staff|worker|shift|venue|event|show|gig|tour|concert|festival)/,
+    /\b(load\s*(in|out)|bump.?(in|out)|show\s*call|lx|sx|vx|backline|wardrobe|rigger|fork|ewp)/,
+    /\b(customer|client|contact|invoice|quote|estimat|import|schedul|roster|availab)/,
+    /\b(smartstaff|gigpower|crewfinder|induction|certif|licen|whs|ohs|safety|compli)/,
+    /\b(date|time|start|finish|duration|hour|week|tomorrow|today|tonight|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/,
+    /\b(sms|message|notif|send|confirm|cancel|assign|add|remov|creat|updat|delet)/,
+    /\b(rla|mcg|mcec|aami|jca|mca|forum|marvel|crown|palais|arena|stadium|theatre|hall)/];
   return !w.some(p=>p.test(t));
 }
 
