@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.16.1"
+APP_VERSION    = "3.17.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2881,6 +2881,42 @@ def ss_update_call_bulk(ss, call_id, call):
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
     return data, None
+
+
+def ss_link_calls_bulk(ss, action, call_ids):
+    """Link or unlink a set of calls via link-calls.php (admin session).
+
+    action   : 'link' (needs >=2 call_ids, same booking, all unlinked) or
+               'unlink' (clears link_group; dissolves singleton groups).
+    call_ids : list of call ids.
+
+    Returns (result, error). On a link the endpoint returns {ok, link_group,
+    call_ids}; on unlink {ok, unlinked, dissolved_singletons}.
+    """
+    url = f"{BASE_URL}/ajax/crew/link-calls.php"
+    try:
+        resp = ss.post(url, json={"action": action, "call_ids": call_ids}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            j = resp.json()
+            detail = j.get("error", "")
+            if j.get("errors"):
+                detail = (detail + ": " + "; ".join(j["errors"])).strip(": ")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, detail or f"HTTP {resp.status_code}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
 def ss_update_crew_status(ss, call_id, user_id, status):
     """Set one crew member's status on a call in ONE request via
     update-crew-status.php.
@@ -6529,6 +6565,45 @@ def api_booking_add_call(booking_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify({"ok": True, "call_id": call_id})
+
+
+@app.route("/api/calls/link", methods=["POST"])
+@require_cohort("admin")
+def api_calls_link():
+    """Link a set of calls (Phase 2). Proxies link-calls.php (admin-only). Body:
+    {call_ids:[>=2]} — all must be in the same booking and currently unlinked.
+    Grouping only; never touches call_crew_map / calendars. The response cascade
+    that makes linked calls answer as a unit lives in respond-to-call.php."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body     = request.get_json(force=True) or {}
+    call_ids = [c for c in (body.get("call_ids") or []) if str(c).strip()]
+    if len(call_ids) < 2:
+        return jsonify({"error": "Select at least two calls to link"}), 400
+    result, err = ss_link_calls_bulk(ss, "link", call_ids)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+
+@app.route("/api/calls/unlink", methods=["POST"])
+@require_cohort("admin")
+def api_calls_unlink():
+    """Unlink a set of calls (Phase 2). Proxies link-calls.php (admin-only). Body:
+    {call_ids:[>=1]} — clears link_group; any group left with a single call is
+    dissolved by the endpoint."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body     = request.get_json(force=True) or {}
+    call_ids = [c for c in (body.get("call_ids") or []) if str(c).strip()]
+    if not call_ids:
+        return jsonify({"error": "No calls to unlink"}), 400
+    result, err = ss_link_calls_bulk(ss, "unlink", call_ids)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
 
 
 @app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/status", methods=["POST"])

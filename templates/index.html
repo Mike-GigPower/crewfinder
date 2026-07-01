@@ -5737,6 +5737,7 @@ async function generateGoogleSheet(bookingId){
 
 async function openBookingDialog(bookingId){
   openEntityModal();
+  _bkLinkMode = false; _bkLinkSel = {};
   const cached = window._bookingIndex[bookingId];
   document.getElementById('entity-modal-title').textContent = cached ? cached.name : 'Booking';
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
@@ -5772,6 +5773,133 @@ function bkCallBlock(bookingId, c){
     + '<span style="display:flex;align-items:center">'+conf+'<span style="font-size:10px;color:var(--accent)">view →</span></span></div>';
 }
 
+// ── LINKED CALLS (booking dialog) ────────────────────────────────────────────
+// Calls sharing a link_group answer as one unit (the response cascade lives in
+// respond-to-call.php). Here we show a per-group 🔗 chip and give admins a
+// link/unlink mode. Linking posts to /api/calls/link (-> link-calls.php).
+var _bkLinkMode = false;
+var _bkLinkSel  = {};   // { call_id: true } while in link mode
+var BK_GROUP_COLORS = ['#e0b64a','#5aa9e6','#7ac74f','#e08a5a','#b47ae6','#4ac7c7'];
+
+function bkGroupMap(calls){
+  // distinct link_groups, in call order -> {label 'A'..,'color'}
+  var map = {}, i = 0;
+  (calls||[]).forEach(function(c){
+    var g = c.link_group;
+    if(g !== null && g !== undefined && Number(g) > 0 && !map[g]){
+      map[g] = { label: String.fromCharCode(65 + (i % 26)), color: BK_GROUP_COLORS[i % BK_GROUP_COLORS.length] };
+      i++;
+    }
+  });
+  return map;
+}
+
+function bkChainChip(g, gm){
+  if(g === null || g === undefined || Number(g) <= 0 || !gm[g]) return '';
+  var e = gm[g];
+  return '<span title="Linked group '+e.label+' — these calls are answered together" style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:600;color:'+e.color+';border:1px solid '+e.color+';border-radius:3px;padding:1px 5px;margin-left:8px">🔗 '+e.label+'</span>';
+}
+
+function bkCallRow(bookingId, c, gm){
+  var g = c.link_group;
+  var chip = bkChainChip(g, gm);
+  var isLinked = (g !== null && g !== undefined && Number(g) > 0 && gm[g]);
+  if(_bkLinkMode){
+    var checked = _bkLinkSel[c.call_id] ? 'checked' : '';
+    var unlinkBtn = isLinked
+      ? '<span onclick="event.preventDefault();event.stopPropagation();bkUnlinkCall(\''+bookingId+'\',\''+c.call_id+'\')" style="font-size:9px;color:var(--conflict);cursor:pointer;margin-left:8px">unlink</span>'
+      : '';
+    return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)">'
+      + '<input type="checkbox" '+checked+' onchange="bkToggleSel(\''+bookingId+'\',\''+c.call_id+'\',this.checked)">'
+      + '<span style="flex:1;font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+chip+'</span>'
+      + unlinkBtn
+      + '</label>';
+  }
+  var conf = '<span style="font-size:10px;color:var(--muted);margin-right:10px">'+(c.confirmed||0)+' booked</span>';
+  return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)" onmouseover="this.style.borderColor=\'var(--border-gold)\'" onmouseout="this.style.borderColor=\'var(--border)\'">'
+    + '<span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+chip+'</span>'
+    + '<span style="display:flex;align-items:center">'+conf+'<span style="font-size:10px;color:var(--accent)">view →</span></span></div>';
+}
+
+function bkCallsSection(bookingId, d){
+  var calls = (d && d.calls) || [];
+  var gm = bkGroupMap(calls);
+  var hasCalls = calls.length > 0;
+
+  var toggle = (d && hasCalls)
+    ? (_bkLinkMode
+        ? '<span onclick="bkToggleLinkMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>'
+        : '<span onclick="bkToggleLinkMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">🔗 Link calls</span>')
+    : '';
+  var header = '<div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
+    + '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Calls</span>'
+    + toggle + '</div>';
+
+  var list = hasCalls
+    ? calls.map(function(c){ return bkCallRow(bookingId, c, gm); }).join('')
+    : '<div style="color:var(--muted);font-size:12px">No calls on this booking yet.</div>';
+
+  var footer = '';
+  if(_bkLinkMode){
+    var n = Object.keys(_bkLinkSel).length;
+    footer = '<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
+      + entityBtn('🔗 Link selected'+(n?' ('+n+')':''), "bkLinkSelected('"+bookingId+"')", {primary:true, id:'bk-link-go'})
+      + '<span style="font-size:10px;color:var(--muted)">Tick two or more unlinked calls, then link them.</span></div>'
+      + '<div id="bk-link-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
+  } else if(d){
+    footer = '<div onclick="openAddCallForm(\''+bookingId+'\')" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 10px;border:1px dashed var(--border);border-radius:4px;margin-top:2px;cursor:pointer;color:var(--muted);font-size:11px" onmouseover="this.style.borderColor=\'var(--border-gold)\';this.style.color=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.color=\'var(--muted)\'">+ Add call</div>';
+  }
+  return header + list + footer;
+}
+
+function bkRerenderCalls(bookingId){
+  var wrap = document.getElementById('bk-calls-wrap');
+  if(wrap) wrap.innerHTML = bkCallsSection(bookingId, window._curBookingEdit);
+}
+
+function bkToggleLinkMode(bookingId){
+  _bkLinkMode = !_bkLinkMode;
+  _bkLinkSel = {};
+  bkRerenderCalls(bookingId);
+}
+
+function bkToggleSel(bookingId, callId, checked){
+  if(checked) _bkLinkSel[callId] = true; else delete _bkLinkSel[callId];
+  bkRerenderCalls(bookingId);
+}
+
+async function bkLinkSelected(bookingId){
+  var ids = Object.keys(_bkLinkSel);
+  var st = document.getElementById('bk-link-status');
+  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.textContent=m; } }
+  if(ids.length < 2) return fail('Tick at least two calls to link.');
+  if(st){ st.style.color='var(--muted)'; st.textContent='Linking…'; }
+  var btn = document.getElementById('bk-link-go'); if(btn) btn.disabled = true;
+  try{
+    var resp = await fetch('/api/calls/link', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({call_ids: ids})});
+    var j = await resp.json();
+    if(!resp.ok || (j && j.error)){
+      fail((j && j.error) ? j.error : ('HTTP '+resp.status));
+      if(btn) btn.disabled = false; return;
+    }
+    _bkLinkMode = false; _bkLinkSel = {};
+    delete window._bookingIndex[bookingId];
+    openBookingDialog(bookingId);
+  }catch(e){ fail('Link failed: '+e.message); if(btn) btn.disabled = false; }
+}
+
+async function bkUnlinkCall(bookingId, callId){
+  var st = document.getElementById('bk-link-status');
+  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.textContent=m; } }
+  try{
+    var resp = await fetch('/api/calls/unlink', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({call_ids: [callId]})});
+    var j = await resp.json();
+    if(!resp.ok || (j && j.error)){ fail((j && j.error) ? j.error : ('HTTP '+resp.status)); return; }
+    delete window._bookingIndex[bookingId];
+    openBookingDialog(bookingId);
+  }catch(e){ fail('Unlink failed: '+e.message); }
+}
+
 function renderBookingDialog(bookingId, d, cached){
   window._curBookingEdit = d || null;
   var name = (d && d.name) || (cached && cached.name) || 'Booking';
@@ -5791,23 +5919,19 @@ function renderBookingDialog(bookingId, d, cached){
     rows = entityRow('Venue', escapeHtml((cached&&cached.venue)||'—'))
          + '<div style="color:var(--muted);font-size:11px;padding:6px 0">Couldn\'t load full booking details — showing cached info.</div>';
   }
-  var callsHtml;
-  if(d && d.calls && d.calls.length){
-    callsHtml = d.calls.map(function(c){ return bkCallBlock(bookingId, c); }).join('');
+  var callsSection;
+  if(d){
+    callsSection = bkCallsSection(bookingId, d);
   } else {
     var calls = (cached && cached.calls) || [];
-    callsHtml = calls.length
+    var cachedList = calls.length
       ? calls.map(function(c){ return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+'</span><span style="font-size:10px;color:var(--accent)">view →</span></div>'; }).join('')
       : '<div style="color:var(--muted);font-size:12px">No calls cached — open from the Schedule or Crew Finder to list calls.</div>';
+    callsSection = '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>' + cachedList;
   }
-  var addCallBtn = d
-    ? '<div onclick="openAddCallForm(\''+bookingId+'\')" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 10px;border:1px dashed var(--border);border-radius:4px;margin-top:2px;cursor:pointer;color:var(--muted);font-size:11px" onmouseover="this.style.borderColor=\'var(--border-gold)\';this.style.color=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.color=\'var(--muted)\'">+ Add call</div>'
-    : '';
   document.getElementById('entity-modal-body').innerHTML =
       rows
-    + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>'
-    + callsHtml
-    + addCallBtn;
+    + '<div id="bk-calls-wrap">' + callsSection + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
     + (d
