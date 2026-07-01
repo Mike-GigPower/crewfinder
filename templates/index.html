@@ -1843,6 +1843,7 @@ async function loadCalls(force=false){
     if(resp.status===401){window.location='/login';return}
     const data=await resp.json();
     if(!data.calls?.length){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-icon">&#128235;</div><div class="empty-sub">No unfilled calls on dashboard</div></div>';return}
+    window._finderCalls = (data.calls||[]).filter(function(c){ return c.unfilled; });
     const bookingOrder=[];const bookingMap={};
     data.calls.forEach(c=>{
       if(!c.unfilled) return;   // Unfilled Calls panel — skip fully-booked calls
@@ -1863,6 +1864,7 @@ async function loadCalls(force=false){
           +(c.unfilled?'<div class="unfilled-dot"></div>':'')
           +'<span class="call-num">#'+c.call_num+'</span>'
           +'<span class="call-name" onclick="event.stopPropagation();openCallDialog(\''+c.booking_id+'\',\''+c.call_id+'\')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="View call">'+(c.call_name||'Call')+'</span>'
+          +((c.link_group!==null&&c.link_group!==undefined&&Number(c.link_group)>0)?'<span title="Linked \u2014 offering this call also offers its linked calls" style="display:inline-flex;align-items:center;gap:2px;font-size:9px;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;margin-left:6px">\ud83d\udd17</span>':'')
           +'</div>'
           +'<div class="call-meta">'
           +'<span>'+c.date+'</span><span>'+c.time+'</span><span>'+c.length+'h</span>'
@@ -1886,6 +1888,23 @@ async function loadCalls(force=false){
 }
 
 // ── CALL SELECTION (click / cmd+click / shift+click) ──
+function _finderSetCall(call, selected){
+  if(selected) selectedCalls.set(call.call_id, call); else selectedCalls.delete(call.call_id);
+  var card = document.querySelector('.call-card[data-call-id="'+call.call_id+'"]');
+  if(card){ if(selected) card.classList.add('selected'); else card.classList.remove('selected'); }
+}
+
+function _finderLinkedSiblings(call){
+  // Displayed calls sharing this call's link_group (excludes the call itself).
+  var g = call.link_group;
+  if(g===null || g===undefined || Number(g)<=0) return [];
+  var out = [];
+  (window._finderCalls||[]).forEach(function(c){
+    if(String(c.call_id)!==String(call.call_id) && Number(c.link_group)===Number(g)) out.push(c);
+  });
+  return out;
+}
+
 function handleCallClick(event, call){
   const multi = event.metaKey || event.ctrlKey || event.shiftKey;
   if(!multi){
@@ -1893,15 +1912,12 @@ function handleCallClick(event, call){
     selectedCalls.clear();
     document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('selected'));
   }
-  const card = event.currentTarget;
-  if(multi && selectedCalls.has(call.call_id)){
-    // Cmd+click on already-selected: deselect
-    selectedCalls.delete(call.call_id);
-    card.classList.remove('selected');
-  } else {
-    selectedCalls.set(call.call_id, call);
-    card.classList.add('selected');
-  }
+  // Cmd+click on an already-selected call deselects; otherwise select.
+  const makeSelected = !(multi && selectedCalls.has(call.call_id));
+  _finderSetCall(call, makeSelected);
+  // Linked calls follow the same action, so a linked group is always selected,
+  // offered, and availability-checked together.
+  _finderLinkedSiblings(call).forEach(function(sib){ _finderSetCall(sib, makeSelected); });
   updateCallSelectionUI();
   greyOutResults();
 }

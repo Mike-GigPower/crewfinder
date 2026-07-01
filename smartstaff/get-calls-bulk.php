@@ -87,6 +87,7 @@
 			c.start_time  AS start_time,
 			c.est_length  AS est_length,
 			c.required    AS required,
+			c.link_group  AS link_group,
 			/* calls.booked is not maintained live (came back 0 for every call);
 			/* the live confirmed count is call_crew_map status=5. Computed with a
 			/* GROUP BY join — a single pass over the windowed calls' crew rows. A
@@ -151,6 +152,7 @@
 			'end_iso'      => date('Y-m-d\TH:i:s', $end_unix),
 			'booked'       => $booked,
 			'required'     => $required,
+			'link_group'   => ($row->link_group === null ? null : (int) $row->link_group),
 			'full'         => ($booked >= $required && $required > 0),
 			'notes'        => $row->notes,
 		);

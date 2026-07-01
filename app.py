@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.17.0"
+APP_VERSION    = "3.17.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1595,6 +1595,60 @@ def fetch_booking_bulk(ss, booking_id):
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
     return data, None
+
+
+def expand_linked_calls(ss, calls):
+    """Widen an outgoing offer to include any linked siblings, so the same crew
+    are offered the whole linked group (linked calls are answered as a unit —
+    respond-to-call.php cascades the response). Group membership is resolved
+    server-side from get-booking.php, so it is correct regardless of what the
+    Crew Finder currently has in view. Deduped by call_id. On any lookup failure
+    the original calls are returned unchanged — an offer is never blocked."""
+    if not calls:
+        return calls
+
+    booking_ids = set()
+    for c in calls:
+        bid = c.get("booking_id")
+        if bid:
+            booking_ids.add(str(bid))
+
+    group_of   = {}   # call_id -> link_group
+    members_of = {}   # link_group -> [ {call_id, call_name, booking_id} ]
+    for bid in booking_ids:
+        data, err = fetch_booking_bulk(ss, bid)
+        if err or not isinstance(data, dict):
+            continue
+        for bc in (data.get("calls") or []):
+            g = bc.get("link_group")
+            if g is None:
+                continue
+            try:
+                g = int(g)
+            except Exception:
+                continue
+            if g <= 0:
+                continue
+            cid = str(bc.get("call_id"))
+            group_of[cid] = g
+            members_of.setdefault(g, []).append({
+                "call_id":    cid,
+                "call_name":  bc.get("call_name", cid),
+                "booking_id": bid,
+            })
+
+    expanded = list(calls)
+    seen = set(str(c.get("call_id")) for c in calls)
+    for c in calls:
+        g = group_of.get(str(c.get("call_id")))
+        if not g:
+            continue
+        for m in members_of.get(g, []):
+            if m["call_id"] not in seen:
+                expanded.append(m)
+                seen.add(m["call_id"])
+    return expanded
+
 
 def _get_all_crew(ss):
     """Unified crew-list fetcher: tries the bulk endpoint when enabled, falls
@@ -4251,6 +4305,7 @@ def _bulk_call_to_scrape_shape(r):
         "venue":        r.get("venue", "") or "",
         "notes":        r.get("notes", "") or "",
         "booking_name": r.get("booking_name", "") or "",
+        "link_group":   r.get("link_group"),
     }
 
 
@@ -5525,6 +5580,7 @@ def api_goat_add_crew():
     body    = request.get_json(force=True)
     crew    = body.get("crew", [])
     calls   = body.get("calls", [])
+    calls   = expand_linked_calls(ss, calls)
     confirm = body.get("confirm", False)
     action  = "confcrew" if confirm else "addcrew"
 
@@ -5567,6 +5623,7 @@ def api_goat_send_sms():
     body  = request.get_json(force=True)
     crew  = body.get("crew", [])
     calls = body.get("calls", [])
+    calls = expand_linked_calls(ss, calls)
 
     import time
     results = []
