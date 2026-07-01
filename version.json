@@ -1,6 +1,6 @@
 {
-  "version": "3.16.0",
+  "version": "3.16.1",
   "release_date": "2026-07-01",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.16.0/TheGOAT.dmg",
-  "release_notes": "v3.16.0 - Crew Hub push notifications on shift offers (call name, time, venue)"
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.16.1/TheGOAT.dmg",
+  "release_notes": "v3.16.1 - Add call to an existing booking (booking view dialog)"
 }
