@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.16.0"
+APP_VERSION    = "3.16.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6476,6 +6476,61 @@ def api_call_update(booking_id, call_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
+
+
+@app.route("/api/booking/<booking_id>/call", methods=["POST"])
+@require_cohort("admin")
+def api_booking_add_call(booking_id):
+    """Add a single call to an existing booking.
+
+    Creates the call through SmartStaff's OWN callsheet form (ss_create_call),
+    so the result is byte-identical to a call created in SmartStaff itself —
+    no new PHP endpoint, and no crew-side rows (calendars / call_crew_map are
+    only written when crew are actually assigned, a separate workflow).
+
+    Body: {call: {call_name, call_name_free?, start_date (YYYY-MM-DD),
+                  start_time (HH:MM:SS)?, length?, required?, notes?}}
+    Mirrors the {call:{...}} body shape of the call-edit route.
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(force=True) or {}
+    call = body.get("call") or {}
+
+    name = str(call.get("call_name", "")).strip()
+    date = str(call.get("start_date", "")).strip()
+    if not name:
+        return jsonify({"error": "Call name is required"}), 400
+    if not date:
+        return jsonify({"error": "Call date is required"}), 400
+
+    # A blank time means "start of day" — matches SmartStaff's own default.
+    start_time = str(call.get("start_time", "")).strip() or "00:00:00"
+
+    # ss_create_call reads duration_hours / crew_required with [] (not .get),
+    # so both must always be present; default them to 0.
+    call_data = {
+        "call_name":      name,
+        "start_date":     format_ss_date(date),   # YYYY-MM-DD -> 'Month D, YYYY'
+        "start_time":     start_time,
+        "duration_hours": call.get("length", 0) or 0,
+        "crew_required":  call.get("required", 0) or 0,
+        "notes":          call.get("notes", "") or "",
+    }
+    # "Other" calls carry their display name in call_name_free
+    # (-> call_name_hidden inside ss_create_call).
+    free = str(call.get("call_name_free", "")).strip()
+    if free:
+        call_data["call_name_free"] = free
+
+    call_id, err = ss_create_call(ss, booking_id, call_data)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"ok": True, "call_id": call_id})
+
+
 @app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/status", methods=["POST"])
 @require_cohort("admin")
 def api_call_crew_status(booking_id, call_id, user_id):

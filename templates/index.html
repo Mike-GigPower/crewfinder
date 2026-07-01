@@ -5800,10 +5800,14 @@ function renderBookingDialog(bookingId, d, cached){
       ? calls.map(function(c){ return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+'</span><span style="font-size:10px;color:var(--accent)">view →</span></div>'; }).join('')
       : '<div style="color:var(--muted);font-size:12px">No calls cached — open from the Schedule or Crew Finder to list calls.</div>';
   }
+  var addCallBtn = d
+    ? '<div onclick="openAddCallForm(\''+bookingId+'\')" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 10px;border:1px dashed var(--border);border-radius:4px;margin-top:2px;cursor:pointer;color:var(--muted);font-size:11px" onmouseover="this.style.borderColor=\'var(--border-gold)\';this.style.color=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.color=\'var(--muted)\'">+ Add call</div>'
+    : '';
   document.getElementById('entity-modal-body').innerHTML =
       rows
     + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>'
-    + callsHtml;
+    + callsHtml
+    + addCallBtn;
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
     + (d
@@ -6011,6 +6015,99 @@ async function saveCallEdit(bookingId, callId){
     openCallDialog(bookingId, callId);   // re-fetch + show fresh view
   }catch(e){
     fail('Save failed: '+e.message);
+    if(btn) btn.disabled = false;
+  }
+}
+
+
+// ---- add call (to an existing booking) ----
+// Creates a new call on an existing booking via SmartStaff's own callsheet
+// form (POST /api/booking/<id>/call -> ss_create_call). No crew are booked
+// onto the new call. Call-name field mirrors the manual Booking form: a
+// dropdown of MB_CALL_NAMES plus "Other -> free text".
+
+function acCallNameSelect(){
+  var opts = MB_CALL_NAMES.map(function(n){
+    return '<option value="'+escapeHtml(n)+'">'+escapeHtml(n)+'</option>';
+  }).join('');
+  return '<select id="ac-name" onchange="acToggleOther()" style="'+EF_INPUT_STYLE+'">'+opts+'</select>';
+}
+
+function acToggleOther(){
+  var sel = document.getElementById('ac-name');
+  var row = document.getElementById('ac-other-row');
+  if(!sel || !row) return;
+  row.style.display = (sel.value === 'Other') ? 'block' : 'none';
+}
+
+function openAddCallForm(bookingId){
+  document.getElementById('entity-modal-title').textContent = 'Add call';
+  document.getElementById('entity-modal-sub').textContent   = 'New call \u00b7 Booking #'+bookingId;
+  var today = new Date().toISOString().slice(0,10);
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Name',       acCallNameSelect())
+    + '<div id="ac-other-row" style="display:none">'
+    +   efRow('Other name', efInput('ac-name-free', '', 'text'))
+    + '</div>'
+    + efRow('Date',       efInput('ac-date', today, 'date'))
+    + efRow('Time',       '<input id="ac-time" type="text" inputmode="numeric" placeholder="HH:MM (24hr) \u2014 optional" value="" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Length (h)', efInput('ac-length', '', 'number'))
+    + efRow('Required',   efInput('ac-required', '0', 'number'))
+    + efRow('Notes',      efTextarea('ac-notes', ''))
+    + '<div id="ac-status" style="font-size:11px;color:var(--muted);margin-top:8px;min-height:14px"></div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">Adds a new call to this booking, exactly as SmartStaff would. No crew are booked onto it.</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('\uD83D\uDCBE Add call', "saveAddCall('"+bookingId+"')", {primary:true, id:'ac-save'})
+    + entityBtn('Cancel',  "openBookingDialog('"+bookingId+"')");
+}
+
+async function saveAddCall(bookingId){
+  var sel  = _efVal('ac-name');
+  var free = _efVal('ac-name-free').trim();
+  var date = _efVal('ac-date');
+  var st = document.getElementById('ac-status');
+  function fail(msg){ if(st){ st.style.color='var(--conflict)'; st.textContent=msg; } }
+
+  var name = sel;
+  if(sel === 'Other'){
+    if(!free) return fail('Enter a name for the "Other" call');
+    name = free;              // Other calls send the free text as the call name
+  }
+  if(!name) return fail('Name is required');
+  if(!date) return fail('Date is required');
+
+  var t = _efVal('ac-time').trim();
+  if(t){
+    var tm = t.match(/^(\d{1,2}):(\d{2})$/);
+    if(!tm) return fail('Time must be 24hr HH:MM');
+    var hh = parseInt(tm[1],10), mm = parseInt(tm[2],10);
+    if(hh > 23 || mm > 59) return fail('Time out of range (00:00\u201323:59)');
+    t = String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0') + ':00';
+  }
+
+  if(st){ st.style.color='var(--muted)'; st.textContent='Adding\u2026'; }
+  var btn = document.getElementById('ac-save'); if(btn) btn.disabled = true;
+
+  var payload = { call_name: name, start_date: date, start_time: t,
+                  length: _efVal('ac-length'), required: _efVal('ac-required'),
+                  notes: _efVal('ac-notes') };
+  if(sel === 'Other') payload.call_name_free = free;
+
+  try{
+    var resp = await fetch('/api/booking/'+bookingId+'/call', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({call: payload})
+    });
+    var j = await resp.json();
+    if(!resp.ok || (j && j.error)){
+      fail((j && j.error) ? j.error : ('HTTP '+resp.status));
+      if(btn) btn.disabled = false;
+      return;
+    }
+    delete window._bookingIndex[bookingId];   // cached call list is now stale
+    openBookingDialog(bookingId);             // re-fetch + show the new call
+  }catch(e){
+    fail('Add failed: '+e.message);
     if(btn) btn.disabled = false;
   }
 }
