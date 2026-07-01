@@ -51,41 +51,81 @@
 	}
 
 	/*
-	/* change only if currently offered (status <= 1), self-scoped to this crew
-	/* member + this call — same guard as dash.php, so a call that has since
-	/* been filled or already answered is a no-op.
+	/* Resolve the linked set. If this call has a link_group, the response
+	/* applies to EVERY call in that group — linked calls are answered as one
+	/* unit (you can't confirm one and decline another). Otherwise it's just
+	/* this call. Each row is still guarded by status <= 1 and self-scoped, so
+	/* only THIS crew member's own still-offered rows change.
 	*/
 
-	$db->update(
-		'call_crew_map',
-		array('status' => $db->sc($callStatus)),
-		'status <= 1 AND userID=' . $db->sc($userID) . ' AND callID=' . $db->sc($callID)
-	);
+	$targetCall = $db->selectFirst('id, link_group', 'calls', 'id=' . $db->sc($callID));
 
-	$changed = mysql_affected_rows();
+	$callIDs = array();
 
-	if (mysql_error())
+	if ($targetCall && $targetCall->link_group !== null && (int) $targetCall->link_group > 0)
 	{
-		http_response_code(500);
-		die('{"error":"call status update failed: ' . addslashes(mysql_error()) . '"}');
+		$group = (int) $targetCall->link_group;
+		$grp   = $db->select('id', 'calls', 'link_group=' . $db->sc($group));
+
+		if (is_array($grp))
+		{
+			foreach ($grp as $gc)
+			{
+				$callIDs[] = (int) $gc->id;
+			}
+		}
+	}
+
+	if (!count($callIDs))
+	{
+		$callIDs[] = $callID;   /* unlinked (or lookup failed) — just this call */
 	}
 
 	/*
-	/* on a confirm that actually took effect, materialise the calendar row
-	/* exactly as SmartStaff does (skip if the offer was already gone, so we
-	/* never add a calendar entry the crew member isn't really confirmed on).
+	/* Apply the status to each call in the set. call_crew_map guard unchanged:
+	/* only rows currently offered (status <= 1) for THIS user change, so an
+	/* already-answered or filled row is a no-op. addToCalendar fires per call
+	/* that actually flipped to Confirmed.
 	*/
 
-	if ($callStatus == 5 && $changed > 0)
+	$totalChanged = 0;
+	$changedCalls = array();
+
+	foreach ($callIDs as $cid)
 	{
-		$sss->addToCalendar($callID, $userID);
+		$db->update(
+			'call_crew_map',
+			array('status' => $db->sc($callStatus)),
+			'status <= 1 AND userID=' . $db->sc($userID) . ' AND callID=' . $db->sc($cid)
+		);
+
+		if (mysql_error())
+		{
+			http_response_code(500);
+			die('{"error":"call status update failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		$changed = mysql_affected_rows();
+
+		if ($changed > 0)
+		{
+			$totalChanged += $changed;
+			$changedCalls[] = $cid;
+
+			if ($callStatus == 5)
+			{
+				$sss->addToCalendar($cid, $userID);
+			}
+		}
 	}
 
 	echo json_encode(array(
-		'ok'      => true,
-		'callID'  => $callID,
-		'status'  => $callStatus,
-		'changed' => $changed > 0 ? true : false
+		'ok'            => true,
+		'callID'        => $callID,
+		'status'        => $callStatus,
+		'changed'       => $totalChanged > 0 ? true : false,
+		'changed_calls' => $changedCalls,
+		'linked'        => count($callIDs) > 1 ? true : false
 	));
 
 ?>

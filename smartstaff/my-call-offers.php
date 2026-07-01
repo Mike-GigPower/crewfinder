@@ -41,6 +41,7 @@
 			calls.start_time  AS start_time,
 			calls.est_length  AS est_length,
 			calls.required    AS required,
+			calls.link_group  AS link_group,
 			call_crew_map.status       AS status,
 			call_crew_map.is_call_boss AS is_call_boss,
 			bookings.name     AS booking_name,
@@ -82,6 +83,7 @@
 			'end'          => date('Y-m-d\TH:i:s', $endUnix),
 			'est_length'   => (double) $row->est_length,
 			'required'     => (int) $row->required,
+			'link_group'   => ($row->link_group === null ? null : (int) $row->link_group),
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss
 		);

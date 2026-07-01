@@ -94,7 +94,7 @@
 	*/
 
 	$calls = array();
-	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes
+	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes, link_group
 	                     FROM calls
 	                     WHERE bookingID = " . $bookingID . "
 	                     ORDER BY start_date ASC, start_time ASC");
@@ -144,6 +144,7 @@
 				'est_length' => $call->est_length,
 				'required'   => (int) $call->required,
 				'notes'      => $call->notes,
+				'link_group' => ($call->link_group === null ? null : (int) $call->link_group),
 				'booked'     => $booked,
 				'confirmed'  => $confirmed,
 				'crew'       => $crew,
