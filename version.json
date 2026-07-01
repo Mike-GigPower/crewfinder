@@ -1,6 +1,6 @@
 {
-  "version": "3.16.1",
+  "version": "3.17.0",
   "release_date": "2026-07-01",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.16.1/TheGOAT.dmg",
-  "release_notes": "v3.16.1 - Add call to an existing booking (booking view dialog)"
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.17.0/TheGOAT.dmg",
+  "release_notes": "v3.17.0 - Linked calls: link/unlink calls with a chain indicator"
 }
