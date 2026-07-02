@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.17.1"
+APP_VERSION    = "3.17.2"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -131,6 +131,7 @@ def gp_notify_offer(crew_id, call):
                 "booking_name": call.get("booking_name", ""),  # "" until Phase 2
                 "venue":        call.get("venue", ""),          # "" until Phase 2
                 "start":        call.get("start_dt", ""),       # "" until Phase 2
+                "end":          call.get("end_dt", ""),         # duration source (Phase 2.1)
                 "call_id":      call_id,
             },
             headers={"X-Push-Secret": GP_PUSH_SECRET},

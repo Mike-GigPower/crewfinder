@@ -2935,7 +2935,7 @@ async function addSelected(confirm){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         crew:crew.map(c=>({name:c.name,crew_id:String(c.crewId)})),
-        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||'',venue:t.venue||'',start_dt:t.start_dt||''})),
+        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||'',venue:t.venue||'',start_dt:t.start_dt||'',end_dt:t.end_dt||''})),
         confirm:!!confirm
       })
     });
@@ -2963,7 +2963,7 @@ async function sendSMS(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         crew:crew.map(c=>({name:c.name,crew_id:String(c.crewId)})),
-        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||'',venue:t.venue||'',start_dt:t.start_dt||''}))
+        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||'',venue:t.venue||'',start_dt:t.start_dt||'',end_dt:t.end_dt||''}))
       })
     });
     const j=await r.json();
