@@ -3297,12 +3297,12 @@ function renderImportPreview(data){
 
   // Shared contacts list (used by both Contact and Onsite Contact dropdowns)
   const contactOptions = '<option value="">-- Select contact --</option>' +
-    m.contacts.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    m.contacts.map(c => `<option value="${c.id}">${escapeHtml(decodeEntities(c.name))}</option>`).join('');
 
   // Customer dropdown
   const custSel = document.getElementById('match-customer');
   custSel.innerHTML = '<option value="">-- Select customer --</option>' +
-    m.customers.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+   m.customers.map(c => `<option value="${c.id}">${escapeHtml(decodeEntities(c.name))}</option>`).join('');
   document.getElementById('cust-shadow').textContent =
     m.customer_name ? `From file: ${m.customer_name}` : '';
   if(m.customer_matched && m.customer_id){
@@ -3345,7 +3345,7 @@ function renderImportPreview(data){
   // Venue dropdown
   const venueSel = document.getElementById('match-venue');
   venueSel.innerHTML = '<option value="">-- Select venue --</option>' +
-    m.venues.map(v => `<option value="${v.id}">${v.name}</option>`).join('');
+    m.venues.map(v => `<option value="${v.id}">${escapeHtml(decodeEntities(v.name))}</option>`).join('');
   document.getElementById('venue-shadow').textContent =
     m.venue_name ? `From file: ${m.venue_name}` : '';
   if(m.venue_matched && m.venue_id){
@@ -3666,8 +3666,9 @@ function fillMbSelect(id, items, placeholder){
   const sel = document.getElementById(id);
   if(!sel) return;
   sel.innerHTML = `<option value="">${placeholder}</option>` +
-    (items||[]).map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
+    (items||[]).map(x => `<option value="${x.id}">${escapeHtml(decodeEntities(x.name))}</option>`).join('');
 }
+
 // ── Administration tab (admin-only hub) ───────────────────────────────────
 // All Administration actions are live (Add Crew Member, Customer, Venue, Contact, Cohorts).
 // Manage Cohorts is previewed and lands in a later commit.
