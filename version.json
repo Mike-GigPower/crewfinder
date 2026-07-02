@@ -1,6 +1,6 @@
 {
-  "version": "3.17.2",
-  "release_date": "2026-07-02",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.17.2/TheGOAT.dmg",
-  "release_notes": "v3.17.2 - Push offer now shows estimated shift duration (Est.Nhrs)"
+  "version": "3.17.3",
+  "release_date": "2026-07-03",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.17.3/TheGOAT.dmg",
+  "release_notes": "v3.17.3 - Minor updates in support of CrewHub changes"
 }
