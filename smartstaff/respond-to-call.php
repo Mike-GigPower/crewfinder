@@ -20,6 +20,9 @@
 	/*   - status 5 = Confirmed; also added to the calendar via addToCalendar,
 	/*     which is what then surfaces it in my-shifts.php
 	/*   - status 6 = Declined ("Can't attend") — drops out of the offers list
+	/*   - status 7 = Backup — a Confirm (5) on a call that is already full is
+	/*     written as 7 instead (no calendar row), mirroring sms-cron.php so the
+	/*     PWA and SMS paths agree. See the capacity check below.
 	/*
 	/* Reuses $db and $sss from global.php so the confirm side-effect is byte
 	/* identical to SmartStaff's own dashboard.
@@ -82,6 +85,51 @@
 	}
 
 	/*
+	/* Capacity check — mirrors sms-cron.php, so the PWA path behaves like the
+	/* SMS path. Only applies when CONFIRMING (5); Decline (6) is never capped.
+	/*
+	/* For each call in the set, count the confirmed (status 5) rows against that
+	/* call's `required`. Linked calls are answered as ONE unit, so we apply
+	/* ALL-OR-NOTHING: if ANY call in the set is already full, the whole response
+	/* becomes Backup (7) instead of Confirmed (5) — even on calls that had room.
+	/* That keeps the linked group on a single shared status.
+	*/
+
+	$effectiveStatus = $callStatus;   /* 5 or 6 — may become 7 below */
+
+	if ($callStatus == 5)
+	{
+		$groupIsFull = false;
+
+		foreach ($callIDs as $cid)
+		{
+			$callRow  = $db->selectFirst('required', 'calls', 'id=' . $db->sc($cid));
+			$required = $callRow ? (int) $callRow->required : 0;
+
+			$stat = $db->selectFirst(
+				'COUNT(call_crew_map.status) as cnt',
+				'call_crew_map',
+				'status=5 AND callID=' . $db->sc($cid) . ' GROUP BY status'
+			);
+			$confirmed = $stat ? (int) $stat->cnt : 0;
+
+			/* >= required matches sms-cron.php exactly (including the required=0
+			/* edge, where a call needing no crew reads as full). */
+
+			if ($confirmed >= $required)
+			{
+				$groupIsFull = true;
+				break;   /* all-or-nothing: one full call fills the whole group */
+			}
+		}
+
+		if ($groupIsFull)
+		{
+			$effectiveStatus = 7;   /* Backup — accepted, but the call is full */
+		}
+	}
+
+	/*
 	/* Apply the status to each call in the set. call_crew_map guard unchanged:
 	/* only rows currently offered (status <= 1) for THIS user change, so an
 	/* already-answered or filled row is a no-op. addToCalendar fires per call
@@ -95,7 +143,7 @@
 	{
 		$db->update(
 			'call_crew_map',
-			array('status' => $db->sc($callStatus)),
+			array('status' => $db->sc($effectiveStatus)),
 			'status <= 1 AND userID=' . $db->sc($userID) . ' AND callID=' . $db->sc($cid)
 		);
 
@@ -112,7 +160,10 @@
 			$totalChanged += $changed;
 			$changedCalls[] = $cid;
 
-			if ($callStatus == 5)
+			/* Only a real Confirm (5) gets a calendar row. Backup (7) does not
+			/* — a backup isn't working the shift yet. */
+
+			if ($effectiveStatus == 5)
 			{
 				$sss->addToCalendar($cid, $userID);
 			}
@@ -122,7 +173,9 @@
 	echo json_encode(array(
 		'ok'            => true,
 		'callID'        => $callID,
-		'status'        => $callStatus,
+		'status'        => $callStatus,                             /* preserved: what the crew requested (5/6) */
+		'result_status' => $effectiveStatus,                        /* what was actually written (5/6/7) */
+		'backup'        => ($effectiveStatus == 7) ? true : false,  /* convenience flag for the PWA (Phase 3) */
 		'changed'       => $totalChanged > 0 ? true : false,
 		'changed_calls' => $changedCalls,
 		'linked'        => count($callIDs) > 1 ? true : false
