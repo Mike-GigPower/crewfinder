@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.17.3"
+APP_VERSION    = "3.18.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4484,11 +4484,28 @@ def api_schedule():
 @app.route("/api/booked-crew/<booking_id>/<call_id>")
 @require_cohort(*READ_ALL_COHORTS)
 def api_booked_crew(booking_id, call_id):
-    """Scrape crew already booked for a call with their confirmation status."""
+    """Crew already assigned to a call, with their confirmation status.
+
+    Prefers the DB-backed get-booking.php (via fetch_booking_bulk), which knows
+    every status including 'backup' (call_crew_map.status = 7). Falls back to
+    scraping the callsheet page if that endpoint is unavailable — the legacy
+    path only recognises confirmed/unconfirmed/declined and buckets everything
+    else (including backup) as 'waiting'."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
 
+    # Preferred: DB-backed booking endpoint — correct statuses, incl. 'backup'.
+    data, err = fetch_booking_bulk(ss, booking_id)
+    if err is None and isinstance(data, dict):
+        for c in (data.get("calls") or []):
+            if str(c.get("call_id")) == str(call_id):
+                roster = [{"name": m.get("name", ""), "status": m.get("status", "")}
+                          for m in (c.get("crew") or [])]
+                return jsonify({"crew": roster, "total": len(roster)})
+        return jsonify({"crew": [], "total": 0})
+
+    # Fallback: legacy callsheet scrape (only if the DB endpoint failed).
     resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/{call_id}")
     soup = BeautifulSoup(resp.text, "html.parser")
 

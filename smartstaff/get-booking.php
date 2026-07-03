@@ -87,7 +87,7 @@
 	/*   anything else (incl. just-added) = unconfirmed
 	*/
 
-	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 0 => 'unconfirmed');
+	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 7 => 'backup', 0 => 'unconfirmed');
 
 	/*
 	/* calls + per-call crew roster
