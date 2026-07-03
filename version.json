@@ -1,6 +1,6 @@
 {
-  "version": "3.17.3",
+  "version": "3.18.0",
   "release_date": "2026-07-03",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.17.3/TheGOAT.dmg",
-  "release_notes": "v3.17.3 - Minor updates in support of CrewHub changes"
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.18.0/TheGOAT.dmg",
+  "release_notes": "Backup crew (phase 1): crew who accept a full call are now shown as Backup across the Crew Finder and booking dialogs. Also fixes the call dialog crew-required count."
 }
