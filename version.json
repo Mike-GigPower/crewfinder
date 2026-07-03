@@ -1,6 +1,6 @@
 {
-  "version": "3.18.1",
+  "version": "3.18.2",
   "release_date": "2026-07-03",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.18.1/TheGOAT.dmg",
-  "release_notes": "Backup crew (phase 2): promote a backup to confirmed in one click, and the call dialog now shows and handles Backup properly."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.18.2/TheGOAT.dmg",
+  "release_notes": "Confirmed now shows green, and promoting a backup sends them a 'you're booked' push (once the Crew Hub webhook is live)."
 }
