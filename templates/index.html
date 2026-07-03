@@ -4902,11 +4902,12 @@ function crewStatusBadge(status){
 // ── Crew status editing (admin only) ─────────────────────────
 // Status labels <-> SmartStaff call_crew_map.status ints. The endpoint owns the
 // authoritative whitelist; this map only drives the select + its colour.
-var CREW_STATUS_OPTS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[8,'No-show'],[0,'Unconfirmed']];
+var CREW_STATUS_OPTS = [[5,'Confirmed'],[7,'Backup'],[1,'Pending'],[6,'Declined'],[8,'No-show'],[0,'Unconfirmed']];
 
 function crewStatusInt(status){
   var s = (status||'').toLowerCase();
   if(s==='confirmed')             return 5;
+  if(s==='backup')                return 7;
   if(s==='sent'||s==='pending')   return 1;
   if(s==='declined')              return 6;
   if(s==='noshow'||s==='no-show') return 8;
@@ -4915,6 +4916,7 @@ function crewStatusInt(status){
 
 function crewStatusColors(v){
   if(v===5)        return ['var(--available)','var(--avail-bg)'];
+  if(v===7)        return ['#14b8a6','rgba(20,184,166,0.12)'];
   if(v===6||v===8) return ['var(--conflict)','var(--conf-bg)'];
   if(v===1||v===0) return ['#f59e0b','rgba(245,158,11,0.12)'];
   return ['var(--muted)','var(--surface2)'];
@@ -4999,6 +5001,36 @@ async function removeCrewFromCall(bookingId, callId, userId, btn){
     alert('Could not remove: '+(e.message||e));
   }
 }
+// Admin-only "Promote" button. Shown ONLY next to a backup (status 7) crew
+// member. One click confirms them (status 5) via the same status endpoint the
+// dropdown uses -- which also fires addToCalendar -- then reloads the dialog so
+// they show as Confirmed and the button drops away.
+function crewPromoteControl(c, bookingId, callId){
+  if(window._cohort !== 'admin' || !c.id) return '';
+  if(crewStatusInt(c.status) !== 7) return '';
+  return '<button type="button" title="Promote to Confirmed"'
+    + ' onclick="promoteBackup(\''+bookingId+'\',\''+callId+'\','+c.id+',this)"'
+    + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#22c55e;'
+    + 'background:rgba(34,197,94,0.12);border:1px solid #22c55e;border-radius:3px;padding:2px 6px;'
+    + 'font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&uarr; Promote</button>';
+}
+async function promoteBackup(bookingId, callId, userId, btn){
+  if(!confirm('Promote this backup to Confirmed?\n\nThey will be booked onto the call and added to the calendar.')) return;
+  if(btn) btn.disabled = true;
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({status: 5})
+    });
+    var j = await r.json();
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    openCallDialog(bookingId, callId);
+  }catch(e){
+    if(btn) btn.disabled = false;
+    alert('Could not promote: '+(e.message||e));
+  }
+}
 function entityBtn(label, onclick, opts){
   opts = opts||{};
   const dis = opts.disabled ? 'disabled' : '';
@@ -5069,7 +5101,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     ? crew.map(function(c){
         var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(c.mobile)+'</a>' : '';
         var boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+'</span><span style="display:flex;align-items:center;gap:4px">'+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+'</span><span style="display:flex;align-items:center;gap:4px">'+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       entityRow('Date',  escapeHtml(d.date_str||'—'))

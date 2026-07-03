@@ -31,6 +31,8 @@
 	/*
 	/*   status 5 (confirmed)   : UPDATE status=5  + $sss->addToCalendar(callID,userID)
 	/*   status 6 (declined)    : UPDATE status=6  (NO calendar change)
+	/*   status 7 (backup)      : UPDATE status=7  (NO calendar change; promoting
+	/*                            a backup means setting status 5, which adds it)
 	/*   status 8 (no-show)     : UPDATE status=8  (NO calendar change)
 	/*   status 1 (pending)     : UPDATE status=1  (NO calendar change; NO SMS sent)
 	/*   status 0 (unconfirmed) : UPDATE status=0  (NO calendar change)
@@ -110,10 +112,10 @@
 	if ($userID <= 0)
 		$errors[] = 'userID is required';
 
-	$allowedStatuses = array(0, 1, 5, 6, 8);   /* 0 unconfirmed, 1 pending, 5 confirmed, 6 declined, 8 no-show */
+	$allowedStatuses = array(0, 1, 5, 6, 7, 8);   /* 0 unconfirmed, 1 pending, 5 confirmed, 6 declined, 7 backup, 8 no-show */
 
 	if (!in_array($status, $allowedStatuses))
-		$errors[] = 'status must be one of 0, 1, 5, 6, 8';
+		$errors[] = 'status must be one of 0, 1, 5, 6, 7, 8';
 
 	if (count($errors))
 	{
