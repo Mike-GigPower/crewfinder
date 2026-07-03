@@ -131,13 +131,15 @@
 	/* success on mysql_error() rather than affected_rows -- a re-save of the same
 	/* status changes 0 rows but is NOT a failure. */
 
-	$existingRow = $db->selectFirst('userID', 'call_crew_map', 'callID=' . $callID . ' AND userID=' . $userID);
+	$existingRow = $db->selectFirst('userID, status', 'call_crew_map', 'callID=' . $callID . ' AND userID=' . $userID);
 
 	if (!$existingRow)
 	{
 		send_status(404, 'Not Found');
 		die('{"error":"Crew member is not assigned to this call"}');
 	}
+
+	$prevStatus = (int) $existingRow->status;   /* status BEFORE this update — lets us flag a 7->5 promotion */
 
 	/* ---- update status ---- */
 
@@ -174,6 +176,7 @@
 		'booking_id'      => $bookingID,
 		'user_id'         => $userID,
 		'status'          => $status,
+		'promoted'        => ($prevStatus === 7 && $status === 5) ? true : false,
 		'calendar_synced' => $calendarSynced,
 		'affected_rows'   => $updAffected,
 	));

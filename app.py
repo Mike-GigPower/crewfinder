@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.18.1"
+APP_VERSION    = "3.18.2"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -139,6 +139,43 @@ def gp_notify_offer(crew_id, call):
         )
     except Exception:
         pass   # never let a push break the offer/SMS loop
+
+GP_PROMOTE_URL = "https://crew.gigpower.com/api/push/promote"
+
+_gp_promote_notified = {}   # (crew_id, call_id) -> last-sent epoch; in-memory dedup
+
+def gp_notify_promotion(crew_id, call):
+    """Fire-and-forget push to the Crew Hub when a BACKUP is promoted to confirmed
+    (call_crew_map status 7 -> 5). crew_id = SmartStaff internal userID (the portal
+    resolves it to an EIN). Deduped per (crew_id, call_id) for GP_PUSH_DEDUP_TTL
+    seconds. Never raises — the promotion already happened; a push must not break
+    the response. Uses the same secret as the offer push, posted to a separate
+    /api/push/promote webhook so the portal can word it as 'you're booked'."""
+    try:
+        call_id = call.get("call_id")
+        key = (str(crew_id), str(call_id))
+        now = time.time()
+        if now - _gp_promote_notified.get(key, 0) < GP_PUSH_DEDUP_TTL:
+            return
+        _gp_promote_notified[key] = now
+        if len(_gp_promote_notified) > 5000:                 # bound memory
+            cutoff = now - GP_PUSH_DEDUP_TTL
+            for k in [k for k, v in list(_gp_promote_notified.items()) if v < cutoff]:
+                _gp_promote_notified.pop(k, None)
+        http.post(
+            GP_PROMOTE_URL,
+            json={
+                "user_id":      crew_id,
+                "call_name":    call.get("call_name", ""),
+                "booking_name": call.get("booking_name", ""),
+                "venue":        call.get("venue", ""),
+                "call_id":      call_id,
+            },
+            headers={"X-Push-Secret": GP_PUSH_SECRET},
+            timeout=4,
+        )
+    except Exception:
+        pass   # never let a push break the promote response
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
 # When True, the app will try the new bulk SmartStaff endpoints first and fall
@@ -6704,6 +6741,26 @@ def api_call_crew_status(booking_id, call_id, user_id):
     result, err = ss_update_crew_status(ss, call_id, user_id, status)
     if err:
         return jsonify({"error": err}), 502
+
+    # A backup (status 7) just promoted to confirmed (5): push "you're booked".
+    # Fire-and-forget; the promotion already succeeded above, so this must never
+    # block or fail the response. Fetch the call's name/venue for the message.
+    if isinstance(result, dict) and result.get("promoted"):
+        call = {"call_id": call_id}
+        try:
+            bdata, berr = fetch_booking_bulk(ss, booking_id)
+            if berr is None and isinstance(bdata, dict):
+                call["booking_name"] = bdata.get("name", "")
+                venue = bdata.get("venue") or {}
+                call["venue"] = venue.get("name", "")
+                for c in (bdata.get("calls") or []):
+                    if str(c.get("call_id")) == str(call_id):
+                        call["call_name"] = c.get("call_name", "")
+                        break
+        except Exception:
+            pass
+        gp_notify_promotion(user_id, call)
+
     return jsonify(result)
 
 def ss_remove_crew_from_call(ss, call_id, user_id):
