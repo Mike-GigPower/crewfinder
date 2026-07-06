@@ -731,6 +731,30 @@ body.cohort-readonly #unavail-add-section{display:none}
 .admin-card-soon{display:inline-block;margin-left:7px;font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--warn);border:1px solid var(--warn);border-radius:3px;padding:1px 5px;vertical-align:middle}
 .admin-card.is-soon{opacity:.72}
 .admin-card.is-soon:hover{border-color:var(--warn)}
+/* ── Recruitment tab (admin/operations — read-only applicant list) ── */
+#tab-recruitment .recruit-wrap{max-width:880px;margin:0 auto;padding:26px 22px 40px}
+.recruit-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
+.recruit-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin:6px 0 18px}
+.recruit-status{font-family:'Rajdhani',sans-serif;font-size:14px;color:var(--muted);padding:12px 0}
+.recruit-list{display:flex;flex-direction:column;gap:10px}
+.recruit-card{background:var(--surface);border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.recruit-card-head{display:flex;width:100%;gap:12px;align-items:flex-start;text-align:left;padding:14px 16px;background:none;border:none;cursor:pointer;font-family:inherit;color:var(--text)}
+.recruit-card-head:hover{background:var(--surface2)}
+.recruit-card-main{flex:1;min-width:0}
+.recruit-name{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:var(--text)}
+.recruit-meta{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin-top:3px}
+.recruit-label{color:var(--accent);font-weight:700;letter-spacing:.03em;margin-right:5px}
+.recruit-pitch{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text);margin-top:7px;white-space:pre-wrap;line-height:1.4}
+.recruit-empty{color:var(--muted);font-style:italic}
+.recruit-chevron{color:var(--muted);transition:transform .15s;flex-shrink:0;margin-top:2px}
+.recruit-card.open .recruit-chevron{transform:rotate(180deg)}
+.recruit-detail{display:none;padding:0 16px 16px;border-top:1px solid var(--border)}
+.recruit-card.open .recruit-detail{display:block}
+.recruit-detail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px 16px;margin:12px 0}
+.recruit-detail-grid > div{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text)}
+.recruit-detail-grid .recruit-label{display:block;font-size:11px;text-transform:uppercase;margin:0 0 1px}
+.recruit-block{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text);margin-top:10px;white-space:pre-wrap;line-height:1.4}
+.recruit-block .recruit-label{display:block;font-size:11px;text-transform:uppercase;margin-bottom:2px}
 </style>
 </head>
 <body>
@@ -774,6 +798,7 @@ body.cohort-readonly #unavail-add-section{display:none}
   <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
   <button class="tab-btn" id="tab-btn-import" onclick="switchTab('import')">📋 Create Booking</button>
   <button class="tab-btn" id="tab-btn-administration" onclick="switchTab('administration')">⚙ Administration</button>
+  <button class="tab-btn" id="tab-btn-recruitment" onclick="switchTab('recruitment')">🧑‍💼 Recruitment</button>
   <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
   <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat" style="margin-left:auto;align-self:center;margin-right:10px">
     <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
@@ -1426,6 +1451,16 @@ body.cohort-readonly #unavail-add-section{display:none}
       </div>
     </div>
   </div>
+  <!-- ── RECRUITMENT (admin/operations — read-only applicant list) ── -->
+  <div class="tab-panel" id="tab-recruitment">
+    <div class="recruit-wrap">
+      <div class="recruit-title">Recruitment</div>
+      <div class="recruit-sub">Job applicants — read-only. Click an applicant to expand the full detail.</div>
+      <div id="recruit-status" class="recruit-status">Loading applicants…</div>
+      <div id="recruit-list" class="recruit-list"></div>
+    </div>
+  </div>
+
   <!-- ── ADMINISTRATION (admin-only hub) ── -->
   <div class="tab-panel" id="tab-administration">
     <div class="admin-hub">
@@ -1559,6 +1594,7 @@ function applyCohort(d){
     hide('tab-btn-all-bookings');                 // All Bookings is admin-only
     hide('tab-btn-import');                       // Estimate Import is admin-only
     hide('tab-btn-administration');               // Administration is admin-only
+    if(cohort !== 'operations') hide('tab-btn-recruitment'); // Recruitment: ops yes, leadership no
     // My Status tab stays: leadership are crew too — own inductions/shifts and
     // can add/remove their own availability (the /api/me/* routes are any-cohort).
     switchTab('schedule');                        // never land on a hidden tab
@@ -3005,6 +3041,91 @@ function switchTab(tab){
   if(tab==='schedule') { initSchedule(); if(!_schedData) loadSchedule(); }
   if(tab==='all-bookings') loadAllBookings();
   if(tab==='my-status') loadMyStatus();
+  if(tab==='recruitment') loadRecruitment();
+}
+
+// ── RECRUITMENT (read-only applicant review; admin/operations only) ──────────
+// Fetches applicants from our server route (which holds the service key). The
+// browser never sees the key. Re-fetches each time the tab is opened.
+async function loadRecruitment(){
+  const statusEl = document.getElementById('recruit-status');
+  const listEl   = document.getElementById('recruit-list');
+  statusEl.style.display = '';
+  statusEl.textContent = 'Loading applicants…';
+  listEl.innerHTML = '';
+  try{
+    const r = await fetch('/api/recruitment/candidates', {cache:'no-store'});
+    if(!r.ok){
+      statusEl.textContent = (r.status === 403)
+        ? 'You do not have access to recruitment.'
+        : 'Could not load applicants. Please try again.';
+      return;
+    }
+    const rows = await r.json();
+    if(!Array.isArray(rows) || rows.length === 0){
+      statusEl.textContent = 'No applicants yet.';
+      return;
+    }
+    statusEl.style.display = 'none';
+    listEl.innerHTML = rows.map(renderRecruitCard).join('');
+  }catch(e){
+    statusEl.textContent = 'Could not load applicants. Please try again.';
+  }
+}
+
+// Escape applicant-supplied text so it can never inject HTML.
+function recruitEsc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, m =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+// availability {Monday:{day,night},...} -> "Mon Day · Sat Night"
+function recruitAvail(av){
+  if(!av || typeof av !== 'object') return '—';
+  const order = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  const short = {Monday:'Mon',Tuesday:'Tue',Wednesday:'Wed',Thursday:'Thu',Friday:'Fri',Saturday:'Sat',Sunday:'Sun'};
+  const parts = [];
+  order.forEach(d => {
+    const slot = av[d]; if(!slot) return;
+    const dn = [];
+    if(slot.day) dn.push('Day');
+    if(slot.night) dn.push('Night');
+    if(dn.length) parts.push(short[d] + ' ' + dn.join('/'));
+  });
+  return parts.length ? parts.join(' · ') : 'None selected';
+}
+function recruitDate(iso){
+  if(!iso) return '—';
+  try{ return new Date(iso).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'}); }
+  catch(e){ return recruitEsc(iso); }
+}
+function renderRecruitCard(c){
+  const tickets = (Array.isArray(c.tickets) && c.tickets.length)
+    ? c.tickets.map(recruitEsc).join(', ') : 'None';
+  const pitch = c.pitch ? recruitEsc(c.pitch)
+    : '<span class="recruit-empty">No pitch provided</span>';
+  return `
+  <div class="recruit-card">
+    <button class="recruit-card-head" onclick="this.parentNode.classList.toggle('open')">
+      <div class="recruit-card-main">
+        <div class="recruit-name">${recruitEsc(c.name || 'Unnamed applicant')}</div>
+        <div class="recruit-meta"><span class="recruit-label">Available</span>${recruitAvail(c.availability)}</div>
+        <div class="recruit-meta"><span class="recruit-label">Tickets</span>${tickets}</div>
+        <div class="recruit-pitch">${pitch}</div>
+      </div>
+      <div class="recruit-chevron">▾</div>
+    </button>
+    <div class="recruit-detail">
+      <div class="recruit-detail-grid">
+        <div><span class="recruit-label">Reference</span>${recruitEsc(c.reference || '—')}</div>
+        <div><span class="recruit-label">Applied</span>${recruitDate(c.created_at)}</div>
+        <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
+        <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
+        <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
+      </div>
+      <div class="recruit-block"><span class="recruit-label">Work history</span>${c.work_history ? recruitEsc(c.work_history) : '—'}</div>
+      <div class="recruit-block"><span class="recruit-label">References</span>${c.referees ? recruitEsc(c.referees) : '—'}</div>
+    </div>
+  </div>`;
 }
 
 // ── CALL SEARCH & COLLAPSE ──

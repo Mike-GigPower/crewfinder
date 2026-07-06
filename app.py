@@ -177,6 +177,13 @@ def gp_notify_promotion(crew_id, call):
     except Exception:
         pass   # never let a push break the promote response
 
+# ─── RECRUITMENT (ops applicant review) ───────────────────────────────────────
+# Read-only applicant list, served by a deployed Supabase edge function. The URL
+# is public (safe in source). The KEY is a secret — loaded from the gitignored
+# config.json (or env), exactly like GP_PUSH_SECRET above, and never hardcoded.
+RECRUITMENT_CANDIDATES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidates"
+GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
+
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
 # When True, the app will try the new bulk SmartStaff endpoints first and fall
 # back to HTML scraping on any failure. Safe to leave True even before the
@@ -3561,6 +3568,34 @@ def api_booking_details(booking_id):
     if err:
         return jsonify({"error": err}), 500
     return jsonify(details)
+
+
+@app.route("/api/recruitment/candidates", methods=["GET"])
+@require_cohort("admin", "operations")
+def api_recruitment_candidates():
+    """Read-only list of job applicants for the ops recruitment review.
+
+    Calls the deployed edge function server-side, sending our secret in the
+    X-Goat-Service-Key header. The key stays in Python — the browser/index.html
+    never sees it. Only admin or operations cohorts reach this (require_cohort)."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    try:
+        r = http.get(
+            RECRUITMENT_CANDIDATES_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code != 200:
+        print(f"[recruitment] edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
 
 @app.route("/api/availability", methods=["POST"])
 @require_cohort("admin")
