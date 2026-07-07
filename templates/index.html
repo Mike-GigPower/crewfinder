@@ -3182,6 +3182,50 @@ async function recruitSetStatus(id, status, btn){
   }
 }
 
+// Send an induction INVITE (this emails the applicant), via our server route
+// /api/recruitment/invite -> the recruitment-invite edge function. Unlike
+// recruitSetStatus above, this actually emails them their booking link and, on
+// a successful send, marks them invited. Confirms first, and warns before a
+// re-send if they're already in the Invited pile.
+async function recruitInvite(id, btn){
+  // Look up the applicant in the already-fetched list for the confirm dialog.
+  const cand = _recruitRows.find(c => String(c.id) === String(id)) || {};
+  const name  = cand.name  || 'this applicant';
+  const email = cand.email || '(no email on file)';
+  const alreadyInvited = (cand.status === 'invited_to_induction');
+
+  // Confirm before sending — this sends a real email.
+  const msg = alreadyInvited
+    ? `${name} has already been invited.\n\nSend the induction invite AGAIN to ${email}?`
+    : `Send an induction invite to ${name} (${email})?`;
+  if(!confirm(msg)) return;
+
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch('/api/recruitment/invite', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id})
+    });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      // Surface the edge function's own message (e.g. "No induction link set").
+      alert(r.status === 403
+        ? 'You do not have access to invite applicants.'
+        : (body.error || 'Could not send the invite. Please try again.'));
+      if(btn) btn.disabled = false;
+      return;
+    }
+    alert(body.reinvite
+      ? `Re-invite sent to ${email}.`
+      : `Invite sent to ${email}.`);
+    await loadRecruitment();  // refetch so the card lands in the Invited pile
+  }catch(e){
+    alert('Could not send the invite. Please try again.');
+    if(btn) btn.disabled = false;
+  }
+}
+
 // Escape applicant-supplied text so it can never inject HTML.
 function recruitEsc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m =>
@@ -3217,10 +3261,21 @@ function renderRecruitCard(c){
   const pill = `<span class="recruit-pill st-${cur}">${RECRUIT_STATUS_LABELS[cur]}</span>`;
   // Buttons to move to the OTHER three statuses (every move is reversible).
   const id = recruitEsc(c.id);
-  const actions = RECRUIT_STATUS_ORDER.filter(s => s !== cur).map(s =>
-    `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
-    + `${RECRUIT_MOVE_LABELS[s]}</button>`
-  ).join('');
+  const actions = RECRUIT_STATUS_ORDER.map(s => {
+    if(s === 'invited_to_induction'){
+      // Invite EMAILS the applicant (via /api/recruitment/invite) — it does NOT
+      // just relabel like the others. Always offered; from the Invited pile it
+      // becomes a deliberate re-send.
+      const label = (cur === 'invited_to_induction')
+        ? 'Re-invite to induction' : RECRUIT_MOVE_LABELS[s];
+      return `<button class="recruit-action" onclick="recruitInvite('${id}',this)">`
+        + `${label}</button>`;
+    }
+    // Back to New / Hold / Not suitable — unchanged: relabel via set-status.
+    if(s === cur) return '';
+    return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
+      + `${RECRUIT_MOVE_LABELS[s]}</button>`;
+  }).filter(Boolean).join('');
   return `
   <div class="recruit-card">
     <button class="recruit-card-head" onclick="this.parentNode.classList.toggle('open')">

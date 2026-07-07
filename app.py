@@ -184,6 +184,10 @@ def gp_notify_promotion(crew_id, call):
 RECRUITMENT_CANDIDATES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidates"
 # Same base URL, different function: this one UPDATES an applicant's status.
 RECRUITMENT_SET_STATUS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-set-status"
+# Same base URL again: this one EMAILS the induction invite (via Resend) and, on
+# a successful send, marks the applicant invited. set-status only relabels — it
+# never emails — so the "Invite" button must use THIS route, not set-status.
+RECRUITMENT_INVITE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-invite"
 # The only statuses this doorway may set — must match the edge function exactly.
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
@@ -3643,6 +3647,47 @@ def api_recruitment_set_status():
         return jsonify(r.json())
     except Exception:
         return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/invite", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_recruitment_invite():
+    """Email an applicant their induction booking link and mark them invited.
+
+    Unlike set-status (which only relabels the applicant), this calls the
+    recruitment-invite edge function, which sends the branded Resend email and —
+    only if the email actually sends — sets status=invited_to_induction and
+    stamps induction_invited_at. Same auth + key pattern as the other
+    recruitment routes: only admin/operations reach it (require_cohort), and the
+    secret key stays in Python (sent to the edge function in X-Goat-Service-Key,
+    never seen by the browser). The browser only sends us {id}."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+
+    data = request.get_json(silent=True) or {}
+    cand_id = str(data.get("id", "")).strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+
+    try:
+        r = http.post(
+            RECRUITMENT_INVITE_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json={"id": cand_id},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] invite request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    # Forward the edge function's own status + JSON so the operator sees a useful
+    # message (e.g. "No induction link set", "Failed to send invite email",
+    # "Candidate not found") instead of a generic error. The response also
+    # carries the "reinvite" flag we surface in the UI.
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        print(f"[recruitment] invite edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
 
 
 @app.route("/api/availability", methods=["POST"])
