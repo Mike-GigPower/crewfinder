@@ -5876,7 +5876,7 @@ async function tiLoadLive(bookingId){
     if(data.error){ if(status){ status.style.color='var(--conflict)'; status.textContent = data.error; } return; }
     _tiState = {bookingId: bookingId, data: data, include: {}, source: 'gsheet'};
     (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
-    renderImportPreview();
+    renderTimesheetImportPreview();
   }catch(e){
     if(status){ status.style.color='var(--conflict)'; status.textContent = 'Couldn\'t read the sheet: ' + e.message; }
   }
@@ -5895,14 +5895,14 @@ async function tiHandleFile(input, bookingId){
     if(data.error){ status.style.color='var(--conflict)'; status.textContent = data.error; return; }
     _tiState = {bookingId: bookingId, data: data, include: {}, source: 'file'};
     (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
-    renderImportPreview();
+    renderTimesheetImportPreview();
   }catch(e){
     status.style.color = 'var(--conflict)';
     status.textContent = 'Upload failed: ' + e.message;
   }
 }
 
-function renderImportPreview(){
+function renderTimesheetImportPreview(){
   const s = _tiState, d = s.data;
   const calls = d.calls || [];
   const totalWrite = calls.reduce(function(n,c){ return n + (s.include[c.call_id] ? c.matched.length : 0); }, 0);
@@ -5960,7 +5960,7 @@ function renderImportPreview(){
 }
 
 function tiToggleCall(callId, el){
-  if(_tiState){ _tiState.include[callId] = el.checked; renderImportPreview(); }
+  if(_tiState){ _tiState.include[callId] = el.checked; renderTimesheetImportPreview(); }
 }
 
 async function writeTimesImport(){
