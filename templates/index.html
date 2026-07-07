@@ -732,24 +732,29 @@ body.cohort-readonly #unavail-add-section{display:none}
 .admin-card.is-soon{opacity:.72}
 .admin-card.is-soon:hover{border-color:var(--warn)}
 /* ── Recruitment tab (admin/operations — read-only applicant list) ── */
-#tab-recruitment .recruit-wrap{max-width:880px;margin:0 auto;padding:26px 22px 40px}
+#tab-recruitment .recruit-wrap{max-width:1100px;margin:0 auto;padding:26px 22px 40px}
 .recruit-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
 .recruit-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin:6px 0 18px}
 .recruit-status{font-family:'Rajdhani',sans-serif;font-size:14px;color:var(--muted);padding:12px 0}
-.recruit-list{display:flex;flex-direction:column;gap:10px}
-.recruit-card{background:var(--surface);border:1px solid var(--border);border-radius:7px;overflow:hidden}
-.recruit-card-head{display:flex;width:100%;gap:12px;align-items:flex-start;text-align:left;padding:14px 16px;background:none;border:none;cursor:pointer;font-family:inherit;color:var(--text)}
-.recruit-card-head:hover{background:var(--surface2)}
-.recruit-card-main{flex:1;min-width:0}
-.recruit-name{font-family:'Rajdhani',sans-serif;font-size:16px;font-weight:700;color:var(--text)}
-.recruit-meta{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin-top:3px}
 .recruit-label{color:var(--accent);font-weight:700;letter-spacing:.03em;margin-right:5px}
-.recruit-pitch{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text);margin-top:7px;white-space:pre-wrap;line-height:1.4}
 .recruit-empty{color:var(--muted);font-style:italic}
-.recruit-chevron{color:var(--muted);transition:transform .15s;flex-shrink:0;margin-top:2px}
-.recruit-card.open .recruit-chevron{transform:rotate(180deg)}
-.recruit-detail{display:none;padding:0 16px 16px;border-top:1px solid var(--border)}
-.recruit-card.open .recruit-detail{display:block}
+/* Compact table — one row per applicant, scales to 30+ rows (scrolls if tall) */
+.recruit-table-wrap{border:1px solid var(--border);border-radius:7px;overflow:auto;max-height:70vh}
+.recruit-table{width:100%;border-collapse:collapse;font-family:'Rajdhani',sans-serif}
+.recruit-table thead th{position:sticky;top:0;z-index:1;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--surface2);padding:9px 14px;border-bottom:2px solid var(--border);white-space:nowrap}
+.recruit-row{cursor:pointer;border-top:1px solid var(--border)}
+.recruit-row:first-child{border-top:none}
+.recruit-row:hover{background:var(--surface2)}
+.recruit-row.open{background:var(--surface2)}
+.recruit-row td{padding:10px 14px;font-size:14px;color:var(--text);vertical-align:middle}
+.recruit-row .rc-name{font-weight:700}
+.recruit-row .rc-chevron{color:var(--muted);transition:transform .15s;display:inline-block;margin-left:6px;font-size:11px}
+.recruit-row.open .rc-chevron{transform:rotate(180deg)}
+.recruit-row .rc-avail,.recruit-row .rc-tickets{font-size:13px;color:var(--muted)}
+.recruit-row .rc-ref{font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--muted);white-space:nowrap}
+.recruit-detail-row{display:none;background:var(--surface2)}
+.recruit-detail-row.open{display:table-row}
+.recruit-detail-row > td{padding:2px 16px 18px;border-top:none}
 .recruit-detail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px 16px;margin:12px 0}
 .recruit-detail-grid > div{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text)}
 .recruit-detail-grid .recruit-label{display:block;font-size:11px;text-transform:uppercase;margin:0 0 1px}
@@ -766,8 +771,8 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-pill.st-invited_to_induction{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.08)}
 .recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
-/* Action buttons row (outside the expand button so clicks don't toggle it) */
-.recruit-actions{display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 14px}
+/* Action buttons row — sits inside the expanded detail panel */
+.recruit-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
 .recruit-action:hover{border-color:var(--accent);color:var(--accent)}
 .recruit-action:disabled{opacity:.5;cursor:default}
@@ -3150,7 +3155,27 @@ function renderRecruit(){
     return;
   }
   statusEl.style.display = 'none';
-  listEl.innerHTML = visible.map(renderRecruitCard).join('');
+  // Compact table: header labels + one summary row per applicant, each followed
+  // by a hidden detail row that expands inline on click (see recruitToggleRow).
+  const rows = visible.map((c, i) => renderRecruitRow(c, i)).join('');
+  listEl.innerHTML =
+    '<div class="recruit-table-wrap"><table class="recruit-table">'
+    + '<thead><tr>'
+    +   '<th>Name</th><th>Status</th><th>Availability</th>'
+    +   '<th>Tickets</th><th>Reference</th>'
+    + '</tr></thead>'
+    + '<tbody>' + rows + '</tbody>'
+    + '</table></div>';
+}
+
+// Expand one applicant's detail row and collapse any other that was open.
+function recruitToggleRow(i){
+  const row  = document.getElementById('recruit-row-' + i);
+  const drow = document.getElementById('recruit-drow-' + i);
+  const wasOpen = drow && drow.classList.contains('open');
+  document.querySelectorAll('#recruit-list .recruit-row.open, #recruit-list .recruit-detail-row.open')
+    .forEach(el => el.classList.remove('open'));
+  if(!wasOpen && row && drow){ row.classList.add('open'); drow.classList.add('open'); }
 }
 
 // Switch pile and re-render from the already-fetched list.
@@ -3251,9 +3276,16 @@ function recruitDate(iso){
   try{ return new Date(iso).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'}); }
   catch(e){ return recruitEsc(iso); }
 }
-function renderRecruitCard(c){
-  const tickets = (Array.isArray(c.tickets) && c.tickets.length)
+// Build TWO table rows for one applicant: a clickable summary row and a hidden
+// detail row (spanning all columns) that expands inline. `i` is the applicant's
+// index in the currently-visible list, used to pair the two rows for toggling.
+function renderRecruitRow(c, i){
+  const ticketsFull = (Array.isArray(c.tickets) && c.tickets.length)
     ? c.tickets.map(recruitEsc).join(', ') : 'None';
+  // Compact tickets for the narrow column: first ticket + "+N" if there are more.
+  const ticketsCell = (Array.isArray(c.tickets) && c.tickets.length)
+    ? recruitEsc(c.tickets[0]) + (c.tickets.length > 1 ? ` +${c.tickets.length - 1}` : '')
+    : 'None';
   const pitch = c.pitch ? recruitEsc(c.pitch)
     : '<span class="recruit-empty">No pitch provided</span>';
   // Current status (default unknown/missing to "applied"/New).
@@ -3276,30 +3308,37 @@ function renderRecruitCard(c){
     return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
       + `${RECRUIT_MOVE_LABELS[s]}</button>`;
   }).filter(Boolean).join('');
-  return `
-  <div class="recruit-card">
-    <button class="recruit-card-head" onclick="this.parentNode.classList.toggle('open')">
-      <div class="recruit-card-main">
-        <div class="recruit-name">${recruitEsc(c.name || 'Unnamed applicant')} ${pill}</div>
-        <div class="recruit-meta"><span class="recruit-label">Available</span>${recruitAvail(c.availability)}</div>
-        <div class="recruit-meta"><span class="recruit-label">Tickets</span>${tickets}</div>
-        <div class="recruit-pitch">${pitch}</div>
-      </div>
-      <div class="recruit-chevron">▾</div>
-    </button>
-    <div class="recruit-actions">${actions}</div>
-    <div class="recruit-detail">
-      <div class="recruit-detail-grid">
-        <div><span class="recruit-label">Reference</span>${recruitEsc(c.reference || '—')}</div>
-        <div><span class="recruit-label">Applied</span>${recruitDate(c.created_at)}</div>
-        <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
-        <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
-        <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
-      </div>
-      <div class="recruit-block"><span class="recruit-label">Work history</span>${c.work_history ? recruitEsc(c.work_history) : '—'}</div>
-      <div class="recruit-block"><span class="recruit-label">References</span>${c.referees ? recruitEsc(c.referees) : '—'}</div>
-    </div>
-  </div>`;
+
+  const summary = `
+    <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
+      <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
+      <td>${pill}</td>
+      <td class="rc-avail">${recruitAvail(c.availability)}</td>
+      <td class="rc-tickets">${ticketsCell}</td>
+      <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
+    </tr>`;
+
+  const detail = `
+    <tr class="recruit-detail-row" id="recruit-drow-${i}">
+      <td colspan="5">
+        <div class="recruit-detail">
+          <div class="recruit-detail-grid">
+            <div><span class="recruit-label">Reference</span>${recruitEsc(c.reference || '—')}</div>
+            <div><span class="recruit-label">Applied</span>${recruitDate(c.created_at)}</div>
+            <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
+            <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
+            <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
+            <div><span class="recruit-label">Tickets</span>${ticketsFull}</div>
+          </div>
+          <div class="recruit-block"><span class="recruit-label">Pitch</span>${pitch}</div>
+          <div class="recruit-block"><span class="recruit-label">Work history</span>${c.work_history ? recruitEsc(c.work_history) : '—'}</div>
+          <div class="recruit-block"><span class="recruit-label">References</span>${c.referees ? recruitEsc(c.referees) : '—'}</div>
+          <div class="recruit-actions">${actions}</div>
+        </div>
+      </td>
+    </tr>`;
+
+  return summary + detail;
 }
 
 // ── CALL SEARCH & COLLAPSE ──
