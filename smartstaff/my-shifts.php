@@ -21,7 +21,14 @@
 	/* the app can reuse the same parsing for "My Utilization" and "My Schedule".
 	/*
 	/*   type = 1  -> unavailability   (call FK is NULL)
-	/*   type = 2  -> confirmed shift   (call FK populated)
+	/*   type = 2  -> shift            (call FK populated)
+	/*
+	/* IMPORTANT: a type-2 calendar row on its own does NOT prove the crew member
+	/* is confirmed. A row can linger after a call was declined (status 6) or was
+	/* only ever assigned/offered. So for type-2 rows we ALSO require a matching
+	/* call_crew_map row with status = 5 (Confirmed). Without this check, declined
+	/* calls leak into "My Shifts". Backups (status 7) never get a calendar row,
+	/* so they are naturally excluded.
 	*/
 
 
@@ -65,6 +72,10 @@
 	/* Single query: this user's calendars rows overlapping the window, joined
 	/* to calls + bookings + venues for shift context. Mirrors get-shifts-bulk
 	/* but with `cal.user = <self>` instead of returning all crew.
+	/*
+	/* The EXISTS(...) guard is the fix: a type-2 (shift) row is only returned
+	/* when this same user has a CONFIRMED (status 5) call_crew_map row for that
+	/* call. Type-1 (unavailability) rows are unaffected.
 	*/
 
 	$sql = "
@@ -88,7 +99,19 @@
 		  AND cal.start < $end_sql
 		  AND cal.end   > $start_sql
 		  AND cal.type IN (1, 2)
-		  AND (cal.type = 1 OR c.id IS NOT NULL)
+		  AND (
+		        cal.type = 1
+		        OR (
+		             c.id IS NOT NULL
+		             AND EXISTS (
+		               SELECT 1
+		               FROM call_crew_map ccm
+		               WHERE ccm.callID = cal.call
+		                 AND ccm.userID = cal.user
+		                 AND ccm.status = 5
+		             )
+		           )
+		      )
 		ORDER BY cal.start ASC
 	";
 
