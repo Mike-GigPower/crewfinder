@@ -755,6 +755,22 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-detail-grid .recruit-label{display:block;font-size:11px;text-transform:uppercase;margin:0 0 1px}
 .recruit-block{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text);margin-top:10px;white-space:pre-wrap;line-height:1.4}
 .recruit-block .recruit-label{display:block;font-size:11px;text-transform:uppercase;margin-bottom:2px}
+/* Status filter row (browser-side filtering of the already-fetched list) */
+.recruit-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
+.recruit-filter{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;padding:6px 13px;border-radius:20px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
+.recruit-filter:hover{border-color:var(--accent);color:var(--accent)}
+.recruit-filter.active{background:var(--accent);border-color:var(--accent);color:#000}
+/* Current-status pill on each card */
+.recruit-pill{display:inline-block;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.recruit-pill.st-applied{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
+.recruit-pill.st-invited_to_induction{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.08)}
+.recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
+.recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
+/* Action buttons row (outside the expand button so clicks don't toggle it) */
+.recruit-actions{display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 14px}
+.recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
+.recruit-action:hover{border-color:var(--accent);color:var(--accent)}
+.recruit-action:disabled{opacity:.5;cursor:default}
 </style>
 </head>
 <body>
@@ -1455,7 +1471,8 @@ body.cohort-readonly #unavail-add-section{display:none}
   <div class="tab-panel" id="tab-recruitment">
     <div class="recruit-wrap">
       <div class="recruit-title">Recruitment</div>
-      <div class="recruit-sub">Job applicants — read-only. Click an applicant to expand the full detail.</div>
+      <div class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
+      <div id="recruit-filters" class="recruit-filters"></div>
       <div id="recruit-status" class="recruit-status">Loading applicants…</div>
       <div id="recruit-list" class="recruit-list"></div>
     </div>
@@ -3044,32 +3061,124 @@ function switchTab(tab){
   if(tab==='recruitment') loadRecruitment();
 }
 
-// ── RECRUITMENT (read-only applicant review; admin/operations only) ──────────
+// ── RECRUITMENT (applicant triage; admin/operations only) ────────────────────
 // Fetches applicants from our server route (which holds the service key). The
-// browser never sees the key. Re-fetches each time the tab is opened.
+// browser never sees the key. Re-fetches each time the tab is opened, and again
+// after each status change so cards land in their new pile.
+
+// Status value -> short pill label shown on the card and in the filter row.
+const RECRUIT_STATUS_LABELS = {
+  applied:'New', invited_to_induction:'Invited', on_hold:'Hold', not_suitable:'Not suitable'
+};
+// Order the filter chips appear in (plus "All" added at the end in code).
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','on_hold','not_suitable'];
+// Label for the BUTTON that moves an applicant INTO each status.
+const RECRUIT_MOVE_LABELS = {
+  applied:'Back to New', invited_to_induction:'Invite to induction',
+  on_hold:'Hold', not_suitable:'Not suitable'
+};
+
+let _recruitRows = [];              // the full fetched list (kept for filtering)
+let _recruitFilter = 'applied';     // which pile to show; default = New
+
 async function loadRecruitment(){
   const statusEl = document.getElementById('recruit-status');
   const listEl   = document.getElementById('recruit-list');
+  const filtersEl= document.getElementById('recruit-filters');
   statusEl.style.display = '';
   statusEl.textContent = 'Loading applicants…';
   listEl.innerHTML = '';
   try{
     const r = await fetch('/api/recruitment/candidates', {cache:'no-store'});
     if(!r.ok){
+      filtersEl.innerHTML = '';
       statusEl.textContent = (r.status === 403)
         ? 'You do not have access to recruitment.'
         : 'Could not load applicants. Please try again.';
       return;
     }
     const rows = await r.json();
-    if(!Array.isArray(rows) || rows.length === 0){
-      statusEl.textContent = 'No applicants yet.';
+    _recruitRows = Array.isArray(rows) ? rows : [];
+    renderRecruit();
+  }catch(e){
+    filtersEl.innerHTML = '';
+    statusEl.textContent = 'Could not load applicants. Please try again.';
+  }
+}
+
+// Render the filter row + the visible pile from _recruitRows (no re-fetch).
+function renderRecruit(){
+  const statusEl = document.getElementById('recruit-status');
+  const listEl   = document.getElementById('recruit-list');
+  const filtersEl= document.getElementById('recruit-filters');
+
+  // Count applicants per status so we can show "New (3)" etc.
+  const counts = {};
+  RECRUIT_STATUS_ORDER.forEach(s => counts[s] = 0);
+  _recruitRows.forEach(c => {
+    const s = (c.status && counts.hasOwnProperty(c.status)) ? c.status : 'applied';
+    counts[s]++;
+  });
+
+  // Build the filter chips: one per status, plus "All".
+  const chips = RECRUIT_STATUS_ORDER.map(s =>
+    `<button class="recruit-filter ${_recruitFilter===s?'active':''}" onclick="setRecruitFilter('${s}')">`
+    + `${RECRUIT_STATUS_LABELS[s]} (${counts[s]})</button>`
+  );
+  chips.push(`<button class="recruit-filter ${_recruitFilter==='all'?'active':''}" onclick="setRecruitFilter('all')">`
+    + `All (${_recruitRows.length})</button>`);
+  filtersEl.innerHTML = chips.join('');
+
+  if(_recruitRows.length === 0){
+    statusEl.style.display = '';
+    statusEl.textContent = 'No applicants yet.';
+    listEl.innerHTML = '';
+    return;
+  }
+
+  // Filter to the chosen pile (treat missing/unknown status as "applied"/New).
+  const visible = _recruitRows.filter(c => {
+    if(_recruitFilter === 'all') return true;
+    const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
+    return s === _recruitFilter;
+  });
+
+  if(visible.length === 0){
+    statusEl.style.display = '';
+    statusEl.textContent = 'No applicants in this pile.';
+    listEl.innerHTML = '';
+    return;
+  }
+  statusEl.style.display = 'none';
+  listEl.innerHTML = visible.map(renderRecruitCard).join('');
+}
+
+// Switch pile and re-render from the already-fetched list.
+function setRecruitFilter(status){
+  _recruitFilter = status;
+  renderRecruit();
+}
+
+// Move one applicant to a new status via our server route, then refresh.
+async function recruitSetStatus(id, status, btn){
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch('/api/recruitment/set-status', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id, status})
+    });
+    if(!r.ok){
+      alert(r.status === 403
+        ? 'You do not have access to update applicants.'
+        : 'Could not update applicant. Please try again.');
+      if(btn) btn.disabled = false;
       return;
     }
-    statusEl.style.display = 'none';
-    listEl.innerHTML = rows.map(renderRecruitCard).join('');
+    await loadRecruitment();  // refetch so the card shows its new status/pile
   }catch(e){
-    statusEl.textContent = 'Could not load applicants. Please try again.';
+    alert('Could not update applicant. Please try again.');
+    if(btn) btn.disabled = false;
   }
 }
 
@@ -3103,17 +3212,27 @@ function renderRecruitCard(c){
     ? c.tickets.map(recruitEsc).join(', ') : 'None';
   const pitch = c.pitch ? recruitEsc(c.pitch)
     : '<span class="recruit-empty">No pitch provided</span>';
+  // Current status (default unknown/missing to "applied"/New).
+  const cur = RECRUIT_STATUS_LABELS.hasOwnProperty(c.status) ? c.status : 'applied';
+  const pill = `<span class="recruit-pill st-${cur}">${RECRUIT_STATUS_LABELS[cur]}</span>`;
+  // Buttons to move to the OTHER three statuses (every move is reversible).
+  const id = recruitEsc(c.id);
+  const actions = RECRUIT_STATUS_ORDER.filter(s => s !== cur).map(s =>
+    `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
+    + `${RECRUIT_MOVE_LABELS[s]}</button>`
+  ).join('');
   return `
   <div class="recruit-card">
     <button class="recruit-card-head" onclick="this.parentNode.classList.toggle('open')">
       <div class="recruit-card-main">
-        <div class="recruit-name">${recruitEsc(c.name || 'Unnamed applicant')}</div>
+        <div class="recruit-name">${recruitEsc(c.name || 'Unnamed applicant')} ${pill}</div>
         <div class="recruit-meta"><span class="recruit-label">Available</span>${recruitAvail(c.availability)}</div>
         <div class="recruit-meta"><span class="recruit-label">Tickets</span>${tickets}</div>
         <div class="recruit-pitch">${pitch}</div>
       </div>
       <div class="recruit-chevron">▾</div>
     </button>
+    <div class="recruit-actions">${actions}</div>
     <div class="recruit-detail">
       <div class="recruit-detail-grid">
         <div><span class="recruit-label">Reference</span>${recruitEsc(c.reference || '—')}</div>

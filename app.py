@@ -182,6 +182,10 @@ def gp_notify_promotion(crew_id, call):
 # is public (safe in source). The KEY is a secret — loaded from the gitignored
 # config.json (or env), exactly like GP_PUSH_SECRET above, and never hardcoded.
 RECRUITMENT_CANDIDATES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidates"
+# Same base URL, different function: this one UPDATES an applicant's status.
+RECRUITMENT_SET_STATUS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-set-status"
+# The only statuses this doorway may set — must match the edge function exactly.
+RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -3596,6 +3600,50 @@ def api_recruitment_candidates():
         return jsonify(r.json())
     except Exception:
         return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/set-status", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_recruitment_set_status():
+    """Move a job applicant to a new status (triage action).
+
+    Same auth + key pattern as the read route above: only admin/operations reach
+    it (require_cohort), and the secret key stays in Python — it is sent to the
+    edge function in the X-Goat-Service-Key header and never exposed to the
+    browser. The browser only sends us {id, status}."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+
+    data = request.get_json(silent=True) or {}
+    cand_id = str(data.get("id", "")).strip()
+    status = str(data.get("status", "")).strip()
+
+    # Validate here too, so we never forward junk to the edge function.
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    if status not in RECRUITMENT_VALID_STATUSES:
+        return jsonify({"error": "Invalid status"}), 400
+
+    try:
+        r = http.post(
+            RECRUITMENT_SET_STATUS_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json={"id": cand_id, "status": status},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] set-status request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code == 404:
+        return jsonify({"error": "Applicant not found"}), 404
+    if r.status_code != 200:
+        print(f"[recruitment] set-status edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
+
 
 @app.route("/api/availability", methods=["POST"])
 @require_cohort("admin")
