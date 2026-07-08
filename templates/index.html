@@ -769,6 +769,7 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-pill{display:inline-block;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 .recruit-pill.st-applied{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
 .recruit-pill.st-invited_to_induction{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.08)}
+.recruit-pill.st-booked{color:#a371f7;border-color:#a371f7;background:rgba(163,113,247,0.08)}
 .recruit-pill.st-attended{color:#58a6ff;border-color:#58a6ff;background:rgba(88,166,255,0.08)}
 .recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
@@ -3086,15 +3087,15 @@ function switchTab(tab){
 
 // Status value -> short pill label shown on the card and in the filter row.
 const RECRUIT_STATUS_LABELS = {
-  applied:'New', invited_to_induction:'Invited', attended:'Attended',
+  applied:'New', invited_to_induction:'Invited', booked:'Booked', attended:'Attended',
   on_hold:'Hold', not_suitable:'Not suitable'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
-const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','attended','on_hold','not_suitable'];
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','on_hold','not_suitable'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
-  attended:'Mark attended', on_hold:'Hold', not_suitable:'Not suitable'
+  booked:'Mark booked', attended:'Mark attended', on_hold:'Hold', not_suitable:'Not suitable'
 };
 
 let _recruitRows = [];              // the full fetched list (kept for filtering)
@@ -3429,9 +3430,12 @@ function renderRecruitRow(c, i){
       return `<button class="recruit-action" onclick="recruitInvite('${id}',this)">`
         + `${label}</button>`;
     }
-    // "Mark attended" is only offered to someone currently Invited (they turned
-    // up to the induction). Hidden for every other pile. Reuses set-status.
-    if(s === 'attended' && cur !== 'invited_to_induction') return '';
+    // "Mark booked" is only offered to someone currently Invited (they've
+    // confirmed an induction slot). Hidden for every other pile. Reuses set-status.
+    if(s === 'booked' && cur !== 'invited_to_induction') return '';
+    // "Mark attended" is offered once they're Invited OR Booked (they turned up
+    // to the induction; booked -> attended is a normal step). Hidden otherwise.
+    if(s === 'attended' && cur !== 'invited_to_induction' && cur !== 'booked') return '';
     // Back to New / Attended / Hold / Not suitable — relabel via set-status.
     if(s === cur) return '';
     return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
