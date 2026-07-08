@@ -769,6 +769,7 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-pill{display:inline-block;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 .recruit-pill.st-applied{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
 .recruit-pill.st-invited_to_induction{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.08)}
+.recruit-pill.st-attended{color:#58a6ff;border-color:#58a6ff;background:rgba(88,166,255,0.08)}
 .recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
 /* Action buttons row — sits inside the expanded detail panel */
@@ -776,6 +777,17 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
 .recruit-action:hover{border-color:var(--accent);color:var(--accent)}
 .recruit-action:disabled{opacity:.5;cursor:default}
+/* Batch selection: checkbox column + the action bar that appears when rows are ticked */
+.recruit-table .rc-check{width:36px;text-align:center;padding-left:14px;padding-right:0}
+.recruit-check,#recruit-check-all{cursor:pointer;width:15px;height:15px;accent-color:var(--accent);margin:0}
+.recruit-batch{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 16px;padding:10px 14px;border:1px solid var(--accent);border-radius:7px;background:var(--accent-bg)}
+.recruit-batch-count{font-family:'Rajdhani',sans-serif;font-weight:700;color:var(--accent);font-size:13px}
+.recruit-batch-actions{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}
+.recruit-batch-btn{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:6px 12px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer;transition:all .12s}
+.recruit-batch-btn:hover{border-color:var(--accent);color:var(--accent)}
+.recruit-batch-btn:disabled{opacity:.5;cursor:default}
+.recruit-batch-clear{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none;text-decoration:underline;padding:0}
+.recruit-batch-clear:hover{color:var(--accent)}
 </style>
 </head>
 <body>
@@ -1478,6 +1490,7 @@ body.cohort-readonly #unavail-add-section{display:none}
       <div class="recruit-title">Recruitment</div>
       <div class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
       <div id="recruit-filters" class="recruit-filters"></div>
+      <div id="recruit-batch" class="recruit-batch" style="display:none"></div>
       <div id="recruit-status" class="recruit-status">Loading applicants…</div>
       <div id="recruit-list" class="recruit-list"></div>
     </div>
@@ -3073,18 +3086,21 @@ function switchTab(tab){
 
 // Status value -> short pill label shown on the card and in the filter row.
 const RECRUIT_STATUS_LABELS = {
-  applied:'New', invited_to_induction:'Invited', on_hold:'Hold', not_suitable:'Not suitable'
+  applied:'New', invited_to_induction:'Invited', attended:'Attended',
+  on_hold:'Hold', not_suitable:'Not suitable'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
-const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','on_hold','not_suitable'];
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','attended','on_hold','not_suitable'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
-  on_hold:'Hold', not_suitable:'Not suitable'
+  attended:'Mark attended', on_hold:'Hold', not_suitable:'Not suitable'
 };
 
 let _recruitRows = [];              // the full fetched list (kept for filtering)
 let _recruitFilter = 'applied';     // which pile to show; default = New
+let _recruitSelected = new Set();   // ids ticked for a batch action (by candidate id)
+let _recruitVisibleIds = [];        // ids currently shown (for the header "select all")
 
 async function loadRecruitment(){
   const statusEl = document.getElementById('recruit-status');
@@ -3155,17 +3171,25 @@ function renderRecruit(){
     return;
   }
   statusEl.style.display = 'none';
+  // Remember which applicants are on screen so "select all" only ticks these,
+  // and drop any earlier selection that is no longer visible.
+  _recruitVisibleIds = visible.map(c => String(c.id));
+  _recruitSelected.forEach(id => { if(!_recruitVisibleIds.includes(id)) _recruitSelected.delete(id); });
   // Compact table: header labels + one summary row per applicant, each followed
   // by a hidden detail row that expands inline on click (see recruitToggleRow).
   const rows = visible.map((c, i) => renderRecruitRow(c, i)).join('');
   listEl.innerHTML =
     '<div class="recruit-table-wrap"><table class="recruit-table">'
     + '<thead><tr>'
+    +   '<th class="rc-check"><input type="checkbox" id="recruit-check-all" title="Select all"'
+    +     ' onclick="recruitToggleAll(this)"></th>'
     +   '<th>Name</th><th>Status</th><th>Availability</th>'
     +   '<th>Tickets</th><th>Reference</th>'
     + '</tr></thead>'
     + '<tbody>' + rows + '</tbody>'
     + '</table></div>';
+  recruitSyncHeaderCheck();   // reflect current selection in the header tick
+  recruitUpdateBatchBar();    // show/hide the batch action bar
 }
 
 // Expand one applicant's detail row and collapse any other that was open.
@@ -3178,10 +3202,112 @@ function recruitToggleRow(i){
   if(!wasOpen && row && drow){ row.classList.add('open'); drow.classList.add('open'); }
 }
 
-// Switch pile and re-render from the already-fetched list.
+// Switch pile and re-render from the already-fetched list. Selection is per-pile,
+// so clear it — you don't want a Hold action landing on someone from the New pile.
 function setRecruitFilter(status){
   _recruitFilter = status;
+  _recruitSelected.clear();
   renderRecruit();
+}
+
+// ── Batch selection (tick rows in the list, then act on them all at once) ──────
+// Tick/untick one row.
+function recruitToggleSelect(id, el){
+  id = String(id);
+  if(el.checked) _recruitSelected.add(id); else _recruitSelected.delete(id);
+  recruitSyncHeaderCheck();
+  recruitUpdateBatchBar();
+}
+// Header "select all" — ticks/unticks every applicant currently on screen.
+function recruitToggleAll(el){
+  if(el.checked) _recruitVisibleIds.forEach(id => _recruitSelected.add(id));
+  else _recruitSelected.clear();
+  document.querySelectorAll('#recruit-list .recruit-check').forEach(cb => cb.checked = el.checked);
+  el.indeterminate = false;
+  recruitUpdateBatchBar();
+}
+// Make the header tick reflect the selection: full = checked, some = dash.
+function recruitSyncHeaderCheck(){
+  const head = document.getElementById('recruit-check-all');
+  if(!head) return;
+  const total = _recruitVisibleIds.length;
+  const sel = _recruitVisibleIds.filter(id => _recruitSelected.has(id)).length;
+  head.checked = (total > 0 && sel === total);
+  head.indeterminate = (sel > 0 && sel < total);
+}
+// Untick everything.
+function recruitClearSelection(){
+  _recruitSelected.clear();
+  document.querySelectorAll('#recruit-list .recruit-check').forEach(cb => cb.checked = false);
+  recruitSyncHeaderCheck();
+  recruitUpdateBatchBar();
+}
+// Show the action bar with a live count when ≥1 row is ticked; hide it otherwise.
+function recruitUpdateBatchBar(){
+  const bar = document.getElementById('recruit-batch');
+  if(!bar) return;
+  const n = _recruitSelected.size;
+  if(n === 0){ bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML =
+    `<span class="recruit-batch-count">${n} selected</span>`
+    + `<button class="recruit-batch-clear" onclick="recruitClearSelection()">Clear</button>`
+    + `<span class="recruit-batch-actions">`
+    +   `<button class="recruit-batch-btn" onclick="recruitBatchInvite()">Invite to induction</button>`
+    +   `<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('on_hold')">Hold</button>`
+    +   `<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('not_suitable')">Not suitable</button>`
+    + `</span>`;
+}
+// Batch relabel (Hold / Not suitable) — reuses the single-row set-status route,
+// one call per applicant. No emails are sent.
+async function recruitBatchSetStatus(status){
+  const ids = Array.from(_recruitSelected);
+  if(ids.length === 0) return;
+  const label = RECRUIT_STATUS_LABELS[status] || status;
+  if(!confirm(`Move ${ids.length} applicant(s) to “${label}”?`)) return;
+  const bar = document.getElementById('recruit-batch');
+  if(bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
+  let ok = 0, fail = 0;
+  for(const id of ids){
+    try{
+      const r = await fetch('/api/recruitment/set-status', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({id, status})
+      });
+      if(r.ok) ok++; else fail++;
+    }catch(e){ fail++; }
+  }
+  if(fail) alert(`Moved ${ok} to “${label}”. ${fail} could not be updated.`);
+  _recruitSelected.clear();
+  await loadRecruitment();  // refetch so cards land in their new piles
+}
+// Batch invite — reuses the single-row invite route, one call per applicant.
+// This EMAILS each applicant, so it confirms once for the whole batch and
+// reports a per-person summary (some may fail, e.g. no induction link on file).
+async function recruitBatchInvite(){
+  const ids = Array.from(_recruitSelected);
+  if(ids.length === 0) return;
+  if(!confirm(`Send induction invites to ${ids.length} applicant(s)?\n\nThis emails each of them their booking link.`)) return;
+  const bar = document.getElementById('recruit-batch');
+  if(bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
+  let ok = 0; const failed = [];
+  for(const id of ids){
+    const cand = _recruitRows.find(c => String(c.id) === String(id)) || {};
+    try{
+      const r = await fetch('/api/recruitment/invite', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({id})
+      });
+      const body = await r.json().catch(() => ({}));
+      if(r.ok) ok++;
+      else failed.push(`${cand.name || id}: ${body.error || 'failed'}`);
+    }catch(e){ failed.push(`${cand.name || id}: network error`); }
+  }
+  let msg = `Invites sent: ${ok} of ${ids.length}.`;
+  if(failed.length) msg += `\n\nNot sent:\n` + failed.join('\n');
+  alert(msg);
+  _recruitSelected.clear();
+  await loadRecruitment();  // refetch so invited applicants land in the Invited pile
 }
 
 // Move one applicant to a new status via our server route, then refresh.
@@ -3303,14 +3429,21 @@ function renderRecruitRow(c, i){
       return `<button class="recruit-action" onclick="recruitInvite('${id}',this)">`
         + `${label}</button>`;
     }
-    // Back to New / Hold / Not suitable — unchanged: relabel via set-status.
+    // "Mark attended" is only offered to someone currently Invited (they turned
+    // up to the induction). Hidden for every other pile. Reuses set-status.
+    if(s === 'attended' && cur !== 'invited_to_induction') return '';
+    // Back to New / Attended / Hold / Not suitable — relabel via set-status.
     if(s === cur) return '';
     return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
       + `${RECRUIT_MOVE_LABELS[s]}</button>`;
   }).filter(Boolean).join('');
 
+  // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
+  const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
   const summary = `
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
+      <td class="rc-check"><input type="checkbox" class="recruit-check"${checked}
+        onclick="event.stopPropagation();recruitToggleSelect('${id}',this)"></td>
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
       <td>${pill}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
@@ -3320,7 +3453,7 @@ function renderRecruitRow(c, i){
 
   const detail = `
     <tr class="recruit-detail-row" id="recruit-drow-${i}">
-      <td colspan="5">
+      <td colspan="6">
         <div class="recruit-detail">
           <div class="recruit-detail-grid">
             <div><span class="recruit-label">Reference</span>${recruitEsc(c.reference || '—')}</div>

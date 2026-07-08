@@ -189,7 +189,7 @@ RECRUITMENT_SET_STATUS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions
 # never emails — so the "Invite" button must use THIS route, not set-status.
 RECRUITMENT_INVITE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-invite"
 # The only statuses this doorway may set — must match the edge function exactly.
-RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "on_hold", "not_suitable"}
+RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "attended", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
