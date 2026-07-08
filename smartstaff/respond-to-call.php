@@ -24,6 +24,9 @@
 	/*     written as 7 instead (no calendar row), mirroring sms-cron.php so the
 	/*     PWA and SMS paths agree. See the capacity check below.
 	/*
+	/* A call that has already STARTED can no longer be confirmed — see the time
+	/* guard below. Decline is never time-gated.
+	/*
 	/* Reuses $db and $sss from global.php so the confirm side-effect is byte
 	/* identical to SmartStaff's own dashboard.
 	*/
@@ -82,6 +85,53 @@
 	if (!count($callIDs))
 	{
 		$callIDs[] = $callID;   /* unlinked (or lookup failed) — just this call */
+	}
+
+	/*
+	/* Time guard — a call that has already STARTED can no longer be CONFIRMED.
+	/* Decline (6) is always allowed. Linked calls answer as one unit, so if ANY
+	/* call in the resolved set has started, the whole accept is refused.
+	/*
+	/* The start instant is the call's Melbourne wall-clock (start_date +
+	/* start_time) resolved in Australia/Melbourne, so the check is correct
+	/* regardless of the server's own timezone. Mirrors the start computation in
+	/* my-call-offers.php.
+	*/
+
+	if ($callStatus == 5)
+	{
+		$melTz = new DateTimeZone('Australia/Melbourne');
+		$nowTs = time();
+
+		foreach ($callIDs as $cid)
+		{
+			$cRow = $db->selectFirst('start_date, start_time', 'calls', 'id=' . $db->sc($cid));
+
+			if (!$cRow)
+			{
+				continue;
+			}
+
+			$cDate   = date('Y-m-d', (int) $cRow->start_date);
+			$startTs = false;
+
+			try {
+				$dt = new DateTime($cDate . ' ' . $cRow->start_time, $melTz);
+				$startTs = $dt->getTimestamp();
+			} catch (Exception $e) {
+				$startTs = false;
+			}
+
+			if ($startTs !== false && $startTs <= $nowTs)
+			{
+				echo json_encode(array(
+					'ok'      => false,
+					'expired' => true,
+					'error'   => 'This shift has already started, so it can no longer be accepted.'
+				));
+				exit;
+			}
+		}
 	}
 
 	/*

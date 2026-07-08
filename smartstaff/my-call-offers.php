@@ -22,6 +22,14 @@
 	/* calls.start_date (unix date) + start_time (time) + est_length (hours),
 	/* and emitted in the same ISO shape as my-shifts.php so the portal renders
 	/* offers with the same formatter.
+	/*
+	/* STARTED OFFERS ARE HIDDEN: a call whose start time has already passed can
+	/* no longer be accepted (see respond-to-call.php), so we drop it here — it
+	/* simply stops appearing on the crew member's dashboard. For linked calls
+	/* (a "package" answered as one unit), if ANY call in the group has started
+	/* the WHOLE group is dropped, so we never show a half-package that can't be
+	/* accepted. "Has it started?" is measured against Australia/Melbourne time
+	/* so it is correct regardless of the server's own timezone.
 	*/
 
 	$userID = (int) goat_acting_user_id();
@@ -64,14 +72,81 @@
 		die('{"error":"offers query failed: ' . addslashes(mysql_error()) . '"}');
 	}
 
-	$offers = array();
+	/* Melbourne "now" for the started-check. time() is an absolute epoch, and
+	/* $melTz resolves each call's wall-clock start to its true absolute instant,
+	/* so the comparison holds whatever timezone this server runs in. */
+
+	$melTz = new DateTimeZone('Australia/Melbourne');
+	$now   = time();
+
+	/*
+	/* Pass 1 — read every offered row, compute its display start/end (wall-clock,
+	/* unchanged) AND a separate absolute "has it started?" flag. Record which
+	/* linked groups contain an already-started call so the whole package can be
+	/* dropped together in pass 2.
+	*/
+
+	$rows          = array();
+	$startedGroups = array();
 
 	while ($row = mysql_fetch_object($res))
 	{
 		$dateStr    = date('Y-m-d', (int) $row->start_date);
+
+		/* display start/end — round-trips the wall-clock regardless of server tz */
 		$startUnix  = strtotime($dateStr . ' ' . $row->start_time);
 		$lengthSecs = (int) round(((double) $row->est_length) * 3600);
 		$endUnix    = $startUnix + $lengthSecs;
+
+		/* gate — absolute instant of the Melbourne wall-clock start */
+		$startTs = false;
+		try {
+			$dt = new DateTime($dateStr . ' ' . $row->start_time, $melTz);
+			$startTs = $dt->getTimestamp();
+		} catch (Exception $e) {
+			$startTs = false;
+		}
+		$hasStarted = ($startTs !== false && $startTs <= $now);
+
+		$lg = ($row->link_group === null ? null : (int) $row->link_group);
+
+		if ($hasStarted && $lg !== null && $lg > 0)
+		{
+			$startedGroups[$lg] = true;
+		}
+
+		$rows[] = array(
+			'row'        => $row,
+			'startUnix'  => $startUnix,
+			'endUnix'    => $endUnix,
+			'lg'         => $lg,
+			'hasStarted' => $hasStarted,
+		);
+	}
+
+	/*
+	/* Pass 2 — emit the offers that are still open: skip a call that has itself
+	/* started, and skip any remaining sibling of a linked group whose other call
+	/* has started.
+	*/
+
+	$offers = array();
+
+	foreach ($rows as $r)
+	{
+		if ($r['hasStarted'])
+		{
+			continue;   /* this call has already started */
+		}
+
+		$lg = $r['lg'];
+
+		if ($lg !== null && $lg > 0 && isset($startedGroups[$lg]))
+		{
+			continue;   /* a linked call in this package has started — drop the package */
+		}
+
+		$row = $r['row'];
 
 		$offers[] = array(
 			'call_id'      => (int) $row->call_id,
@@ -79,11 +154,11 @@
 			'call_name'    => $row->call_name,
 			'booking_name' => $row->booking_name,
 			'venue'        => $row->venue_name,
-			'start'        => date('Y-m-d\TH:i:s', $startUnix),
-			'end'          => date('Y-m-d\TH:i:s', $endUnix),
+			'start'        => date('Y-m-d\TH:i:s', $r['startUnix']),
+			'end'          => date('Y-m-d\TH:i:s', $r['endUnix']),
 			'est_length'   => (double) $row->est_length,
 			'required'     => (int) $row->required,
-			'link_group'   => ($row->link_group === null ? null : (int) $row->link_group),
+			'link_group'   => $lg,
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss
 		);
