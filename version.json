@@ -1,6 +1,6 @@
 {
-  "version": "3.18.3",
-  "release_date": "2026-07-08",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.18.3/TheGOAT.dmg",
-  "release_notes": "Fixes Create Booking → From Estimate: dropping an estimate JSON now shows the booking preview correctly instead of bouncing back to the empty screen."
+  "version": "3.19.0",
+  "release_date": "2026-07-09",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.19.0/TheGOAT.dmg",
+  "release_notes": "Recruitment tab (admin/operations): new Booked and Attended stages, batch actions, and TryBooking bookings import. Regular crew see no change."
 }
