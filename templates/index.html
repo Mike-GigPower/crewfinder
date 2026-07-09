@@ -6539,10 +6539,47 @@ async function generateGoogleSheet(bookingId){
     const res = await fetch('/api/booking/'+bookingId+'/generate-gsheet');
     let j = {};
     try{ j = await res.json(); }catch(e){}
-    if(!res.ok || j.error){ showFeedback('Sheet failed: '+(j.error||res.status)); return; }
-    showFeedback('Google Sheet created — shared to you & opening');
-    if(j.url) window.open(j.url, '_blank');
-  }catch(e){ showFeedback('Sheet failed: '+e.message); }
+
+    // Failure — show a persistent popup instead of a 2.5s toast, so it can't be missed
+    if(!res.ok || j.error){
+      document.getElementById('entity-modal-title').textContent = 'Google Sheet failed';
+      document.getElementById('entity-modal-sub').textContent   = 'Booking ' + bookingId;
+      document.getElementById('entity-modal-body').innerHTML =
+        '<div style="font-size:13px;color:var(--muted);line-height:1.5">'
+        + escapeHtml(j.error || ('Server error ' + res.status)) + '</div>';
+      document.getElementById('entity-modal-actions').innerHTML =
+        '<button onclick="closeEntityModal()" style="padding:7px 14px;border:1px solid var(--border);'
+        + 'border-radius:4px;background:var(--surface2);color:var(--muted);cursor:pointer;font-size:12px">Close</button>';
+      openEntityModal();
+      showFeedback('');
+      return;
+    }
+
+    // Success — persistent popup with a clickable link to the created sheet
+    const url = j.url || '';
+    document.getElementById('entity-modal-title').textContent = 'Google Sheet created';
+    document.getElementById('entity-modal-sub').textContent   = 'Shared to your Google account';
+    document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:10px">'
+      + 'Your timesheet Google Sheet is ready.</div>'
+      + (url
+          ? '<div style="font-size:13px;word-break:break-all">'
+            + '<a href="'+escapeHtml(url)+'" target="_blank" style="color:var(--accent);text-decoration:none">'
+            + '📊 Open the Google Sheet ↗</a></div>'
+          : '<div style="font-size:12px;color:var(--muted)">Sheet created, but no link was returned.</div>');
+    document.getElementById('entity-modal-actions').innerHTML =
+      (url
+        ? '<a href="'+escapeHtml(url)+'" target="_blank" style="padding:7px 14px;border:1px solid var(--accent);'
+          + 'border-radius:4px;background:var(--surface2);color:var(--accent);cursor:pointer;font-size:12px;'
+          + 'text-decoration:none">Open sheet ↗</a>'
+        : '')
+      + '<button onclick="closeEntityModal()" style="padding:7px 14px;border:1px solid var(--border);'
+      + 'border-radius:4px;background:var(--surface2);color:var(--muted);cursor:pointer;font-size:12px">Close</button>';
+    openEntityModal();
+    showFeedback('');
+  }catch(e){
+    showFeedback('Sheet failed: '+e.message);
+  }
 }
 
 async function openBookingDialog(bookingId){
