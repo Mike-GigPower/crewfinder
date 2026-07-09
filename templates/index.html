@@ -789,6 +789,25 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-batch-btn:disabled{opacity:.5;cursor:default}
 .recruit-batch-clear{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none;text-decoration:underline;padding:0}
 .recruit-batch-clear:hover{color:var(--accent)}
+/* Header row: title on the left, Import bookings button on the right */
+.recruit-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.recruit-import-btn{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;padding:8px 15px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-bg);color:var(--accent);cursor:pointer;transition:all .12s;white-space:nowrap;flex-shrink:0}
+.recruit-import-btn:hover{background:var(--accent);color:#000}
+/* Import-bookings preview: three grouped lists (mark booked / skip / unmatched) */
+.bi-group{margin-top:14px;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.bi-group-head{display:flex;align-items:center;gap:8px;padding:9px 13px;background:var(--surface2);font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;letter-spacing:.03em;border-bottom:1px solid var(--border)}
+.bi-group-count{margin-left:auto;font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--muted)}
+.bi-group.book .bi-group-head{color:#a371f7}
+.bi-group.skip .bi-group-head{color:var(--warn)}
+.bi-group.review .bi-group-head{color:#58a6ff}
+.bi-group.unmatched .bi-group-head{color:var(--accent2)}
+.bi-list{max-height:200px;overflow:auto;padding:4px 0}
+.bi-item{display:flex;align-items:baseline;gap:10px;padding:5px 13px;font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text)}
+.bi-item .bi-ref{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted);white-space:nowrap}
+.bi-item .bi-note{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
+.bi-empty{padding:8px 13px;font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);font-style:italic}
+.bi-msg{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);min-height:15px;margin-top:4px}
+.bi-msg.err{color:var(--conflict)}
 </style>
 </head>
 <body>
@@ -1488,8 +1507,13 @@ body.cohort-readonly #unavail-add-section{display:none}
   <!-- ── RECRUITMENT (admin/operations — read-only applicant list) ── -->
   <div class="tab-panel" id="tab-recruitment">
     <div class="recruit-wrap">
-      <div class="recruit-title">Recruitment</div>
-      <div class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
+      <div class="recruit-head">
+        <div>
+          <div class="recruit-title">Recruitment</div>
+          <div class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
+        </div>
+        <button class="recruit-import-btn" onclick="openBookingImport()">📥 Import bookings</button>
+      </div>
       <div id="recruit-filters" class="recruit-filters"></div>
       <div id="recruit-batch" class="recruit-batch" style="display:none"></div>
       <div id="recruit-status" class="recruit-status">Loading applicants…</div>
@@ -3476,6 +3500,260 @@ function renderRecruitRow(c, i){
     </tr>`;
 
   return summary + detail;
+}
+
+// ── IMPORT BOOKINGS (Recruitment) ───────────────────────────────────────────
+// Drop a TryBooking "Attendee List Report" CSV. We parse it in the browser,
+// match each unique reference against the already-loaded applicant list, and —
+// only after you press Confirm — mark the matching Invited applicants "booked"
+// by reusing POST /api/recruitment/set-status (one call each). No new backend.
+
+let _biBook = [];   // [{id, name, ref}] — applicants that Confirm will mark booked
+
+// Open/close the modal. Opening resets everything so a second import starts clean.
+function openBookingImport(){
+  bookingImportReset();
+  document.getElementById('bi-file-name').textContent = '';
+  document.getElementById('bi-file-input').value = '';   // let the same file re-trigger onchange
+  const m = document.getElementById('booking-import-modal');
+  if(m) m.style.display = 'flex';
+}
+function closeBookingImport(){
+  const m = document.getElementById('booking-import-modal');
+  if(m) m.style.display = 'none';
+}
+// Clear the preview/result/confirm back to the empty state (keeps the modal open).
+function bookingImportReset(){
+  _biBook = [];
+  document.getElementById('bi-preview').innerHTML = '';
+  setBiMsg('');
+  const btn = document.getElementById('bi-confirm');
+  if(btn){ btn.style.display = 'none'; btn.disabled = false; }
+  const cancel = document.getElementById('bi-cancel');
+  if(cancel){ cancel.disabled = false; cancel.textContent = 'Close'; }
+}
+function setBiMsg(text, isErr){
+  const el = document.getElementById('bi-msg');
+  if(!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('err', !!isErr);
+}
+
+// Accept a drop onto the zone.
+function bookingImportDrop(event){
+  event.preventDefault();
+  event.currentTarget.classList.remove('drag-over');
+  const f = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+  if(f) bookingImportFile(f);
+}
+// Read the chosen file as text, then process it.
+function bookingImportFile(file){
+  if(!file) return;
+  bookingImportReset();
+  document.getElementById('bi-file-name').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = () => { try{ bookingImportProcess(String(reader.result || '')); }
+                          catch(e){ setBiMsg('Could not read that CSV. Is it a TryBooking attendee list?', true); } };
+  reader.onerror = () => setBiMsg('Could not read the file. Please try again.', true);
+  reader.readAsText(file);
+}
+
+// RFC4180-style CSV parser: returns an array of rows, each an array of cell
+// strings. Handles quoted fields (commas/newlines inside quotes, "" escapes).
+function bookingImportParseCSV(text){
+  const rows = []; let row = [], field = '', inQ = false;
+  for(let i = 0; i < text.length; i++){
+    const ch = text[i];
+    if(inQ){
+      if(ch === '"'){ if(text[i+1] === '"'){ field += '"'; i++; } else inQ = false; }
+      else field += ch;
+    } else if(ch === '"'){ inQ = true; }
+    else if(ch === ','){ row.push(field); field = ''; }
+    else if(ch === '\r'){ /* ignore; the \n handles the line break */ }
+    else if(ch === '\n'){ row.push(field); rows.push(row); row = []; field = ''; }
+    else field += ch;
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows;
+}
+// True if every cell in the row is empty/whitespace (a blank line).
+function biRowIsBlank(r){ return !r || r.every(c => String(c).trim() === ''); }
+
+// Parse → categorise → show the preview. Follows the TryBooking format:
+// skip the metadata block, find the "Booked By" header row (which also carries a
+// "…Reference…" column), then read data rows until a blank line or the
+// "TryBooking.com" footer.
+function bookingImportProcess(text){
+  const rows = bookingImportParseCSV(text);
+
+  // Find the header row: its first cell is exactly "Booked By".
+  const headerIdx = rows.findIndex(r => r.length && String(r[0]).trim().toLowerCase() === 'booked by');
+  if(headerIdx === -1){
+    setBiMsg('This doesn’t look like a TryBooking attendee list — no “Booked By” header row found.', true);
+    return;
+  }
+  const header = rows[headerIdx];
+  // The reference column is the one whose header contains the word "reference".
+  const refIdx = header.findIndex(c => String(c).toLowerCase().includes('reference'));
+  if(refIdx === -1){
+    setBiMsg('Found the attendee list but no “…Reference…” column. Check the report includes the Gig Power Reference question.', true);
+    return;
+  }
+  // The email column (added to newer exports) is optional. When present it lets
+  // us still match a candidate who typed the wrong reference — or none at all.
+  const emailIdx = header.findIndex(c => String(c).trim().toLowerCase() === 'email');
+
+  // Read data rows until a blank line or the "TryBooking.com" footer.
+  const data = [];
+  for(let i = headerIdx + 1; i < rows.length; i++){
+    const r = rows[i];
+    if(biRowIsBlank(r)) break;
+    if(String(r[0]).trim().toLowerCase().startsWith('trybooking.com')) break;
+    data.push({
+      bookedBy: String(r[0] || '').trim(),
+      refRaw:   String(r[refIdx] || '').trim(),
+      email:    emailIdx > -1 ? String(r[emailIdx] || '').trim() : ''
+    });
+  }
+  if(data.length === 0){
+    setBiMsg('No attendee rows found under the header.', true);
+    return;
+  }
+
+  // Group the rows into ONE attendee per person (they buy several tickets, each a
+  // row). Prefer email as the identity key (stable even when the reference is
+  // wrong/blank); fall back to reference, then name. Collect every reference they
+  // gave so we can try each against the candidate list.
+  const attendees = new Map();   // key -> {name, email, refs:Set}
+  data.forEach(d => {
+    const key = (d.email && d.email.toLowerCase())
+             || (d.refRaw && d.refRaw.toUpperCase())
+             || d.bookedBy.toLowerCase();
+    let a = attendees.get(key);
+    if(!a){ a = { name: d.bookedBy, email: d.email, refs: new Set() }; attendees.set(key, a); }
+    if(!a.name && d.bookedBy) a.name = d.bookedBy;
+    if(!a.email && d.email)   a.email = d.email;
+    if(d.refRaw) a.refs.add(d.refRaw.toUpperCase());
+  });
+
+  // Look up loaded applicants by normalised reference (one each — references are
+  // unique) and by normalised email (a LIST — emails are NOT unique in our data;
+  // one email can belong to several candidates, so we keep them all).
+  const byRef = new Map(), byEmail = new Map();
+  _recruitRows.forEach(c => {
+    const rk = String(c.reference || '').trim().toUpperCase();
+    if(rk && !byRef.has(rk)) byRef.set(rk, c);
+    const ek = String(c.email || '').trim().toLowerCase();
+    if(ek){ if(!byEmail.has(ek)) byEmail.set(ek, []); byEmail.get(ek).push(c); }
+  });
+
+  const book = [], skip = [], unmatched = [], review = [], bookedIds = new Set();
+  attendees.forEach(a => {
+    // Try reference first (the intended path). References are unique, so a hit
+    // here is unambiguous.
+    let cand = null, via = 'reference';
+    for(const ref of a.refs){ if(byRef.has(ref)){ cand = byRef.get(ref); break; } }
+
+    // Email fallback (reference blank or didn't match). Because an email can map
+    // to several candidates, only act when it points to EXACTLY ONE — otherwise
+    // matching would be a guess that could book the wrong person.
+    if(!cand && a.email){
+      const hits = byEmail.get(a.email.toLowerCase()) || [];
+      if(hits.length === 1){ cand = hits[0]; via = 'email'; }
+      else if(hits.length > 1){
+        // Shared email — never auto-book. Send it to a "needs review" group so
+        // ops picks the right person by hand.
+        review.push({ email: a.email, names: hits.map(c => c.name || '(unnamed)') });
+        return;
+      }
+      // hits.length === 0 → falls through to "unmatched" below.
+    }
+
+    const refShown = a.refs.size ? Array.from(a.refs)[0] : '';
+    if(!cand){ unmatched.push({ name: a.name, ref: refShown, email: a.email }); return; }
+    if(cand.status === 'invited_to_induction'){
+      if(bookedIds.has(cand.id)) return;   // guard: two attendee rows → same candidate
+      bookedIds.add(cand.id);
+      book.push({ id: cand.id, name: cand.name || a.name, ref: refShown, via });
+    } else {
+      const label = RECRUIT_STATUS_LABELS[cand.status] || cand.status || 'unknown';
+      skip.push({ name: cand.name || a.name, ref: refShown, status: label, via });
+    }
+  });
+
+  _biBook = book;
+  bookingImportRenderPreview(book, skip, unmatched, review);
+}
+
+// Render the groups + counts. Show Confirm only if there is ≥1 to book. `review`
+// holds shared-email rows we refuse to auto-book (default [] for safety).
+function bookingImportRenderPreview(book, skip, unmatched, review){
+  review = review || [];
+  const esc = recruitEsc;
+  const group = (cls, icon, title, items, render) =>
+    `<div class="bi-group ${cls}"><div class="bi-group-head">${icon} ${title}`
+    + `<span class="bi-group-count">${items.length}</span></div>`
+    + (items.length ? `<div class="bi-list">${items.map(render).join('')}</div>`
+                    : `<div class="bi-empty">None</div>`)
+    + `</div>`;
+
+  // Flag matches that only worked via the email fallback so ops can eyeball them.
+  const viaNote = via => via === 'email' ? '<span class="bi-note">matched by email</span>' : '';
+  const html =
+    group('book', '✅', 'Will mark booked', book, b =>
+      `<div class="bi-item"><span>${esc(b.name)}</span><span class="bi-ref">${esc(b.ref || '—')}</span>`
+      + `${viaNote(b.via)}</div>`)
+  + group('skip', '⏭️', 'Skipped (already past Invited)', skip, s =>
+      `<div class="bi-item"><span>${esc(s.name)}</span><span class="bi-ref">${esc(s.ref || '—')}</span>`
+      + `<span class="bi-note">${esc(s.status)}${s.via === 'email' ? ' · by email' : ''}</span></div>`)
+  + group('review', '⚠️', 'Needs review — shared email', review, r =>
+      `<div class="bi-item"><span>${esc(r.names.join(', '))}</span>`
+      + `<span class="bi-ref">${esc(r.email)}</span></div>`)
+  + group('unmatched', '❓', 'Unmatched (chase manually)', unmatched, u =>
+      `<div class="bi-item"><span>${esc(u.name || '(no name)')}</span>`
+      + `<span class="bi-ref">${u.ref ? esc(u.ref) : (u.email ? esc(u.email) : 'no reference')}</span></div>`);
+
+  document.getElementById('bi-preview').innerHTML = html;
+  const tail = `${skip.length} skipped, ${review.length} need review, ${unmatched.length} unmatched.`;
+  setBiMsg(book.length ? `Ready: ${book.length} to mark booked, ${tail}` : `Nothing to book — ${tail}`);
+  const btn = document.getElementById('bi-confirm');
+  btn.style.display = book.length ? '' : 'none';
+  btn.disabled = !book.length;
+}
+
+// On Confirm: mark each "will book" applicant booked, one set-status call at a
+// time (same route the single-row buttons use). Then summarise and refresh.
+async function bookingImportConfirm(){
+  if(!_biBook.length) return;
+  const btn = document.getElementById('bi-confirm');
+  const cancel = document.getElementById('bi-cancel');
+  btn.disabled = true; if(cancel) cancel.disabled = true;
+  let ok = 0; const failed = [];
+  for(const b of _biBook){
+    setBiMsg(`Marking booked… ${ok + failed.length + 1} of ${_biBook.length}`);
+    try{
+      const r = await fetch('/api/recruitment/set-status', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ id: b.id, status: 'booked' })
+      });
+      if(r.ok) ok++; else failed.push(b.name);
+    }catch(e){ failed.push(b.name); }
+  }
+  // Result summary — replaces the preview; Confirm is spent.
+  const esc = recruitEsc;
+  let res = `<div class="bi-group book"><div class="bi-group-head">✅ Marked booked`
+    + `<span class="bi-group-count">${ok}</span></div></div>`;
+  if(failed.length){
+    res += `<div class="bi-group unmatched"><div class="bi-group-head">⚠️ Could not update`
+      + `<span class="bi-group-count">${failed.length}</span></div>`
+      + `<div class="bi-list">${failed.map(n => `<div class="bi-item"><span>${esc(n)}</span></div>`).join('')}</div></div>`;
+  }
+  document.getElementById('bi-preview').innerHTML = res;
+  setBiMsg(failed.length ? `Done — ${ok} booked, ${failed.length} failed.` : `Done — ${ok} marked booked.`,
+           failed.length > 0);
+  btn.style.display = 'none';
+  if(cancel){ cancel.disabled = false; cancel.textContent = 'Done'; }
+  await loadRecruitment();   // refresh piles so the newly-booked applicants move
 }
 
 // ── CALL SEARCH & COLLAPSE ──
@@ -8530,6 +8808,46 @@ function applyGoldRows(){
     <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a">
       <button class="btn-logout" onclick="closeElevateModal()">Cancel</button>
       <button class="btn-logout" id="elevate-go" style="border-color:var(--accent);color:var(--accent)" onclick="submitElevate()">Elevate</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── IMPORT BOOKINGS (Recruitment) — drop a TryBooking attendee CSV to mark booked ── -->
+<div id="booking-import-modal" style="display:none;position:fixed;inset:0;z-index:99992;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeBookingImport()">
+  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+              width:560px;max-width:94vw;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+                border-bottom:1px solid var(--border);background:#0a0a0a;flex-shrink:0">
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.1em;color:var(--accent)">IMPORT BOOKINGS</div>
+      <button onclick="closeBookingImport()" style="background:none;border:none;color:var(--muted);
+              font-size:20px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <div style="padding:16px 18px;overflow:auto">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;font-family:'Rajdhani',sans-serif">
+        Drop a TryBooking <b>Attendee List Report</b> (CSV). Applicants are matched by Gig Power
+        reference, then by email if the reference is wrong or missing; those currently
+        <b>Invited</b> are marked <b>Booked</b>. Nothing changes until you press Confirm.
+      </div>
+      <div class="import-drop-zone" id="bi-drop-zone" style="margin:8px 0"
+           onclick="document.getElementById('bi-file-input').click()"
+           ondragover="event.preventDefault();this.classList.add('drag-over')"
+           ondragleave="this.classList.remove('drag-over')"
+           ondrop="bookingImportDrop(event)">
+        <div class="import-drop-icon">📂</div>
+        <div class="import-drop-text">Drop the attendee-list CSV here</div>
+        <div class="import-drop-sub">or click to browse</div>
+        <input type="file" id="bi-file-input" accept=".csv,text/csv" style="display:none"
+               onchange="bookingImportFile(this.files[0])">
+      </div>
+      <div id="bi-file-name" style="font-size:11px;color:var(--accent);font-weight:600;font-family:'Rajdhani',sans-serif;min-height:14px"></div>
+      <div id="bi-msg" class="bi-msg"></div>
+      <div id="bi-preview"></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a;flex-shrink:0">
+      <button class="btn-logout" id="bi-cancel" onclick="closeBookingImport()">Close</button>
+      <button class="btn-logout" id="bi-confirm" style="border-color:var(--accent);color:var(--accent);display:none"
+              onclick="bookingImportConfirm()">Confirm</button>
     </div>
   </div>
 </div>
