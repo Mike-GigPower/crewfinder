@@ -6765,7 +6765,10 @@ function _clBuildHtml(data, opts){
     } else {
       crew.forEach(function(c){
         let row = '<tr><td>' + _clName(c) + '</td>';
-        optCols.forEach(function(col){ row += '<td>' + escapeHtml((c[col.key]!=null?c[col.key]:'')+'') + '</td>'; });
+        optCols.forEach(function(col){
+          var v = (col.key === 'phone') ? (c.mobile || c.phone || '') : (c[col.key]!=null ? c[col.key] : '');
+          row += '<td>' + escapeHtml(v+'') + '</td>';
+        });
         row += '<td class="wr"></td><td class="wr"></td><td class="wr"></td></tr>';
         parts.push(row);
       });
@@ -7213,14 +7216,12 @@ function renderBookingDialog(bookingId, d, cached){
       : '<div style="color:var(--muted);font-size:12px">No calls cached — open from the Schedule or Crew Finder to list calls.</div>';
     callsSection = '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>' + cachedList;
   }
-  document.getElementById('entity-modal-body').innerHTML =
-      rows
-    + '<div id="bk-calls-wrap">' + callsSection + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
     + (d
         ? entityBtn('✎ Edit', "openBookingEditForm('"+bookingId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
+    + entityBtn('📋 Crew Lists', "openCrewLists('"+bookingId+"')")
     + entityBtn('📥 Import Times', "openTimesImport('"+bookingId+"')")
     + entityBtn('📊 Generate Google Sheet', "generateGoogleSheet('"+bookingId+"')")
     + entityBtn('Close', 'closeEntityModal()');
