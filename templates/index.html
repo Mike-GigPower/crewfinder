@@ -780,6 +780,11 @@ body.cohort-readonly #unavail-add-section{display:none}
    (why they dropped off) stands out when the row is expanded. */
 .recruit-block.recruit-withdrawn{border-left:2px solid #8b949e;padding-left:10px}
 .recruit-block.recruit-withdrawn .recruit-label{color:#8b949e}
+/* "Time in current stage" label — small + muted, shown under the status pill and
+   in the detail grid. Turns amber for candidates who've aged past the threshold
+   for their waiting stage (see RECRUIT_AGING_THRESHOLDS in JS). Display only. */
+.recruit-stage-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.02em}
+.recruit-stage-age.aging{color:var(--warn)}
 /* Action buttons row — sits inside the expanded detail panel */
 .recruit-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
@@ -3130,6 +3135,16 @@ const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
   booked:'Mark booked', attended:'Mark attended', on_hold:'Hold', not_suitable:'Not suitable'
 };
+// Amber-tint thresholds, in DAYS, for the "waiting" stages only. A candidate who
+// has sat in one of these stages LONGER than its number gets a gentle amber
+// "time in stage" label so ops can chase them. Any stage not listed here (New /
+// Hold / Not suitable / Withdrawn) never ambers — it just shows the plain count.
+// Tweak the numbers here; the comparison is "days >= threshold" (see recruitStageAge).
+const RECRUIT_AGING_THRESHOLDS = {
+  invited_to_induction: 7,   // invited but hasn't booked an induction
+  booked:               14,  // booked but not yet attended
+  attended:              7,  // attended but details not completing
+};
 
 let _recruitRows = [];              // the full fetched list (kept for filtering)
 let _recruitFilter = 'applied';     // which pile to show; default = New
@@ -3444,6 +3459,33 @@ function recruitDate(iso){
   try{ return new Date(iso).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'}); }
   catch(e){ return recruitEsc(iso); }
 }
+// Whole days elapsed since an ISO timestamp, or null if missing/unparseable.
+// We subtract two absolute instants and divide by ms-per-day, so it can't
+// off-by-one across timezones: status_changed_at is UTC and Date parses it as a
+// real moment, then Date.now() is also a real moment — no calendar-date maths.
+function recruitDaysSince(iso){
+  if(!iso) return null;
+  const then = new Date(iso).getTime();
+  if(isNaN(then)) return null;              // unparseable -> show nothing
+  const days = Math.floor((Date.now() - then) / 86400000);  // 86,400,000 ms = 1 day
+  return days < 0 ? 0 : days;               // guard a future timestamp (clock skew)
+}
+// Build the muted "N days in stage" label for one candidate, or '' if there's no
+// usable status_changed_at (so we never render "NaN" or a wrong date). Turns
+// amber only when the candidate's status is a waiting stage AND it has sat there
+// longer than that stage's threshold in RECRUIT_AGING_THRESHOLDS.
+function recruitStageAge(c){
+  const days = recruitDaysSince(c && c.status_changed_at);
+  if(days === null) return '';
+  const text = (days === 0) ? 'Today'
+    : (days === 1) ? '1 day in stage'
+    : `${days} days in stage`;
+  const threshold = RECRUIT_AGING_THRESHOLDS[c.status];
+  const aging = (threshold !== undefined && days >= threshold);
+  return `<span class="recruit-stage-age${aging ? ' aging' : ''}"`
+    + (aging ? ' title="Ageing — worth chasing"' : '')
+    + `>${text}</span>`;
+}
 // Build TWO table rows for one applicant: a clickable summary row and a hidden
 // detail row (spanning all columns) that expands inline. `i` is the applicant's
 // index in the currently-visible list, used to pair the two rows for toggling.
@@ -3470,6 +3512,9 @@ function renderRecruitRow(c, i){
   // Current status (default unknown/missing to "applied"/New).
   const cur = RECRUIT_STATUS_LABELS.hasOwnProperty(c.status) ? c.status : 'applied';
   const pill = `<span class="recruit-pill st-${cur}">${RECRUIT_STATUS_LABELS[cur]}</span>`;
+  // "Time in current stage" label (display only). '' when status_changed_at is
+  // missing, so nothing shows rather than a broken value.
+  const age = recruitStageAge(c);
   // Buttons to move to the OTHER three statuses (every move is reversible).
   const id = recruitEsc(c.id);
   const actions = RECRUIT_STATUS_ORDER.map(s => {
@@ -3515,7 +3560,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
-      <td>${pill}</td>
+      <td>${pill}${age}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
@@ -3528,6 +3573,7 @@ function renderRecruitRow(c, i){
           <div class="recruit-detail-grid">
             <div><span class="recruit-label">Reference</span>${recruitEsc(c.reference || '—')}</div>
             <div><span class="recruit-label">Applied</span>${recruitDate(c.created_at)}</div>
+            <div><span class="recruit-label">Time in stage</span>${age || '—'}</div>
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
             <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
             <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
