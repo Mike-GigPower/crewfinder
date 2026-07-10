@@ -773,6 +773,13 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-pill.st-attended{color:#58a6ff;border-color:#58a6ff;background:rgba(88,166,255,0.08)}
 .recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
+/* Withdrawn: candidate opted out via /withdraw. Deliberately muted grey so it
+   reads as "inactive / out", visually distinct from every active pile above. */
+.recruit-pill.st-withdrawn{color:#8b949e;border-color:#8b949e;background:rgba(139,148,158,0.10)}
+/* Withdrawn detail: the reason + date, set off with a grey rule so the feedback
+   (why they dropped off) stands out when the row is expanded. */
+.recruit-block.recruit-withdrawn{border-left:2px solid #8b949e;padding-left:10px}
+.recruit-block.recruit-withdrawn .recruit-label{color:#8b949e}
 /* Action buttons row — sits inside the expanded detail panel */
 .recruit-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
@@ -1272,12 +1279,12 @@ body.cohort-readonly #unavail-add-section{display:none}
               <div class="import-section-body">
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
                   <div class="import-field">
-                    <label>Customer <span id="cust-match-status"></span></label>
+                    <label>Customer <a href="#" onclick="openAddEntity('customer','estimate');return false;" style="color:var(--accent);text-transform:none;letter-spacing:0;text-decoration:none">+ Add</a> <span id="cust-match-status"></span></label>
                     <select id="match-customer" onchange="updateImportReadiness()"></select>
                     <div class="import-field-shadow" id="cust-shadow"></div>
                   </div>
                   <div class="import-field">
-                    <label>Contact <span id="contact-match-status"></span></label>
+                    <label>Contact <a href="#" onclick="openAddEntity('contact','estimate');return false;" style="color:var(--accent);text-transform:none;letter-spacing:0;text-decoration:none">+ Add</a> <span id="contact-match-status"></span></label>
                     <select id="match-contact" onchange="updateImportReadiness()"></select>
                     <div class="import-field-shadow" id="contact-shadow"></div>
                   </div>
@@ -1287,7 +1294,7 @@ body.cohort-readonly #unavail-add-section{display:none}
                     <div class="import-field-shadow" id="onsite-contact-shadow"></div>
                   </div>
                   <div class="import-field">
-                    <label>Venue <span id="venue-match-status"></span></label>
+                    <label>Venue <a href="#" onclick="openAddEntity('venue','estimate');return false;" style="color:var(--accent);text-transform:none;letter-spacing:0;text-decoration:none">+ Add</a> <span id="venue-match-status"></span></label>
                     <select id="match-venue" onchange="updateImportReadiness()"></select>
                     <div class="import-field-shadow" id="venue-shadow"></div>
                   </div>
@@ -3112,10 +3119,12 @@ function switchTab(tab){
 // Status value -> short pill label shown on the card and in the filter row.
 const RECRUIT_STATUS_LABELS = {
   applied:'New', invited_to_induction:'Invited', booked:'Booked', attended:'Attended',
-  on_hold:'Hold', not_suitable:'Not suitable'
+  on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
-const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','on_hold','not_suitable'];
+// "withdrawn" sits last (before All): candidates put themselves here via the
+// /withdraw page — it's not an operator triage step.
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','on_hold','not_suitable','withdrawn'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
@@ -3245,9 +3254,17 @@ function recruitToggleSelect(id, el){
 }
 // Header "select all" — ticks/unticks every applicant currently on screen.
 function recruitToggleAll(el){
-  if(el.checked) _recruitVisibleIds.forEach(id => _recruitSelected.add(id));
-  else _recruitSelected.clear();
-  document.querySelectorAll('#recruit-list .recruit-check').forEach(cb => cb.checked = el.checked);
+  if(el.checked){
+    // Skip withdrawn applicants — they're read-only and can't be batch-acted on,
+    // so "select all" (e.g. on the All pile) never ticks them.
+    _recruitVisibleIds.forEach(id => {
+      const cand = _recruitRows.find(c => String(c.id) === id);
+      if(cand && cand.status === 'withdrawn') return;
+      _recruitSelected.add(id);
+    });
+  } else _recruitSelected.clear();
+  // Only toggle the enabled tickboxes (withdrawn rows render theirs disabled).
+  document.querySelectorAll('#recruit-list .recruit-check:not([disabled])').forEach(cb => cb.checked = el.checked);
   el.indeterminate = false;
   recruitUpdateBatchBar();
 }
@@ -3439,12 +3456,32 @@ function renderRecruitRow(c, i){
     : 'None';
   const pitch = c.pitch ? recruitEsc(c.pitch)
     : '<span class="recruit-empty">No pitch provided</span>';
+  // Withdrawn detail (only shown for a withdrawn applicant). withdraw_reason and
+  // withdrawn_at come from the recruitment-candidates feed; if the feed hasn't
+  // been updated to include them yet, we show a clear placeholder instead of
+  // breaking. Reading WHY people drop off is the point, so this sits up top.
+  const withdrawReason = c.withdraw_reason ? recruitEsc(c.withdraw_reason)
+    : '<span class="recruit-empty">No reason given</span>';
+  const withdrawnWhen = c.withdrawn_at ? recruitDate(c.withdrawn_at)
+    : '<span class="recruit-empty">Date not recorded</span>';
+  const withdrawnBlock = (c.status === 'withdrawn') ? `
+          <div class="recruit-block recruit-withdrawn"><span class="recruit-label">Withdrew on</span>${withdrawnWhen}</div>
+          <div class="recruit-block recruit-withdrawn"><span class="recruit-label">Reason for withdrawing</span>${withdrawReason}</div>` : '';
   // Current status (default unknown/missing to "applied"/New).
   const cur = RECRUIT_STATUS_LABELS.hasOwnProperty(c.status) ? c.status : 'applied';
   const pill = `<span class="recruit-pill st-${cur}">${RECRUIT_STATUS_LABELS[cur]}</span>`;
   // Buttons to move to the OTHER three statuses (every move is reversible).
   const id = recruitEsc(c.id);
   const actions = RECRUIT_STATUS_ORDER.map(s => {
+    // "Withdrawn" is a candidate-driven opt-out (set from the /withdraw page),
+    // never an operator triage destination — so no button ever moves anyone INTO it.
+    if(s === 'withdrawn') return '';
+    // A withdrawn applicant is read-only (they've opted out): don't offer the
+    // normal triage buttons. Allow only a single "Back to New", in case someone
+    // withdrew by mistake and needs putting back in the pipeline.
+    if(cur === 'withdrawn') return (s === 'applied')
+      ? `<button class="recruit-action" onclick="recruitSetStatus('${id}','applied',this)">Back to New</button>`
+      : '';
     if(s === 'invited_to_induction'){
       // Invite EMAILS the applicant (via /api/recruitment/invite) — it does NOT
       // just relabel like the others. Always offered; from the Invited pile it
@@ -3468,10 +3505,15 @@ function renderRecruitRow(c, i){
 
   // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
   const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
+  // Withdrawn applicants are read-only: they can't be batch-selected for an
+  // Invite/Hold/Not-suitable action (they've opted out), so disable their tickbox.
+  const checkCell = (c.status === 'withdrawn')
+    ? `<td class="rc-check"><input type="checkbox" class="recruit-check" disabled title="Withdrawn — read-only"></td>`
+    : `<td class="rc-check"><input type="checkbox" class="recruit-check"${checked}
+        onclick="event.stopPropagation();recruitToggleSelect('${id}',this)"></td>`;
   const summary = `
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
-      <td class="rc-check"><input type="checkbox" class="recruit-check"${checked}
-        onclick="event.stopPropagation();recruitToggleSelect('${id}',this)"></td>
+      ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
       <td>${pill}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
@@ -3490,7 +3532,7 @@ function renderRecruitRow(c, i){
             <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
             <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
             <div><span class="recruit-label">Tickets</span>${ticketsFull}</div>
-          </div>
+          </div>${withdrawnBlock}
           <div class="recruit-block"><span class="recruit-label">Pitch</span>${pitch}</div>
           <div class="recruit-block"><span class="recruit-label">Work history</span>${c.work_history ? recruitEsc(c.work_history) : '—'}</div>
           <div class="recruit-block"><span class="recruit-label">References</span>${c.referees ? recruitEsc(c.referees) : '—'}</div>
@@ -5255,8 +5297,13 @@ async function _cohortSet(ein, cohort){
 const AE_ERR = '<div id="ae-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0 122px;min-height:14px"></div>';
 const AE_NOTE = function(t){ return '<div style="font-size:10px;color:var(--muted);padding:4px 0 0 122px">'+t+'</div>'; };
 
-function openAddEntity(kind, fromAdmin){
-  window._aeFromAdmin = !!fromAdmin;  // Admin tab: skip booking-form wiring
+function openAddEntity(kind, mode){
+  // mode: 'manual' (default) | 'estimate' | 'admin'.
+  // Back-compat: earlier call sites passed `true` to mean the Admin tab.
+  if(mode === true) mode = 'admin';
+  if(mode !== 'estimate' && mode !== 'admin') mode = 'manual';
+  window._aeMode = mode;
+  window._aeFromAdmin = (mode === 'admin');  // Admin tab: skip booking-form wiring
   openEntityModal();
   const body = document.getElementById('entity-modal-body');
   const acts = document.getElementById('entity-modal-actions');
@@ -5292,9 +5339,12 @@ function openAddEntity(kind, fromAdmin){
 
   } else if(kind === 'contact'){
     document.getElementById('entity-modal-title').textContent = 'New contact';
-    const custSel  = document.getElementById('mb-customer');
-    const custId   = custSel.value;
-    const custName = (custSel.selectedOptions[0] ? custSel.selectedOptions[0].textContent : '').trim();
+    // A new contact is linked to the currently-selected customer. Read that
+    // from whichever mode's customer dropdown launched this modal.
+    const custSelId = (mode === 'estimate') ? 'match-customer' : 'mb-customer';
+    const custSel  = document.getElementById(custSelId);
+    const custId   = custSel ? custSel.value : '';
+    const custName = (custSel && custSel.selectedOptions[0] ? custSel.selectedOptions[0].textContent : '').trim();
     if(!custId){
       sub.textContent = '';
       body.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0">Select a customer first — a new contact is linked to that customer.</div>';
@@ -5336,6 +5386,8 @@ async function submitAddEntity(kind){
   const btn = document.getElementById('ae-submit');
   if(err) err.textContent = '';
 
+  const mode = window._aeMode || (window._aeFromAdmin ? 'admin' : 'manual');
+
   const CFG = {
     venue:    {url:'/api/booking/venue',    listKey:'venues',
                selects:[['mb-venue','-- Select venue --']],          primary:'mb-venue',    ok:'Create venue'},
@@ -5370,7 +5422,9 @@ async function submitAddEntity(kind){
       active: true
     };
   } else if(kind === 'contact'){
-    const custId = document.getElementById('mb-customer').value;
+    // Read the linked customer from the mode-appropriate dropdown.
+    const custSelId = (mode === 'estimate') ? 'match-customer' : 'mb-customer';
+    const custId = document.getElementById(custSelId).value;
     if(!custId){ if(err) err.textContent = 'Select a customer first.'; return; }
     const username = document.getElementById('ae-ct-user').value.trim();
     if(!username){ if(err) err.textContent = 'Username is required.'; return; }
@@ -5394,6 +5448,34 @@ async function submitAddEntity(kind){
     });
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+
+    // ── ESTIMATE (From Estimate) mode ────────────────────────────────────
+    // The estimate match dropdowns are populated from the import-match payload,
+    // not from _mbLookups, so insert the new record straight into those
+    // <select>s and select it. This MUST run before the _mbLookups check below,
+    // because _mbLookups may be null in estimate mode.
+    if(mode === 'estimate'){
+      const EST = {
+        venue:    {selects:['match-venue'],                          primary:'match-venue',    status:'venue-match-status'},
+        customer: {selects:['match-customer'],                       primary:'match-customer', status:'cust-match-status'},
+        contact:  {selects:['match-contact','match-onsite-contact'], primary:'match-contact',  status:'contact-match-status'}
+      };
+      const e = EST[kind];
+      e.selects.forEach(function(id){
+        const sel = document.getElementById(id);
+        if(!sel) return;
+        const exists = Array.prototype.some.call(sel.options, function(o){ return o.value === String(d.id); });
+        if(!exists) sel.add(new Option(d.name, String(d.id)));
+      });
+      const prim = document.getElementById(e.primary);
+      if(prim) prim.value = String(d.id);
+      const st = document.getElementById(e.status);
+      if(st) st.innerHTML = '<span class="import-match-ok">✓ added</span>';
+      closeEntityModal();
+      if(typeof updateImportReadiness === 'function') updateImportReadiness();
+      return;
+    }
+
     // Launched from the Administration tab (or before the booking form loaded):
     // no dropdowns to feed, so just confirm the create and stop.
     if(window._aeFromAdmin || !_mbLookups){
