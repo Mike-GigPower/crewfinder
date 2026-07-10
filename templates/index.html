@@ -6551,7 +6551,7 @@ async function abToggle(bookingId){
       body.setAttribute('data-loaded','1');
       return;
     }
-    const genBtn = '<div onclick="generateTimesheet(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📄 Excel</div>';
+    const genBtn = '<div onclick="openEntityModal();openCrewLists(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📋 Crew Lists</div>';
     const gsheetBtn = '<div onclick="generateGoogleSheet(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📊 Google Sheet</div>';
     const importBtn = '<div onclick="openEntityModal();openTimesImport(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📥 Import times</div>';
     body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+genBtn+gsheetBtn+importBtn+'</div>' + calls.map(function(c){
@@ -6582,6 +6582,205 @@ function _abCallWhen(startUnix, startTime){
     if(m) out = (out?out+' ':'')+m[1].padStart(2,'0')+':'+m[2];
   }
   return out;
+}
+
+
+// ── CREW LISTS (SmartStaff Call List / Door List) ────────────────────────────
+// Admin-only (lives in the admin-only All Bookings tab). Builds SmartStaff-style
+// printable crew lists — one section per call: a booking/call header block plus a
+// crew roster table. A single dialog chooses which OPTIONAL columns appear
+// (EIN, Phone, Email); Name and the write-in On / Break / Off columns are always
+// present. The result opens in a new browser tab and pops the print dialog
+// (print, or Save as PDF). Data comes straight from /api/booking/<id>
+// (get-booking.php), which now carries ein + email on each crew member.
+
+function openCrewLists(bookingId){
+  document.getElementById('entity-modal-title').textContent = 'Create Crew Lists';
+  document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="padding:6px 0">'
+    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Break / Off write-in columns are always shown. The list opens in a new tab, ready to print or save as PDF.</div>'
+    + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding-bottom:6px">Optional columns</div>'
+    + _clCheckbox('cl-col-ein','EIN',true)
+    + _clCheckbox('cl-col-phone','Phone',false)
+    + _clCheckbox('cl-col-email','Email',false)
+    + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:14px 0 6px">Who to include</div>'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="confirmed"> Confirmed crew only</label>'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="rostered" checked> All rostered (excludes declined &amp; no-shows)</label>'
+    + '<div id="cl-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
+    + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Create Crew Lists', "crewListGenerate('"+bookingId+"')", {primary:true})
+    + entityBtn('Close','closeEntityModal()');
+}
+
+function _clCheckbox(id,label,checked){
+  return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer">'
+       + '<input type="checkbox" id="'+id+'"'+(checked?' checked':'')+'> '+label
+       + '</label>';
+}
+
+async function crewListGenerate(bookingId){
+  const opts = {
+    ein:   !!(document.getElementById('cl-col-ein')   || {}).checked,
+    phone: !!(document.getElementById('cl-col-phone') || {}).checked,
+    email: !!(document.getElementById('cl-col-email') || {}).checked,
+    who:   (document.querySelector('input[name="cl-who"]:checked') || {}).value || 'rostered'
+  };
+  const status = document.getElementById('cl-status');
+  if(status){ status.style.color='var(--muted)'; status.textContent='Building crew lists…'; }
+
+  // Open the tab NOW, synchronously inside the click, so the browser doesn't
+  // block it as an unsolicited pop-up. Fill it after the fetch resolves.
+  const win = window.open('', '_blank');
+  if(!win){
+    if(status){ status.style.color='var(--conflict)'; status.textContent='Your browser blocked the new tab. Allow pop-ups for 127.0.0.1 and try again.'; }
+    return;
+  }
+  win.document.write('<!doctype html><meta charset="utf-8"><title>Crew Lists…</title><body style="font-family:Arial,Helvetica,sans-serif;padding:24px;color:#333">Building crew lists…</body>');
+
+  try{
+    const res  = await fetch('/api/booking/'+bookingId);
+    const data = await res.json();
+    if(data.error){
+      win.document.body.innerHTML = 'Couldn\'t load booking: '+escapeHtml(data.error);
+      if(status){ status.style.color='var(--conflict)'; status.textContent=data.error; }
+      return;
+    }
+    const html = _clBuildHtml(data, opts);
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    if(status){ status.style.color='var(--muted)'; status.textContent='Crew lists opened in a new tab.'; }
+    closeEntityModal();
+  }catch(e){
+    win.document.body.innerHTML = 'Couldn\'t build crew lists: '+escapeHtml(e.message);
+    if(status){ status.style.color='var(--conflict)'; status.textContent='Couldn\'t build crew lists: '+e.message; }
+  }
+}
+
+// crew status label -> keep for this list?
+function _clKeepCrew(c, who){
+  const st = (c.status||'').toLowerCase();
+  if(who === 'confirmed') return st === 'confirmed';
+  // 'rostered' = everyone assigned except declined / no-shows / backups
+  return st !== 'declined' && st !== 'noshow' && st !== 'backup';
+}
+
+// "Wednesday Jul 8, 2026 / 08:00" from unix start_date + HH:MM(:SS) start_time
+function _clWhen(startUnix, startTime){
+  let out = '';
+  if(startUnix){
+    const d = new Date(Number(startUnix)*1000);
+    if(!isNaN(d.getTime())){
+      out = d.toLocaleDateString('en-AU', {weekday:'long', month:'short', day:'numeric', year:'numeric'});
+    }
+  }
+  const t = _clTime(startTime);
+  if(t) out = (out ? out+' / ' : '') + t;
+  return out;
+}
+
+function _clTime(t){
+  if(!t) return '';
+  const m = String(t).match(/^(\d{1,2}):(\d{2})/);
+  return m ? (m[1].padStart(2,'0')+':'+m[2]) : '';
+}
+
+// "Lastname, Firstname" with the surname bold (matches SmartStaff)
+function _clName(c){
+  const last  = escapeHtml((c.lastname||'').trim());
+  const first = escapeHtml((c.firstname||'').trim());
+  if(last && first) return '<b>'+last+'</b>, '+first;
+  if(last)  return '<b>'+last+'</b>';
+  return first || escapeHtml((c.name||'').trim());
+}
+
+function _clBuildHtml(data, opts){
+  const bookingName = data.name || 'Booking';
+  const cust  = (data.customer && data.customer.name) ? data.customer.name : '';
+  const venue = data.venue || {};
+  const venueLine = [venue.name, venue.address, venue.suburb, venue.state].filter(Boolean).join(', ');
+  const contact = data.contact || {};
+  const contactPhone = contact.mobile || contact.phone || '';
+
+  // optional column headers, in fixed order
+  const optCols = [];
+  if(opts.ein)   optCols.push({key:'ein',   label:'EIN',   width:'50'});
+  if(opts.phone) optCols.push({key:'phone', label:'Phone', width:'150'});
+  if(opts.email) optCols.push({key:'email', label:'Email', width:'200'});
+
+  const css =
+      'body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#000}'
+    + 'h1{font-size:18px;margin:0 0 8px}'
+    + '.hdr{border-collapse:collapse;width:100%;margin-bottom:12px}'
+    + '.hdr th,.hdr td{font-size:12px;border:1px solid #000;padding:5px;text-align:left;vertical-align:top}'
+    + '.hdr th{background:#e7e7e7;width:120px;white-space:nowrap}'
+    + '.crew{border-collapse:collapse;width:100%}'
+    + '.crew th,.crew td{font-size:12px;border:1px solid #000;padding:5px;text-align:left}'
+    + '.crew th{background:#e7e7e7}'
+    + '.wr{height:22px}'
+    + '.toolbar{margin-bottom:16px}'
+    + '.toolbar button{font-size:13px;padding:8px 14px;cursor:pointer}'
+    + '@media print{.toolbar{display:none}.call{page-break-after:always}.call:last-child{page-break-after:auto}}';
+
+  const parts = [];
+  parts.push('<!doctype html><html><head><meta charset="utf-8"><title>'
+    + escapeHtml(bookingName) + ' — Crew Lists</title><style>' + css + '</style></head><body>');
+  parts.push('<div class="toolbar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div>');
+
+  const calls = data.calls || [];
+  if(!calls.length){
+    parts.push('<p style="font-size:13px">This booking has no calls.</p>');
+  }
+
+  calls.forEach(function(call){
+    const crew = (call.crew || []).filter(function(c){ return _clKeepCrew(c, opts.who); });
+
+    parts.push('<div class="call">');
+    parts.push('<h1>' + escapeHtml([cust, bookingName, call.call_name].filter(Boolean).join(' / ')) + '</h1>');
+
+    // header block
+    parts.push('<table class="hdr">');
+    parts.push(_clHdrRow('When',       _clWhen(call.start_date, call.start_time)));
+    parts.push(_clHdrRow('Contact',    contact.name || ''));
+    parts.push(_clHdrRow('Phone',      contactPhone));
+    parts.push(_clHdrRow('Venue',      venueLine));
+    parts.push(_clHdrRow('Est. Length',call.est_length || ''));
+    parts.push(_clHdrRow('Required',   (typeof call.required !== 'undefined') ? String(call.required) : ''));
+    parts.push(_clHdrRow('Booked',     (typeof call.confirmed !== 'undefined') ? String(call.confirmed) : ''));
+    parts.push(_clHdrRow('Notes',      call.notes || ''));
+    parts.push('</table>');
+
+    // crew table
+    parts.push('<table class="crew">');
+    let head = '<tr><th>Name</th>';
+    optCols.forEach(function(col){ head += '<th width="'+col.width+'">'+col.label+'</th>'; });
+    head += '<th width="45">On</th><th width="45">Break</th><th width="45">Off</th></tr>';
+    parts.push(head);
+
+    if(!crew.length){
+      const span = 4 + optCols.length;
+      parts.push('<tr><td colspan="'+span+'" style="color:#666">No crew to list for this call.</td></tr>');
+    } else {
+      crew.forEach(function(c){
+        let row = '<tr><td>' + _clName(c) + '</td>';
+        optCols.forEach(function(col){ row += '<td>' + escapeHtml((c[col.key]!=null?c[col.key]:'')+'') + '</td>'; });
+        row += '<td class="wr"></td><td class="wr"></td><td class="wr"></td></tr>';
+        parts.push(row);
+      });
+    }
+    parts.push('</table>');
+    parts.push('</div>');
+  });
+
+  parts.push('<script>window.onload=function(){setTimeout(function(){window.print();},250);};<\/script>');
+  parts.push('</body></html>');
+  return parts.join('');
+}
+
+function _clHdrRow(label, value){
+  return '<tr><th>'+escapeHtml(label)+':</th><td>'+escapeHtml(value||'')+'</td></tr>';
 }
 
 

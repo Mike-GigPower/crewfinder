@@ -109,6 +109,7 @@
 			$confirmed = 0;
 
 			$crres = mysql_query("SELECT users.id, users.firstname, users.lastname, users.mobile, users.phone,
+			                             users.ein, users.email,
 			                             call_crew_map.status, call_crew_map.is_call_boss
 			                      FROM call_crew_map
 			                      LEFT JOIN users ON call_crew_map.userID = users.id
@@ -128,6 +129,10 @@
 					$crew[] = array(
 						'id'           => (int) $cr->id,
 						'name'         => trim($cr->firstname . ' ' . $cr->lastname),
+						'firstname'    => html_entity_decode($cr->firstname, ENT_QUOTES),
+						'lastname'     => html_entity_decode($cr->lastname, ENT_QUOTES),
+						'ein'          => $cr->ein,
+						'email'        => $cr->email,
 						'mobile'       => $cr->mobile,
 						'phone'        => $cr->phone,
 						'status'       => $statusStr,
