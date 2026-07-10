@@ -1,6 +1,6 @@
 {
-  "version": "3.22.0",
+  "version": "3.22.1",
   "release_date": "2026-07-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.22.0/TheGOAT.dmg",
-  "release_notes": "All Bookings: the Excel button is now Create Crew Lists — SmartStaff-style Call Lists and Door Lists, one page per call, printed or saved as PDF. One dialog picks the optional columns (EIN, Phone, Email)."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.22.1/TheGOAT.dmg",
+  "release_notes": "Crew Lists: the Phone column now shows each crew member's mobile, and Create Crew Lists is available from the Schedule booking popup as well as the All Bookings tab."
 }
