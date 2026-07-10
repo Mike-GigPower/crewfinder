@@ -256,6 +256,13 @@ tr.skipped{opacity:.6}
 #crew-card .cc-notes-label{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-bottom:3px}
 #crew-card .cc-notes{font-size:11px;line-height:1.5;color:var(--text);white-space:pre-line;max-height:140px;overflow:auto}
 #crew-card .cc-notes.empty{color:var(--muted);font-style:italic}
+#crew-card .cc-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted,#9ca3af);margin:2px 0 4px}
+#crew-card .cc-stats{margin-bottom:8px}
+#crew-card .cc-stat-row{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.7}
+#crew-card .cc-stat-period{min-width:34px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted,#9ca3af)}
+#crew-card .cc-stat{font-weight:600}
+#crew-card .cc-stat-late{color:var(--warn,#f59e0b)}
+#crew-card .cc-stat-ns{color:var(--conflict,#ef4444)}
 .tl-time-header{position:relative;height:20px}
 .tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%);white-space:nowrap}
 .section-row-tl td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
@@ -2591,6 +2598,26 @@ function _positionCrewCard(el,anchor){
 }
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function decodeEntities(s){if(s==null)return '';var t=document.createElement('textarea');t.innerHTML=String(s);return t.value;}
+// Reliability tallies for the hover card. Rides along on crew.stats (from
+// list-crew-bulk.php). Renders nothing until the endpoint carries stats, so the
+// rollout is additive — old data / stale cache simply shows no block.
+function crewStatsHtml(crew){
+  const s = crew && crew.stats;
+  if(!s || (s.late_all==null && s.noshow_all==null)) return '';
+  const n = v => Number(v)||0;
+  const pair = (late, ns) =>
+      '<span class="cc-stat cc-stat-late">Late '+n(late)+'</span>'
+    + '<span class="cc-stat cc-stat-ns">No-show '+n(ns)+'</span>';
+  let rows;
+  if(s.over_12mo){
+    rows =
+        '<div class="cc-stat-row"><span class="cc-stat-period">12 mo</span>'+pair(s.late_12mo,s.noshow_12mo)+'</div>'
+      + '<div class="cc-stat-row"><span class="cc-stat-period">All</span>'+pair(s.late_all,s.noshow_all)+'</div>';
+  } else {
+    rows = '<div class="cc-stat-row">'+pair(s.late_all,s.noshow_all)+'</div>';
+  }
+  return '<div class="cc-stat-label">Reliability</div><div class="cc-stats">'+rows+'</div>';
+}
 function showCrewCard(anchor,crew){
   if(!crew) return;
   const el=_ensureCrewCardEl();
@@ -2601,7 +2628,7 @@ function showCrewCard(anchor,crew){
   const notes=hasNotes
     ? `<div class="cc-notes">${escapeHtml(crew.notes)}</div>`
     : `<div class="cc-notes empty">No notes on file</div>`;
-  el.innerHTML=`<div class="cc-name">${escapeHtml(crew.name)}</div>${photo}<div class="cc-notes-label">Notes</div>${notes}`;
+  el.innerHTML=`<div class="cc-name">${escapeHtml(crew.name)}</div>${photo}${crewStatsHtml(crew)}<div class="cc-notes-label">Notes</div>${notes}`;
   el.style.display='block';
   _positionCrewCard(el,anchor);
 }

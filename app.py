@@ -97,7 +97,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.19.2"
+APP_VERSION    = "3.21.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2146,6 +2146,7 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "ein":        c.get("ein") or c.get("id"),  # prefer endpoint EIN; fall back to userID
             "postcode":   str(c.get("postcode") or "").strip(),
             "notes":      c.get("notes") or "",          # users.notes — for the name-hover card
+            "stats":      c.get("stats") or {},   # Late / No-show tallies for the hover card
         })
     return out, None
 

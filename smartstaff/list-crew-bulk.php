@@ -29,6 +29,13 @@
 	$active_clause = $active_only ? " AND u.active = '1'" : '';
 
 	/*
+	/* 12-month cutoff for the reliability tallies. SmartStaff stores
+	/* calls.start_date as a unix timestamp, so this is a plain integer compare.
+	*/
+
+	$twelve_mo_ago = strtotime('-1 year');   /* leap-safe; whole-second unix ts */
+
+	/*
 	/* 1. crew roster
 	*/
 
@@ -82,6 +89,13 @@
 			'active'     => $row->active,
 			'groups'     => array(),
 			'inductions' => array(),
+			'stats'      => array(
+				'late_all'    => 0,
+				'noshow_all'  => 0,
+				'late_12mo'   => 0,
+				'noshow_12mo' => 0,
+				'over_12mo'   => false,   /* set by section 4 below */
+			),
 		);
 	}
 
@@ -158,7 +172,58 @@
 	}
 
 	/*
-	/* 4. emit
+	/* 4. reliability tallies — Late (call_crew_map.late = '1') and No-show
+	/*    (call_crew_map.status = 8), counted all-time and for the last 12 months.
+	/*
+	/* LEFT JOIN calls so a row whose call was later deleted still counts toward
+	/* the all-time totals (it just can't land inside the 12-month window, which
+	/* needs the call date). GROUP BY userID — one cheap aggregate, same pattern
+	/* as get-calls-bulk.php (a correlated subquery there timed out; don't).
+	/*
+	/* first_seen_ts (earliest call date) drives the "12+ months of history"
+	/* split. It's a proxy for tenure (first booking, not employment start) but
+	/* needs no change to the roster query and can't break the endpoint.
+	/*
+	/* Guarded on !== false: if this query errors, crew come back with all-zero
+	/* stats rather than a 500 — so if the card shows all zeros, THIS query
+	/* failed (check the column names on the test box first).
+	*/
+
+	$sql_stats = "
+		SELECT ccm.userID AS user_id,
+		       SUM(CASE WHEN ccm.status = 8   THEN 1 ELSE 0 END) AS noshow_all,
+		       SUM(CASE WHEN ccm.late   = '1' THEN 1 ELSE 0 END) AS late_all,
+		       SUM(CASE WHEN ccm.status = 8   AND c.start_date >= $twelve_mo_ago THEN 1 ELSE 0 END) AS noshow_12mo,
+		       SUM(CASE WHEN ccm.late   = '1' AND c.start_date >= $twelve_mo_ago THEN 1 ELSE 0 END) AS late_12mo,
+		       MIN(c.start_date) AS first_seen_ts
+		FROM call_crew_map ccm
+		LEFT JOIN calls c ON c.id = ccm.callID
+		WHERE ccm.userID IN ($crew_ids_csv)
+		GROUP BY ccm.userID
+	";
+
+	$stats_result = mysql_query($sql_stats);
+	if ($stats_result !== false)
+	{
+		while ($row = mysql_fetch_object($stats_result))
+		{
+			$uid = (int) $row->user_id;
+			if (isset($crew_by_id[$uid]))
+			{
+				$first_seen = ($row->first_seen_ts !== null) ? (int) $row->first_seen_ts : 0;
+
+				$crew_by_id[$uid]['stats']['noshow_all']  = (int) $row->noshow_all;
+				$crew_by_id[$uid]['stats']['late_all']    = (int) $row->late_all;
+				$crew_by_id[$uid]['stats']['noshow_12mo'] = (int) $row->noshow_12mo;
+				$crew_by_id[$uid]['stats']['late_12mo']   = (int) $row->late_12mo;
+				$crew_by_id[$uid]['stats']['over_12mo']   =
+					($first_seen > 0 && $first_seen < $twelve_mo_ago);
+			}
+		}
+	}
+
+	/*
+	/* 5. emit
 	*/
 
 	echo json_encode(array(
