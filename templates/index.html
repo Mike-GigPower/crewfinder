@@ -7216,6 +7216,9 @@ function renderBookingDialog(bookingId, d, cached){
       : '<div style="color:var(--muted);font-size:12px">No calls cached — open from the Schedule or Crew Finder to list calls.</div>';
     callsSection = '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>' + cachedList;
   }
+  document.getElementById('entity-modal-body').innerHTML =
+      rows
+    + '<div id="bk-calls-wrap">' + callsSection + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
     + (d
