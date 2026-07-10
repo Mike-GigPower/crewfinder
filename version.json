@@ -1,6 +1,6 @@
 {
-  "version": "3.19.2",
-  "release_date": "2026-07-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.19.2/TheGOAT.dmg",
-  "release_notes": "Fix: in-app Download update button now downloads correctly."
+  "version": "3.21.0",
+  "release_date": "2026-07-10",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.21.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder: Late / No-show history on the hover card. Recruitment: TryBooking bookings import, Attended stage + batch actions, stage-aging, and a Withdrawn pile."
 }
