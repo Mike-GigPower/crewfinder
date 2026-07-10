@@ -1,6 +1,6 @@
 {
-  "version": "3.22.1",
+  "version": "3.22.2",
   "release_date": "2026-07-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.22.1/TheGOAT.dmg",
-  "release_notes": "Crew Lists: the Phone column now shows each crew member's mobile, and Create Crew Lists is available from the Schedule booking popup as well as the All Bookings tab."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.22.2/TheGOAT.dmg",
+  "release_notes": "Hotfix: the Schedule booking popup could hang on 'Loading booking…' — now renders correctly. Includes the 3.22.1 Crew Lists phone fix and Schedule-page access."
 }
