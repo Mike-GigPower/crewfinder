@@ -3628,11 +3628,23 @@ def api_recruitment_set_status():
     if status not in RECRUITMENT_VALID_STATUSES:
         return jsonify({"error": "Invalid status"}), 400
 
+    payload = {"id": cand_id, "status": status}
+    # Optional session-date fields, sent ONLY by the bookings import when marking
+    # candidates "booked" (to record which TryBooking session they booked). Normal
+    # single-row / batch triage never includes these keys, so their behaviour is
+    # unchanged. We pass them straight through; the edge function stores them.
+    # session_date may be null (the display date couldn't be parsed) while
+    # session_date_text still carries the raw string — that's intentional.
+    if "session_date" in data:
+        payload["session_date"] = data.get("session_date")
+    if "session_date_text" in data:
+        payload["session_date_text"] = str(data.get("session_date_text") or "")
+
     try:
         r = http.post(
             RECRUITMENT_SET_STATUS_URL,
             headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
-            json={"id": cand_id, "status": status},
+            json=payload,
             timeout=15,
         )
     except Exception as e:

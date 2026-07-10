@@ -820,6 +820,10 @@ body.cohort-readonly #unavail-add-section{display:none}
 .bi-empty{padding:8px 13px;font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);font-style:italic}
 .bi-msg{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);min-height:15px;margin-top:4px}
 .bi-msg.err{color:var(--conflict)}
+/* Session banner in the import preview: which session this CSV is for. */
+.bi-session{font-family:'Rajdhani',sans-serif;font-size:13px;margin:4px 0 12px;padding:9px 13px;border:1px solid var(--accent);border-radius:7px;background:var(--accent-bg);color:var(--text)}
+.bi-session.bi-session-none{border-color:var(--border);background:var(--surface2);color:var(--muted)}
+.bi-session .bi-note{color:var(--warn);margin-left:6px}
 </style>
 </head>
 <body>
@@ -3597,6 +3601,8 @@ function renderRecruitRow(c, i){
 // by reusing POST /api/recruitment/set-status (one call each). No new backend.
 
 let _biBook = [];   // [{id, name, ref}] — applicants that Confirm will mark booked
+let _biSessionText = '';    // raw "Session time" string from the CSV (e.g. "Friday 10 July 2026 10:00 AM")
+let _biSessionISO  = null;  // that string parsed to an ISO instant (Melbourne local) — null if unparseable
 
 // Open/close the modal. Opening resets everything so a second import starts clean.
 function openBookingImport(){
@@ -3613,6 +3619,8 @@ function closeBookingImport(){
 // Clear the preview/result/confirm back to the empty state (keeps the modal open).
 function bookingImportReset(){
   _biBook = [];
+  _biSessionText = '';
+  _biSessionISO  = null;
   document.getElementById('bi-preview').innerHTML = '';
   setBiMsg('');
   const btn = document.getElementById('bi-confirm');
@@ -3667,12 +3675,69 @@ function bookingImportParseCSV(text){
 // True if every cell in the row is empty/whitespace (a blank line).
 function biRowIsBlank(r){ return !r || r.every(c => String(c).trim() === ''); }
 
+// ── Session date (one session per file) ──────────────────────────────────────
+// Pull the raw "Session time" value from the TryBooking metadata block: the row
+// whose first cell is exactly "Session time". Rejoins the rest in case a stray
+// comma split the value across cells, and trims trailing empties. '' if absent.
+function biSessionRaw(rows){
+  const row = rows.find(r => r.length && String(r[0]).trim().toLowerCase() === 'session time');
+  if(!row) return '';
+  return row.slice(1).join(',').replace(/,+\s*$/, '').trim();
+}
+const BI_MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,
+  july:6,august:7,september:8,october:9,november:10,december:11};
+// Offset (in minutes) of an IANA timezone at a given absolute instant, such that
+// localWallClock = utcInstant + offset. Built from Intl so it follows DST
+// automatically (Melbourne is +10 in winter, +11 in summer).
+function biZoneOffsetMinutes(date, timeZone){
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone, hourCycle:'h23',
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit'
+  });
+  const p = {};
+  dtf.formatToParts(date).forEach(x => { if(x.type !== 'literal') p[x.type] = x.value; });
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return (asUTC - date.getTime()) / 60000;
+}
+// Parse a TryBooking "Session time" string like "Friday 10 July 2026 10:00 AM"
+// into an ISO instant for that wall-clock time in Melbourne. Returns null on ANY
+// problem — the caller keeps the raw text and imports anyway (a date-parse issue
+// must never block bookings).
+function biParseSessionDate(raw){
+  if(!raw) return null;
+  // day-name (optional trailing comma), day, month-name, year, h:mm, AM/PM
+  const m = String(raw).trim().match(
+    /^[A-Za-z]+,?\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+  if(!m) return null;
+  const day = +m[1], mon = BI_MONTHS[m[2].toLowerCase()], year = +m[3];
+  let hour = +m[4]; const min = +m[5], ap = m[6].toLowerCase();
+  if(mon === undefined) return null;
+  if(ap === 'pm' && hour !== 12) hour += 12;
+  if(ap === 'am' && hour === 12) hour = 0;
+  if(hour > 23 || min > 59 || day < 1 || day > 31) return null;
+  try{
+    // Treat the parsed parts as Melbourne wall-clock time: find Melbourne's offset
+    // at that moment, then subtract it to recover the true UTC instant.
+    const wallAsUTC = Date.UTC(year, mon, day, hour, min);
+    const offset = biZoneOffsetMinutes(new Date(wallAsUTC), 'Australia/Melbourne');
+    const instant = new Date(wallAsUTC - offset * 60000);
+    return isNaN(instant.getTime()) ? null : instant.toISOString();
+  }catch(e){ return null; }
+}
+
 // Parse → categorise → show the preview. Follows the TryBooking format:
 // skip the metadata block, find the "Booked By" header row (which also carries a
 // "…Reference…" column), then read data rows until a blank line or the
 // "TryBooking.com" footer.
 function bookingImportProcess(text){
   const rows = bookingImportParseCSV(text);
+
+  // Capture the ONE session this file is for, from the metadata block. Best-effort:
+  // a missing or unparseable session time must NEVER block the import — we keep the
+  // raw text and simply leave the parsed date null.
+  _biSessionText = biSessionRaw(rows);
+  _biSessionISO  = biParseSessionDate(_biSessionText);
 
   // Find the header row: its first cell is exactly "Booked By".
   const headerIdx = rows.findIndex(r => r.length && String(r[0]).trim().toLowerCase() === 'booked by');
@@ -3785,6 +3850,17 @@ function bookingImportRenderPreview(book, skip, unmatched, review){
                     : `<div class="bi-empty">None</div>`)
     + `</div>`;
 
+  // Session banner: which session this file is for, shown before Confirm so ops
+  // can sanity-check it. If we found the text but couldn't parse the date, say so
+  // (it still imports). If there was no "Session time" line at all, say that too.
+  let sessionHtml;
+  if(_biSessionText){
+    const warn = _biSessionISO ? '' : '<span class="bi-note">couldn’t read the date — will still import</span>';
+    sessionHtml = `<div class="bi-session">📅 Session: <strong>${esc(_biSessionText)}</strong> ${warn}</div>`;
+  } else {
+    sessionHtml = `<div class="bi-session bi-session-none">No “Session time” found in this file — bookings will import without a session date.</div>`;
+  }
+
   // Flag matches that only worked via the email fallback so ops can eyeball them.
   const viaNote = via => via === 'email' ? '<span class="bi-note">matched by email</span>' : '';
   const html =
@@ -3801,7 +3877,7 @@ function bookingImportRenderPreview(book, skip, unmatched, review){
       `<div class="bi-item"><span>${esc(u.name || '(no name)')}</span>`
       + `<span class="bi-ref">${u.ref ? esc(u.ref) : (u.email ? esc(u.email) : 'no reference')}</span></div>`);
 
-  document.getElementById('bi-preview').innerHTML = html;
+  document.getElementById('bi-preview').innerHTML = sessionHtml + html;
   const tail = `${skip.length} skipped, ${review.length} need review, ${unmatched.length} unmatched.`;
   setBiMsg(book.length ? `Ready: ${book.length} to mark booked, ${tail}` : `Nothing to book — ${tail}`);
   const btn = document.getElementById('bi-confirm');
@@ -3820,9 +3896,16 @@ async function bookingImportConfirm(){
   for(const b of _biBook){
     setBiMsg(`Marking booked… ${ok + failed.length + 1} of ${_biBook.length}`);
     try{
+      // Base payload is unchanged. When the CSV carried a session, also record it:
+      // session_date may be null (unparseable) while we still store the raw text.
+      const payload = { id: b.id, status: 'booked' };
+      if(_biSessionText){
+        payload.session_date      = _biSessionISO;   // ISO instant or null
+        payload.session_date_text = _biSessionText;  // raw display string
+      }
       const r = await fetch('/api/recruitment/set-status', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ id: b.id, status: 'booked' })
+        body: JSON.stringify(payload)
       });
       if(r.ok) ok++; else failed.push(b.name);
     }catch(e){ failed.push(b.name); }
