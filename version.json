@@ -1,6 +1,6 @@
 {
-  "version": "3.21.0",
+  "version": "3.22.0",
   "release_date": "2026-07-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.21.0/TheGOAT.dmg",
-  "release_notes": "Crew Finder: Late / No-show history on the hover card. Recruitment: TryBooking bookings import, Attended stage + batch actions, stage-aging, and a Withdrawn pile."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.22.0/TheGOAT.dmg",
+  "release_notes": "All Bookings: the Excel button is now Create Crew Lists — SmartStaff-style Call Lists and Door Lists, one page per call, printed or saved as PDF. One dialog picks the optional columns (EIN, Phone, Email)."
 }
