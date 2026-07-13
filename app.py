@@ -193,6 +193,10 @@ RECRUITMENT_INVITE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/
 # data — plus short-lived signed URLs for the headshot/licence files, so the
 # browser must re-fetch on each expand to get URLs that are still valid.
 RECRUITMENT_CANDIDATE_DETAIL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-detail"
+# Same base URL: the SEALED health answers for ONE candidate — the single most
+# sensitive thing we hold. Its proxy route is gated to the ADMIN cohort ONLY
+# (never operations); the edge function returns just { reference, name, health }.
+RECRUITMENT_CANDIDATE_HEALTH_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-health"
 # The only statuses this doorway may set — must match the edge function exactly.
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
@@ -3645,6 +3649,48 @@ def api_recruitment_candidate_detail(cand_id):
         return jsonify({"error": "Applicant not found"}), 404
     if r.status_code != 200:
         print(f"[recruitment] candidate-detail edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/health", methods=["GET"])
+@require_cohort("admin")
+def api_recruitment_candidate_health(cand_id):
+    """ADMIN-ONLY: the candidate's SEALED health answers — the most sensitive data
+    we hold.
+
+    NOTE THE GATE: @require_cohort("admin") — NOT "admin","operations" like every
+    other recruitment route. This decorator IS the real access control: a logged-in
+    operations user is refused here with the standard 403 ("Forbidden for your
+    access level") BEFORE this function body runs, so the edge function is never
+    even called for them. The health edge function trusts our gate — it has no
+    cohort check of its own — which is exactly why this route must stay admin-only.
+
+    Same key discipline as the other recruitment routes: GOAT_RECRUITMENT_KEY stays
+    in Python, sent to the edge function in the X-Goat-Service-Key header, never
+    seen by the browser. The edge function returns only { reference, name, health }."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    try:
+        r = http.get(
+            RECRUITMENT_CANDIDATE_HEALTH_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            params={"id": cand_id},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] candidate-health request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code == 404:
+        return jsonify({"error": "Applicant not found"}), 404
+    if r.status_code != 200:
+        print(f"[recruitment] candidate-health edge function returned {r.status_code}")
         return jsonify({"error": "Recruitment service error"}), 502
     try:
         return jsonify(r.json())

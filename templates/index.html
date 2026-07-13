@@ -814,6 +814,18 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-licence-date{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted)}
 .recruit-flag{color:var(--warn);font-weight:600}
 a.recruit-action{text-decoration:none;display:inline-block}
+/* ADMIN-ONLY health reveal — the most sensitive data we hold. The button only
+   renders for admin users (see recruitRenderDetail), and the answers stay hidden
+   until it's clicked. The reddish accent2 tint marks the section as sensitive. */
+.recruit-health{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
+.recruit-health-banner{display:inline-block;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--accent2);border:1px solid var(--accent2);background:var(--accent2-bg);border-radius:5px;padding:3px 9px;margin-bottom:9px}
+.recruit-health-body{margin-top:10px}
+.recruit-health-q{padding:7px 0;border-top:1px solid var(--border);font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text)}
+.recruit-health-q:first-child{border-top:none}
+.recruit-health-a{display:inline-block;min-width:38px;font-weight:700;color:var(--muted)}
+.recruit-health-a.flag{color:var(--accent2)}
+.recruit-health-label{color:var(--text)}
+.recruit-health-detail{margin:5px 0 0 46px;padding-left:10px;border-left:2px solid var(--accent2);color:var(--muted);white-space:pre-wrap;line-height:1.4}
 /* Action buttons row — sits inside the expanded detail panel */
 .recruit-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
@@ -3704,7 +3716,7 @@ async function recruitLoadDetail(i){
     }
     const d = await r.json();
     if(host.__loadToken !== token) return;
-    host.innerHTML = recruitRenderDetail(d);
+    host.innerHTML = recruitRenderDetail(d, i);
   }catch(err){
     if(host.__loadToken !== token) return;
     host.innerHTML = '<div class="recruit-xdetail-error">Could not load details (network error).'
@@ -3715,7 +3727,7 @@ async function recruitLoadDetail(i){
 // Build the reviewable-detail HTML from the endpoint's JSON. Everything is
 // defensive: any missing field renders "—" (or a clear placeholder) rather than
 // breaking, so candidates with little data still display cleanly.
-function recruitRenderDetail(d){
+function recruitRenderDetail(d, i){
   d = d || {};
   const val = v => (v == null || v === '') ? '—' : recruitEsc(v);
   const contact = `
@@ -3736,7 +3748,90 @@ function recruitRenderDetail(d){
     <div class="recruit-xsection">Confirmations</div>
     ${recruitConfirmations(d.confirmations)}
     <div class="recruit-xsection">Licences</div>
-    ${recruitLicences(d.licences)}`;
+    ${recruitLicences(d.licences)}${recruitHealthSection(d, i)}`;
+}
+
+// ADMIN-ONLY health reveal. We only EMIT the button when the current user is in
+// the admin cohort — window._cohort is the same role signal the rest of the UI
+// uses (set by loadWhoami; e.g. `if(cohort === 'admin')` gates admin-only nav
+// and loads). For an operations user this returns '', so the button is not even
+// in the page. (The real gate is still the server route — this is just UI.)
+// Health is NOT fetched here; it stays hidden until the operator clicks.
+function recruitHealthSection(d, i){
+  if(window._cohort !== 'admin') return '';
+  const id = recruitEsc(d.id || '');
+  if(!id) return '';
+  return `
+    <div class="recruit-health">
+      <div class="recruit-health-banner">Sensitive — health information · admin only</div>
+      <button class="recruit-action" onclick="recruitRevealHealth(${i}, '${id}')">Show health information</button>
+      <div class="recruit-health-body" id="recruit-health-body-${i}"></div>
+    </div>`;
+}
+
+// Fetch + show one candidate's health answers on demand (admin only). Hits the
+// admin-gated route; a non-admin somehow reaching here gets a 403 we report
+// plainly. Loading + error states mirror recruitLoadDetail, incl. the race guard.
+async function recruitRevealHealth(i, id){
+  const host = document.getElementById('recruit-health-body-' + i);
+  if(!host) return;
+  host.innerHTML = '<div class="recruit-xdetail-loading">Loading health information…</div>';
+  const token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/health',
+      { headers: { 'Accept': 'application/json' } });
+    if(host.__loadToken !== token) return;
+    if(!r.ok){
+      let msg = (r.status === 403)
+        ? 'You do not have permission to view health information.'
+        : 'Could not load health information.';
+      try{ const e = await r.json(); if(e && e.error) msg = e.error; }catch(_){}
+      host.innerHTML = '<div class="recruit-xdetail-error">' + recruitEsc(msg) + '</div>';
+      return;
+    }
+    const data = await r.json();
+    if(host.__loadToken !== token) return;
+    host.innerHTML = recruitRenderHealth(data.health);
+  }catch(err){
+    if(host.__loadToken !== token) return;
+    host.innerHTML = '<div class="recruit-xdetail-error">Could not load health information (network error).</div>';
+  }
+}
+
+// Render the health object readably (never raw JSON). Each of the four questions
+// is { answer: bool, details: string }; we show Yes/No and, only when Yes, the
+// free-text details. A "Yes" is flagged (accent2) because it's the notable case
+// an admin needs to read. Finally the WorkCover acknowledgement. Missing/odd
+// shapes degrade to a clear placeholder rather than breaking.
+function recruitRenderHealth(h){
+  if(!h || typeof h !== 'object')
+    return '<div class="recruit-empty">No health information provided</div>';
+  // [key, label] in the order the form asks them. Labels are the EXACT question
+  // wording shown to the candidate on the application form.
+  const QUESTIONS = [
+    ['medication', 'Do you take any medication/s used to treat any condition/s that you may have?'],
+    ['safe_provisions', 'To your knowledge is there any provisions that needs to be made to ensure your work environment is safe for you?'],
+    ['injuries_treatment', 'To your knowledge do you have any injuries or conditions that may require treatment while in the employ of Gig Power P/L?'],
+    ['injuries_exacerbated', 'To your knowledge do you have any injuries or conditions that may be exacerbated by your duties at Gig Power P/L?'],
+  ];
+  const rows = QUESTIONS.map(([key, label]) => {
+    const item = (h[key] && typeof h[key] === 'object') ? h[key] : {};
+    const yes = item.answer === true;
+    const ans = yes ? 'Yes' : (item.answer === false ? 'No' : '—');
+    const details = (yes && item.details)
+      ? `<div class="recruit-health-detail">${recruitEsc(item.details)}</div>` : '';
+    return `<div class="recruit-health-q">`
+      + `<span class="recruit-health-a${yes ? ' flag' : ''}">${ans}</span>`
+      + `<span class="recruit-health-label">${recruitEsc(label)}</span>${details}</div>`;
+  }).join('');
+  const wcYes = h.workcover_acknowledged === true;
+  const wc = wcYes ? 'Acknowledged'
+    : (h.workcover_acknowledged === false ? 'Not acknowledged' : '—');
+  // WorkCover: here the NOTABLE (flagged) case is a MISSING acknowledgement.
+  const wcRow = `<div class="recruit-health-q">`
+    + `<span class="recruit-health-a${wcYes ? '' : ' flag'}">${wc}</span>`
+    + `<span class="recruit-health-label">WorkCover declaration</span></div>`;
+  return rows + wcRow;
 }
 
 // "12 Smith St, Richmond VIC 3121" from the address parts, skipping any that are
