@@ -792,6 +792,28 @@ body.cohort-readonly #unavail-add-section{display:none}
    for their waiting stage (see RECRUIT_AGING_THRESHOLDS in JS). Display only. */
 .recruit-stage-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.02em}
 .recruit-stage-age.aging{color:var(--warn)}
+/* "Submitted ✓" badge + "Submitted N days ago" line — shown only for candidates
+   who have submitted their details form (details_submitted_at set). Uses the same
+   positive green as the Invited pill so it reads as a good/ready state. Display only. */
+.recruit-submitted{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:#3fb950;border:1px solid #3fb950;background:rgba(63,185,80,0.08);white-space:nowrap}
+.recruit-submitted-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:#3fb950;letter-spacing:.02em}
+/* Reviewable-detail panel — the block fetched fresh from /api/recruitment/
+   candidate/<id> each time a row is expanded (the file URLs are short-lived, so
+   we never cache them). Sits inside the existing detail panel, above the action
+   buttons. Contains NO health data (the endpoint doesn't return any). Display only. */
+.recruit-xdetail{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
+.recruit-xdetail-loading{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);font-style:italic;padding:4px 0}
+.recruit-xdetail-error{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--warn);padding:4px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.recruit-xsection{font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin:14px 0 4px}
+.recruit-xhead{display:flex;gap:16px;align-items:flex-start}
+.recruit-xhead-main{flex:1;min-width:0}
+.recruit-headshot{width:96px;height:96px;object-fit:cover;border-radius:7px;border:1px solid var(--border);background:var(--surface2);flex-shrink:0}
+.recruit-licence{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--border)}
+.recruit-licence:first-child{border-top:none}
+.recruit-licence-type{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:13px;color:var(--text)}
+.recruit-licence-date{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted)}
+.recruit-flag{color:var(--warn);font-weight:600}
+a.recruit-action{text-decoration:none;display:inline-block}
 /* Action buttons row — sits inside the expanded detail panel */
 .recruit-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
@@ -3279,7 +3301,13 @@ function recruitToggleRow(i){
   const wasOpen = drow && drow.classList.contains('open');
   document.querySelectorAll('#recruit-list .recruit-row.open, #recruit-list .recruit-detail-row.open')
     .forEach(el => el.classList.remove('open'));
-  if(!wasOpen && row && drow){ row.classList.add('open'); drow.classList.add('open'); }
+  if(!wasOpen && row && drow){
+    row.classList.add('open'); drow.classList.add('open');
+    // Fetch the candidate's REVIEWABLE detail fresh every time the row opens —
+    // the endpoint's headshot/licence URLs are signed and expire after ~5 min, so
+    // a stale cached copy would hand the operator dead links.
+    recruitLoadDetail(i);
+  }
 }
 
 // Switch pile and re-render from the already-fetched list. Selection is per-pile,
@@ -3517,6 +3545,24 @@ function recruitStageAge(c){
     + (aging ? ' title="Ageing — worth chasing"' : '')
     + `>${text}</span>`;
 }
+// Positive "Submitted ✓" badge for a candidate who has submitted their details
+// form (details_submitted_at set). Returns '' when they haven't (the common case),
+// so nothing shows. Surfaces ONLY that they submitted — not the form contents.
+function recruitSubmittedBadge(c){
+  if(!c || !c.details_submitted_at) return '';
+  return '<span class="recruit-submitted" title="Details form submitted">Submitted ✓</span>';
+}
+// Muted-green "Submitted today / 1 day ago / N days ago" line, using the SAME
+// whole-day computation as the stage-age label (recruitDaysSince). '' when
+// details_submitted_at is missing/unparseable, so nothing renders. Display only.
+function recruitSubmittedAge(c){
+  const days = recruitDaysSince(c && c.details_submitted_at);
+  if(days === null) return '';
+  const text = (days === 0) ? 'Submitted today'
+    : (days === 1) ? 'Submitted 1 day ago'
+    : `Submitted ${days} days ago`;
+  return `<span class="recruit-submitted-age">${text}</span>`;
+}
 // Build TWO table rows for one applicant: a clickable summary row and a hidden
 // detail row (spanning all columns) that expands inline. `i` is the applicant's
 // index in the currently-visible list, used to pair the two rows for toggling.
@@ -3546,6 +3592,11 @@ function renderRecruitRow(c, i){
   // "Time in current stage" label (display only). '' when status_changed_at is
   // missing, so nothing shows rather than a broken value.
   const age = recruitStageAge(c);
+  // "Details submitted: <date>" grid item — only when the candidate has submitted
+  // their details form. Omitted entirely otherwise. Shows the date only, not the form.
+  const submittedDetail = c.details_submitted_at
+    ? `<div><span class="recruit-label">Details submitted</span>${recruitDate(c.details_submitted_at)}</div>`
+    : '';
   // Buttons to move to the OTHER three statuses (every move is reversible).
   const id = recruitEsc(c.id);
   const actions = RECRUIT_STATUS_ORDER.map(s => {
@@ -3591,7 +3642,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
-      <td>${pill}${age}</td>
+      <td>${pill}${recruitSubmittedBadge(c)}${age}${recruitSubmittedAge(c)}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
@@ -3605,6 +3656,7 @@ function renderRecruitRow(c, i){
             <div><span class="recruit-label">Reference</span>${recruitEsc(c.reference || '—')}</div>
             <div><span class="recruit-label">Applied</span>${recruitDate(c.created_at)}</div>
             <div><span class="recruit-label">Time in stage</span>${age || '—'}</div>
+            ${submittedDetail}
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
             <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
             <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
@@ -3613,12 +3665,155 @@ function renderRecruitRow(c, i){
           <div class="recruit-block"><span class="recruit-label">Pitch</span>${pitch}</div>
           <div class="recruit-block"><span class="recruit-label">Work history</span>${c.work_history ? recruitEsc(c.work_history) : '—'}</div>
           <div class="recruit-block"><span class="recruit-label">References</span>${c.referees ? recruitEsc(c.referees) : '—'}</div>
+          <div class="recruit-xdetail" id="recruit-xdetail-${i}" data-cand-id="${id}"></div>
           <div class="recruit-actions">${actions}</div>
         </div>
       </td>
     </tr>`;
 
   return summary + detail;
+}
+
+// ── EXPANDED REVIEWABLE DETAIL (fetched per-expand) ──────────────────────────
+// When a row opens, recruitToggleRow calls this to load that ONE candidate's
+// reviewable detail from our proxy route (/api/recruitment/candidate/<id>).
+// We re-fetch every expand because the headshot/licence URLs it returns are
+// signed and expire after ~5 minutes — caching them would show dead links.
+// This view NEVER shows health data (the endpoint doesn't return any).
+async function recruitLoadDetail(i){
+  const host = document.getElementById('recruit-xdetail-' + i);
+  if(!host) return;
+  const id = host.getAttribute('data-cand-id');
+  if(!id){ host.innerHTML = ''; return; }
+  // Show a loading line immediately so the panel never looks broken/empty.
+  host.innerHTML = '<div class="recruit-xdetail-loading">Loading details…</div>';
+  // Guard against races: if the operator collapses and re-opens (or opens a
+  // different row) while a slow response is in flight, an older response must not
+  // overwrite a newer one. Each call bumps a token; only the latest one renders.
+  const token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id),
+      { headers: { 'Accept': 'application/json' } });
+    if(host.__loadToken !== token) return;   // superseded by a newer open
+    if(!r.ok){
+      let msg = 'Could not load details.';
+      try{ const e = await r.json(); if(e && e.error) msg = e.error; }catch(_){}
+      host.innerHTML = '<div class="recruit-xdetail-error">' + recruitEsc(msg)
+        + ' <button class="recruit-action" onclick="recruitLoadDetail(' + i + ')">Retry</button></div>';
+      return;
+    }
+    const d = await r.json();
+    if(host.__loadToken !== token) return;
+    host.innerHTML = recruitRenderDetail(d);
+  }catch(err){
+    if(host.__loadToken !== token) return;
+    host.innerHTML = '<div class="recruit-xdetail-error">Could not load details (network error).'
+      + ' <button class="recruit-action" onclick="recruitLoadDetail(' + i + ')">Retry</button></div>';
+  }
+}
+
+// Build the reviewable-detail HTML from the endpoint's JSON. Everything is
+// defensive: any missing field renders "—" (or a clear placeholder) rather than
+// breaking, so candidates with little data still display cleanly.
+function recruitRenderDetail(d){
+  d = d || {};
+  const val = v => (v == null || v === '') ? '—' : recruitEsc(v);
+  const contact = `
+    <div class="recruit-detail-grid">
+      <div><span class="recruit-label">Email</span>${val(d.email)}</div>
+      <div><span class="recruit-label">Phone</span>${val(d.phone)}</div>
+      <div><span class="recruit-label">Date of birth</span>${d.dob ? recruitDate(d.dob) : '—'}</div>
+      <div><span class="recruit-label">Address</span>${recruitAddress(d)}</div>
+      <div><span class="recruit-label">Emergency contact</span>${recruitEmergency(d)}</div>
+      <div><span class="recruit-label">Signature</span>${val(d.signature_name)}</div>
+      <div><span class="recruit-label">Details submitted</span>${d.details_submitted_at ? recruitDate(d.details_submitted_at) : '—'}</div>
+    </div>`;
+  return `
+    <div class="recruit-xhead">
+      ${recruitHeadshot(d)}
+      <div class="recruit-xhead-main">${contact}</div>
+    </div>
+    <div class="recruit-xsection">Confirmations</div>
+    ${recruitConfirmations(d.confirmations)}
+    <div class="recruit-xsection">Licences</div>
+    ${recruitLicences(d.licences)}`;
+}
+
+// "12 Smith St, Richmond VIC 3121" from the address parts, skipping any that are
+// blank. Returns "—" if we have nothing at all.
+function recruitAddress(d){
+  const line1 = (d.street_address == null ? '' : String(d.street_address).trim());
+  const cityBits = [d.suburb, d.state, d.postcode]
+    .map(x => x == null ? '' : String(x).trim()).filter(Boolean).join(' ');
+  const parts = [line1, cityBits].filter(Boolean);
+  return parts.length ? recruitEsc(parts.join(', ')) : '—';
+}
+
+// "Jane Doe · 0400 000 000" — name and/or phone, whichever we have. "—" if none.
+function recruitEmergency(d){
+  const bits = [];
+  if(d.emergency_name)  bits.push(String(d.emergency_name).trim());
+  if(d.emergency_phone) bits.push(String(d.emergency_phone).trim());
+  return bits.length ? recruitEsc(bits.join(' · ')) : '—';
+}
+
+// Small headshot thumbnail from the signed URL (click to open full size in a new
+// tab). Shows a placeholder when there's no photo. The URL is short-lived.
+function recruitHeadshot(d){
+  if(!d.headshot_url) return '<div class="recruit-empty">No headshot</div>';
+  const u = recruitEsc(d.headshot_url);
+  return `<a href="${u}" target="_blank" rel="noopener">`
+    + `<img class="recruit-headshot" src="${u}" alt="Headshot" loading="lazy"></a>`;
+}
+
+// Turn the confirmations object into readable lines (never raw JSON). Unknown /
+// missing shapes degrade to a clear placeholder. yn() maps a boolean tick-group
+// to "confirmed" / "not confirmed".
+function recruitConfirmations(cf){
+  if(!cf || typeof cf !== 'object')
+    return '<div class="recruit-empty">No confirmations recorded</div>';
+  const yn = v => v === true ? 'confirmed' : (v === false ? 'not confirmed' : '—');
+  const rows = [];
+  rows.push(['Eligibility to work', yn(cf.eligibility_confirmed)]);
+  // WWCC (Working With Children Check) is a small object, not a single tick.
+  const w = (cf.wwcc && typeof cf.wwcc === 'object') ? cf.wwcc : null;
+  if(w){
+    const bits = [w.holds ? 'holds a check' : 'does not hold'];
+    if(!w.holds) bits.push(w.willing_to_obtain ? 'willing to obtain' : 'not willing to obtain');
+    bits.push(w.acknowledged ? 'acknowledged' : 'not acknowledged');
+    rows.push(['WWCC', bits.join(', ')]);
+  } else {
+    rows.push(['WWCC', '—']);
+  }
+  // criminal_history is a string ("none", or a short description) — not a tick.
+  const crim = cf.criminal_history;
+  rows.push(['Criminal history',
+    (crim == null || crim === '') ? '—' : (crim === 'none' ? 'none declared' : String(crim))]);
+  rows.push(['PPE', yn(cf.ppe_confirmed)]);
+  rows.push(['Workplace', yn(cf.workplace_confirmed)]);
+  rows.push(['Declarations', yn(cf.declarations_confirmed)]);
+  rows.push(['Tier / probation', yn(cf.tier_probation_confirmed)]);
+  return '<div class="recruit-detail-grid">'
+    + rows.map(([k, v]) => `<div><span class="recruit-label">${recruitEsc(k)}</span>${recruitEsc(v)}</div>`).join('')
+    + '</div>';
+}
+
+// List each licence with its type + certified date (flagged when blank) and an
+// "Open PDF" link using its short-lived signed URL. Empty/missing -> placeholder.
+function recruitLicences(list){
+  if(!Array.isArray(list) || list.length === 0)
+    return '<div class="recruit-empty">No licences uploaded</div>';
+  return list.map(l => {
+    l = l || {};
+    const type = l.type ? recruitEsc(l.type) : 'Licence';
+    const date = l.date_certified ? ('Certified: ' + recruitDate(l.date_certified))
+      : '<span class="recruit-flag">date missing</span>';
+    const link = l.url
+      ? `<a class="recruit-action" href="${recruitEsc(l.url)}" target="_blank" rel="noopener">Open PDF ↗</a>`
+      : '<span class="recruit-empty">file unavailable</span>';
+    return `<div class="recruit-licence"><span class="recruit-licence-type">${type}</span>`
+      + `<span class="recruit-licence-date">${date}</span>${link}</div>`;
+  }).join('');
 }
 
 // ── IMPORT BOOKINGS (Recruitment) ───────────────────────────────────────────

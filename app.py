@@ -188,6 +188,11 @@ RECRUITMENT_SET_STATUS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions
 # a successful send, marks the applicant invited. set-status only relabels — it
 # never emails — so the "Invite" button must use THIS route, not set-status.
 RECRUITMENT_INVITE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-invite"
+# Same base URL: REVIEWABLE detail for ONE candidate (the expanded panel in the
+# Recruitment tab). Returns an allowlisted set of fields — deliberately NO health
+# data — plus short-lived signed URLs for the headshot/licence files, so the
+# browser must re-fetch on each expand to get URLs that are still valid.
+RECRUITMENT_CANDIDATE_DETAIL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-detail"
 # The only statuses this doorway may set — must match the edge function exactly.
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
@@ -3600,6 +3605,46 @@ def api_recruitment_candidates():
         return jsonify({"error": "Recruitment service unavailable"}), 502
     if r.status_code != 200:
         print(f"[recruitment] edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/candidate/<cand_id>", methods=["GET"])
+@require_cohort("admin", "operations")
+def api_recruitment_candidate_detail(cand_id):
+    """Read-only REVIEWABLE detail for ONE applicant (the expanded panel).
+
+    Same auth + key pattern as the candidates list route above: only admin/
+    operations reach it (require_cohort), and the secret key stays in Python — it
+    is sent to the edge function in the X-Goat-Service-Key header and never seen
+    by the browser. The browser only sends us the candidate id in the URL.
+
+    The edge function returns an allowlisted set of fields (it deliberately
+    excludes health data) plus short-lived signed URLs for the headshot/licence
+    files, so the browser fetches this fresh on every expand to get URLs that are
+    still valid. We just proxy the JSON straight through."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    try:
+        r = http.get(
+            RECRUITMENT_CANDIDATE_DETAIL_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            params={"id": cand_id},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] candidate-detail request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code == 404:
+        return jsonify({"error": "Applicant not found"}), 404
+    if r.status_code != 200:
+        print(f"[recruitment] candidate-detail edge function returned {r.status_code}")
         return jsonify({"error": "Recruitment service error"}), 502
     try:
         return jsonify(r.json())
