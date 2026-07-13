@@ -778,6 +778,10 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-pill.st-invited_to_induction{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.08)}
 .recruit-pill.st-booked{color:#a371f7;border-color:#a371f7;background:rgba(163,113,247,0.08)}
 .recruit-pill.st-attended{color:#58a6ff;border-color:#58a6ff;background:rgba(88,166,255,0.08)}
+/* Sent to EH: an Employment Hero entry has been created for them (a late,
+   near-final stage). Distinct teal so it doesn't read as Invited (green) or
+   Attended (blue). */
+.recruit-pill.st-sent_to_eh{color:#2dd4bf;border-color:#2dd4bf;background:rgba(45,212,191,0.10)}
 .recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
 /* Withdrawn: candidate opted out via /withdraw. Deliberately muted grey so it
@@ -3189,16 +3193,17 @@ function switchTab(tab){
 // Status value -> short pill label shown on the card and in the filter row.
 const RECRUIT_STATUS_LABELS = {
   applied:'New', invited_to_induction:'Invited', booked:'Booked', attended:'Attended',
-  on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
+  sent_to_eh:'Sent to EH', on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
 // "withdrawn" sits last (before All): candidates put themselves here via the
 // /withdraw page — it's not an operator triage step.
-const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','on_hold','not_suitable','withdrawn'];
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','sent_to_eh','on_hold','not_suitable','withdrawn'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
-  booked:'Mark booked', attended:'Mark attended', on_hold:'Hold', not_suitable:'Not suitable'
+  booked:'Mark booked', attended:'Mark attended', sent_to_eh:'Mark Sent to EH',
+  on_hold:'Hold', not_suitable:'Not suitable'
 };
 // Amber-tint thresholds, in DAYS, for the "waiting" stages only. A candidate who
 // has sat in one of these stages LONGER than its number gets a gentle amber
@@ -3609,6 +3614,11 @@ function renderRecruitRow(c, i){
   const submittedDetail = c.details_submitted_at
     ? `<div><span class="recruit-label">Details submitted</span>${recruitDate(c.details_submitted_at)}</div>`
     : '';
+  // "Sent to EH: <date>" grid item — shown whenever eh_invited_at is stamped
+  // (set when they were moved to sent_to_eh). Same pattern as Details submitted.
+  const ehSentDetail = c.eh_invited_at
+    ? `<div><span class="recruit-label">Sent to EH</span>${recruitDate(c.eh_invited_at)}</div>`
+    : '';
   // Buttons to move to the OTHER three statuses (every move is reversible).
   const id = recruitEsc(c.id);
   const actions = RECRUIT_STATUS_ORDER.map(s => {
@@ -3636,6 +3646,12 @@ function renderRecruitRow(c, i){
     // "Mark attended" is offered once they're Invited OR Booked (they turned up
     // to the induction; booked -> attended is a normal step). Hidden otherwise.
     if(s === 'attended' && cur !== 'invited_to_induction' && cur !== 'booked') return '';
+    // "Mark Sent to EH" is only offered once they're Attended (in practice you
+    // send them to Employment Hero after induction + details). Hidden for every
+    // other pile. Reuses set-status (which stamps eh_invited_at). A candidate who
+    // is ALREADY sent_to_eh still gets "Back to New" below (s='applied'), so a
+    // mis-click is reversible.
+    if(s === 'sent_to_eh' && cur !== 'attended') return '';
     // Back to New / Attended / Hold / Not suitable — relabel via set-status.
     if(s === cur) return '';
     return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
@@ -3669,6 +3685,7 @@ function renderRecruitRow(c, i){
             <div><span class="recruit-label">Applied</span>${recruitDate(c.created_at)}</div>
             <div><span class="recruit-label">Time in stage</span>${age || '—'}</div>
             ${submittedDetail}
+            ${ehSentDetail}
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
             <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
             <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
