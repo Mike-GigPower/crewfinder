@@ -1,12 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import copy_metadata
+
+datas = [('templates', 'templates'), ('static', 'static')]
+hiddenimports = ['AppKit', 'PyObjCTools', 'openpyxl', 'googleapiclient', 'googleapiclient.discovery', 'google.auth', 'google.auth.transport.requests', 'google.oauth2', 'google.oauth2.credentials', 'timesheet_common', 'timesheet_import', 'timesheet_generate', 'timesheet_gsheet', 'timesheet_gsheet_read']
+datas += copy_metadata('google-api-python-client')
+hiddenimports += collect_submodules('googleapiclient')
+hiddenimports += collect_submodules('google.auth')
 
 
 a = Analysis(
     ['dock_launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('templates', 'templates'), ('static', 'static')],
-    hiddenimports=['AppKit', 'PyObjCTools'],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
