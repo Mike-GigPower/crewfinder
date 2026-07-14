@@ -10,7 +10,10 @@ Run via menubar.py or directly:
 import json
 import os
 import re
+import io
 import math
+import types
+import difflib
 import threading
 import functools
 import time
@@ -97,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "3.22.2"
+APP_VERSION    = "4.0.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -3792,6 +3795,596 @@ def api_recruitment_invite():
     except Exception:
         print(f"[recruitment] invite edge function returned {r.status_code}")
         return jsonify({"error": "Recruitment service error"}), 502
+
+
+# ─── CONVERT A CANDIDATE TO A SMARTSTAFF CREW MEMBER ──────────────────────────
+# "Sent to EH" candidates (Supabase, via the recruitment feed) can be turned into
+# a real SmartStaff crew member. This reuses the SAME crew-creation path as the
+# Administration "Add Crew Member" button (ss_create_crew -> add-crew.php), which
+# auto-assigns ein/username/active/rating/usergroupID and takes NO paygrade/tax
+# fields. The crew WRITE goes to whatever SmartStaff BASE_URL points at (config
+# .json "base_url"); keep that on the test box until you deliberately switch it.
+
+# Status we stamp a candidate with once their crew record exists. This is NOT in
+# RECRUITMENT_VALID_STATUSES on purpose: the generic /set-status proxy must not be
+# able to move anyone to active_crew — only a successful conversion here may, and
+# it talks to the edge function directly (below). The recruitment-set-status edge
+# function must ALSO allow this value and persist smartstaff_user_id (see the
+# convert route).
+RECRUITMENT_CONVERTED_STATUS = "active_crew"
+
+# Fixed licence types we push into SmartStaff during convert-B (see
+# _push_candidate_licences). This list is one of three copies that must stay in
+# sync (Supabase onboarding, here, and admin-add-license.php's allow-list); if it
+# ever changes, all three move together. Anything NOT in this list — including
+# 'Induction Certificate' — is skipped GOAT-side and rejected endpoint-side, so a
+# licence write can never touch an induction row.
+LICENCE_TYPE_ALLOWLIST = ["CI", "EWP", "WWC", "Forklift", "Truck", "Working at Heights"]
+_LICENCE_TYPE_CANON = {t.lower(): t for t in LICENCE_TYPE_ALLOWLIST}
+
+
+def _canonical_licence_type(t):
+    """Map an incoming type to its canonical allow-list spelling (case-insensitive),
+    or None if it isn't an allowed licence type. Returning the canonical value means
+    the PHP endpoint's exact-match allow-list always agrees with us."""
+    return _LICENCE_TYPE_CANON.get(str(t or "").strip().lower())
+
+
+# ─── LICENCE EXPIRY COMPLIANCE ────────────────────────────────────────────────
+# The Manage Crew -> Licences tab is the first place date_certified / date_expiry
+# are entered, which turns licences into a light compliance tool. LICENCE_TYPES
+# is derived from LICENCE_TYPE_ALLOWLIST (the single canonical list) so the two
+# can never drift.
+LICENCE_TYPES = tuple(LICENCE_TYPE_ALLOWLIST)
+
+# v1 decision: chase only the hard-expiry types. A blank expiry on these is a
+# real gap ("unknown"); a blank on the others is fine ("na"). A present date is
+# always scored normally, whatever the type.
+LICENCE_EXPIRY_EXPECTED = {
+    "WWC": True, "Forklift": True, "Truck": True,
+    "CI": False, "EWP": False, "Working at Heights": False,
+}
+
+LICENCE_WARN_DAYS = 60   # global v1 window (inductions use 14; the helper is parameterised)
+
+
+def compliance_status(target_date, today, warn_days, expiry_expected):
+    """Pure date -> status. target_date: a date/datetime or None.
+    Returns one of: 'valid' | 'expiring_soon' | 'expired' | 'unknown' | 'na'.
+
+    Deliberately domain-free — feed it any (date, expected?) pair and it yields a
+    status. _compute_induction_status() already does the equivalent for inductions
+    and is proven; the portability goal (one helper for both) is served by BUILDING
+    this now and adopting it for inductions in a separate, low-risk change — NOT by
+    folding it into this feature. Don't refactor the induction path here."""
+    if target_date is None:
+        return 'unknown' if expiry_expected else 'na'
+    days_left = (target_date - today).days
+    if days_left < 0:
+        return 'expired'
+    if days_left <= warn_days:
+        return 'expiring_soon'
+    return 'valid'
+
+
+def _licence_parse_date(s):
+    """Parse a 'YYYY-MM-DD' string (as admin-list-licenses.php returns) to a date,
+    or None for null/blank/malformed. Never raises."""
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+# Attention-first sort weight for licence status pills (mirrors the induction
+# tab's {Expired:0, 'Expiring Soon':1, ...} ordering).
+_LICENCE_STATUS_ORDER = {"expired": 0, "expiring_soon": 1, "unknown": 2, "valid": 3, "na": 4}
+
+
+def _decorate_licences(licences):
+    """Attach a compliance `status` to each licence row from admin-list-licenses
+    .php, then sort attention-first. Returns a new list; input rows are copied."""
+    today = datetime.now().date()
+    out = []
+    for lic in (licences or []):
+        if not isinstance(lic, dict):
+            continue
+        row = dict(lic)
+        ltype = row.get("type") or ""
+        expected = LICENCE_EXPIRY_EXPECTED.get(ltype, False)
+        row["status"] = compliance_status(
+            _licence_parse_date(row.get("date_expiry")),
+            today, LICENCE_WARN_DAYS, expected)
+        out.append(row)
+    out.sort(key=lambda r: (_LICENCE_STATUS_ORDER.get(r.get("status"), 9),
+                            str(r.get("type") or "").lower()))
+    return out
+
+
+def _licence_date_ymd(v):
+    """Normalise a Supabase date/datetime to a strict 'YYYY-MM-DD', or '' if it
+    isn't a recognisable date. '' tells the endpoint to store NULL (never
+    0000-00-00). Accepts '2024-05-01' and '2024-05-01T00:00:00Z' alike."""
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})", str(v or "").strip())
+    return m.group(1) if m else ""
+
+
+def ss_push_licence(ss, user_id, licence_type, date_certified, date_expiry, pdf_bytes):
+    """POST ONE licence to admin-add-license.php on the shared admin session `ss`
+    (admin-gated, explicit target user). Multipart when a PDF is supplied, plain
+    form otherwise. Returns (result_dict, error_str). A result with
+    skipped=True means the (user, type) row already existed — a normal, expected
+    outcome on a retry, not an error."""
+    data = {
+        "user":           str(user_id),
+        "type":           licence_type,
+        "date_certified": date_certified or "",
+        "date_expiry":    date_expiry or "",
+    }
+    files = None
+    if pdf_bytes:
+        files = {"licence_pdf": ("licence.pdf", pdf_bytes, "application/pdf")}
+    try:
+        resp = ss.post(f"{BASE_URL}/ajax/crew/admin-add-license.php",
+                       data=data, files=files, allow_redirects=True)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+def _push_candidate_licences(ss, user_id, licences):
+    """Convert-B: push a converted candidate's onboarding licences into SmartStaff
+    user_licenses, ONE admin-add-license.php call at a time (sequential — the box
+    has per-session file-lock contention under concurrent writes).
+
+    `licences` is the candidate-detail 'licences' list; each item may carry
+    {type, date_certified, url(signed PDF)}. Only allow-listed types are pushed.
+    The PDF is fetched from its short-lived signed URL exactly as the headshot is.
+
+    Best-effort: every outcome is recorded and returned; nothing here raises, so a
+    licence problem never aborts the conversion. Returns a list of per-licence
+    dicts: {type, ok, skipped?, id?, pdf_file?, error?}."""
+    results = []
+    if not isinstance(licences, list):
+        return results
+    for lic in licences:
+        if not isinstance(lic, dict):
+            continue
+        canon = _canonical_licence_type(lic.get("type"))
+        if not canon:
+            continue   # not an allow-listed licence (e.g. induction cert) — skip
+        date_cert = _licence_date_ymd(lic.get("date_certified"))
+
+        # Fetch the PDF bytes from the signed URL, if the licence has one. A licence
+        # with no URL is pushed as a metadata-only row (pdf_file NULL). A URL that
+        # won't download is a per-licence failure — recorded, then we move on.
+        pdf_bytes = None
+        url = lic.get("url")
+        if url:
+            try:
+                r = http.get(url, timeout=20)
+                if r.status_code == 200 and r.content:
+                    pdf_bytes = r.content
+                else:
+                    results.append({"type": canon, "ok": False,
+                                    "error": f"PDF fetch HTTP {r.status_code}"})
+                    continue
+            except Exception as e:
+                results.append({"type": canon, "ok": False,
+                                "error": f"PDF fetch failed: {e}"})
+                continue
+
+        out, err = ss_push_licence(ss, user_id, canon, date_cert, "", pdf_bytes)
+        if err:
+            results.append({"type": canon, "ok": False, "error": err})
+        elif out.get("skipped"):
+            results.append({"type": canon, "ok": True, "skipped": True})
+        else:
+            results.append({"type": canon, "ok": True, "skipped": False,
+                            "id": out.get("id"), "pdf_file": out.get("pdf_file")})
+    return results
+
+
+def _recruit_split_name(full):
+    """Default first/last split for the preview: first word = firstname, the rest
+    = lastname. Ops can edit both in the modal, so this only has to be a sane
+    starting guess ("Mary Jane Watson" -> "Mary" / "Jane Watson")."""
+    parts = str(full or "").split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
+
+
+def _recruit_norm_name(s):
+    """Lowercase, drop punctuation, collapse whitespace — for tolerant name
+    comparison ("de Silva" == "De  Silva.")."""
+    s = re.sub(r"[^a-z0-9 ]+", " ", str(s or "").lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _recruit_name_tokens(s):
+    """Set of normalised word-tokens in a name. Order-independent, so it matches
+    the roster's "Lastname, Firstname" against the candidate's "First Last"."""
+    return set(t for t in _recruit_norm_name(s).split() if t)
+
+
+def _recruit_crew_matches(crew, cand_first, cand_last, cand_email):
+    """Duplicate guard. Given the crew roster (from fetch_crew_bulk) and the
+    candidate's proposed name + email, return (email_matches, name_matches):
+
+      - email_matches: exact email match, case-insensitive.
+      - name_matches:  same OR similar first+last — identical token set, OR two
+        shared name tokens, OR a high whole-string similarity (catches typos like
+        "Silva"/"Silvo"). Ignores case/whitespace/punctuation.
+
+    Each match is a small dict {name, email, ein, id} safe to show the operator.
+    Inactive crew are included by the caller so returners are still caught."""
+    email_l = str(cand_email or "").strip().lower()
+    cand_tokens = _recruit_name_tokens(cand_first + " " + cand_last)
+    cand_join = " ".join(sorted(cand_tokens))
+
+    email_matches, name_matches = [], []
+    seen_name_ids = set()
+    for c in (crew or []):
+        row = {
+            "name":  c.get("name", "") or "",
+            "email": c.get("email", "") or "",
+            "ein":   str(c.get("ein") or c.get("id") or ""),
+            "id":    str(c.get("id") or ""),
+            "active": int(c.get("active", 1) or 0),
+        }
+        if email_l and row["email"].strip().lower() == email_l:
+            email_matches.append(row)
+
+        ctokens = _recruit_name_tokens(row["name"])
+        if not ctokens or not cand_tokens:
+            continue
+        cjoin = " ".join(sorted(ctokens))
+        similar = difflib.SequenceMatcher(None, cand_join, cjoin).ratio()
+        if (ctokens == cand_tokens
+                or len(ctokens & cand_tokens) >= 2
+                or similar >= 0.87):
+            if row["id"] not in seen_name_ids:
+                seen_name_ids.add(row["id"])
+                name_matches.append(row)
+    return email_matches, name_matches
+
+
+def _recruit_fetch_feed_row(cand_id):
+    """Fetch the recruitment feed and return this candidate's row (dict) or
+    (None, error). The feed is the authoritative source for `status`, `name` and
+    `worked_with_gigpower` — the fields the convert flow gates on."""
+    if not GOAT_RECRUITMENT_KEY:
+        return None, "Recruitment key not configured"
+    try:
+        r = http.get(RECRUITMENT_CANDIDATES_URL,
+                     headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                     timeout=15)
+    except Exception as e:
+        print(f"[recruitment] convert feed request failed: {e}")
+        return None, "Recruitment service unavailable"
+    if r.status_code != 200:
+        print(f"[recruitment] convert feed returned {r.status_code}")
+        return None, "Recruitment service error"
+    try:
+        body = r.json()
+    except Exception:
+        return None, "Bad response from recruitment service"
+    rows = body.get("candidates") if isinstance(body, dict) else body
+    if not isinstance(rows, list):
+        rows = []
+    for c in rows:
+        if str(c.get("id")) == str(cand_id):
+            return c, None
+    return None, "not_found"
+
+
+def _recruit_fetch_detail(cand_id):
+    """Fetch the candidate's reviewable detail (address/dob/emergency + a FRESH
+    signed headshot URL) straight from the edge function, exactly like
+    api_recruitment_candidate_detail does. Returns (dict, error)."""
+    if not GOAT_RECRUITMENT_KEY:
+        return None, "Recruitment key not configured"
+    try:
+        r = http.get(RECRUITMENT_CANDIDATE_DETAIL_URL,
+                     headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                     params={"id": cand_id}, timeout=15)
+    except Exception as e:
+        print(f"[recruitment] convert detail request failed: {e}")
+        return None, "Recruitment service unavailable"
+    if r.status_code == 404:
+        return None, "not_found"
+    if r.status_code != 200:
+        print(f"[recruitment] convert detail returned {r.status_code}")
+        return None, "Recruitment service error"
+    try:
+        return r.json(), None
+    except Exception:
+        return None, "Bad response from recruitment service"
+
+
+def _recruit_worked_before(feed_row, detail):
+    """worked_with_gigpower isn't consumed anywhere else yet and may live on the
+    feed OR the detail payload, so read it from either, coercing to a real bool."""
+    for src in (feed_row or {}, detail or {}):
+        if "worked_with_gigpower" in src:
+            v = src.get("worked_with_gigpower")
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "yes", "y", "t")
+            return bool(v)
+    return False
+
+
+def _recruit_convert_context(cand_id):
+    """Assemble everything the convert flow needs for ONE candidate:
+    (feed_row, detail, error). error is a short code: 'not_found', 'not_eh'
+    handled by callers; anything else is a service error string."""
+    feed_row, err = _recruit_fetch_feed_row(cand_id)
+    if err:
+        return None, None, err
+    detail, derr = _recruit_fetch_detail(cand_id)
+    if derr and derr != "not_found":
+        # Detail is needed for the address/headshot but a transient detail error
+        # shouldn't mask the (successful) feed read — surface it plainly.
+        return feed_row, None, derr
+    return feed_row, (detail or {}), None
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/convert-preview", methods=["GET"])
+@require_cohort("admin", "operations")
+def api_recruitment_convert_preview(cand_id):
+    """Everything the "Convert to crew" modal needs, computed server-side, WITHOUT
+    creating anything:
+
+      - the proposed first/last name split (editable in the modal),
+      - the exact fields that would be sent to SmartStaff (so ops can eyeball them),
+      - the duplicate guard: exact-email + fuzzy-name matches against the live crew
+        roster (fetch_crew_bulk, admin-gated), plus the worked-with-Gig-Power flag.
+
+    Only sent_to_eh candidates are convertible; anything else returns 409 so the
+    UI can explain why. The crew roster lookup needs a SmartStaff session."""
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    feed_row, detail, err = _recruit_convert_context(cand_id)
+    if err == "not_found":
+        return jsonify({"error": "Applicant not found"}), 404
+    if err:
+        return jsonify({"error": err}), 502
+
+    status = str(feed_row.get("status") or "").strip()
+    if status != "sent_to_eh":
+        return jsonify({"error": "Only a 'Sent to EH' candidate can be converted "
+                                 f"(this one is '{status or 'unknown'}')."}), 409
+
+    name = feed_row.get("name") or ""
+    first, last = _recruit_split_name(name)
+    email  = detail.get("email")  or feed_row.get("email")  or ""
+    phone  = detail.get("phone")  or feed_row.get("phone")  or ""
+    worked = _recruit_worked_before(feed_row, detail)
+
+    # Duplicate guard — include inactive crew so returners are still flagged.
+    crew, cerr = fetch_crew_bulk(ss, include_inactive=True)
+    if cerr:
+        return jsonify({"error": f"Couldn't load the crew roster to check for "
+                                 f"duplicates: {cerr}"}), 502
+    email_matches, name_matches = _recruit_crew_matches(crew, first, last, email)
+
+    # "What will be sent" — the exact mapping ss_create_crew will use (minus the
+    # auto-assigned ein/username/password/active/rating). Shown read-only.
+    will_send = {
+        "firstname":         first,
+        "lastname":          last,
+        "email":             email,
+        "mobile":            phone,
+        "dob":               detail.get("dob") or "",
+        "street_address":    detail.get("street_address") or "",
+        "suburb":            detail.get("suburb") or "",
+        "state":             detail.get("state") or "",
+        "postcode":          detail.get("postcode") or "",
+        "emergency_contact": detail.get("emergency_name") or "",
+        "emergency_phone":   detail.get("emergency_phone") or "",
+    }
+    return jsonify({
+        "id":                 cand_id,
+        "name":               name,
+        "proposed_firstname": first,
+        "proposed_lastname":  last,
+        "will_send":          will_send,
+        "headshot_present":   bool(detail.get("headshot_url")),
+        "worked_with_gigpower": worked,
+        "email_matches":      email_matches,
+        "name_matches":       name_matches,
+    })
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/convert", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_recruitment_convert(cand_id):
+    """Create the SmartStaff crew record for a 'Sent to EH' candidate, then stamp
+    the candidate active_crew with its new SmartStaff id.
+
+    Body: { firstname, lastname, acknowledged? }.
+      - firstname/lastname: the (possibly ops-edited) name split; required.
+      - acknowledged: the operator ticked "I've checked — create anyway". Required
+        when the duplicate guard finds an email/name match OR the candidate said
+        they've worked with Gig Power before.
+
+    Ordering matters for retries: everything that can fail cleanly happens BEFORE
+    the SmartStaff write, so a rejected conversion changes nothing (in SmartStaff
+    OR Supabase) and can be retried. Once the crew record exists we can't delete
+    it, so a failure to stamp Supabase afterwards is reported as a warning (the
+    crew WAS created) — the operator finishes the status move by hand rather than
+    re-running convert and creating a duplicate."""
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(silent=True) or {}
+    first = str(body.get("firstname", "")).strip()
+    last  = str(body.get("lastname", "")).strip()
+    acknowledged = bool(body.get("acknowledged"))
+
+    # 1. Authoritative re-check: candidate must still be sent_to_eh.
+    feed_row, detail, err = _recruit_convert_context(cand_id)
+    if err == "not_found":
+        return jsonify({"error": "Applicant not found"}), 404
+    if err:
+        return jsonify({"error": err}), 502
+    status = str(feed_row.get("status") or "").strip()
+    if status != "sent_to_eh":
+        return jsonify({"error": "This candidate is no longer 'Sent to EH' "
+                                 f"(now '{status or 'unknown'}') — refusing to "
+                                 "convert."}), 409
+
+    # 2. Name fallback (if the client somehow sent blanks, use the default split).
+    if not first or not last:
+        d_first, d_last = _recruit_split_name(feed_row.get("name") or "")
+        first = first or d_first
+        last  = last  or d_last
+    if not first or not last:
+        return jsonify({"error": "First and last name are required."}), 400
+
+    email = detail.get("email") or feed_row.get("email") or ""
+
+    # 3. Server-side duplicate guard — defence in depth. If anything is flagged and
+    #    the operator hasn't acknowledged, refuse (mirrors the modal's checkbox).
+    crew, cerr = fetch_crew_bulk(ss, include_inactive=True)
+    if cerr:
+        return jsonify({"error": f"Couldn't load the crew roster to check for "
+                                 f"duplicates: {cerr}"}), 502
+    email_matches, name_matches = _recruit_crew_matches(crew, first, last, email)
+    worked = _recruit_worked_before(feed_row, detail)
+    if (email_matches or name_matches or worked) and not acknowledged:
+        return jsonify({"error": "Possible existing crew (or they've worked with "
+                                 "Gig Power before) — tick the confirm box to "
+                                 "create a new record anyway.",
+                        "needs_ack": True}), 409
+
+    # 4. Map candidate -> crew fields (NO paygrade/tax — SmartStaff defaults stand,
+    #    matching the manual process). A short provenance note aids traceability.
+    ref = feed_row.get("reference") or cand_id
+    data = {
+        "firstname":         first,
+        "lastname":          last,
+        "mobile":            detail.get("phone") or feed_row.get("phone") or "",
+        "email":             email,
+        "dob":               detail.get("dob") or "",   # add-crew.php strtotime()s it
+        "address":           detail.get("street_address") or "",
+        "suburb":            detail.get("suburb") or "",
+        "state":             detail.get("state") or "",
+        "postcode":          detail.get("postcode") or "",
+        "emergency_contact": detail.get("emergency_name") or "",
+        "emergency_phone":   detail.get("emergency_phone") or "",
+        "notes":             f"Converted from recruitment application {ref}.",
+        "groups":            [],
+    }
+
+    # 5. Optional headshot: fetch the bytes from the fresh signed URL and hand them
+    #    to ss_create_crew as a file-like part. A photo failure is never fatal —
+    #    the crew member is still created without a picture.
+    photo = None
+    headshot_url = detail.get("headshot_url")
+    if headshot_url:
+        try:
+            img = http.get(headshot_url, timeout=20)
+            ctype = (img.headers.get("Content-Type") or "").split(";")[0].strip()
+            if img.status_code == 200 and img.content and ctype.startswith("image/"):
+                ext = "png" if ctype == "image/png" else "jpg"
+                photo = types.SimpleNamespace(
+                    filename=f"headshot.{ext}",
+                    stream=io.BytesIO(img.content),
+                    mimetype=ctype or "image/jpeg")
+            else:
+                print(f"[recruitment] convert: headshot not usable "
+                      f"(HTTP {img.status_code}, type {ctype!r})")
+        except Exception as e:
+            print(f"[recruitment] convert: headshot fetch failed: {e}")
+
+    # 6. Assign the next EIN and create the crew record (points at BASE_URL).
+    look, lerr = ss_crew_lookups(ss)
+    if lerr:
+        return jsonify({"error": f"Couldn't assign an EIN: {lerr}"}), 502
+    try:
+        ein = int(look.get("next_ein") or 0)
+    except (TypeError, ValueError):
+        ein = 0
+    if ein <= 0:
+        return jsonify({"error": "Couldn't determine the next EIN"}), 502
+
+    uid, cxerr = ss_create_crew(ss, data, ein, NEW_CREW_TEMP_PASSWORD, photo=photo)
+    if cxerr:
+        # Nothing was written to Supabase — safe to retry (e.g. 409 EIN collision).
+        return jsonify({"error": cxerr}), 502
+
+    # 7. Crew record now EXISTS in SmartStaff. Stamp the candidate active_crew with
+    #    its new id. We send status + smartstaff_user_id + ein to the set-status
+    #    edge function in ONE call. NOTE: the edge function must allow the
+    #    active_crew status AND persist smartstaff_user_id, or the stamp is lost.
+    stamp_warning = None
+    if not GOAT_RECRUITMENT_KEY:
+        stamp_warning = "Recruitment key not configured — candidate not updated."
+    else:
+        try:
+            sr = http.post(RECRUITMENT_SET_STATUS_URL,
+                           headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                           json={"id": cand_id,
+                                 "status": RECRUITMENT_CONVERTED_STATUS,
+                                 "smartstaff_user_id": uid,
+                                 "ein": ein},
+                           timeout=15)
+            if sr.status_code != 200:
+                print(f"[recruitment] convert stamp returned {sr.status_code}")
+                stamp_warning = (f"Crew member was created (EIN {ein}) but the "
+                                 f"candidate's status couldn't be updated "
+                                 f"(HTTP {sr.status_code}). Update it by hand — "
+                                 f"do NOT run convert again.")
+        except Exception as e:
+            print(f"[recruitment] convert stamp failed: {e}")
+            stamp_warning = (f"Crew member was created (EIN {ein}) but the "
+                             f"candidate's status update failed to send. Update it "
+                             f"by hand — do NOT run convert again.")
+
+    # 8. Convert-B — push the candidate's onboarding licences into SmartStaff
+    #    user_licenses (one admin-add-license.php POST each, sequential). Purely
+    #    best-effort: the endpoint is idempotent per (user, type), so a partial or
+    #    failed push can simply be retried, and a licence problem never fails the
+    #    conversion (the crew record + status already stand).
+    try:
+        licence_results = _push_candidate_licences(ss, uid, detail.get("licences"))
+    except Exception as e:
+        print(f"[recruitment] convert licence push crashed: {e}")
+        licence_results = []
+
+    return jsonify({
+        "ok":       True,
+        "id":       uid,
+        "ein":      ein,
+        "username": str(ein),
+        "name":     f"{first} {last}".strip(),
+        "status":   RECRUITMENT_CONVERTED_STATUS,
+        "temp_password": NEW_CREW_TEMP_PASSWORD,
+        "warning":  stamp_warning,
+        "licences": licence_results,
+    })
 
 
 @app.route("/api/availability", methods=["POST"])
@@ -7854,6 +8447,39 @@ def api_admin_update_venue(venue_id):
     return jsonify(data)
 
 
+def ss_delete_venue(ss, venue_id):
+    """Guarded hard delete of one venue via delete-venue.php. Like
+    ss_delete_customer this returns (data, status): the PHP endpoint's HTTP status
+    is forwarded verbatim so the 409 guard message (bookings / crew inductions /
+    induction certificate rows still linked) reaches the UI as a block, not a
+    generic 502."""
+    url = f"{BASE_URL}/ajax/crew/delete-venue.php"
+    try:
+        resp = ss.post(url, data={"id": int(venue_id)}, timeout=60)
+    except Exception as e:
+        return {"error": f"request failed: {e}"}, 502
+    try:
+        data = resp.json()
+    except Exception:
+        detail = (resp.text or "")[:200]
+        return {"error": detail or f"HTTP {resp.status_code}"}, (resp.status_code if resp.status_code >= 400 else 502)
+    return data, resp.status_code
+
+
+@app.route("/api/admin/venue/<venue_id>/delete", methods=["POST"])
+@require_cohort("admin")
+def api_admin_delete_venue(venue_id):
+    """Guarded hard delete of one venue. Forwards delete-venue.php's JSON + status
+    straight through, so a 409 block (still referenced by bookings, crew inductions
+    or induction certificate rows) reaches the UI with its reason list intact
+    instead of collapsing to a 502."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, status = ss_delete_venue(ss, venue_id)
+    return jsonify(data), status
+
+
 # ── Manage Customers ─────────────────────────────────────────────────────────
 # Same authored-endpoint pattern as venues. customers is a standalone table
 # (no relationships): list-customers.php (browse), get-customer.php (read one,
@@ -7931,6 +8557,24 @@ def ss_update_customer(ss, customer_id, fields):
     return data, None
 
 
+def ss_delete_customer(ss, customer_id):
+    """Guarded hard delete of one customer via delete-customer.php. Unlike the
+    other helpers this returns (data, status): the PHP endpoint's HTTP status is
+    forwarded verbatim so the 409 guard message (bookings still linked) reaches
+    the UI as a block, not a generic 502."""
+    url = f"{BASE_URL}/ajax/crew/delete-customer.php"
+    try:
+        resp = ss.post(url, data={"id": int(customer_id)}, timeout=60)
+    except Exception as e:
+        return {"error": f"request failed: {e}"}, 502
+    try:
+        data = resp.json()
+    except Exception:
+        detail = (resp.text or "")[:200]
+        return {"error": detail or f"HTTP {resp.status_code}"}, (resp.status_code if resp.status_code >= 400 else 502)
+    return data, resp.status_code
+
+
 @app.route("/api/admin/customer-list")
 @require_cohort("admin")
 def api_admin_customer_list():
@@ -7982,6 +8626,19 @@ def api_admin_update_customer(customer_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(data)
+
+
+@app.route("/api/admin/customer/<customer_id>/delete", methods=["POST"])
+@require_cohort("admin")
+def api_admin_delete_customer(customer_id):
+    """Guarded hard delete of one customer. Forwards delete-customer.php's JSON +
+    status straight through, so a 409 block (bookings still linked) reaches the UI
+    with its count message intact instead of collapsing to a 502."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, status = ss_delete_customer(ss, customer_id)
+    return jsonify(data), status
 
 
 # ── Manage Contacts ──────────────────────────────────────────────────────────
@@ -8117,6 +8774,40 @@ def api_admin_update_contact(contact_id):
     return jsonify(data)
 
 
+def ss_delete_contact(ss, contact_id):
+    """Guarded hard delete of one contact via delete-contact.php. Like the
+    customer/venue delete helpers this returns (data, status): the PHP endpoint's
+    HTTP status is forwarded verbatim so the 409 guard message (bookings still
+    linked — 'Set inactive instead?') reaches the UI as a block, not a 502.
+    delete-contact.php is usergroup-4-guarded, so a non-contact id yields 403/404
+    from PHP and that status flows straight through too."""
+    url = f"{BASE_URL}/ajax/crew/delete-contact.php"
+    try:
+        resp = ss.post(url, data={"id": int(contact_id)}, timeout=60)
+    except Exception as e:
+        return {"error": f"request failed: {e}"}, 502
+    try:
+        data = resp.json()
+    except Exception:
+        detail = (resp.text or "")[:200]
+        return {"error": detail or f"HTTP {resp.status_code}"}, (resp.status_code if resp.status_code >= 400 else 502)
+    return data, resp.status_code
+
+
+@app.route("/api/admin/contact/<contact_id>/delete", methods=["POST"])
+@require_cohort("admin")
+def api_admin_delete_contact(contact_id):
+    """Guarded hard delete of one contact (users, usergroup 4). Forwards
+    delete-contact.php's JSON + status straight through, so a 409 block (bookings
+    still linked) reaches the UI with its 'Set inactive instead?' nudge intact.
+    Deactivate (active='0' via the update route) remains the everyday removal."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, status = ss_delete_contact(ss, contact_id)
+    return jsonify(data), status
+
+
 @app.route("/api/admin/crew/<crew_id>/inductions")
 @require_cohort("admin")
 def api_admin_crew_inductions(crew_id):
@@ -8157,6 +8848,175 @@ def api_admin_add_crew_induction(crew_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(out)
+
+
+# ── Manage Crew: Licences ─────────────────────────────────────────────────────
+# Admin licence CRUD for the Manage Crew -> Licences tab. Each route proxies to
+# one smartstaff/admin-*-license*.php endpoint on the admin session, exactly like
+# the Manage Venues / Manage Crew routes above. All are admin-gated both here
+# (@require_cohort) and at the PHP boundary. Licence reads/writes never touch
+# induction rows — that exclusion is enforced in every endpoint. The add path
+# reuses ss_push_licence() (the convert-B helper posting to admin-add-license.php).
+
+def ss_list_licences(ss, user_id):
+    """One user's non-induction licences via admin-list-licenses.php (raw rows;
+    the status pill is derived here in app.py). Returns (list, error)."""
+    url = f"{BASE_URL}/ajax/crew/admin-list-licenses.php"
+    try:
+        resp = ss.get(url, params={"user": int(user_id)}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and data.get("error"):
+        return None, data["error"]
+    return (data.get("licences") or []), None
+
+
+def ss_edit_licence(ss, licence_id, ltype, date_certified, date_expiry, pdf_file):
+    """Edit / renew one licence via admin-edit-license.php. `pdf_file` is an
+    uploaded FileStorage or None (None = keep the existing file). Returns
+    (result_dict, error). A skipped/exists case can't happen on edit."""
+    data = {
+        "id":             str(int(licence_id)),
+        "type":           ltype,
+        "date_certified": date_certified or "",
+        "date_expiry":    date_expiry or "",
+    }
+    files = None
+    if pdf_file:
+        files = {"licence_pdf": (pdf_file.filename or "licence.pdf",
+                                 pdf_file.read(), "application/pdf")}
+    try:
+        resp = ss.post(f"{BASE_URL}/ajax/crew/admin-edit-license.php",
+                       data=data, files=files, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+def ss_delete_licence(ss, licence_id):
+    """Delete one licence via admin-delete-license.php. Returns (result, error)."""
+    try:
+        resp = ss.post(f"{BASE_URL}/ajax/crew/admin-delete-license.php",
+                       data={"id": str(int(licence_id))}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+@app.route("/api/user/<int:user_id>/licences")
+@require_cohort("admin")
+def api_admin_list_licences(user_id):
+    """One crew member's licences, each with a derived compliance status, sorted
+    attention-first (expired -> expiring_soon -> unknown -> valid -> na)."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    licences, err = ss_list_licences(ss, user_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"licences": _decorate_licences(licences)})
+
+
+@app.route("/api/user/<int:user_id>/licences", methods=["POST"])
+@require_cohort("admin")
+def api_admin_add_licence(user_id):
+    """Add one licence (multipart: type, optional dates, optional licence_pdf).
+    Idempotent per (user, type) at the endpoint — a re-add returns skipped."""
+    ltype = _canonical_licence_type(request.form.get("type"))
+    if not ltype:
+        return jsonify({"error": "Invalid licence type"}), 400
+    date_cert = _licence_date_ymd(request.form.get("date_certified"))
+    date_exp  = _licence_date_ymd(request.form.get("date_expiry"))
+    pdf       = request.files.get("licence_pdf")
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    pdf_bytes = pdf.read() if pdf else None
+    out, err = ss_push_licence(ss, user_id, ltype, date_cert, date_exp, pdf_bytes)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
+
+
+@app.route("/api/licence/<int:licence_id>/edit", methods=["POST"])
+@require_cohort("admin")
+def api_admin_edit_licence(licence_id):
+    """Edit / renew one licence (multipart; blank licence_pdf keeps the current
+    file). This is the renewal path — new dates + new PDF replace the line."""
+    ltype = _canonical_licence_type(request.form.get("type"))
+    if not ltype:
+        return jsonify({"error": "Invalid licence type"}), 400
+    date_cert = _licence_date_ymd(request.form.get("date_certified"))
+    date_exp  = _licence_date_ymd(request.form.get("date_expiry"))
+    pdf       = request.files.get("licence_pdf")
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    out, err = ss_edit_licence(ss, licence_id, ltype, date_cert, date_exp, pdf)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
+
+
+@app.route("/api/licence/<int:licence_id>/delete", methods=["POST"])
+@require_cohort("admin")
+def api_admin_delete_licence(licence_id):
+    """Delete one licence (row + its file(s))."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    out, err = ss_delete_licence(ss, licence_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
+
+
+@app.route("/api/licence/<int:licence_id>/file")
+@require_cohort("admin")
+def api_admin_licence_file(licence_id):
+    """Stream one licence's PDF (or legacy image) inline, straight through from
+    admin-get-license-file.php with the upstream content-type."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-license-file.php",
+                      params={"id": int(licence_id)}, timeout=60)
+    except Exception as e:
+        return jsonify({"error": f"request failed: {e}"}), 502
+    if resp.status_code != 200:
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+    ctype = (resp.headers.get("Content-Type") or "application/octet-stream").split(";")[0].strip()
+    return Response(resp.content, mimetype=ctype, headers={
+        "Content-Disposition": resp.headers.get("Content-Disposition", "inline"),
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 if __name__ == "__main__":

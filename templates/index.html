@@ -782,6 +782,9 @@ body.cohort-readonly #unavail-add-section{display:none}
    near-final stage). Distinct teal so it doesn't read as Invited (green) or
    Attended (blue). */
 .recruit-pill.st-sent_to_eh{color:#2dd4bf;border-color:#2dd4bf;background:rgba(45,212,191,0.10)}
+/* Active crew: converted to a real SmartStaff crew member — the pipeline's end
+   state. Gold, matching the app's "live crew" accent, so it reads as "done". */
+.recruit-pill.st-active_crew{color:var(--accent);border-color:var(--border-gold);background:rgba(212,175,55,0.10)}
 .recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
 /* Withdrawn: candidate opted out via /withdraw. Deliberately muted grey so it
@@ -835,6 +838,16 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
 .recruit-action:hover{border-color:var(--accent);color:var(--accent)}
 .recruit-action:disabled{opacity:.5;cursor:default}
+/* "Convert to crew" — the headline action on a Sent-to-EH card. Gold outline so
+   it stands out from the plain relabel buttons next to it. */
+.recruit-action.recruit-convert{border-color:var(--border-gold);color:var(--accent)}
+/* Convert modal: warning banner + the "create anyway" acknowledge box */
+.rc-conv-warn{border:1px solid var(--accent2);background:var(--accent2-bg);color:var(--accent2);border-radius:5px;padding:8px 10px;margin:8px 0;font-size:12px;line-height:1.5}
+.rc-conv-warn b{color:var(--accent2)}
+.rc-conv-ack{display:flex;gap:8px;align-items:flex-start;padding:8px 0;font-size:12px;color:var(--text);cursor:pointer}
+.rc-conv-ack input{margin-top:2px;accent-color:var(--accent)}
+.rc-conv-send{font-size:12px;color:var(--muted);line-height:1.7}
+.rc-conv-send b{color:var(--text)}
 /* Batch selection: checkbox column + the action bar that appears when rows are ticked */
 .recruit-table .rc-check{width:36px;text-align:center;padding-left:14px;padding-right:0}
 .recruit-check,#recruit-check-all{cursor:pointer;width:15px;height:15px;accent-color:var(--accent);margin:0}
@@ -1600,25 +1613,25 @@ a.recruit-action{text-decoration:none;display:inline-block}
             <div class="admin-card-desc">Search, view and edit crew records.</div>
           </div>
         </button>
-        <button class="admin-card" onclick="openAddEntity('customer', true)">
+        <button class="admin-card" onclick="adminCustomerList()">
           <div class="admin-card-icon">🏢</div>
           <div class="admin-card-body">
-            <div class="admin-card-title">Add Customer</div>
-            <div class="admin-card-desc">Create a new customer record.</div>
+            <div class="admin-card-title">Manage Customer</div>
+            <div class="admin-card-desc">Search, view, create and edit customer records.</div>
           </div>
         </button>
-        <button class="admin-card" onclick="openAddEntity('venue', true)">
+        <button class="admin-card" onclick="adminVenueList()">
           <div class="admin-card-icon">📍</div>
           <div class="admin-card-body">
-            <div class="admin-card-title">Add Venue</div>
-            <div class="admin-card-desc">Create a new venue record.</div>
+            <div class="admin-card-title">Manage Venue</div>
+            <div class="admin-card-desc">Search, view, create and edit venue records.</div>
           </div>
         </button>
-        <button class="admin-card" onclick="adminAddContact()">
+        <button class="admin-card" onclick="adminContactList()">
           <div class="admin-card-icon">📇</div>
           <div class="admin-card-body">
-            <div class="admin-card-title">Add Contact</div>
-            <div class="admin-card-desc">Create a new contact linked to a customer.</div>
+            <div class="admin-card-title">Manage Contact</div>
+            <div class="admin-card-desc">Search, view, create and edit contact records.</div>
           </div>
         </button>
       </div>
@@ -3193,12 +3206,12 @@ function switchTab(tab){
 // Status value -> short pill label shown on the card and in the filter row.
 const RECRUIT_STATUS_LABELS = {
   applied:'New', invited_to_induction:'Invited', booked:'Booked', attended:'Attended',
-  sent_to_eh:'Sent to EH', on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
+  sent_to_eh:'Sent to EH', active_crew:'Active crew', on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
 // "withdrawn" sits last (before All): candidates put themselves here via the
 // /withdraw page — it's not an operator triage step.
-const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','sent_to_eh','on_hold','not_suitable','withdrawn'];
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','sent_to_eh','active_crew','on_hold','not_suitable','withdrawn'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
@@ -3510,6 +3523,169 @@ async function recruitInvite(id, btn){
   }
 }
 
+// ── CONVERT TO CREW ──────────────────────────────────────────────────────────
+// Turn a "Sent to EH" candidate into a real SmartStaff crew member. Two steps,
+// both server-side: (1) convert-preview computes the name split + duplicate guard
+// WITHOUT creating anything; (2) convert actually writes the crew record and
+// stamps the candidate active_crew. This click only opens the preview modal.
+async function recruitConvertOpen(id){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Convert to crew';
+  document.getElementById('entity-modal-sub').textContent   = 'Create a SmartStaff crew member';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Checking for duplicates…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+  let p;
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/convert-preview',
+      { headers: { 'Accept': 'application/json' } });
+    p = await r.json();
+    if(!r.ok || p.error) throw new Error(p.error || ('HTTP ' + r.status));
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t prepare the conversion: ' + escapeHtml(e.message) + '</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+  window._recruitConvert = p;   // stash for submit/recheck
+  recruitConvertRender(p);
+}
+
+// Build the preview/confirm modal body from the server's payload.
+function recruitConvertRender(p){
+  const id = p.id;
+  const ws = p.will_send || {};
+  // Does anything need an explicit "create anyway" acknowledgement?
+  const hasEmail = Array.isArray(p.email_matches) && p.email_matches.length > 0;
+  const hasName  = Array.isArray(p.name_matches)  && p.name_matches.length  > 0;
+  const worked   = !!p.worked_with_gigpower;
+  const ackRequired = hasEmail || hasName || worked;
+
+  // Warning blocks (only rendered when relevant).
+  const matchLine = m => escapeHtml((m.name || '(no name)') + ' — ' + (m.email || 'no email')
+                    + (m.ein ? ' · EIN ' + m.ein : '') + (m.active === 0 ? ' · inactive' : ''));
+  let warn = '';
+  if(hasEmail)
+    warn += '<div class="rc-conv-warn"><b>Possible existing crew (same email):</b><br>'
+          + p.email_matches.map(matchLine).join('<br>') + '</div>';
+  if(hasName)
+    warn += '<div class="rc-conv-warn"><b>Possible existing crew (similar name):</b><br>'
+          + p.name_matches.map(matchLine).join('<br>') + '</div>';
+  if(worked)
+    warn += '<div class="rc-conv-warn"><b>They indicated they’ve worked with Gig Power before.</b><br>'
+          + 'People often return under a new name or email — double-check they’re not already on the roster.</div>';
+
+  const ackHtml = ackRequired
+    ? '<label class="rc-conv-ack"><input type="checkbox" id="rc-conv-ack" onchange="recruitConvertRecheck()">'
+      + '<span>I’ve checked — create a NEW crew record anyway.</span></label>'
+    : '';
+
+  // "What will be sent" (name is shown as the editable fields above).
+  const addr = [ws.street_address, [ws.suburb, ws.state, ws.postcode].filter(Boolean).join(' ')]
+                 .filter(Boolean).join(', ');
+  const line = (label, v) => '<div><b>' + label + ':</b> ' + escapeHtml(v || '—') + '</div>';
+  const sendSummary =
+      '<div class="rc-conv-send" style="padding-top:6px">'
+    + line('Email', ws.email) + line('Mobile', ws.mobile) + line('Date of birth', ws.dob)
+    + line('Address', addr)
+    + '<div><b>Headshot:</b> ' + (p.headshot_present ? 'will be attached' : 'none on file') + '</div>'
+    + '<div style="padding-top:4px;color:var(--muted)">EIN, username, active, rating and paygrade are set automatically. No pay/tax fields are sent.</div>'
+    + '</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('First name *', efInput('rc-conv-first', p.proposed_firstname || ''))
+    + efRow('Last name *',  efInput('rc-conv-last',  p.proposed_lastname  || ''))
+    + '<div style="font-size:10px;color:var(--muted);padding:0 0 4px 122px">Edit the split if needed (e.g. “Mary Jane Watson”, “de Silva”).</div>'
+    + warn + ackHtml
+    + '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">What will be sent to SmartStaff</div>' + sendSummary + '</div>'
+    + '<div id="rc-conv-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
+
+  // Wire the name inputs so the Create button re-checks as ops types.
+  ['rc-conv-first','rc-conv-last'].forEach(function(fid){
+    var el = document.getElementById(fid);
+    if(el) el.addEventListener('input', recruitConvertRecheck);
+  });
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel','closeEntityModal()')
+    + entityBtn('Create crew member', "recruitConvertSubmit('" + id + "'," + (ackRequired ? 'true' : 'false') + ")",
+                {primary:true, id:'rc-conv-submit'});
+  recruitConvertRecheck();
+  setTimeout(function(){ var f=document.getElementById('rc-conv-first'); if(f) f.focus(); }, 50);
+}
+
+// Enable "Create" only when both names are filled AND (if any warning) the
+// acknowledge box is ticked. Mirrors the server-side guard.
+function recruitConvertRecheck(){
+  const btn = document.getElementById('rc-conv-submit');
+  if(!btn) return;
+  const first = (document.getElementById('rc-conv-first') || {}).value;
+  const last  = (document.getElementById('rc-conv-last')  || {}).value;
+  const ackEl = document.getElementById('rc-conv-ack');
+  const namesOk = !!(first && first.trim() && last && last.trim());
+  const ackOk   = !ackEl || ackEl.checked;
+  const ok = namesOk && ackOk;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '1' : '0.45';
+  btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+}
+
+// Do the conversion: write the crew record + stamp the candidate active_crew.
+async function recruitConvertSubmit(id, ackRequired){
+  const err = document.getElementById('rc-conv-error');
+  const btn = document.getElementById('rc-conv-submit');
+  if(err) err.textContent = '';
+  const val = function(fid){ var el=document.getElementById(fid); return el ? el.value.trim() : ''; };
+  const first = val('rc-conv-first'), last = val('rc-conv-last');
+  if(!first || !last){ if(err) err.textContent = 'First and last name are required.'; return; }
+  const ackEl = document.getElementById('rc-conv-ack');
+  const acknowledged = ackEl ? !!ackEl.checked : false;
+  if(ackRequired && !acknowledged){ if(err) err.textContent = 'Please tick the confirm box first.'; return; }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Creating…'; }
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/convert', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ firstname:first, lastname:last, acknowledged: acknowledged })
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+
+    // Success. The crew record exists; a `warning` means the crew was created but
+    // the Supabase status stamp didn't land (fix by hand — don't re-convert).
+    const warnHtml = d.warning
+      ? '<div class="rc-conv-warn" style="margin-top:10px">' + escapeHtml(d.warning) + '</div>' : '';
+    // Licence-push (convert-B) summary. Each item is {type, ok, skipped, error}.
+    // A failed licence is not fatal — the endpoint is idempotent, so re-running the
+    // convert retries only the missing ones. Nothing shown if there were none.
+    let licHtml = '';
+    if(Array.isArray(d.licences) && d.licences.length){
+      const rows = d.licences.map(function(l){
+        l = l || {};
+        const t = escapeHtml(l.type || 'Licence');
+        if(!l.ok)        return '<div>✗ ' + t + ' — <span style="color:var(--conflict)">failed: ' + escapeHtml(l.error || 'error') + '</span></div>';
+        if(l.skipped)    return '<div>• ' + t + ' — already on file</div>';
+        return '<div>✓ ' + t + ' — added</div>';
+      }).join('');
+      licHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
+        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Licences</div>'
+        + rows + '</div>';
+    }
+    document.getElementById('entity-modal-title').textContent = 'Crew member created';
+    document.getElementById('entity-modal-sub').textContent   = '';
+    document.getElementById('entity-modal-body').innerHTML =
+        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.7">'
+      + escapeHtml(d.name || (first + ' ' + last)) + ' was added to SmartStaff.<br>'
+      + 'EIN / username: <b style="color:var(--accent)">' + escapeHtml(String(d.ein)) + '</b><br>'
+      + 'Temp password: <b>' + escapeHtml(String(d.temp_password || '')) + '</b> &mdash; they should change it on first login.'
+      + '</div>' + warnHtml + licHtml;
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Done','closeEntityModal()',{primary:true});
+    await loadRecruitment();   // candidate moves to the Active crew pile
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Create crew member'; }
+  }
+}
+
 // Escape applicant-supplied text so it can never inject HTML.
 function recruitEsc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m =>
@@ -3619,18 +3795,39 @@ function renderRecruitRow(c, i){
   const ehSentDetail = c.eh_invited_at
     ? `<div><span class="recruit-label">Sent to EH</span>${recruitDate(c.eh_invited_at)}</div>`
     : '';
+  // Converted-to-crew ids. The recruitment feed returns ein + smartstaff_user_id
+  // (both null until conversion), so their presence == "this candidate is now a
+  // real SmartStaff crew member". We show whichever we have; nothing if neither.
+  const einVal  = (c.ein == null || c.ein === '') ? '' : String(c.ein);
+  const ssIdVal = (c.smartstaff_user_id == null || c.smartstaff_user_id === '') ? '' : String(c.smartstaff_user_id);
+  // Human line for the detail grid, e.g. "EIN 1234 (SmartStaff ID 56)".
+  let crewIdText = '';
+  if(einVal && ssIdVal) crewIdText = 'EIN ' + recruitEsc(einVal) + ' (SmartStaff ID ' + recruitEsc(ssIdVal) + ')';
+  else if(einVal)       crewIdText = 'EIN ' + recruitEsc(einVal);
+  else if(ssIdVal)      crewIdText = 'SmartStaff ID ' + recruitEsc(ssIdVal);
+  const crewIdDetail = crewIdText
+    ? `<div><span class="recruit-label">Converted to crew</span>${crewIdText}</div>`
+    : '';
   // Buttons to move to the OTHER three statuses (every move is reversible).
   const id = recruitEsc(c.id);
   const actions = RECRUIT_STATUS_ORDER.map(s => {
     // "Withdrawn" is a candidate-driven opt-out (set from the /withdraw page),
     // never an operator triage destination — so no button ever moves anyone INTO it.
     if(s === 'withdrawn') return '';
+    // "Active crew" is only ever reached by a successful "Convert to crew" (its
+    // own button below) — never by the generic relabel, which the server would
+    // reject anyway. So no set-status button is ever produced for it.
+    if(s === 'active_crew') return '';
     // A withdrawn applicant is read-only (they've opted out): don't offer the
     // normal triage buttons. Allow only a single "Back to New", in case someone
     // withdrew by mistake and needs putting back in the pipeline.
     if(cur === 'withdrawn') return (s === 'applied')
       ? `<button class="recruit-action" onclick="recruitSetStatus('${id}','applied',this)">Back to New</button>`
       : '';
+    // A converted candidate is READ-ONLY, same idea as withdrawn: they're a real
+    // SmartStaff crew member now, so recruitment status shouldn't be changed.
+    // Suppress every triage button (a read-only note is shown instead, below).
+    if(cur === 'active_crew') return '';
     if(s === 'invited_to_induction'){
       // Invite EMAILS the applicant (via /api/recruitment/invite) — it does NOT
       // just relabel like the others. Always offered; from the Invited pile it
@@ -3658,12 +3855,28 @@ function renderRecruitRow(c, i){
       + `${RECRUIT_MOVE_LABELS[s]}</button>`;
   }).filter(Boolean).join('');
 
+  // "Convert to crew" — ONLY offered on a Sent-to-EH candidate. It opens a
+  // preview/confirm modal (nothing is created on click); the real write happens
+  // from there. Rendered first so it's the prominent action for this pile.
+  const convertBtn = (cur === 'sent_to_eh')
+    ? `<button class="recruit-action recruit-convert" onclick="recruitConvertOpen('${id}')">Convert to crew</button>`
+    : '';
+  // Read-only note shown in place of buttons for a converted candidate (mirrors
+  // "withdrawn" being read-only). Includes the EIN when we have it.
+  const activeCrewNote = (cur === 'active_crew')
+    ? `<span class="recruit-empty">Converted to crew${einVal ? ' · EIN ' + recruitEsc(einVal) : ''}</span>`
+    : '';
+  const allActions = convertBtn + actions + activeCrewNote;
+
   // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
   const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
-  // Withdrawn applicants are read-only: they can't be batch-selected for an
-  // Invite/Hold/Not-suitable action (they've opted out), so disable their tickbox.
-  const checkCell = (c.status === 'withdrawn')
-    ? `<td class="rc-check"><input type="checkbox" class="recruit-check" disabled title="Withdrawn — read-only"></td>`
+  // Withdrawn AND converted applicants are read-only: they can't be batch-selected
+  // for an Invite/Hold/Not-suitable action, so disable their tickbox. Withdrawn =
+  // opted out; active_crew = already a real SmartStaff crew member.
+  const readOnlyRow = (c.status === 'withdrawn' || c.status === 'active_crew');
+  const readOnlyTitle = (c.status === 'active_crew') ? 'Converted to crew — read-only' : 'Withdrawn — read-only';
+  const checkCell = readOnlyRow
+    ? `<td class="rc-check"><input type="checkbox" class="recruit-check" disabled title="${readOnlyTitle}"></td>`
     : `<td class="rc-check"><input type="checkbox" class="recruit-check"${checked}
         onclick="event.stopPropagation();recruitToggleSelect('${id}',this)"></td>`;
   const summary = `
@@ -3686,6 +3899,7 @@ function renderRecruitRow(c, i){
             <div><span class="recruit-label">Time in stage</span>${age || '—'}</div>
             ${submittedDetail}
             ${ehSentDetail}
+            ${crewIdDetail}
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
             <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
             <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
@@ -3695,7 +3909,7 @@ function renderRecruitRow(c, i){
           <div class="recruit-block"><span class="recruit-label">Work history</span>${c.work_history ? recruitEsc(c.work_history) : '—'}</div>
           <div class="recruit-block"><span class="recruit-label">References</span>${c.referees ? recruitEsc(c.referees) : '—'}</div>
           <div class="recruit-xdetail" id="recruit-xdetail-${i}" data-cand-id="${id}"></div>
-          <div class="recruit-actions">${actions}</div>
+          <div class="recruit-actions">${allActions}</div>
         </div>
       </td>
     </tr>`;
@@ -5342,11 +5556,11 @@ async function openCrewEdit(id){
     + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
-  window._ceLoaded = {inductions:false, shifts:false, unavail:false};
+  window._ceLoaded = {inductions:false, licences:false, shifts:false, unavail:false};
 
   const ceTabBar =
       '<div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap">'
-    + [['details','Details'],['inductions','Inductions'],['shifts','Calls'],['unavail','Unavailability']].map(function(t){
+    + [['details','Details'],['inductions','Inductions'],['licences','Licences'],['shifts','Calls'],['unavail','Unavailability']].map(function(t){
         return '<button type="button" id="ce-tabbtn-'+t[0]+'" onclick="ceShowTab(\''+String(c.id)+'\',\''+t[0]+'\')" '
           + 'style="background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:\'Rajdhani\',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer">'+t[1]+'</button>';
       }).join('')
@@ -5356,6 +5570,7 @@ async function openCrewEdit(id){
       ceTabBar
     + '<div id="ce-panel-details">'+detailsHtml+'</div>'
     + '<div id="ce-panel-inductions" style="display:none"></div>'
+    + '<div id="ce-panel-licences" style="display:none"></div>'
     + '<div id="ce-panel-shifts" style="display:none"></div>'
     + '<div id="ce-panel-unavail" style="display:none"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
@@ -5412,7 +5627,7 @@ async function submitCrewEdit(id){
 
 // ── Edit Crew Member: tabbed panels (Details / Inductions / Shifts / Unavailability) ──
 function ceShowTab(id, tab){
-  ['details','inductions','shifts','unavail'].forEach(function(t){
+  ['details','inductions','licences','shifts','unavail'].forEach(function(t){
     var panel = document.getElementById('ce-panel-'+t);
     var btn   = document.getElementById('ce-tabbtn-'+t);
     var on    = (t===tab);
@@ -5424,6 +5639,7 @@ function ceShowTab(id, tab){
   });
   window._ceLoaded = window._ceLoaded || {};
   if(tab==='inductions' && !window._ceLoaded.inductions){ window._ceLoaded.inductions = true; ceLoadInductions(id); }
+  if(tab==='licences'   && !window._ceLoaded.licences){   window._ceLoaded.licences = true;   ceLoadLicences(id); }
   if(tab==='shifts'     && !window._ceLoaded.shifts){     window._ceLoaded.shifts = true;     ceLoadShifts(id); }
   if(tab==='unavail'    && !window._ceLoaded.unavail){    window._ceLoaded.unavail = true;    ceLoadUnavail(id); }
 }
@@ -5484,6 +5700,188 @@ async function ceLoadInductions(id){
   panel.innerHTML =
       '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+(summary.length?escapeHtml(summary.join(' \u00b7 ')):'No inductions on record')+'</div>'
     + rows + uploadForm;
+}
+
+// \u2500\u2500 Edit Crew Member: Licences tab \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Admin licence CRUD. One row per (user, type): a renewal EDITS the line rather
+// than adding a second. New adds/edits are PDF-only; legacy image licences (from
+// before PDF storage) still render read-only and View works. Status pills reuse
+// the induction palette; the compliance status is computed server-side.
+var LICENCE_TYPES = ['CI','EWP','WWC','Forklift','Truck','Working at Heights'];
+
+function licPill(s){
+  var map = {
+    expired:      ['Expired',            '#ef4444'],
+    expiring_soon:['Expires soon',       '#f59e0b'],
+    valid:        ['Valid',              '#1f8f4e'],
+    unknown:      ['No expiry on file',  '#555']
+  };
+  var m = map[s];
+  if(!m) return '';   // 'na' \u2014 a type that never expires; no pill
+  return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+m[1]+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(m[0])+'</span>';
+}
+
+function licDate(d){ return d ? escapeHtml(d) : '\u2014'; }
+
+async function ceLoadLicences(id){
+  var panel = document.getElementById('ce-panel-licences');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading licences\u2026</div>';
+  var data;
+  try{
+    var r = await fetch('/api/user/'+encodeURIComponent(id)+'/licences');
+    data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.error || ('HTTP '+r.status));
+  }catch(e){
+    panel.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load licences: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  var lics = data.licences || [];
+  window._ceLicences = lics;   // stashed for edit pre-fill
+
+  var counts = {expired:0, expiring_soon:0, unknown:0, valid:0, na:0};
+  lics.forEach(function(l){ if(counts[l.status]!==undefined) counts[l.status]++; });
+  var summary = [];
+  if(counts.expired)       summary.push(counts.expired+' expired');
+  if(counts.expiring_soon) summary.push(counts.expiring_soon+' expiring soon');
+  if(counts.unknown)       summary.push(counts.unknown+' no expiry on file');
+  if(counts.valid)         summary.push(counts.valid+' valid');
+
+  var rows = lics.length
+    ? lics.map(function(l){
+        var legacy  = (!l.pdf_file && l.has_image);
+        var hasFile = (l.pdf_file || l.has_image);
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+          + '<div style="min-width:0">'
+          +   '<div style="font-size:13px;color:var(--text)">'+escapeHtml(l.type||'')
+          +     (legacy ? ' <span style="font-size:9px;color:var(--muted)">(image)</span>' : '')+'</div>'
+          +   '<div style="font-size:10px;color:var(--muted)">Certified '+licDate(l.date_certified)+' \u00b7 Expires '+licDate(l.date_expiry)+'</div>'
+          + '</div>'
+          + '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">'
+          +   licPill(l.status||'')
+          +   (hasFile ? '<a href="/api/licence/'+l.id+'/file" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none">View</a>' : '')
+          +   '<button type="button" onclick="licEditForm(\''+String(id)+'\','+l.id+')" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:0">Edit</button>'
+          +   '<button type="button" onclick="licDelete(\''+String(id)+'\','+l.id+')" style="background:none;border:none;color:var(--conflict);font-size:11px;cursor:pointer;padding:0">Delete</button>'
+          + '</div></div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No licences on record.</div>';
+
+  var held  = {}; lics.forEach(function(l){ held[l.type] = true; });
+  var avail = LICENCE_TYPES.filter(function(t){ return !held[t]; });
+  var addForm = avail.length ? (
+      '<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:12px">'
+    + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Add a licence</div>'
+    + efRow('Type', '<select id="lic-add-type" style="'+EF_INPUT_STYLE+'">'+avail.map(function(t){ return '<option value="'+escapeHtml(t)+'">'+escapeHtml(t)+'</option>'; }).join('')+'</select>')
+    + efRow('Certified', '<input id="lic-add-cert" type="date" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Expires', '<input id="lic-add-exp" type="date" style="'+EF_INPUT_STYLE+'"><div style="font-size:10px;color:var(--muted);padding-top:3px">WWC, Forklift and Truck expire; leaving those blank flags the licence to chase.</div>')
+    + efRow('Licence (PDF)', '<input id="lic-add-file" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'">')
+    + '<div id="lic-add-status" style="font-size:11px;min-height:14px;padding:4px 0"></div>'
+    + '<div style="padding-top:4px">'+entityBtn('Add licence', "submitLicenceAdd('"+String(id)+"')", {primary:true, id:'lic-add-btn'})+'</div>'
+    + '</div>'
+  ) : '<div style="font-size:11px;color:var(--muted);padding:10px 0 0;border-top:1px solid var(--border);margin-top:10px">This crew member holds every tracked licence type. Use Edit to renew a line.</div>';
+
+  panel.innerHTML =
+      '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+(summary.length?escapeHtml(summary.join(' \u00b7 ')):'No licences on record')+'</div>'
+    + rows
+    + '<div id="lic-edit-slot"></div>'
+    + addForm;
+}
+
+function licEditForm(id, licId){
+  var slot = document.getElementById('lic-edit-slot');
+  if(!slot) return;
+  var lics = window._ceLicences || [];
+  var lic  = null;
+  lics.forEach(function(l){ if(l.id===licId) lic = l; });
+  if(!lic) return;
+
+  // One-per-(user,type): the type select offers the current type plus any type
+  // no OTHER row holds, so a rename can never collide.
+  var heldByOthers = {}; lics.forEach(function(l){ if(l.id!==licId) heldByOthers[l.type] = true; });
+  var typeOpts = LICENCE_TYPES.filter(function(t){ return t===lic.type || !heldByOthers[t]; });
+
+  slot.innerHTML =
+      '<div style="border:1px solid var(--border);border-radius:6px;padding:12px;margin-top:12px;background:var(--surface2)">'
+    + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Edit / renew licence</div>'
+    + efRow('Type', '<select id="lic-edit-type" style="'+EF_INPUT_STYLE+'">'+typeOpts.map(function(t){ var sel=(t===lic.type)?' selected':''; return '<option value="'+escapeHtml(t)+'"'+sel+'>'+escapeHtml(t)+'</option>'; }).join('')+'</select>')
+    + efRow('Certified', '<input id="lic-edit-cert" type="date" value="'+escapeHtml(lic.date_certified||'')+'" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Expires', '<input id="lic-edit-exp" type="date" value="'+escapeHtml(lic.date_expiry||'')+'" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Replace PDF', '<input id="lic-edit-file" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'"><div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep the current file'+((!lic.pdf_file && lic.has_image)?' (this is a legacy image \u2014 attaching a PDF replaces it).':'.')+'</div>')
+    + '<div id="lic-edit-status" style="font-size:11px;min-height:14px;padding:4px 0"></div>'
+    + '<div style="display:flex;gap:8px;padding-top:4px">'
+    +   entityBtn('Save', "submitLicenceEdit('"+String(id)+"',"+licId+")", {primary:true, id:'lic-edit-btn'})
+    +   entityBtn('Cancel', "document.getElementById('lic-edit-slot').innerHTML=''")
+    + '</div></div>';
+  slot.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+async function submitLicenceAdd(id){
+  var st  = document.getElementById('lic-add-status');
+  var btn = document.getElementById('lic-add-btn');
+  if(st) st.textContent = '';
+  var type = (document.getElementById('lic-add-type')||{}).value || '';
+  var cert = (document.getElementById('lic-add-cert')||{}).value || '';
+  var exp  = (document.getElementById('lic-add-exp')||{}).value || '';
+  var file = (document.getElementById('lic-add-file')||{}).files;
+  file = (file && file.length) ? file[0] : null;
+  if(!type){ if(st){ st.style.color='var(--conflict)'; st.textContent='Pick a licence type.'; } return; }
+  var fd = new FormData();
+  fd.append('type', type);
+  if(cert) fd.append('date_certified', cert);
+  if(exp)  fd.append('date_expiry', exp);
+  if(file) fd.append('licence_pdf', file);
+  if(btn){ btn.disabled = true; btn.textContent = 'Adding\u2026'; }
+  try{
+    var r = await fetch('/api/user/'+encodeURIComponent(id)+'/licences', {method:'POST', body:fd});
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._ceLoaded.licences = false;
+    ceLoadLicences(id);
+  }catch(e){
+    if(st){ st.style.color='var(--conflict)'; st.textContent = e.message; }
+    if(btn){ btn.disabled = false; btn.textContent = 'Add licence'; }
+  }
+}
+
+async function submitLicenceEdit(id, licId){
+  var st  = document.getElementById('lic-edit-status');
+  var btn = document.getElementById('lic-edit-btn');
+  if(st) st.textContent = '';
+  var type = (document.getElementById('lic-edit-type')||{}).value || '';
+  var cert = (document.getElementById('lic-edit-cert')||{}).value || '';
+  var exp  = (document.getElementById('lic-edit-exp')||{}).value || '';
+  var file = (document.getElementById('lic-edit-file')||{}).files;
+  file = (file && file.length) ? file[0] : null;
+  if(!type){ if(st){ st.style.color='var(--conflict)'; st.textContent='Pick a licence type.'; } return; }
+  var fd = new FormData();
+  fd.append('type', type);
+  if(cert) fd.append('date_certified', cert);
+  if(exp)  fd.append('date_expiry', exp);
+  if(file) fd.append('licence_pdf', file);
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving\u2026'; }
+  try{
+    var r = await fetch('/api/licence/'+licId+'/edit', {method:'POST', body:fd});
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._ceLoaded.licences = false;
+    ceLoadLicences(id);
+  }catch(e){
+    if(st){ st.style.color='var(--conflict)'; st.textContent = e.message; }
+    if(btn){ btn.disabled = false; btn.textContent = 'Save'; }
+  }
+}
+
+async function licDelete(id, licId){
+  if(!confirm('Delete this licence? The file is removed too. This cannot be undone.')) return;
+  try{
+    var r = await fetch('/api/licence/'+licId+'/delete', {method:'POST'});
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._ceLoaded.licences = false;
+    ceLoadLicences(id);
+  }catch(e){
+    alert('Couldn\u2019t delete licence: '+e.message);
+  }
 }
 
 async function ceLoadShifts(id){
@@ -5664,6 +6062,756 @@ function _renderCrewList(){
 
   const target = document.getElementById('crew-list-rows');
   if(target) target.innerHTML = html;
+}
+
+// ── Manage Customer (list → click-row → edit modal, with create + guarded delete) ──
+// Mirrors Manage Crew: list-customers.php feeds the list, get-customer.php pre-fills
+// the edit form (incl. its read-only linked-contacts table), update-customer.php
+// saves, delete-customer.php runs a guarded hard delete (409 = still-linked block).
+let _custListData   = [];    // rows currently loaded from the server
+let _custListActive = true;  // true = Active set, false = Inactive set
+
+function adminCustomerList(){ openCustomerListModal(true); }
+
+async function openCustomerListModal(active){
+  _custListActive = (active !== false);
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Manage Customer';
+  document.getElementById('entity-modal-sub').textContent   = 'Search, view, create and edit customer records';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-body').innerHTML =
+      _custListControls()
+    + '<div id="cust-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadCustomerList();
+}
+
+function _custListControls(){
+  var seg = function(label, isActive){
+    var on = (isActive === _custListActive);
+    return '<button class="btn-logout" onclick="_custListSetActive('+(isActive?'true':'false')+')" '
+      + 'style="'+(on?'border-color:var(--accent);color:var(--accent)':'')+'">'+label+'</button>';
+  };
+  return '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%;margin-bottom:10px" onclick="openAddEntity(\'customer\', true)">+ New customer</button>'
+    + '<div id="cust-list-flash"></div>'
+    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+    + '<input id="cust-list-search" oninput="_renderCustomerList()" placeholder="Search customers…" style="'+EF_INPUT_STYLE+';flex:1">'
+    + seg('Active', true)
+    + seg('Inactive', false)
+    + '</div>'
+    + '<div id="cust-list-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>';
+}
+
+async function _custListSetActive(active){
+  if(_custListActive === active) return;
+  _custListActive = active;
+  document.getElementById('entity-modal-body').innerHTML =
+      _custListControls()
+    + '<div id="cust-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadCustomerList();
+}
+
+async function _loadCustomerList(){
+  try{
+    var url = '/api/admin/customer-list' + (_custListActive ? '' : '?active=0');
+    var r = await fetch(url);
+    var d = await r.json();
+    if(d.error) throw new Error(d.error);
+    _custListData = d.customers || [];
+  }catch(e){
+    var rows = document.getElementById('cust-list-rows');
+    if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load customers: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  _renderCustomerList();
+}
+
+function _renderCustomerList(){
+  var box = document.getElementById('cust-list-search');
+  var q = box ? box.value : '';
+  var needle = q.toLowerCase().trim();
+  var rows = needle
+    ? _custListData.filter(function(c){ return (c.name||'').toLowerCase().indexOf(needle) >= 0; })
+    : _custListData;
+
+  var cnt = document.getElementById('cust-list-count');
+  if(cnt) cnt.textContent = rows.length + ' of ' + _custListData.length + ' shown';
+
+  // one-shot success banner set by a delete/save, cleared as soon as it renders
+  var flash = document.getElementById('cust-list-flash');
+  if(flash){
+    if(window._custFlash){
+      flash.innerHTML = '<div style="border:1px solid var(--accent);border-radius:5px;background:rgba(212,175,55,0.08);color:var(--accent);font-size:12px;padding:8px 11px;margin-bottom:10px">'+escapeHtml(window._custFlash)+'</div>';
+      window._custFlash = '';
+    } else {
+      flash.innerHTML = '';
+    }
+  }
+
+  var html = rows.length
+    ? rows.map(function(c){
+        var status = c.active
+          ? '<span style="color:var(--ok,#10b981);font-size:11px">Active</span>'
+          : '<span style="color:var(--muted);font-size:11px">Inactive</span>';
+        return '<div onclick="openCustomerEdit(\''+String(c.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="flex:1;min-width:0">'
+            + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.name||'')+'</div>'
+          + '</div>'
+          + status
+          + '<span style="color:var(--muted);font-size:14px">›</span>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No customers match “'+escapeHtml(q)+'”.</div>';
+
+  var target = document.getElementById('cust-list-rows');
+  if(target) target.innerHTML = html;
+}
+
+async function openCustomerEdit(id){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Edit customer';
+  document.getElementById('entity-modal-sub').textContent   = '';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  var c;
+  try{
+    var r = await fetch('/api/admin/customer/'+encodeURIComponent(id));
+    c = await r.json();
+    if(!r.ok || c.error) throw new Error(c.error || ('HTTP '+r.status));
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load customer: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+
+  window._custEditId   = String(c.id);
+  window._custEditName = c.customer_name || '';
+  document.getElementById('entity-modal-title').textContent = (c.customer_name || 'Edit customer');
+  document.getElementById('entity-modal-sub').textContent   = 'ID '+String(c.id);
+
+  // Active toggle — the PRIMARY, everyday removal path. Deactivating is reversible
+  // and keeps all history, so it leads and is annotated as the usual choice.
+  var activeSel = '<select id="cu-active" style="'+EF_INPUT_STYLE+'">'
+    + '<option value="1"'+(String(c.active)==='1'?' selected':'')+'>Active</option>'
+    + '<option value="0"'+(String(c.active)==='0'?' selected':'')+'>Inactive</option>'
+    + '</select>'
+    + '<div style="font-size:10px;color:var(--muted);padding-top:4px">Set inactive to remove a customer from the default list — reversible and keeps all history. This is the usual way to retire a customer.</div>';
+
+  var contacts = c.contacts || [];
+  var contactsHtml = contacts.length
+    ? '<div style="border:1px solid var(--border);border-radius:5px;overflow:hidden">'
+        + contacts.map(function(ct){
+            var badge = ct.is_default ? ' <span style="font-size:9px;color:var(--accent);border:1px solid var(--border-gold);border-radius:8px;padding:1px 6px;vertical-align:1px">default</span>' : '';
+            var inact = ct.active ? '' : ' <span style="font-size:10px;color:var(--muted)">(inactive)</span>';
+            var sub   = [ct.mobile, ct.email].filter(Boolean).join(' · ');
+            return '<div style="padding:6px 9px;border-bottom:1px solid var(--border)">'
+              + '<div style="font-size:12px;color:var(--text)">'+escapeHtml(ct.name||'')+badge+inact+'</div>'
+              + (sub ? '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(sub)+'</div>' : '')
+              + '</div>';
+          }).join('')
+      + '</div>'
+    : '<div style="font-size:11px;color:var(--muted);padding:4px 0">No linked contacts.</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Status',   activeSel)
+    + efRow('Customer name', efInput('cu-name', c.customer_name))
+    + efRow('Phone',    efInput('cu-phone', c.phone, 'tel'))
+    + efRow('Email',    efInput('cu-email', c.email, 'email'))
+    + efRow('Address',  efInput('cu-address', c.address))
+    + efRow('Suburb',   efInput('cu-suburb', c.suburb))
+    + efRow('State',    efInput('cu-state', c.state))
+    + efRow('Postcode', efInput('cu-postcode', c.postcode))
+    + efRow('Contacts', contactsHtml)
+    + '<div id="cu-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>'
+    + '<div id="cu-delete-zone" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">' + _custDeleteBtnHtml() + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel', 'openCustomerListModal(_custListActive)')
+    + entityBtn('Save changes', "submitCustomerEdit('"+String(c.id)+"')", {primary:true, id:'cu-submit'});
+}
+
+async function submitCustomerEdit(id){
+  var err = document.getElementById('cu-error');
+  var btn = document.getElementById('cu-submit');
+  if(err) err.textContent = '';
+  var val = function(eid){ var el=document.getElementById(eid); return el ? el.value.trim() : ''; };
+
+  var payload = {
+    customer_name: val('cu-name'),
+    phone:    val('cu-phone'),
+    email:    val('cu-email'),
+    address:  val('cu-address'),
+    suburb:   val('cu-suburb'),
+    state:    val('cu-state'),
+    postcode: val('cu-postcode'),
+    active:   (document.getElementById('cu-active')||{value:'1'}).value
+  };
+  if(!payload.customer_name){ if(err) err.textContent = 'Customer name is required.'; return; }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/admin/customer/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openCustomerListModal(_custListActive);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+  }
+}
+
+// ── Delete: quiet last-resort link → inline confirm → guarded POST ──
+// Deliberately understated (muted underlined text, not a red button) so the
+// active toggle stays the obvious removal. Deactivate is the everyday path.
+function _custDeleteBtnHtml(){
+  return '<button onclick="deleteCustomerPrompt()" style="background:none;border:none;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer;text-decoration:underline;padding:0">Delete this customer permanently</button>';
+}
+
+function deleteCustomerPrompt(){
+  var zone = document.getElementById('cu-delete-zone');
+  if(!zone) return;
+  zone.innerHTML =
+      '<div style="font-size:12px;color:var(--text);padding:2px 0 8px">Delete <b>'+escapeHtml(window._custEditName||'this customer')+'</b>? This can’t be undone. Setting it inactive keeps all history — prefer that unless the record was created in error.</div>'
+    + '<div id="cu-del-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-bottom:6px"></div>'
+    + '<div style="display:flex;gap:8px">'
+    +   entityBtn('Cancel', 'cancelDeleteCustomer()')
+    +   '<button id="cu-del-confirm" onclick="doDeleteCustomer()" style="background:var(--conflict);border:1px solid var(--conflict);color:#fff;border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer">Confirm delete</button>'
+    + '</div>';
+}
+
+function cancelDeleteCustomer(){
+  var zone = document.getElementById('cu-delete-zone');
+  if(zone) zone.innerHTML = _custDeleteBtnHtml();
+}
+
+async function doDeleteCustomer(){
+  var id  = window._custEditId;
+  var btn = document.getElementById('cu-del-confirm');
+  var err = document.getElementById('cu-del-error');
+  if(err) err.textContent = '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try{
+    var r = await fetch('/api/admin/customer/'+encodeURIComponent(id)+'/delete', {method:'POST'});
+    var d = await r.json();
+    // 409 is a block, not a failure: name the count, keep the record open, and
+    // hint the safe action (deactivate).
+    if(r.status === 409){
+      if(err) err.textContent = d.error || 'Can’t delete — bookings still linked.';
+      if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+      _hintActiveToggle('cu-active');
+      return;
+    }
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    var n = d.contacts_unlinked || 0;
+    window._custFlash = n > 0
+      ? ('Deleted. ' + n + ' contact' + (n === 1 ? '' : 's') + ' unlinked.')
+      : 'Deleted.';
+    openCustomerListModal(_custListActive);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+  }
+}
+
+// ── Manage Venue (list → click-row → edit modal, with create + guarded delete) ──
+// Same flow as Manage Customer, swapping customer → venue endpoints. Two diffs:
+// no linked-contacts sub-list, and a has_induction checkbox in the edit form.
+// delete-venue.php runs a guarded hard delete (409 = referenced by bookings /
+// crew inductions / induction certificate rows).
+let _venueListData   = [];    // rows currently loaded from the server
+let _venueListActive = true;  // true = Active set, false = Inactive set
+
+function adminVenueList(){ openVenueListModal(true); }
+
+async function openVenueListModal(active){
+  _venueListActive = (active !== false);
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Manage Venue';
+  document.getElementById('entity-modal-sub').textContent   = 'Search, view, create and edit venue records';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-body').innerHTML =
+      _venueListControls()
+    + '<div id="venue-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadVenueList();
+}
+
+function _venueListControls(){
+  var seg = function(label, isActive){
+    var on = (isActive === _venueListActive);
+    return '<button class="btn-logout" onclick="_venueListSetActive('+(isActive?'true':'false')+')" '
+      + 'style="'+(on?'border-color:var(--accent);color:var(--accent)':'')+'">'+label+'</button>';
+  };
+  return '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%;margin-bottom:10px" onclick="openAddEntity(\'venue\', true)">+ New venue</button>'
+    + '<div id="venue-list-flash"></div>'
+    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+    + '<input id="venue-list-search" oninput="_renderVenueList()" placeholder="Search venues…" style="'+EF_INPUT_STYLE+';flex:1">'
+    + seg('Active', true)
+    + seg('Inactive', false)
+    + '</div>'
+    + '<div id="venue-list-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>';
+}
+
+async function _venueListSetActive(active){
+  if(_venueListActive === active) return;
+  _venueListActive = active;
+  document.getElementById('entity-modal-body').innerHTML =
+      _venueListControls()
+    + '<div id="venue-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadVenueList();
+}
+
+async function _loadVenueList(){
+  try{
+    var url = '/api/admin/venue-list' + (_venueListActive ? '' : '?active=0');
+    var r = await fetch(url);
+    var d = await r.json();
+    if(d.error) throw new Error(d.error);
+    _venueListData = d.venues || [];
+  }catch(e){
+    var rows = document.getElementById('venue-list-rows');
+    if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load venues: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  _renderVenueList();
+}
+
+function _renderVenueList(){
+  var box = document.getElementById('venue-list-search');
+  var q = box ? box.value : '';
+  var needle = q.toLowerCase().trim();
+  var rows = needle
+    ? _venueListData.filter(function(v){ return (v.name||'').toLowerCase().indexOf(needle) >= 0; })
+    : _venueListData;
+
+  var cnt = document.getElementById('venue-list-count');
+  if(cnt) cnt.textContent = rows.length + ' of ' + _venueListData.length + ' shown';
+
+  // one-shot success banner set by a delete/save, cleared as soon as it renders
+  var flash = document.getElementById('venue-list-flash');
+  if(flash){
+    if(window._venueFlash){
+      flash.innerHTML = '<div style="border:1px solid var(--accent);border-radius:5px;background:rgba(212,175,55,0.08);color:var(--accent);font-size:12px;padding:8px 11px;margin-bottom:10px">'+escapeHtml(window._venueFlash)+'</div>';
+      window._venueFlash = '';
+    } else {
+      flash.innerHTML = '';
+    }
+  }
+
+  var html = rows.length
+    ? rows.map(function(v){
+        var status = v.active
+          ? '<span style="color:var(--ok,#10b981);font-size:11px">Active</span>'
+          : '<span style="color:var(--muted);font-size:11px">Inactive</span>';
+        return '<div onclick="openVenueEdit(\''+String(v.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="flex:1;min-width:0">'
+            + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(v.name||'')+'</div>'
+          + '</div>'
+          + status
+          + '<span style="color:var(--muted);font-size:14px">›</span>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No venues match “'+escapeHtml(q)+'”.</div>';
+
+  var target = document.getElementById('venue-list-rows');
+  if(target) target.innerHTML = html;
+}
+
+async function openVenueEdit(id){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Edit venue';
+  document.getElementById('entity-modal-sub').textContent   = '';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  var v;
+  try{
+    var r = await fetch('/api/admin/venue/'+encodeURIComponent(id));
+    v = await r.json();
+    if(!r.ok || v.error) throw new Error(v.error || ('HTTP '+r.status));
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load venue: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+
+  window._venueEditId   = String(v.id);
+  window._venueEditName = v.venue || '';
+  document.getElementById('entity-modal-title').textContent = (v.venue || 'Edit venue');
+  document.getElementById('entity-modal-sub').textContent   = 'ID '+String(v.id);
+
+  // Active toggle — the PRIMARY, everyday removal path. Deactivating is reversible
+  // and keeps all history, so it leads and is annotated as the usual choice.
+  var activeSel = '<select id="vu-active" style="'+EF_INPUT_STYLE+'">'
+    + '<option value="1"'+(String(v.active)==='1'?' selected':'')+'>Active</option>'
+    + '<option value="0"'+(String(v.active)==='0'?' selected':'')+'>Inactive</option>'
+    + '</select>'
+    + '<div style="font-size:10px;color:var(--muted);padding-top:4px">Set inactive to remove a venue from the default list — reversible and keeps all history. This is the usual way to retire a venue.</div>';
+
+  var inductionChk = '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);cursor:pointer;padding-top:7px">'
+    + '<input type="checkbox" id="vu-has-induction"'+(String(v.has_induction)==='1'?' checked':'')+'> Requires induction</label>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Status',   activeSel)
+    + efRow('Venue name', efInput('vu-name', v.venue))
+    + efRow('Address',  efInput('vu-address', v.address))
+    + efRow('Suburb',   efInput('vu-suburb', v.suburb))
+    + efRow('State',    efInput('vu-state', v.state))
+    + efRow('Postcode', efInput('vu-postcode', v.postcode))
+    + efRow('Induction', inductionChk)
+    + '<div id="vu-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>'
+    + '<div id="vu-delete-zone" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">' + _venueDeleteBtnHtml() + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel', 'openVenueListModal(_venueListActive)')
+    + entityBtn('Save changes', "submitVenueEdit('"+String(v.id)+"')", {primary:true, id:'vu-submit'});
+}
+
+async function submitVenueEdit(id){
+  var err = document.getElementById('vu-error');
+  var btn = document.getElementById('vu-submit');
+  if(err) err.textContent = '';
+  var val = function(eid){ var el=document.getElementById(eid); return el ? el.value.trim() : ''; };
+
+  var payload = {
+    venue:    val('vu-name'),
+    address:  val('vu-address'),
+    suburb:   val('vu-suburb'),
+    state:    val('vu-state'),
+    postcode: val('vu-postcode'),
+    active:   (document.getElementById('vu-active')||{value:'1'}).value,
+    has_induction: (document.getElementById('vu-has-induction')||{checked:false}).checked ? '1' : '0'
+  };
+  if(!payload.venue){ if(err) err.textContent = 'Venue name is required.'; return; }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/admin/venue/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openVenueListModal(_venueListActive);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+  }
+}
+
+// ── Delete: quiet last-resort link → inline confirm → guarded POST ──
+// Deliberately understated (muted underlined text, not a red button) so the
+// active toggle stays the obvious removal. Deactivate is the everyday path.
+function _venueDeleteBtnHtml(){
+  return '<button onclick="deleteVenuePrompt()" style="background:none;border:none;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer;text-decoration:underline;padding:0">Delete this venue permanently</button>';
+}
+
+function deleteVenuePrompt(){
+  var zone = document.getElementById('vu-delete-zone');
+  if(!zone) return;
+  zone.innerHTML =
+      '<div style="font-size:12px;color:var(--text);padding:2px 0 8px">Delete <b>'+escapeHtml(window._venueEditName||'this venue')+'</b>? This can’t be undone. Setting it inactive keeps all history — prefer that unless the record was created in error.</div>'
+    + '<div id="vu-del-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-bottom:6px"></div>'
+    + '<div style="display:flex;gap:8px">'
+    +   entityBtn('Cancel', 'cancelDeleteVenue()')
+    +   '<button id="vu-del-confirm" onclick="doDeleteVenue()" style="background:var(--conflict);border:1px solid var(--conflict);color:#fff;border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer">Confirm delete</button>'
+    + '</div>';
+}
+
+function cancelDeleteVenue(){
+  var zone = document.getElementById('vu-delete-zone');
+  if(zone) zone.innerHTML = _venueDeleteBtnHtml();
+}
+
+async function doDeleteVenue(){
+  var id  = window._venueEditId;
+  var btn = document.getElementById('vu-del-confirm');
+  var err = document.getElementById('vu-del-error');
+  if(err) err.textContent = '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try{
+    var r = await fetch('/api/admin/venue/'+encodeURIComponent(id)+'/delete', {method:'POST'});
+    var d = await r.json();
+    // 409 is a block, not a failure: list every reason, keep the record open, and
+    // hint the safe action (deactivate).
+    if(r.status === 409){
+      if(err) err.textContent = d.error || 'Can’t delete — still linked.';
+      if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+      _hintActiveToggle('vu-active');
+      return;
+    }
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._venueFlash = 'Deleted.';
+    openVenueListModal(_venueListActive);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+  }
+}
+
+// ── Manage Contact (list → click-row → edit modal, with create + guarded delete) ──
+// Same flow as Manage Customer, swapping to contact endpoints. Contact is a users
+// row (usergroup 4), so removal is TWO-TIER: the active toggle (deactivate) is the
+// primary, reversible, everyday action; the guarded hard delete is a quiet
+// last-resort link. delete-contact.php blocks on bookings (409 nudges toward
+// deactivate) and auto-cleans customer_map.
+let _contactListData   = [];    // rows currently loaded from the server
+let _contactListActive = true;  // true = Active set, false = Inactive set
+
+function adminContactList(){ openContactListModal(true); }
+
+async function openContactListModal(active){
+  _contactListActive = (active !== false);
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Manage Contact';
+  document.getElementById('entity-modal-sub').textContent   = 'Search, view, create and edit contact records';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-body').innerHTML =
+      _contactListControls()
+    + '<div id="contact-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadContactList();
+}
+
+function _contactListControls(){
+  var seg = function(label, isActive){
+    var on = (isActive === _contactListActive);
+    return '<button class="btn-logout" onclick="_contactListSetActive('+(isActive?'true':'false')+')" '
+      + 'style="'+(on?'border-color:var(--accent);color:var(--accent)':'')+'">'+label+'</button>';
+  };
+  return '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%;margin-bottom:10px" onclick="adminAddContact()">+ New contact</button>'
+    + '<div id="contact-list-flash"></div>'
+    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+    + '<input id="contact-list-search" oninput="_renderContactList()" placeholder="Search name or customer…" style="'+EF_INPUT_STYLE+';flex:1">'
+    + seg('Active', true)
+    + seg('Inactive', false)
+    + '</div>'
+    + '<div id="contact-list-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>';
+}
+
+async function _contactListSetActive(active){
+  if(_contactListActive === active) return;
+  _contactListActive = active;
+  document.getElementById('entity-modal-body').innerHTML =
+      _contactListControls()
+    + '<div id="contact-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadContactList();
+}
+
+async function _loadContactList(){
+  try{
+    var url = '/api/admin/contact-list' + (_contactListActive ? '' : '?active=0');
+    var r = await fetch(url);
+    var d = await r.json();
+    if(d.error) throw new Error(d.error);
+    _contactListData = d.contacts || [];
+  }catch(e){
+    var rows = document.getElementById('contact-list-rows');
+    if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load contacts: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  _renderContactList();
+}
+
+function _renderContactList(){
+  var box = document.getElementById('contact-list-search');
+  var q = box ? box.value : '';
+  var needle = q.toLowerCase().trim();
+  var rows = needle
+    ? _contactListData.filter(function(c){
+        return (c.name||'').toLowerCase().indexOf(needle) >= 0
+            || (c.customer_name||'').toLowerCase().indexOf(needle) >= 0;
+      })
+    : _contactListData;
+
+  var cnt = document.getElementById('contact-list-count');
+  if(cnt) cnt.textContent = rows.length + ' of ' + _contactListData.length + ' shown';
+
+  // one-shot success banner set by a delete/save, cleared as soon as it renders
+  var flash = document.getElementById('contact-list-flash');
+  if(flash){
+    if(window._contactFlash){
+      flash.innerHTML = '<div style="border:1px solid var(--accent);border-radius:5px;background:rgba(212,175,55,0.08);color:var(--accent);font-size:12px;padding:8px 11px;margin-bottom:10px">'+escapeHtml(window._contactFlash)+'</div>';
+      window._contactFlash = '';
+    } else {
+      flash.innerHTML = '';
+    }
+  }
+
+  var html = rows.length
+    ? rows.map(function(c){
+        var status = c.active
+          ? '<span style="color:var(--ok,#10b981);font-size:11px">Active</span>'
+          : '<span style="color:var(--muted);font-size:11px">Inactive</span>';
+        var cust = c.customer_name
+          ? '<div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.customer_name)+'</div>'
+          : '';
+        return '<div onclick="openContactEdit(\''+String(c.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="flex:1;min-width:0">'
+            + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.name||'')+'</div>'
+            + cust
+          + '</div>'
+          + status
+          + '<span style="color:var(--muted);font-size:14px">›</span>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No contacts match “'+escapeHtml(q)+'”.</div>';
+
+  var target = document.getElementById('contact-list-rows');
+  if(target) target.innerHTML = html;
+}
+
+async function openContactEdit(id){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Edit contact';
+  document.getElementById('entity-modal-sub').textContent   = '';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  var c, customers;
+  try{
+    var results = await Promise.all([
+      fetch('/api/admin/contact/'+encodeURIComponent(id)).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); }),
+      ensureBookingLookups()
+    ]);
+    var cr = results[0];
+    if(!cr.ok || cr.body.error) throw new Error(cr.body.error || ('HTTP '+cr.status));
+    c = cr.body;
+    customers = (results[1] && results[1].customers) ? results[1].customers : [];
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load contact: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+
+  window._contactEditId   = String(c.id);
+  window._contactEditName = ((c.firstname||'')+' '+(c.lastname||'')).trim() || c.username || '';
+  document.getElementById('entity-modal-title').textContent = (window._contactEditName || 'Edit contact');
+  document.getElementById('entity-modal-sub').textContent   = 'ID '+String(c.id);
+
+  // Active toggle — the PRIMARY, everyday removal path. Deactivating is reversible
+  // and keeps all history, so it leads and is annotated as the usual choice.
+  var activeSel = '<select id="co-active" style="'+EF_INPUT_STYLE+'">'
+    + '<option value="1"'+(String(c.active)==='1'?' selected':'')+'>Active</option>'
+    + '<option value="0"'+(String(c.active)==='0'?' selected':'')+'>Inactive</option>'
+    + '</select>'
+    + '<div style="font-size:10px;color:var(--muted);padding-top:4px">Set inactive to remove a contact from the default list — reversible and keeps all history. This is the usual way to retire a contact.</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Status',       activeSel)
+    + efRow('Customer',     efSelect('co-customer', customers, c.customer_id, '-- no default customer --'))
+    + efRow('First name',   efInput('co-first', c.firstname))
+    + efRow('Last name',    efInput('co-last', c.lastname))
+    + efRow('Username',     efInput('co-user', c.username))
+    + efRow('Mobile',       efInput('co-mobile', c.mobile, 'tel'))
+    + efRow('Phone',        efInput('co-phone', c.phone, 'tel'))
+    + efRow('Email',        efInput('co-email', c.email, 'email'))
+    + efRow('Notes',        efTextarea('co-notes', c.notes))
+    + efRow('New password', efInput('co-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current.</div>')
+    + '<div id="co-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>'
+    + '<div id="co-delete-zone" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">' + _contactDeleteBtnHtml() + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel', 'openContactListModal(_contactListActive)')
+    + entityBtn('Save changes', "submitContactEdit('"+String(c.id)+"')", {primary:true, id:'co-submit'});
+}
+
+async function submitContactEdit(id){
+  var err = document.getElementById('co-error');
+  var btn = document.getElementById('co-submit');
+  if(err) err.textContent = '';
+  var val = function(eid){ var el=document.getElementById(eid); return el ? el.value.trim() : ''; };
+
+  var payload = {
+    username:  val('co-user'),
+    firstname: val('co-first'),
+    lastname:  val('co-last'),
+    mobile:    val('co-mobile'),
+    phone:     val('co-phone'),
+    email:     val('co-email'),
+    notes:     val('co-notes'),
+    active:    (document.getElementById('co-active')||{value:'1'}).value
+  };
+  var cust = val('co-customer');
+  if(cust) payload.customer_id = cust;   // updates the default-customer link
+  var pw = val('co-password');
+  if(pw) payload.password = pw;          // only sent when set; blank keeps login
+  if(!payload.username){ if(err) err.textContent = 'Username is required.'; return; }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/admin/contact/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openContactListModal(_contactListActive);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+  }
+}
+
+// ── Delete: quiet last-resort link → inline confirm → guarded POST ──
+// Deliberately understated (muted underlined text, not a red button) so the
+// active toggle stays the obvious removal. Deactivate is the everyday path.
+function _contactDeleteBtnHtml(){
+  return '<button onclick="deleteContactPrompt()" style="background:none;border:none;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer;text-decoration:underline;padding:0">Delete this contact permanently</button>';
+}
+
+function deleteContactPrompt(){
+  var zone = document.getElementById('co-delete-zone');
+  if(!zone) return;
+  zone.innerHTML =
+      '<div style="font-size:12px;color:var(--text);padding:2px 0 8px">Delete <b>'+escapeHtml(window._contactEditName||'this contact')+'</b>? This can’t be undone. Setting them inactive keeps their history — prefer that unless the record was created in error.</div>'
+    + '<div id="co-del-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-bottom:6px"></div>'
+    + '<div style="display:flex;gap:8px">'
+    +   entityBtn('Cancel', 'cancelDeleteContact()')
+    +   '<button id="co-del-confirm" onclick="doDeleteContact()" style="background:var(--conflict);border:1px solid var(--conflict);color:#fff;border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer">Confirm delete</button>'
+    + '</div>';
+}
+
+function cancelDeleteContact(){
+  var zone = document.getElementById('co-delete-zone');
+  if(zone) zone.innerHTML = _contactDeleteBtnHtml();
+}
+
+async function doDeleteContact(){
+  var id  = window._contactEditId;
+  var btn = document.getElementById('co-del-confirm');
+  var err = document.getElementById('co-del-error');
+  if(err) err.textContent = '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try{
+    var r = await fetch('/api/admin/contact/'+encodeURIComponent(id)+'/delete', {method:'POST'});
+    var d = await r.json();
+    // 409 is a block, not a failure — the message already nudges toward
+    // deactivate, so show it inline and hint the active toggle.
+    if(r.status === 409){
+      if(err) err.textContent = d.error || 'Can’t delete — bookings still linked. Set inactive instead?';
+      if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+      _hintActiveToggle('co-active');
+      return;
+    }
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    var n = d.customers_unlinked || 0;
+    window._contactFlash = n > 0
+      ? ('Deleted. ' + n + ' customer link' + (n === 1 ? '' : 's') + ' cleared.')
+      : 'Deleted.';
+    openContactListModal(_contactListActive);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+  }
+}
+
+// After a 409 block, draw the eye to the safe action: flash the given Status
+// select and focus it so the operator's next move is to set inactive. Shared by
+// the customer / venue / contact delete flows.
+function _hintActiveToggle(selId){
+  var sel = document.getElementById(selId);
+  if(!sel) return;
+  var prev = sel.style.borderColor;
+  sel.style.borderColor = 'var(--accent)';
+  sel.focus();
+  try{ sel.scrollIntoView({block:'center', behavior:'smooth'}); }catch(e){ sel.scrollIntoView(); }
+  setTimeout(function(){ sel.style.borderColor = prev; }, 2000);
 }
 
 function adminManageCohorts(){ openCohortModal(); }
