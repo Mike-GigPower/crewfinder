@@ -1,6 +1,6 @@
 {
-  "version": "3.22.2",
-  "release_date": "2026-07-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v3.22.2/TheGOAT.dmg",
-  "release_notes": "Hotfix: the Schedule booking popup could hang on 'Loading booking…' — now renders correctly. Includes the 3.22.1 Crew Lists phone fix and Schedule-page access."
+  "version": "4.0.0",
+  "release_date": "2026-07-15",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.0.0/TheGOAT.dmg",
+  "release_notes": "Converting a candidate to crew now pushes their licences (with certificates) into SmartStaff automatically. Crew records gain a Licences view, and Administration now supports full manage / set-inactive / guarded-delete for Customers, Venues and Contacts."
 }
