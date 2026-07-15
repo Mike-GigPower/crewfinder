@@ -778,6 +778,10 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-pill.st-invited_to_induction{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.08)}
 .recruit-pill.st-booked{color:#a371f7;border-color:#a371f7;background:rgba(163,113,247,0.08)}
 .recruit-pill.st-attended{color:#58a6ff;border-color:#58a6ff;background:rgba(88,166,255,0.08)}
+/* Details Submitted: form done + ready to send to EH — set automatically on
+   /details submit. Distinct pink so it stands out as "waiting on you", clearly
+   apart from Attended (blue) and Sent to EH (teal) on either side of it. */
+.recruit-pill.st-details_submitted{color:#f778ba;border-color:#f778ba;background:rgba(247,120,186,0.10)}
 /* Sent to EH: an Employment Hero entry has been created for them (a late,
    near-final stage). Distinct teal so it doesn't read as Invited (green) or
    Attended (blue). */
@@ -3206,12 +3210,16 @@ function switchTab(tab){
 // Status value -> short pill label shown on the card and in the filter row.
 const RECRUIT_STATUS_LABELS = {
   applied:'New', invited_to_induction:'Invited', booked:'Booked', attended:'Attended',
+  details_submitted:'Details Submitted',
   sent_to_eh:'Sent to EH', active_crew:'Active crew', on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
+// "details_submitted" sits between Attended and Sent to EH: it's set AUTOMATICALLY
+// when a candidate submits their /details form (by the onboarding app), so ready
+// candidates surface in their own pile instead of hiding inside Attended.
 // "withdrawn" sits last (before All): candidates put themselves here via the
 // /withdraw page — it's not an operator triage step.
-const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','sent_to_eh','active_crew','on_hold','not_suitable','withdrawn'];
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','details_submitted','sent_to_eh','active_crew','on_hold','not_suitable','withdrawn'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
@@ -3227,6 +3235,7 @@ const RECRUIT_AGING_THRESHOLDS = {
   invited_to_induction: 7,   // invited but hasn't booked an induction
   booked:               14,  // booked but not yet attended
   attended:              7,  // attended but details not completing
+  details_submitted:     3,  // form done + ready — waiting on you to send to EH
 };
 
 let _recruitRows = [];              // the full fetched list (kept for filtering)
@@ -3818,6 +3827,11 @@ function renderRecruitRow(c, i){
     // own button below) — never by the generic relabel, which the server would
     // reject anyway. So no set-status button is ever produced for it.
     if(s === 'active_crew') return '';
+    // "Details Submitted" is set AUTOMATICALLY when the candidate submits their
+    // /details form (by the onboarding app) — never a manual triage destination.
+    // So no generic button ever moves anyone INTO it (mirrors active_crew above).
+    // The value stays allow-listed server-side for rare manual correction.
+    if(s === 'details_submitted') return '';
     // A withdrawn applicant is read-only (they've opted out): don't offer the
     // normal triage buttons. Allow only a single "Back to New", in case someone
     // withdrew by mistake and needs putting back in the pipeline.
@@ -3843,12 +3857,14 @@ function renderRecruitRow(c, i){
     // "Mark attended" is offered once they're Invited OR Booked (they turned up
     // to the induction; booked -> attended is a normal step). Hidden otherwise.
     if(s === 'attended' && cur !== 'invited_to_induction' && cur !== 'booked') return '';
-    // "Mark Sent to EH" is only offered once they're Attended (in practice you
-    // send them to Employment Hero after induction + details). Hidden for every
-    // other pile. Reuses set-status (which stamps eh_invited_at). A candidate who
-    // is ALREADY sent_to_eh still gets "Back to New" below (s='applied'), so a
+    // "Mark Sent to EH" is offered once they're Attended OR Details Submitted —
+    // the normal path is attended → details_submitted (auto, on form submit) →
+    // sent_to_eh, but we keep it available straight from Attended too so an
+    // operator can send someone to EH even if their form isn't in yet. Hidden for
+    // every other pile. Reuses set-status (which stamps eh_invited_at). A candidate
+    // who is ALREADY sent_to_eh still gets "Back to New" below (s='applied'), so a
     // mis-click is reversible.
-    if(s === 'sent_to_eh' && cur !== 'attended') return '';
+    if(s === 'sent_to_eh' && cur !== 'attended' && cur !== 'details_submitted') return '';
     // Back to New / Attended / Hold / Not suitable — relabel via set-status.
     if(s === cur) return '';
     return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`

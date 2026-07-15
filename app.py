@@ -201,7 +201,7 @@ RECRUITMENT_CANDIDATE_DETAIL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/fun
 # (never operations); the edge function returns just { reference, name, health }.
 RECRUITMENT_CANDIDATE_HEALTH_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-health"
 # The only statuses this doorway may set — must match the edge function exactly.
-RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "sent_to_eh", "on_hold", "not_suitable"}
+RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
