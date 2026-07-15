@@ -1,6 +1,6 @@
 {
-  "version": "4.0.0",
+  "version": "4.1.0",
   "release_date": "2026-07-15",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.0.0/TheGOAT.dmg",
-  "release_notes": "Converting a candidate to crew now pushes their licences (with certificates) into SmartStaff automatically. Crew records gain a Licences view, and Administration now supports full manage / set-inactive / guarded-delete for Customers, Venues and Contacts."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.1.0/TheGOAT.dmg",
+  "release_notes": "New Details Submitted pile: candidates who've completed and submitted their details form now surface in their own stage between Attended and Sent to EH, instead of sitting indistinguishable in Attended."
 }
