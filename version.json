@@ -1,6 +1,6 @@
 {
-  "version": "4.1.0",
+  "version": "4.2.0",
   "release_date": "2026-07-15",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.1.0/TheGOAT.dmg",
-  "release_notes": "New Details Submitted pile: candidates who've completed and submitted their details form now surface in their own stage between Attended and Sent to EH, instead of sitting indistinguishable in Attended."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.2.0/TheGOAT.dmg",
+  "release_notes": "Manage Crew → Inductions now has a View link that opens the uploaded certificate PDF, the same read-only view licences already have. The certificate streams over the crew member's own session, so an admin only ever opens a cert that belongs to the person they're viewing."
 }
