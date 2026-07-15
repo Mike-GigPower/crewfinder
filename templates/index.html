@@ -5453,7 +5453,15 @@ async function openCrewInductions(id){
           +   '<div style="min-width:0"><div style="font-size:13px;color:var(--text)">'+escapeHtml(v.venue||'')+'</div>'
           +   (v.completed ? '<div style="font-size:10px;color:var(--muted)">Completed '+escapeHtml(v.completed)+'</div>' : '')
           +   '</div>'
-          + '</div>' + pill(v.status||'') + '</label>';
+          + '</div>'
+          + '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">'
+          +   pill(v.status||'')
+          +   (v.file
+                ? '<a href="/api/admin/crew/'+encodeURIComponent(id)+'/induction-cert?file='+encodeURIComponent(v.file)
+                  + '" target="_blank" rel="noopener" onclick="event.stopPropagation()"'
+                  + ' style="font-size:11px;color:var(--accent);text-decoration:none">View</a>'
+                : '')
+          + '</div></label>';
       }).join('')
     : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No induction venues found.</div>';
   var uploadForm = venues.length ? (
@@ -5699,7 +5707,15 @@ async function ceLoadInductions(id){
           +   '<div style="min-width:0"><div style="font-size:13px;color:var(--text)">'+escapeHtml(v.venue||'')+'</div>'
           +   (v.completed ? '<div style="font-size:10px;color:var(--muted)">Completed '+escapeHtml(v.completed)+'</div>' : '')
           +   '</div>'
-          + '</div>' + pill(v.status||'') + '</label>';
+          + '</div>'
+          + '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">'
+          +   pill(v.status||'')
+          +   (v.file
+                ? '<a href="/api/admin/crew/'+encodeURIComponent(id)+'/induction-cert?file='+encodeURIComponent(v.file)
+                  + '" target="_blank" rel="noopener" onclick="event.stopPropagation()"'
+                  + ' style="font-size:11px;color:var(--accent);text-decoration:none">View</a>'
+                : '')
+          + '</div></label>';
       }).join('')
     : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No induction venues found.</div>';
   var uploadForm = venues.length ? (

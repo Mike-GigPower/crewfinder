@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.1.0"
+APP_VERSION    = "4.2.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -8816,6 +8816,42 @@ def api_admin_crew_inductions(crew_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify({"venues": venues})
+
+
+@app.route("/api/admin/crew/<crew_id>/induction-cert")
+@require_cohort("admin")
+def api_admin_crew_induction_cert(crew_id):
+    """Stream one induction certificate PDF inline, on the crew member's behalf.
+    get-induction-cert.php self-scopes to the acquired session user and confirms a
+    crew_venue_induction row for (acting crew_id + file), so the impersonated GET
+    returns exactly this crew member's own certificate. Mirrors the licences'
+    /api/licence/<id>/file View link, but via impersonation (not the admin
+    session) because the induction streamer gates on goat_acting_user_id()."""
+    fname = (request.args.get("file") or "").strip()
+    # Whitelist: basename only, {crew_id}_{time}.pdf shape — no path traversal.
+    if not re.match(r'^\d+_\d+\.pdf$', fname):
+        return jsonify({"error": "bad filename"}), 400
+    with _unavail_write_lock:                       # serialise impersonation ops
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return jsonify({"error": err}), 502
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/crew/get-induction-cert.php",
+                          params={"file": fname}, timeout=60, allow_redirects=True)
+            if resp.status_code != 200:
+                try:
+                    return jsonify(resp.json()), resp.status_code
+                except Exception:
+                    return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+            ctype = (resp.headers.get("Content-Type") or "application/pdf").split(";")[0].strip()
+            return Response(resp.content, mimetype=ctype, headers={
+                "Content-Disposition": resp.headers.get("Content-Disposition", "inline"),
+                "X-Content-Type-Options": "nosniff",
+            })
+        except Exception as e:
+            return jsonify({"error": f"request failed: {e}"}), 502
+        finally:
+            _release(ss)
 
 
 @app.route("/api/admin/crew/<crew_id>/shifts")

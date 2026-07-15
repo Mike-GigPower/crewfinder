@@ -28,3 +28,4 @@ Timesheet_GENERATED_sample_*.xlsx
 ~$*.xlsx
 timesheet_links.json
 google_token*
+supabase/.temp/
