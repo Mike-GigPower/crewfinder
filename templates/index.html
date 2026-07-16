@@ -4135,6 +4135,9 @@ function recruitRenderDetail(d, i){
       <div><span class="recruit-label">Emergency contact</span>${recruitEmergency(d)}</div>
       <div><span class="recruit-label">Signature</span>${val(d.signature_name)}</div>
       <div><span class="recruit-label">Details submitted</span>${d.details_submitted_at ? recruitDate(d.details_submitted_at) : '—'}</div>
+      ${(d.contract && d.contract.url)
+        ? `<div><span class="recruit-label">Signed contract</span><a href="${recruitEsc(d.contract.url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-weight:600">View signed contract ↗</a></div>`
+        : ''}
     </div>`;
   return `
     <div class="recruit-xhead">
