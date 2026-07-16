@@ -788,6 +788,7 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-pill.st-sent_to_eh{color:#2dd4bf;border-color:#2dd4bf;background:rgba(45,212,191,0.10)}
 /* Active crew: converted to a real SmartStaff crew member — the pipeline's end
    state. Gold, matching the app's "live crew" accent, so it reads as "done". */
+.recruit-pill.st-all_docs_received{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.12)}
 .recruit-pill.st-active_crew{color:var(--accent);border-color:var(--border-gold);background:rgba(212,175,55,0.10)}
 .recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
@@ -814,6 +815,11 @@ body.cohort-readonly #unavail-add-section{display:none}
    green "Submitted ✓" and echoes the Sent to EH stage. Display only. */
 .recruit-eh{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:#2dd4bf;border:1px solid #2dd4bf;background:rgba(45,212,191,0.10);white-space:nowrap}
 .recruit-eh-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:#2dd4bf;letter-spacing:.02em}
+/* "Contract ✓" badge + age — shown once the candidate has e-signed their
+   employment agreement (contract_signed_at set). Violet, distinct from the green
+   "Submitted ✓" and teal "EH ✓" so the row shows exactly which signals are in. */
+.recruit-contract{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:#a371f7;border:1px solid #a371f7;background:rgba(163,113,247,0.10);white-space:nowrap}
+.recruit-contract-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:#a371f7;letter-spacing:.02em}
 /* Reviewable-detail panel — the block fetched fresh from /api/recruitment/
    candidate/<id> each time a row is expanded (the file URLs are short-lived, so
    we never cache them). Sits inside the existing detail panel, above the action
@@ -3217,7 +3223,7 @@ function switchTab(tab){
 const RECRUIT_STATUS_LABELS = {
   applied:'New', invited_to_induction:'Invited', booked:'Booked', attended:'Attended',
   details_submitted:'Details Submitted',
-  sent_to_eh:'Sent to EH', active_crew:'Active crew', on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
+  sent_to_eh:'Sent to EH', all_docs_received:'All Docs Received', active_crew:'Active crew', on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
 // "details_submitted" sits between Attended and Sent to EH: it's set AUTOMATICALLY
@@ -3225,7 +3231,7 @@ const RECRUIT_STATUS_LABELS = {
 // candidates surface in their own pile instead of hiding inside Attended.
 // "withdrawn" sits last (before All): candidates put themselves here via the
 // /withdraw page — it's not an operator triage step.
-const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','details_submitted','sent_to_eh','active_crew','on_hold','not_suitable','withdrawn'];
+const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','details_submitted','sent_to_eh','all_docs_received','active_crew','on_hold','not_suitable','withdrawn'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
   applied:'Back to New', invited_to_induction:'Invite to induction',
@@ -3490,6 +3496,47 @@ async function recruitSetStatus(id, status, btn){
     await loadRecruitment();  // refetch so the card shows its new status/pile
   }catch(e){
     alert('Could not update applicant. Please try again.');
+    if(btn) btn.disabled = false;
+  }
+}
+
+// "Mark Sent to EH" — like recruitSetStatus, but first collects the ops-entered
+// commencement (start) date, which is merged into the candidate's employment
+// contract and, once set, triggers the contract-signing email (server-side). We
+// prompt for the date and pass it through to set-status as commencement_date.
+async function recruitSentToEh(id, btn){
+  const cand = _recruitRows.find(c => String(c.id) === String(id)) || {};
+  const name = cand.name || 'this applicant';
+  const existing = cand.commencement_date || '';
+  const input = prompt(
+    `Commencement (start) date for ${name}.\n\n` +
+    `Enter as YYYY-MM-DD (e.g. 2026-08-03). This is merged into their employment ` +
+    `contract, and sending them to EH emails their contract to sign.`,
+    existing
+  );
+  if(input === null) return;  // cancelled — no change
+  const v = input.trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(new Date(v + 'T00:00:00').getTime())){
+    alert('Please enter a valid date as YYYY-MM-DD (e.g. 2026-08-03).');
+    return;
+  }
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch('/api/recruitment/set-status', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ id, status:'sent_to_eh', commencement_date: v })
+    });
+    if(!r.ok){
+      alert(r.status === 403
+        ? 'You do not have access to update applicants.'
+        : 'Could not send to EH. Please try again.');
+      if(btn) btn.disabled = false;
+      return;
+    }
+    await loadRecruitment();
+  }catch(e){
+    alert('Could not send to EH. Please try again.');
     if(btn) btn.disabled = false;
   }
 }
@@ -3807,6 +3854,24 @@ function recruitEhCompleteAge(c){
     : `EH done ${days} days ago`;
   return `<span class="recruit-eh-age">${text}</span>`;
 }
+// Violet "Contract ✓" badge for a candidate who has e-signed their employment
+// agreement (contract_signed_at set). '' when not signed. Display only — sits
+// apart from the green "Submitted ✓" and teal "EH ✓" so ops sees exactly which of
+// the two convert-gate signals (EH + contract) are in.
+function recruitContractBadge(c){
+  if(!c || !c.contract_signed_at) return '';
+  return '<span class="recruit-contract" title="Employment agreement signed — one of the two convert signals">Contract ✓</span>';
+}
+// Violet "Signed today / 1 day ago / N days ago" line, same whole-day computation
+// as the others (recruitDaysSince). '' when contract_signed_at is missing.
+function recruitContractSignedAge(c){
+  const days = recruitDaysSince(c && c.contract_signed_at);
+  if(days === null) return '';
+  const text = (days === 0) ? 'Signed today'
+    : (days === 1) ? 'Signed 1 day ago'
+    : `Signed ${days} days ago`;
+  return `<span class="recruit-contract-age">${text}</span>`;
+}
 // Build TWO table rows for one applicant: a clickable summary row and a hidden
 // detail row (spanning all columns) that expands inline. `i` is the applicant's
 // index in the currently-visible list, used to pair the two rows for toggling.
@@ -3851,6 +3916,17 @@ function renderRecruitRow(c, i){
   // Same pattern as Sent to EH / Details submitted.
   const ehCompleteDetail = c.eh_complete_at
     ? `<div><span class="recruit-label">EH setup complete</span>${recruitDate(c.eh_complete_at)}</div>`
+    : '';
+  // Contract signals: the ops-entered commencement date, when the candidate signed
+  // their agreement, and when both gate signals landed (all_docs_received).
+  const commencementDetail = c.commencement_date
+    ? `<div><span class="recruit-label">Commencement date</span>${recruitDate(c.commencement_date)}</div>`
+    : '';
+  const contractSignedDetail = c.contract_signed_at
+    ? `<div><span class="recruit-label">Contract signed</span>${recruitDate(c.contract_signed_at)}</div>`
+    : '';
+  const allDocsDetail = c.all_docs_received_at
+    ? `<div><span class="recruit-label">All docs received</span>${recruitDate(c.all_docs_received_at)}</div>`
     : '';
   // Converted-to-crew ids. The recruitment feed returns ein + smartstaff_user_id
   // (both null until conversion), so their presence == "this candidate is now a
@@ -3912,17 +3988,25 @@ function renderRecruitRow(c, i){
     // every other pile. Reuses set-status (which stamps eh_invited_at). A candidate
     // who is ALREADY sent_to_eh still gets "Back to New" below (s='applied'), so a
     // mis-click is reversible.
-    if(s === 'sent_to_eh' && cur !== 'attended' && cur !== 'details_submitted') return '';
+    if(s === 'sent_to_eh'){
+      if(cur !== 'attended' && cur !== 'details_submitted') return '';
+      // Mark Sent to EH prompts for the commencement date (merged into the
+      // contract) and, once set, the edge function emails the contract-signing
+      // link — so it needs its own handler, not the generic relabel button below.
+      return `<button class="recruit-action" onclick="recruitSentToEh('${id}',this)">${RECRUIT_MOVE_LABELS[s]}</button>`;
+    }
     // Back to New / Attended / Hold / Not suitable — relabel via set-status.
     if(s === cur) return '';
     return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
       + `${RECRUIT_MOVE_LABELS[s]}</button>`;
   }).filter(Boolean).join('');
 
-  // "Convert to crew" — ONLY offered on a Sent-to-EH candidate. It opens a
-  // preview/confirm modal (nothing is created on click); the real write happens
-  // from there. Rendered first so it's the prominent action for this pile.
-  const convertBtn = (cur === 'sent_to_eh')
+  // "Convert to crew" — ONLY offered once a candidate is All Docs Received (EH
+  // self-setup complete AND contract signed; the two-signal gate advanced them
+  // here). This is the point of the gate: ops can't convert a half-documented
+  // candidate. It opens a preview/confirm modal (nothing is created on click); the
+  // real write happens from there. Rendered first so it's the prominent action.
+  const convertBtn = (cur === 'all_docs_received')
     ? `<button class="recruit-action recruit-convert" onclick="recruitConvertOpen('${id}')">Convert to crew</button>`
     : '';
   // Read-only note shown in place of buttons for a converted candidate (mirrors
@@ -3930,7 +4014,20 @@ function renderRecruitRow(c, i){
   const activeCrewNote = (cur === 'active_crew')
     ? `<span class="recruit-empty">Converted to crew${einVal ? ' · EIN ' + recruitEsc(einVal) : ''}</span>`
     : '';
-  const allActions = convertBtn + actions + activeCrewNote;
+  // On a Sent-to-EH candidate, surface WHY convert isn't available yet — which of
+  // the two gate signals (EH self-setup, contract) are still outstanding. Once
+  // both land, the gate advances them to All Docs Received and Convert appears.
+  const waitingNote = (cur === 'sent_to_eh')
+    ? (() => {
+        const pending = [];
+        if(!c.eh_complete_at) pending.push('EH setup');
+        if(!c.contract_signed_at) pending.push('contract');
+        return pending.length
+          ? `<span class="recruit-empty">Waiting on: ${pending.join(' + ')} before convert</span>`
+          : '';
+      })()
+    : '';
+  const allActions = convertBtn + actions + activeCrewNote + waitingNote;
 
   // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
   const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
@@ -3947,7 +4044,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
-      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}</td>
+      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
@@ -3964,6 +4061,9 @@ function renderRecruitRow(c, i){
             ${submittedDetail}
             ${ehSentDetail}
             ${ehCompleteDetail}
+            ${commencementDetail}
+            ${contractSignedDetail}
+            ${allDocsDetail}
             ${crewIdDetail}
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
             <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>

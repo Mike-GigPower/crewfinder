@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.4.0"
+APP_VERSION    = "4.5.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -201,7 +201,7 @@ RECRUITMENT_CANDIDATE_DETAIL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/fun
 # (never operations); the edge function returns just { reference, name, health }.
 RECRUITMENT_CANDIDATE_HEALTH_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-health"
 # The only statuses this doorway may set — must match the edge function exactly.
-RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "on_hold", "not_suitable"}
+RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "all_docs_received", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
@@ -3734,6 +3734,11 @@ def api_recruitment_set_status():
         payload["session_date"] = data.get("session_date")
     if "session_date_text" in data:
         payload["session_date_text"] = str(data.get("session_date_text") or "")
+    # Commencement (start) date, sent by "Mark Sent to EH" — the ops-entered date
+    # merged into the candidate's employment contract. Passed straight through; the
+    # edge function stores it and (once set) emails the contract-signing link.
+    if "commencement_date" in data:
+        payload["commencement_date"] = data.get("commencement_date")
 
     try:
         r = http.post(
@@ -4337,8 +4342,8 @@ def api_recruitment_convert_preview(cand_id):
         return jsonify({"error": err}), 502
 
     status = str(feed_row.get("status") or "").strip()
-    if status != "sent_to_eh":
-        return jsonify({"error": "Only a 'Sent to EH' candidate can be converted "
+    if status != "all_docs_received":
+        return jsonify({"error": "Only an 'All Docs Received' candidate can be converted "
                                  f"(this one is '{status or 'unknown'}')."}), 409
 
     name = feed_row.get("name") or ""
@@ -4413,15 +4418,15 @@ def api_recruitment_convert(cand_id):
     last  = str(body.get("lastname", "")).strip()
     acknowledged = bool(body.get("acknowledged"))
 
-    # 1. Authoritative re-check: candidate must still be sent_to_eh.
+    # 1. Authoritative re-check: candidate must still be all_docs_received.
     feed_row, detail, err = _recruit_convert_context(cand_id)
     if err == "not_found":
         return jsonify({"error": "Applicant not found"}), 404
     if err:
         return jsonify({"error": err}), 502
     status = str(feed_row.get("status") or "").strip()
-    if status != "sent_to_eh":
-        return jsonify({"error": "This candidate is no longer 'Sent to EH' "
+    if status != "all_docs_received":
+        return jsonify({"error": "This candidate is no longer 'All Docs Received' "
                                  f"(now '{status or 'unknown'}') — refusing to "
                                  "convert."}), 409
 
