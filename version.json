@@ -1,6 +1,6 @@
 {
-  "version": "4.2.0",
-  "release_date": "2026-07-15",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.2.0/TheGOAT.dmg",
-  "release_notes": "Manage Crew → Inductions now has a View link that opens the uploaded certificate PDF, the same read-only view licences already have. The certificate streams over the crew member's own session, so an admin only ever opens a cert that belongs to the person they're viewing."
+  "version": "4.3.0",
+  "release_date": "2026-07-16",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.3.0/TheGOAT.dmg",
+  "release_notes": "Converting a candidate to crew now brings their inductions across into SmartStaff automatically — each venue induction and its certificate PDF, the same way licences already transfer. Melbourne Park applies to all five arenas from one certificate. The convert summary lists each induction as added, already on file, or failed."
 }
