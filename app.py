@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.2.0"
+APP_VERSION    = "4.3.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -3993,6 +3993,176 @@ def _push_candidate_licences(ss, user_id, licences):
     return results
 
 
+# ─── CONVERT-B: INDUCTIONS ────────────────────────────────────────────────────
+# Push a converted candidate's onboarding inductions into SmartStaff, mirroring
+# the licence push above. The onboarding form stores a single grouped code
+# MELB_PARK for the five Melbourne Park arenas; we expand it to its member codes
+# here and let add-my-induction.php fan the one PDF across their venue_ids.
+MELB_PARK_MEMBERS = ["RLA", "MCA", "JCA", "Centrepiece", "AAMI"]
+
+# Operator-facing labels for the convert modal (the onboarding dropdown's 17
+# codes). Falls back to the raw code for anything unmapped.
+INDUCTION_CODE_LABELS = {
+    "MELB_PARK":         "Melbourne Park",
+    "Marvel":            "Marvel Stadium",
+    "MCG":               "Melbourne Cricket Ground (MCG)",
+    "MCEC":              "Melbourne Convention & Exhibition Centre (MCEC)",
+    "Festival Hall":     "Festival Hall",
+    "Hamer Hall":        "Hamer Hall",
+    "Palais":            "Palais Theatre",
+    "Sidney Myer":       "Sidney Myer Music Bowl",
+    "Federation Square": "Federation Square",
+    "Crown":             "Crown Melbourne",
+    "Docklands":         "Docklands Studios",
+    "Hanging Rock":      "Hanging Rock Reserve",
+    "GMHBA":             "GMHBA Stadium",
+    "Mt Duneed":         "Mt Duneed Estate",
+    "MOPT":              "MOPT Catwalk",
+    "Royal Botanic":     "Royal Botanic Gardens",
+    "Forum":             "Forum Melbourne",
+}
+
+
+def _induction_venue_id_for_code(code, venues):
+    """Resolve one induction venue CODE ('MCG', 'RLA') to a SmartStaff venue_id,
+    matching INDUCTION_VENUE_MAP's name keywords against the live venue list.
+    Only matches venues flagged has_induction=1. Keywords are tried
+    most-specific first (e.g. 'mcg - gate 7' before 'mcg'), so the id is the
+    deterministic best match. Returns the id as a string, or None when nothing
+    monitored matches."""
+    for kw in INDUCTION_VENUE_MAP.get(code, []):
+        for v in (venues or []):
+            if v.get("has_induction") and kw in (v.get("name") or "").lower():
+                return str(v.get("id"))
+    return None
+
+
+def _push_candidate_inductions(ss, user_id, inductions):
+    """Convert-B: push a converted candidate's onboarding inductions into
+    SmartStaff, ONE add-my-induction.php call per onboarding entry (sequential,
+    via impersonation — the same per-session file-lock contention as licences).
+
+    `inductions` is the candidate-detail 'inductions' list; each item may carry
+    {venue_code, date, url(signed PDF)}. venue_code is a stable code; MELB_PARK
+    expands to its five arenas and the PDF fans across their resolved venue_ids
+    in one POST (add-my-induction.php's native fan-out).
+
+    Idempotency mirrors the licence (user, type) skip: we read the crew member's
+    current inductions once and skip venues already on file — add-my-induction
+    .php INSERTs a user_licenses row per call, so a re-convert without this skip
+    would duplicate it (crew_venue_induction itself self-cleans via
+    delete-then-insert).
+
+    Best-effort: every outcome is recorded and returned; nothing here raises, so
+    an induction problem never aborts the conversion. Returns a list of per-entry
+    dicts: {venue_code, label, ok, skipped?, error?, venue_ids?}."""
+    results = []
+    entries = ([i for i in inductions if isinstance(i, dict)]
+               if isinstance(inductions, list) else [])
+    if not entries:
+        return results
+
+    # Resolve codes against the live venue list (has_induction venues only). If
+    # it can't be fetched we can't map anything — flag every entry and stop.
+    venues, verr = fetch_venues_bulk(ss)
+    if verr or not venues:
+        for ind in entries:
+            code = str(ind.get("venue_code") or "").strip()
+            results.append({"venue_code": code,
+                            "label": INDUCTION_CODE_LABELS.get(code, code) or "Induction",
+                            "ok": False, "error": f"venue list unavailable: {verr or 'empty'}"})
+        return results
+
+    # Idempotency: the venue_ids the crew member is ALREADY inducted at (any row
+    # with a completion date). Unlike admin-add-license.php, add-my-induction.php
+    # has NO server-side (user, type) skip — it INSERTs a user_licenses row every
+    # call — so this read is the ONLY duplicate guard. If it can't be read we
+    # can't tell "nothing on file" from "unknown", so we fail safe: flag every
+    # entry for retry rather than push blind and risk duplicate rows on a
+    # re-convert. Conversion and licences are unaffected.
+    current, cerr = fetch_crew_inductions(user_id)
+    if cerr or not isinstance(current, list):
+        for ind in entries:
+            code = str(ind.get("venue_code") or "").strip()
+            results.append({"venue_code": code,
+                            "label": INDUCTION_CODE_LABELS.get(code, code) or "Induction",
+                            "ok": False,
+                            "error": f"couldn't read existing inductions: {cerr or 'no data'}"})
+        return results
+    present_ids = set()
+    for v in current:
+        if v.get("complete_ts"):
+            present_ids.add(str(v.get("venue_id")))
+
+    for ind in entries:
+        code  = str(ind.get("venue_code") or "").strip()
+        label = INDUCTION_CODE_LABELS.get(code, code) or "Induction"
+        member_codes = MELB_PARK_MEMBERS if code == "MELB_PARK" else [code]
+
+        # Resolve every member code to a monitored venue_id. Unresolvable members
+        # drop out; if NONE resolve, flag the whole entry (never guess).
+        resolved_ids = []
+        for mc in member_codes:
+            vid = _induction_venue_id_for_code(mc, venues)
+            if vid and vid not in resolved_ids:
+                resolved_ids.append(vid)
+        if not resolved_ids:
+            results.append({"venue_code": code, "label": label, "ok": False,
+                            "error": "unresolved venue"})
+            continue
+
+        # Skip venues already on file; a group whose every member is present is a
+        # whole-entry skip. This is what stops duplicate user_licenses rows.
+        missing_ids = [vid for vid in resolved_ids if vid not in present_ids]
+        if not missing_ids:
+            results.append({"venue_code": code, "label": label, "ok": True, "skipped": True})
+            continue
+
+        # Date -> strict YYYY-MM-DD (NULL-safe, reusing the licence normaliser). A
+        # blank/malformed date is skipped and flagged, never written as 0000-00-00.
+        cdate = _licence_date_ymd(ind.get("date"))
+        if not cdate:
+            results.append({"venue_code": code, "label": label, "ok": False,
+                            "error": "missing or invalid date"})
+            continue
+
+        # Certificate PDF from the signed URL (same download path as licences). No
+        # URL, or a failed download, is a per-entry failure — an induction without
+        # its certificate isn't useful.
+        url = ind.get("url")
+        if not url:
+            results.append({"venue_code": code, "label": label, "ok": False,
+                            "error": "no certificate PDF"})
+            continue
+        try:
+            r = http.get(url, timeout=20)
+            if r.status_code == 200 and r.content:
+                pdf_bytes = r.content
+            else:
+                results.append({"venue_code": code, "label": label, "ok": False,
+                                "error": f"PDF fetch HTTP {r.status_code}"})
+                continue
+        except Exception as e:
+            results.append({"venue_code": code, "label": label, "ok": False,
+                            "error": f"PDF fetch failed: {e}"})
+            continue
+
+        # One POST for the entry — the PDF fans across all missing venue_ids.
+        # add_crew_induction reads cert.read()/cert.filename, so hand it a tiny
+        # file-like carrying the bytes.
+        cert = types.SimpleNamespace(read=lambda b=pdf_bytes: b,
+                                     filename="induction.pdf")
+        out, err = add_crew_induction(user_id, ",".join(missing_ids), cdate, cert)
+        if err:
+            results.append({"venue_code": code, "label": label, "ok": False, "error": err})
+        else:
+            for vid in missing_ids:        # so a duplicate entry THIS run skips too
+                present_ids.add(vid)
+            results.append({"venue_code": code, "label": label, "ok": True,
+                            "skipped": False, "venue_ids": missing_ids})
+    return results
+
+
 def _recruit_split_name(full):
     """Default first/last split for the preview: first word = firstname, the rest
     = lastname. Ops can edit both in the modal, so this only has to be a sane
@@ -4374,6 +4544,18 @@ def api_recruitment_convert(cand_id):
         print(f"[recruitment] convert licence push crashed: {e}")
         licence_results = []
 
+    # 9. Convert-B — push the candidate's onboarding inductions into SmartStaff
+    #    (one add-my-induction.php POST per entry, sequential; a MELB_PARK entry
+    #    fans one PDF across its five arenas). Same best-effort contract as the
+    #    licence push: idempotent per venue, so a partial/failed push is retried
+    #    by re-running convert, and an induction problem never fails the
+    #    conversion (the crew record + status already stand).
+    try:
+        induction_results = _push_candidate_inductions(ss, uid, detail.get("inductions"))
+    except Exception as e:
+        print(f"[recruitment] convert induction push crashed: {e}")
+        induction_results = []
+
     return jsonify({
         "ok":       True,
         "id":       uid,
@@ -4384,6 +4566,7 @@ def api_recruitment_convert(cand_id):
         "temp_password": NEW_CREW_TEMP_PASSWORD,
         "warning":  stamp_warning,
         "licences": licence_results,
+        "inductions": induction_results,
     })
 
 

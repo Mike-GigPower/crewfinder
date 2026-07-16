@@ -3679,6 +3679,22 @@ async function recruitConvertSubmit(id, ackRequired){
         + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Licences</div>'
         + rows + '</div>';
     }
+    // Induction-push (convert-B) summary. Each item is {venue_code, label, ok,
+    // skipped, error}. Same best-effort semantics as licences — a MELB_PARK entry
+    // shows as one "Melbourne Park" line. Nothing shown if there were none.
+    let indHtml = '';
+    if(Array.isArray(d.inductions) && d.inductions.length){
+      const irows = d.inductions.map(function(x){
+        x = x || {};
+        const t = escapeHtml(x.label || x.venue_code || 'Induction');
+        if(!x.ok)        return '<div>✗ ' + t + ' — <span style="color:var(--conflict)">failed: ' + escapeHtml(x.error || 'error') + '</span></div>';
+        if(x.skipped)    return '<div>• ' + t + ' — already on file</div>';
+        return '<div>✓ ' + t + ' — added</div>';
+      }).join('');
+      indHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
+        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Inductions</div>'
+        + irows + '</div>';
+    }
     document.getElementById('entity-modal-title').textContent = 'Crew member created';
     document.getElementById('entity-modal-sub').textContent   = '';
     document.getElementById('entity-modal-body').innerHTML =
@@ -3686,7 +3702,7 @@ async function recruitConvertSubmit(id, ackRequired){
       + escapeHtml(d.name || (first + ' ' + last)) + ' was added to SmartStaff.<br>'
       + 'EIN / username: <b style="color:var(--accent)">' + escapeHtml(String(d.ein)) + '</b><br>'
       + 'Temp password: <b>' + escapeHtml(String(d.temp_password || '')) + '</b> &mdash; they should change it on first login.'
-      + '</div>' + warnHtml + licHtml;
+      + '</div>' + warnHtml + licHtml + indHtml;
     document.getElementById('entity-modal-actions').innerHTML = entityBtn('Done','closeEntityModal()',{primary:true});
     await loadRecruitment();   // candidate moves to the Active crew pile
   }catch(e){
