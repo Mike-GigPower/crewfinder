@@ -808,6 +808,12 @@ body.cohort-readonly #unavail-add-section{display:none}
    positive green as the Invited pill so it reads as a good/ready state. Display only. */
 .recruit-submitted{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:#3fb950;border:1px solid #3fb950;background:rgba(63,185,80,0.08);white-space:nowrap}
 .recruit-submitted-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:#3fb950;letter-spacing:.02em}
+/* "EH ✓" badge + "EH done N days ago" line — shown only for candidates who have
+   finished their Employment Hero self-setup (eh_complete_at set, stamped by the EH
+   poller). Teal (matching the Sent to EH pill) so it reads as distinct from the
+   green "Submitted ✓" and echoes the Sent to EH stage. Display only. */
+.recruit-eh{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:#2dd4bf;border:1px solid #2dd4bf;background:rgba(45,212,191,0.10);white-space:nowrap}
+.recruit-eh-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:#2dd4bf;letter-spacing:.02em}
 /* Reviewable-detail panel — the block fetched fresh from /api/recruitment/
    candidate/<id> each time a row is expanded (the file URLs are short-lived, so
    we never cache them). Sits inside the existing detail panel, above the action
@@ -3781,6 +3787,26 @@ function recruitSubmittedAge(c){
     : `Submitted ${days} days ago`;
   return `<span class="recruit-submitted-age">${text}</span>`;
 }
+// Teal "EH ✓" badge for a candidate who has finished their Employment Hero
+// self-setup (eh_complete_at stamped by the EH poller). Teal to echo the Sent to
+// EH stage and sit apart from the green "Submitted ✓". '' when not set (the common
+// case), so nothing shows. Display only — surfaces that they're done; it does NOT
+// change status or trigger convert (that stays the deliberate operator action).
+function recruitEhBadge(c){
+  if(!c || !c.eh_complete_at) return '';
+  return '<span class="recruit-eh" title="Employment Hero self-setup complete — ready to convert">EH ✓</span>';
+}
+// Teal "EH done today / 1 day ago / N days ago" line, using the SAME whole-day
+// computation as recruitSubmittedAge (recruitDaysSince). '' when eh_complete_at is
+// missing/unparseable, so nothing renders. Display only.
+function recruitEhCompleteAge(c){
+  const days = recruitDaysSince(c && c.eh_complete_at);
+  if(days === null) return '';
+  const text = (days === 0) ? 'EH done today'
+    : (days === 1) ? 'EH done 1 day ago'
+    : `EH done ${days} days ago`;
+  return `<span class="recruit-eh-age">${text}</span>`;
+}
 // Build TWO table rows for one applicant: a clickable summary row and a hidden
 // detail row (spanning all columns) that expands inline. `i` is the applicant's
 // index in the currently-visible list, used to pair the two rows for toggling.
@@ -3819,6 +3845,12 @@ function renderRecruitRow(c, i){
   // (set when they were moved to sent_to_eh). Same pattern as Details submitted.
   const ehSentDetail = c.eh_invited_at
     ? `<div><span class="recruit-label">Sent to EH</span>${recruitDate(c.eh_invited_at)}</div>`
+    : '';
+  // "EH setup complete: <date>" grid item — shown whenever eh_complete_at is
+  // stamped (the EH poller detected the candidate finished their self-setup).
+  // Same pattern as Sent to EH / Details submitted.
+  const ehCompleteDetail = c.eh_complete_at
+    ? `<div><span class="recruit-label">EH setup complete</span>${recruitDate(c.eh_complete_at)}</div>`
     : '';
   // Converted-to-crew ids. The recruitment feed returns ein + smartstaff_user_id
   // (both null until conversion), so their presence == "this candidate is now a
@@ -3915,7 +3947,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
-      <td>${pill}${recruitSubmittedBadge(c)}${age}${recruitSubmittedAge(c)}</td>
+      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
@@ -3931,6 +3963,7 @@ function renderRecruitRow(c, i){
             <div><span class="recruit-label">Time in stage</span>${age || '—'}</div>
             ${submittedDetail}
             ${ehSentDetail}
+            ${ehCompleteDetail}
             ${crewIdDetail}
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
             <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
