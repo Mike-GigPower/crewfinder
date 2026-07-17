@@ -9560,6 +9560,7 @@ async function saveAddCall(bookingId){
 
 // ── FORECAST TAB ────────────────────────────────────────────────────────────
 
+let _fcCards      = [];     // per-render registry of call lists; index passed to hover handlers
 let _fcData       = null;   // full API response
 let _fcSort       = 'name'; // current sort field
 let _fcSortDir    = 1;      // 1=asc, -1=desc
@@ -9654,8 +9655,57 @@ function setFcSort(field){
   renderForecastTable();
 }
 
+// ── Utilisation hover card: call details behind a booked cell ────────────────
+function fcCallCardEl(){
+  let el = document.getElementById('fc-call-card');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'fc-call-card';
+    el.style.cssText =
+      'position:fixed;z-index:9999;display:none;pointer-events:none;max-width:280px;'
+      + 'background:var(--surface);border:1px solid var(--border);border-radius:8px;'
+      + 'box-shadow:0 8px 24px rgba(0,0,0,0.35);padding:8px 12px;font-size:11px;'
+      + 'color:var(--text);line-height:1.4';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function fcShowCallCard(ev, idx){
+  const calls = _fcCards[idx];
+  if(!calls || !calls.length) return;
+  const el = fcCallCardEl();
+  const rows = calls.map(function(c){
+    const venue = c.venue   ? '<div style="font-weight:700;color:var(--accent)">'+escapeHtml(decodeEntities(c.venue))+'</div>' : '';
+    const call  = c.call    ? '<div>'+escapeHtml(decodeEntities(c.call))+'</div>' : '';
+    const bk    = c.booking ? '<div style="color:var(--muted)">'+escapeHtml(decodeEntities(c.booking))+'</div>' : '';
+    const time  = c.time    ? '<div style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(c.time)+'</div>' : '';
+    return '<div style="padding:6px 0;border-top:1px solid var(--border)">'+venue+call+bk+time+'</div>';
+  }).join('');
+  el.innerHTML =
+    '<div style="font-weight:700;margin-bottom:2px">'+calls.length+' call'+(calls.length>1?'s':'')+'</div>'+rows;
+  el.style.display = 'block';
+  // position below the cell, clamped to the viewport; flip above if it would overflow
+  const r = ev.currentTarget.getBoundingClientRect();
+  const cardW = el.offsetWidth, cardH = el.offsetHeight;
+  let left = r.left;
+  let top  = r.bottom + 6;
+  if(left + cardW > window.innerWidth  - 8) left = window.innerWidth  - cardW - 8;
+  if(left < 8) left = 8;
+  if(top  + cardH > window.innerHeight - 8) top  = r.top - cardH - 6;
+  if(top  < 8) top = 8;
+  el.style.left = left + 'px';
+  el.style.top  = top  + 'px';
+}
+
+function fcHideCallCard(){
+  const el = document.getElementById('fc-call-card');
+  if(el) el.style.display = 'none';
+}
+
 function renderForecastTable(){
   if(!_fcData) return;
+  _fcCards = [];   // fresh per render; indices below are only valid for this pass
 
   const search   = document.getElementById('fc-search').value.toLowerCase().trim();
   const minStars = parseInt(document.getElementById('fc-min-stars').value) || 0;
@@ -9750,8 +9800,16 @@ function renderForecastTable(){
       } else {
         bg = isWeekend ? 'rgba(255,255,255,0.04)' : 'transparent'; title = d;
       }
+      let cellAttrs = ` title="${title}"`;
+      if(hrs > 0){
+        const calls = c.day_calls?.[d] || [];
+        if(calls.length){
+          const ci = _fcCards.push(calls) - 1;
+          cellAttrs = ` onmouseenter="fcShowCallCard(event,${ci})" onmouseleave="fcHideCallCard()"`;
+        }
+      }
       return `<td style="padding:3px 2px;border-bottom:1px solid var(--border)">
-        <div style="height:22px;border-radius:2px;background:${bg};${extraStyle}" title="${title}"></div>
+        <div style="height:22px;border-radius:2px;background:${bg};${extraStyle}"${cellAttrs}></div>
       </td>`;
     }).join('');
 

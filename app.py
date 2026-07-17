@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.8.0"
+APP_VERSION    = "4.9.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -5399,15 +5399,25 @@ def api_forecast():
         wu = [u for u in unavails if datetime.fromisoformat(u["start"]) < end_dt and datetime.fromisoformat(u["end"]) > start_dt]
 
         day_hours = {}
+        day_calls = {}
         total_hours = 0.0
         for s in ws:
-            cs = max(datetime.fromisoformat(s["start"]), start_dt)
-            ce = min(datetime.fromisoformat(s["end"]),   end_dt)
+            s_start = datetime.fromisoformat(s["start"])
+            s_end   = datetime.fromisoformat(s["end"])
+            cs = max(s_start, start_dt)
+            ce = min(s_end,   end_dt)
             total_hours += (ce - cs).total_seconds() / 3600
+            call_meta = {
+                "booking": s.get("booking_name", "") or "",
+                "call":    s.get("call_name", "") or "",
+                "venue":   s.get("venue", "") or "",
+                "time":    s_start.strftime("%H:%M") + "–" + s_end.strftime("%H:%M"),
+            }
             cur = cs.replace(hour=0, minute=0, second=0, microsecond=0)
             while cur < ce:
                 ds = cur.strftime("%Y-%m-%d")
                 day_hours[ds] = day_hours.get(ds, 0) + (min(ce, cur + timedelta(days=1)) - max(cs, cur)).total_seconds() / 3600
+                day_calls.setdefault(ds, []).append(call_meta)
                 cur += timedelta(days=1)
 
         day_unavail = {}
@@ -5449,6 +5459,7 @@ def api_forecast():
             "groups":             info.get("groups", []),
             "total_hours":        round(total_hours, 1),
             "day_hours":          day_hours,
+            "day_calls":          day_calls,
             "day_unavail":        day_unavail,
             "day_unavail_partial":day_unavail_partial,
             "day_unavail_hours":  day_unavail_hours,
