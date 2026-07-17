@@ -1,6 +1,6 @@
 {
-  "version": "4.5.1",
+  "version": "4.5.2",
   "release_date": "2026-07-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.5.1/TheGOAT.dmg",
-  "release_notes": "Recruitment fixes: the action bar is now stage-aware — selecting Details Submitted or Attended applicants offers 'Mark Sent to EH' with one shared commencement date for the whole monthly intake, while New still offers Invite to induction. Also removes a stray 'undefined' button that appeared on the applicant detail panel."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.5.2/TheGOAT.dmg",
+  "release_notes": "Commencement dates are now entered day-first (DD-MM-YYYY, e.g. 01-09-2026) when marking applicants Sent to EH, matching Australian format."
 }
