@@ -1,6 +1,6 @@
 {
-  "version": "4.5.0",
+  "version": "4.5.1",
   "release_date": "2026-07-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.5.0/TheGOAT.dmg",
-  "release_notes": "Onboarding now runs end to end. Employment Hero self-setup completion is tracked automatically (a green EH ✓ badge), and crew contracts are signed in the app instead of by emailed Google Doc: marking a candidate Sent to EH now takes their commencement date and emails them a link to read and sign their contract, with a Contract ✓ badge and a View signed contract link for you. Candidates move to the new All Docs Received stage once both their EH setup and contract are in, and Convert is enabled only then — so no one is converted half-documented."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.5.1/TheGOAT.dmg",
+  "release_notes": "Recruitment fixes: the action bar is now stage-aware — selecting Details Submitted or Attended applicants offers 'Mark Sent to EH' with one shared commencement date for the whole monthly intake, while New still offers Invite to induction. Also removes a stray 'undefined' button that appeared on the applicant detail panel."
 }
