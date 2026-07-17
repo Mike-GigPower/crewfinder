@@ -820,6 +820,31 @@ body.cohort-readonly #unavail-add-section{display:none}
    "Submitted ✓" and teal "EH ✓" so the row shows exactly which signals are in. */
 .recruit-contract{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:#a371f7;border:1px solid #a371f7;background:rgba(163,113,247,0.10);white-space:nowrap}
 .recruit-contract-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:#a371f7;letter-spacing:.02em}
+/* "Working visa" row chip — at-a-glance flag that this applicant holds a working
+   visa (so ops knows work rights need a VEVO check before convert). Amber/warn,
+   distinct from the status pills and the ✓ badges. Non-PII: just the category. */
+.recruit-visa{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:var(--warn);border:1px solid var(--warn);background:rgba(245,158,11,0.10);white-space:nowrap}
+/* ADMIN-ONLY work-eligibility reveal — immigration PII (passport + visa), same
+   posture as the health reveal below. Button only renders for admins; the
+   sensitive detail stays hidden (and un-fetched) until clicked. */
+.recruit-we{margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)}
+.recruit-we-status{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text);margin-bottom:9px}
+.recruit-we-status b{color:var(--text)}
+.recruit-we-banner{display:inline-block;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--accent2);border:1px solid var(--accent2);background:var(--accent2-bg);border-radius:5px;padding:3px 9px;margin-bottom:9px}
+.recruit-we-body{margin-top:10px}
+.recruit-we-row{padding:7px 0;border-top:1px solid var(--border);font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--text);display:flex;gap:10px;flex-wrap:wrap}
+.recruit-we-row:first-child{border-top:none}
+.recruit-we-k{color:var(--muted);min-width:150px}
+.recruit-we-v{color:var(--text);font-weight:600}
+/* AI-suggested visa facts — must READ as tentative, never verified. Muted, boxed,
+   with an explicit "verify via VEVO" heading. */
+.recruit-we-ai{margin-top:10px;border:1px dashed var(--border);border-radius:6px;padding:9px 11px;background:var(--surface2)}
+.recruit-we-ai-head{font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--warn);margin-bottom:7px}
+.recruit-we-ai .recruit-we-k{min-width:150px}
+.recruit-we-limit{color:var(--accent2);font-weight:700}
+/* VEVO-verified compliance line + the "mark verified" button. Green when set. */
+.recruit-vevo-ok{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;color:#2dd4bf}
+.recruit-vevo-none{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;color:var(--warn)}
 /* Reviewable-detail panel — the block fetched fresh from /api/recruitment/
    candidate/<id> each time a row is expanded (the file URLs are short-lived, so
    we never cache them). Sits inside the existing detail panel, above the action
@@ -943,7 +968,10 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <button class="tab-btn" id="tab-btn-administration" onclick="switchTab('administration')">⚙ Administration</button>
   <button class="tab-btn" id="tab-btn-recruitment" onclick="switchTab('recruitment')">🧑‍💼 Recruitment</button>
   <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
-  <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat" style="margin-left:auto;align-self:center;margin-right:10px">
+  <button class="tab-btn" id="btn-tab-popout" style="margin-left:auto"
+          title="Open the current tab in a new window"
+          onclick="popOutCurrentTab()">⧉ New window</button>
+  <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat" style="align-self:center;margin-right:10px">
     <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
     Ask THE GOAT
   </button>
@@ -1945,15 +1973,30 @@ async function msDeleteUnavail(id){
 }
 
 document.addEventListener('DOMContentLoaded', async ()=>{
+  const wantTab = (location.hash || '').replace(/^#/, '');  // capture BEFORE any switchTab runs
   checkForUpdates();                       // version banner — fine for everyone
   const cohort = await loadWhoami();        // identity + cohort-aware nav
-  if(cohort === 'crew'){ loadMyStatus(); return; }   // crew: personal view only
+  if(cohort === 'crew'){ loadMyStatus(); return; }   // crew: personal view only — no tab bar, ignore any hash
   // admin + leadership
   loadGroups();
   loadCacheStatus();
   if(cohort === 'admin') loadCalls();       // Crew Finder call list — admin only
   if(cohort === 'admin') loadCfRoster();    // spot-check autocomplete roster — admin only
   loadSchedule();
+  // Deep-link: if we were opened at #<tab> and that tab is actually visible for
+  // this cohort, switch to it. Unknown tabs and cohort-hidden tabs are ignored
+  // (we stay on the default), so a hash can NEVER reveal a tab the user can't
+  // otherwise reach. The visibility check mirrors exactly how applyCohort hides
+  // things: a hidden tab button has inline style.display === 'none', and crew
+  // have the whole .tab-bar hidden.
+  if(wantTab){
+    const btn = document.getElementById('tab-btn-' + wantTab);
+    const bar = document.querySelector('.tab-bar');
+    const barVisible = bar && bar.style.display !== 'none';
+    if(btn && btn.style.display !== 'none' && barVisible){
+      switchTab(wantTab);
+    }
+  }
 });
 
 async function loadGroups(){
@@ -3212,6 +3255,19 @@ function switchTab(tab){
   if(tab==='all-bookings') loadAllBookings();
   if(tab==='my-status') loadMyStatus();
   if(tab==='recruitment') loadRecruitment();
+  // Reflect the active tab in the URL so it can be deep-linked / popped out.
+  // replaceState (not `location.hash=`) keeps the back button clean and fires no event.
+  try { history.replaceState(null, '', location.pathname + '#' + tab); } catch(e) {}
+}
+
+// Open whatever tab is currently active in a fresh browser view, deep-linked via
+// #<tab> so it lands straight on that tab. This opens a new TAB by default. To
+// force a separate free-floating WINDOW instead, add a size to the third arg,
+// e.g. window.open(url, '_blank', 'width=1400,height=900').
+function popOutCurrentTab(){
+  const active = document.querySelector('.tab-btn.active');
+  const tab = active ? active.id.replace('tab-btn-', '') : 'schedule';
+  window.open(location.pathname + '#' + tab, '_blank');
 }
 
 // ── RECRUITMENT (applicant triage; admin/operations only) ────────────────────
@@ -3725,6 +3781,14 @@ function recruitConvertRender(p){
   const worked   = !!p.worked_with_gigpower;
   const ackRequired = hasEmail || hasName || worked;
 
+  // Working-visa work-rights gate. It's an offence to employ a non-citizen without
+  // work rights, so a working-visa applicant needs a conscious VEVO check before
+  // convert. If an admin has recorded the check (vevo_check set) the warning clears;
+  // otherwise the operator must tick a dedicated acknowledgement to proceed. Soft
+  // (non-blocking) — ops stays in control — but forces the check to be conscious.
+  const vevoVerified = !!(p.vevo_check && p.vevo_check.verified_at);
+  const vevoAckNeeded = !!p.working_visa && !vevoVerified;
+
   // Warning blocks (only rendered when relevant).
   const matchLine = m => escapeHtml((m.name || '(no name)') + ' — ' + (m.email || 'no email')
                     + (m.ein ? ' · EIN ' + m.ein : '') + (m.active === 0 ? ' · inactive' : ''));
@@ -3738,10 +3802,23 @@ function recruitConvertRender(p){
   if(worked)
     warn += '<div class="rc-conv-warn"><b>They indicated they’ve worked with Gig Power before.</b><br>'
           + 'People often return under a new name or email — double-check they’re not already on the roster.</div>';
+  if(p.working_visa && vevoVerified)
+    warn += '<div class="rc-conv-warn" style="border-color:#2dd4bf;background:rgba(45,212,191,0.08)">'
+          + '<b style="color:#2dd4bf">✓ Working visa — work rights VEVO-verified'
+          + (p.vevo_check.verified_by ? ' by ' + escapeHtml(p.vevo_check.verified_by) : '')
+          + (p.vevo_check.verified_at ? ' on ' + recruitDate(p.vevo_check.verified_at) : '') + '.</b></div>';
+  if(vevoAckNeeded)
+    warn += '<div class="rc-conv-warn"><b>This applicant holds a working visa.</b><br>'
+          + 'Confirm their work rights via VEVO before converting — it’s an offence to employ a '
+          + 'non-citizen without work rights. (An admin can record the VEVO check on the applicant’s panel.)</div>';
 
   const ackHtml = ackRequired
     ? '<label class="rc-conv-ack"><input type="checkbox" id="rc-conv-ack" onchange="recruitConvertRecheck()">'
       + '<span>I’ve checked — create a NEW crew record anyway.</span></label>'
+    : '';
+  const vevoAckHtml = vevoAckNeeded
+    ? '<label class="rc-conv-ack"><input type="checkbox" id="rc-conv-vevo-ack" onchange="recruitConvertRecheck()">'
+      + '<span>I’ve confirmed this applicant’s work rights via VEVO.</span></label>'
     : '';
 
   // "What will be sent" (name is shown as the editable fields above).
@@ -3760,7 +3837,7 @@ function recruitConvertRender(p){
       efRow('First name *', efInput('rc-conv-first', p.proposed_firstname || ''))
     + efRow('Last name *',  efInput('rc-conv-last',  p.proposed_lastname  || ''))
     + '<div style="font-size:10px;color:var(--muted);padding:0 0 4px 122px">Edit the split if needed (e.g. “Mary Jane Watson”, “de Silva”).</div>'
-    + warn + ackHtml
+    + warn + ackHtml + vevoAckHtml
     + '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">What will be sent to SmartStaff</div>' + sendSummary + '</div>'
     + '<div id="rc-conv-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
@@ -3786,9 +3863,11 @@ function recruitConvertRecheck(){
   const first = (document.getElementById('rc-conv-first') || {}).value;
   const last  = (document.getElementById('rc-conv-last')  || {}).value;
   const ackEl = document.getElementById('rc-conv-ack');
+  const vevoAckEl = document.getElementById('rc-conv-vevo-ack');
   const namesOk = !!(first && first.trim() && last && last.trim());
   const ackOk   = !ackEl || ackEl.checked;
-  const ok = namesOk && ackOk;
+  const vevoOk  = !vevoAckEl || vevoAckEl.checked;
+  const ok = namesOk && ackOk && vevoOk;
   btn.disabled = !ok;
   btn.style.opacity = ok ? '1' : '0.45';
   btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
@@ -3805,6 +3884,10 @@ async function recruitConvertSubmit(id, ackRequired){
   const ackEl = document.getElementById('rc-conv-ack');
   const acknowledged = ackEl ? !!ackEl.checked : false;
   if(ackRequired && !acknowledged){ if(err) err.textContent = 'Please tick the confirm box first.'; return; }
+  // Working-visa work-rights gate (soft, client-side): if the dedicated VEVO ack is
+  // present it must be ticked. The recorded vevo_check flag removes it entirely.
+  const vevoAckEl = document.getElementById('rc-conv-vevo-ack');
+  if(vevoAckEl && !vevoAckEl.checked){ if(err) err.textContent = 'Please confirm work rights via VEVO first.'; return; }
 
   if(btn){ btn.disabled = true; btn.textContent = 'Creating…'; }
   try{
@@ -3975,6 +4058,14 @@ function recruitContractSignedAge(c){
     : (days === 1) ? 'Signed 1 day ago'
     : `Signed ${days} days ago`;
   return `<span class="recruit-contract-age">${text}</span>`;
+}
+// Amber "Working visa" chip for an applicant whose work_eligibility.status is
+// "working_visa" (a non-PII boolean the list feed derives as c.working_visa). Flags
+// at a glance that work rights must be checked via VEVO before convert. '' for
+// citizens/PRs and anyone who hasn't answered. Display only.
+function recruitVisaBadge(c){
+  if(!c || !c.working_visa) return '';
+  return '<span class="recruit-visa" title="Holds a working visa — verify work rights via VEVO before converting">Working visa</span>';
 }
 // Build TWO table rows for one applicant: a clickable summary row and a hidden
 // detail row (spanning all columns) that expands inline. `i` is the applicant's
@@ -4153,7 +4244,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
-      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}</td>
+      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
@@ -4256,7 +4347,171 @@ function recruitRenderDetail(d, i){
     <div class="recruit-xsection">Confirmations</div>
     ${recruitConfirmations(d.confirmations)}
     <div class="recruit-xsection">Licences</div>
-    ${recruitLicences(d.licences)}${recruitHealthSection(d, i)}`;
+    ${recruitLicences(d.licences)}${recruitWorkEligibilitySection(d, i)}${recruitHealthSection(d, i)}`;
+}
+
+// Work Eligibility section. The STATUS line (Citizen/PR vs Working visa) and the
+// VEVO-verified compliance line are non-PII and show for ALL ops users. The visa
+// & passport DETAIL is immigration PII: like health, it's revealed only for admins
+// and only on click, fetched from the separate admin-gated route. '' when the
+// applicant hasn't answered the eligibility question yet (older records).
+function recruitWorkEligibilitySection(d, i){
+  const we = d.work_eligibility || {};
+  const status = we.status || null;
+  if(status !== 'citizen_pr' && status !== 'working_visa') return '';
+  const label = status === 'citizen_pr'
+    ? 'Australian Citizen or Permanent Resident' : 'Working visa';
+  let html = `<div class="recruit-xsection">Work Eligibility</div>`
+    + `<div class="recruit-we-status"><b>${recruitEsc(label)}</b></div>`;
+  // Citizen/PR: status only — no visa block, no VEVO gate.
+  if(status !== 'working_visa') return html;
+  // Working visa: the VEVO compliance line for everyone…
+  html += `<div id="recruit-vevo-line-${i}">${recruitVevoLine(d.vevo_check)}</div>`;
+  // …and, for admins only, the reveal for the passport/visa PII (un-fetched until
+  // clicked, exactly like health).
+  if(window._cohort === 'admin'){
+    const id = recruitEsc(d.id || '');
+    if(id){
+      html += `<div class="recruit-we">`
+        + `<div class="recruit-we-banner">Sensitive — passport &amp; visa · admin only</div>`
+        + `<button class="recruit-action" onclick="recruitRevealWorkEligibility(${i}, '${id}')">Show visa &amp; passport details</button>`
+        + `<div class="recruit-we-body" id="recruit-we-body-${i}"></div>`
+        + `</div>`;
+    }
+  }
+  return html;
+}
+
+// The VEVO compliance line: green "verified — {date} by {who}" once an admin has
+// recorded the check (vevo_check set), else an amber "not yet verified" reminder.
+function recruitVevoLine(vc){
+  if(vc && vc.verified_at){
+    const when = recruitDate(vc.verified_at);
+    const who = vc.verified_by ? ' by ' + recruitEsc(vc.verified_by) : '';
+    return `<div class="recruit-vevo-ok">✓ Work rights VEVO-verified — ${when}${who}</div>`;
+  }
+  return `<div class="recruit-vevo-none">⚠ Work rights not yet VEVO-verified</div>`;
+}
+
+// Fetch + show one applicant's passport/visa detail on demand (admin only). Hits
+// the admin-gated route; a non-admin somehow reaching here gets a 403 we report
+// plainly. Loading + error + race-guard all mirror recruitRevealHealth.
+async function recruitRevealWorkEligibility(i, id){
+  const host = document.getElementById('recruit-we-body-' + i);
+  if(!host) return;
+  host.innerHTML = '<div class="recruit-xdetail-loading">Loading visa &amp; passport details…</div>';
+  const token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/work-eligibility',
+      { headers: { 'Accept': 'application/json' } });
+    if(host.__loadToken !== token) return;
+    if(!r.ok){
+      let msg = (r.status === 403)
+        ? 'You do not have permission to view visa & passport details.'
+        : 'Could not load visa & passport details.';
+      try{ const e = await r.json(); if(e && e.error) msg = e.error; }catch(_){}
+      host.innerHTML = '<div class="recruit-xdetail-error">' + recruitEsc(msg) + '</div>';
+      return;
+    }
+    const data = await r.json();
+    if(host.__loadToken !== token) return;
+    host.innerHTML = recruitRenderWorkEligibility(data, i, id);
+  }catch(err){
+    if(host.__loadToken !== token) return;
+    host.innerHTML = '<div class="recruit-xdetail-error">Could not load visa & passport details (network error).</div>';
+  }
+}
+
+// Render the admin-only immigration detail. Passport + country + View visa + VEVO
+// consent come from the applicant's own answers; the AI-extracted block is clearly
+// labelled "AI-suggested — verify via VEVO" and every value reads as tentative. A
+// pending/failed scan is stated honestly rather than shown as blanks. Ends with the
+// "Mark VEVO verified" control (the recorded compliance flag).
+function recruitRenderWorkEligibility(data, i, id){
+  data = data || {};
+  const we = data.work_eligibility || {};
+  const val = v => (v == null || v === '') ? '—' : recruitEsc(v);
+  const row = (k, v) => `<div class="recruit-we-row"><span class="recruit-we-k">${k}</span><span class="recruit-we-v">${v}</span></div>`;
+
+  let html = row('Passport number', val(we.passport_number))
+           + row('Country of issue', val(we.passport_country));
+
+  // View visa — a short-lived signed URL to the private bucket, same as the
+  // signed-contract link. Only when a visa PDF is on file and could be signed.
+  const visaUrl = data.visa && data.visa.url;
+  html += row('Visa document', visaUrl
+    ? `<a href="${recruitEsc(visaUrl)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-weight:600">View visa ↗</a>`
+    : '— (no file on record)');
+
+  // VEVO consent (the applicant's tick + timestamp).
+  const consent = (we.vevo_consent === true)
+    ? ('Consented' + (we.vevo_consent_at ? ' — ' + recruitDate(we.vevo_consent_at) : ''))
+    : 'Not consented';
+  html += row('VEVO consent', recruitEsc(consent));
+
+  // AI-suggested block — must read as tentative.
+  html += recruitRenderVisaExtraction(data.visa_extraction);
+
+  // Recorded VEVO check + the mark/clear control.
+  html += `<div id="recruit-vevo-body-line-${i}" style="margin:10px 0 6px">${recruitVevoLine(data.vevo_check)}</div>`;
+  const verified = !!(data.vevo_check && data.vevo_check.verified_at);
+  html += verified
+    ? `<button class="recruit-action" onclick="recruitMarkVevoVerified(${i}, '${recruitEsc(id)}', false)">Un-verify VEVO</button>`
+    : `<button class="recruit-action" onclick="recruitMarkVevoVerified(${i}, '${recruitEsc(id)}', true)">Mark VEVO verified</button>`;
+  return html;
+}
+
+// Render the AI-suggested visa facts. status "done" shows the extracted fields (any
+// missing → "—", never fabricated). "pending" / "failed" (or a missing scan) are
+// stated plainly so ops reads the visa directly rather than trusting a blank.
+function recruitRenderVisaExtraction(ex){
+  const head = '<div class="recruit-we-ai-head">AI-suggested — verify via VEVO</div>';
+  if(!ex || typeof ex !== 'object'){
+    return `<div class="recruit-we-ai">${head}<div class="recruit-we-k">No AI scan on record — read the visa directly.</div></div>`;
+  }
+  if(ex.status === 'pending'){
+    return `<div class="recruit-we-ai">${head}<div class="recruit-we-k">Scan pending — check back shortly, or read the visa directly.</div></div>`;
+  }
+  if(ex.status === 'failed'){
+    return `<div class="recruit-we-ai">${head}<div class="recruit-we-k">Scan unavailable — read the visa directly.</div></div>`;
+  }
+  const val = v => (v == null || v === '') ? '—' : recruitEsc(v);
+  const row = (k, v) => `<div class="recruit-we-row"><span class="recruit-we-k">${k}</span><span class="recruit-we-v">${v}</span></div>`;
+  let body = row('Subclass', val(ex.visa_subclass))
+           + row('Grant number', val(ex.visa_grant_number))
+           + row('TRN', val(ex.trn))
+           + row('Grant date', val(ex.visa_grant_date))
+           + row('Expiry', val(ex.visa_expiry))
+           + row('Conditions', val(ex.visa_conditions));
+  // Work-limitation flag — the quick "this visa restricts work" signal.
+  if(ex.has_work_limitation === true)
+    body += row('Work limitation', '<span class="recruit-we-limit">⚠ Restricted — check conditions</span>');
+  else if(ex.has_work_limitation === false)
+    body += row('Work limitation', 'None indicated');
+  return `<div class="recruit-we-ai">${head}${body}</div>`;
+}
+
+// Record (or clear) the VEVO-verified flag, then refresh both the in-body line and
+// the section's outer compliance line so the change shows immediately. Admin-only
+// (the route enforces it); errors are reported inline.
+async function recruitMarkVevoVerified(i, id, verify){
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/vevo-verify', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ verified: !!verify })
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    // Re-fetch the admin body (re-renders the button + in-body line)…
+    recruitRevealWorkEligibility(i, id);
+    // …and update the section's outer VEVO line in place.
+    const outer = document.getElementById('recruit-vevo-line-' + i);
+    if(outer) outer.innerHTML = recruitVevoLine(d.vevo_check);
+  }catch(err){
+    const host = document.getElementById('recruit-vevo-body-line-' + i);
+    if(host) host.innerHTML = '<div class="recruit-xdetail-error">Could not update VEVO status: ' + recruitEsc(err.message) + '</div>';
+  }
 }
 
 // ADMIN-ONLY health reveal. We only EMIT the button when the current user is in
