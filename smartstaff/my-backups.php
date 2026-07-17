@@ -54,11 +54,18 @@
 			call_crew_map.status       AS status,
 			call_crew_map.is_call_boss AS is_call_boss,
 			bookings.name     AS booking_name,
-			venues.venue      AS venue_name
+			venues.venue      AS venue_name,
+			cca.prev_start_date AS prev_start_date,
+			cca.prev_start_time AS prev_start_time,
+			cca.prev_est_length AS prev_est_length,
+			cca.changed_at      AS changed_at
 		FROM call_crew_map
 		LEFT JOIN calls    ON call_crew_map.callID  = calls.id
 		LEFT JOIN bookings ON calls.bookingID       = bookings.id
 		LEFT JOIN venues   ON bookings.venueID      = venues.id
+		LEFT JOIN call_change_ack cca
+		       ON cca.callID = call_crew_map.callID
+		      AND cca.userID = call_crew_map.userID
 		WHERE call_crew_map.userID = " . $userID . "
 		  AND call_crew_map.status = 7
 		  AND calls.id IS NOT NULL
@@ -82,7 +89,7 @@
 		$lengthSecs = (int) round(((double) $row->est_length) * 3600);
 		$endUnix    = $startUnix + $lengthSecs;
 
-		$backups[] = array(
+		$entry = array(
 			'call_id'      => (int) $row->call_id,
 			'booking_id'   => (int) $row->booking_id,
 			'call_name'    => $row->call_name,
@@ -96,6 +103,26 @@
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss
 		);
+
+		/*
+		/* A matched call_change_ack row means this standby call's timing changed
+		/* since the crew member was contacted. Emit the "was" timing as a heads-up
+		/* (the portal renders it as a heads-up, not action-needed). Resolved the
+		/* same way as the display start/end above. No match -> omit change_pending.
+		*/
+		if ($row->prev_start_date !== null)
+		{
+			$prevDateStr = date('Y-m-d', (int) $row->prev_start_date);
+			$prevStartTs = strtotime($prevDateStr . ' ' . $row->prev_start_time);
+			$prevEndTs   = $prevStartTs + (int) round(((double) $row->prev_est_length) * 3600);
+
+			$entry['change_pending'] = true;
+			$entry['prev_start']     = date('Y-m-d\TH:i:s', $prevStartTs);
+			$entry['prev_end']       = date('Y-m-d\TH:i:s', $prevEndTs);
+			$entry['changed_at']     = (int) $row->changed_at;
+		}
+
+		$backups[] = $entry;
 	}
 
 	echo json_encode(array('backups' => $backups));

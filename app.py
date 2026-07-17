@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.7.0"
+APP_VERSION    = "4.8.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -179,6 +179,47 @@ def gp_notify_promotion(crew_id, call):
         )
     except Exception:
         pass   # never let a push break the promote response
+
+GP_CHANGE_URL = "https://crew.gigpower.com/api/push/change"
+
+_gp_change_notified = {}   # (crew_id, call_id) -> last-sent epoch; in-memory dedup
+
+def gp_notify_change(crew_id, call, kind):
+    """Fire-and-forget push when a CONTACTED crew member's call TIMING changes.
+    crew_id = SmartStaff internal userID (the portal resolves it to an EIN).
+    kind: 'reconfirm' (confirmed 5 — please re-confirm), 'standby' (backup 7 —
+    heads-up), or 'info' (offered 0/1 — the offer card self-updates). Deduped per
+    (crew_id, call_id) for GP_PUSH_DEDUP_TTL seconds. Never raises — the edit
+    already happened; a push must not break the response. Uses the same secret as
+    the offer push, posted to a separate /api/push/change webhook so the portal
+    can word it by kind. The push is only a NUDGE — the card renders the full
+    delta from my-shifts / my-backups."""
+    try:
+        call_id = call.get("call_id")
+        key = (str(crew_id), str(call_id))
+        now = time.time()
+        if now - _gp_change_notified.get(key, 0) < GP_PUSH_DEDUP_TTL:
+            return
+        _gp_change_notified[key] = now
+        if len(_gp_change_notified) > 5000:                 # bound memory
+            cutoff = now - GP_PUSH_DEDUP_TTL
+            for k in [k for k, v in list(_gp_change_notified.items()) if v < cutoff]:
+                _gp_change_notified.pop(k, None)
+        http.post(
+            GP_CHANGE_URL,
+            json={
+                "user_id":   crew_id,
+                "call_id":   call_id,
+                "call_name": call.get("call_name", ""),
+                "start":     call.get("start_dt", ""),   # NEW start
+                "end":       call.get("end_dt", ""),      # NEW end
+                "kind":      kind,
+            },
+            headers={"X-Push-Secret": GP_PUSH_SECRET},
+            timeout=4,
+        )
+    except Exception:
+        pass   # never let a push break the call-edit response
 
 # ─── RECRUITMENT (ops applicant review) ───────────────────────────────────────
 # Read-only applicant list, served by a deployed Supabase edge function. The URL
@@ -7929,6 +7970,27 @@ def api_call_update(booking_id, call_id):
     result, err = ss_update_call_bulk(ss, call_id, call)
     if err:
         return jsonify({"error": err}), 502
+
+    # If the edit changed the TIMING, the endpoint flagged confirmed/backup crew
+    # (call_change_ack) and returned per-status push lists. Fan out a change push
+    # so contacted crew are nudged. Fire-and-forget: the edit already succeeded,
+    # so nothing here may block or fail the response. The push carries the NEW
+    # start/end; the card renders the full delta from my-shifts / my-backups, so
+    # it no-ops safely until the portal's /api/push/change webhook is live.
+    if isinstance(result, dict) and result.get("timing_changed"):
+        change_call = {
+            "call_id":   call_id,
+            "call_name": call.get("call_name", ""),   # submitted name
+            "start_dt":  result.get("new_start", ""),
+            "end_dt":    result.get("new_end", ""),
+        }
+        for uid in result.get("reconfirm_users", []) or []:
+            gp_notify_change(uid, change_call, "reconfirm")
+        for uid in result.get("standby_users", []) or []:
+            gp_notify_change(uid, change_call, "standby")
+        for uid in result.get("info_users", []) or []:
+            gp_notify_change(uid, change_call, "info")
+
     return jsonify(result)
 
 

@@ -90,11 +90,18 @@
 			c.bookingID     AS booking_id,
 			c.call_name     AS call_name,
 			b.name          AS booking_name,
-			v.venue         AS venue_name
+			v.venue         AS venue_name,
+			cca.prev_start_date AS prev_start_date,
+			cca.prev_start_time AS prev_start_time,
+			cca.prev_est_length AS prev_est_length,
+			cca.changed_at      AS changed_at
 		FROM calendars cal
 		LEFT JOIN calls    c ON c.id  = cal.call
 		LEFT JOIN bookings b ON b.id  = c.bookingID
 		LEFT JOIN venues   v ON v.id  = b.venueID
+		LEFT JOIN call_change_ack cca
+		       ON cca.callID = cal.call
+		      AND cca.userID = cal.user
 		WHERE cal.user = $userID
 		  AND cal.start < $end_sql
 		  AND cal.end   > $start_sql
@@ -143,6 +150,26 @@
 			$entry['call_name']    = $row->call_name;
 			$entry['booking_name'] = $row->booking_name;
 			$entry['venue']        = $row->venue_name;
+
+			/*
+			/* A matched call_change_ack row means this confirmed shift has an
+			/* OUTSTANDING timing change awaiting the crew member's Accept/Decline.
+			/* Emit the "was" timing so the portal can render the delta. Resolved
+			/* the SAME way as the offer/backup endpoints (unix date + start_time;
+			/* end = start + prev_est_length hours). No match -> omit change_pending.
+			*/
+			if ($row->prev_start_date !== null)
+			{
+				$prevDateStr  = date('Y-m-d', (int) $row->prev_start_date);
+				$prevStartTs  = strtotime($prevDateStr . ' ' . $row->prev_start_time);
+				$prevEndTs    = $prevStartTs + (int) round(((double) $row->prev_est_length) * 3600);
+
+				$entry['change_pending'] = true;
+				$entry['prev_start']     = date('Y-m-d\TH:i:s', $prevStartTs);
+				$entry['prev_end']       = date('Y-m-d\TH:i:s', $prevEndTs);
+				$entry['changed_at']     = (int) $row->changed_at;
+			}
+
 			$shifts[] = $entry;
 		}
 		else

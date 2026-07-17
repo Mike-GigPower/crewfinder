@@ -110,9 +110,13 @@
 
 			$crres = mysql_query("SELECT users.id, users.firstname, users.lastname, users.mobile, users.phone,
 			                             users.ein, users.email,
-			                             call_crew_map.status, call_crew_map.is_call_boss
+			                             call_crew_map.status, call_crew_map.is_call_boss,
+			                             cca.id AS change_ack_id
 			                      FROM call_crew_map
 			                      LEFT JOIN users ON call_crew_map.userID = users.id
+			                      LEFT JOIN call_change_ack cca
+			                             ON cca.callID = call_crew_map.callID
+			                            AND cca.userID = call_crew_map.userID
 			                      WHERE call_crew_map.callID = " . $callID . "
 			                      ORDER BY users.lastname ASC, users.firstname ASC");
 
@@ -126,17 +130,27 @@
 					if ($st === 5)
 						$confirmed++;
 
+					/*
+					/* Ops re-confirm badge: a call_change_ack row means this crew
+					/* member has an OUTSTANDING timing change. GUARDED to status 5/7
+					/* so a stale row on an admin-declined person never renders a
+					/* badge (the 5/7 confirmed/backup rows are the filling risk ops
+					/* care about).
+					*/
+					$changePending = (($st === 5 || $st === 7) && $cr->change_ack_id !== null) ? true : false;
+
 					$crew[] = array(
-						'id'           => (int) $cr->id,
-						'name'         => trim($cr->firstname . ' ' . $cr->lastname),
-						'firstname'    => html_entity_decode($cr->firstname, ENT_QUOTES),
-						'lastname'     => html_entity_decode($cr->lastname, ENT_QUOTES),
-						'ein'          => $cr->ein,
-						'email'        => $cr->email,
-						'mobile'       => $cr->mobile,
-						'phone'        => $cr->phone,
-						'status'       => $statusStr,
-						'is_call_boss' => (int) $cr->is_call_boss,
+						'id'             => (int) $cr->id,
+						'name'           => trim($cr->firstname . ' ' . $cr->lastname),
+						'firstname'      => html_entity_decode($cr->firstname, ENT_QUOTES),
+						'lastname'       => html_entity_decode($cr->lastname, ENT_QUOTES),
+						'ein'            => $cr->ein,
+						'email'          => $cr->email,
+						'mobile'         => $cr->mobile,
+						'phone'          => $cr->phone,
+						'status'         => $statusStr,
+						'is_call_boss'   => (int) $cr->is_call_boss,
+						'change_pending' => $changePending,
 					);
 				}
 			}
