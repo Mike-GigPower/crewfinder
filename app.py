@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.6.0"
+APP_VERSION    = "4.7.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4041,6 +4041,60 @@ def ss_push_licence(ss, user_id, licence_type, date_certified, date_expiry, pdf_
     return out, None
 
 
+def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version):
+    """POST the signed employment contract to admin-add-contract.php on the shared
+    admin session `ss` (admin-gated, explicit target user). The PDF is required.
+    Mirrors ss_push_licence. Returns (result_dict, error_str); a result with
+    skipped=True means a contract row already existed (a normal retry outcome)."""
+    if not pdf_bytes:
+        return None, "no contract PDF"
+    data = {
+        "user":      str(user_id),
+        "signed_at": signed_at or "",
+        "version":   version or "",
+    }
+    files = {"contract_pdf": ("contract.pdf", pdf_bytes, "application/pdf")}
+    try:
+        resp = ss.post(f"{BASE_URL}/ajax/crew/admin-add-contract.php",
+                       data=data, files=files, allow_redirects=True)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+def ss_push_visa(ss, user_id, fields, pdf_bytes):
+    """POST the visa record to admin-set-visa.php on the shared admin session `ss`
+    (admin-gated, explicit target user). Upserts user_visa and sets the
+    users.is_visa_worker flag. `fields` is the flat form dict (only non-empty keys
+    are sent); the visa PDF is optional. Mirrors ss_push_licence. Returns
+    (result_dict, error_str)."""
+    data = {"user": str(user_id)}
+    for k, v in (fields or {}).items():
+        if v is not None and v != "":
+            data[k] = str(v)
+    files = None
+    if pdf_bytes:
+        files = {"visa_pdf": ("visa.pdf", pdf_bytes, "application/pdf")}
+    try:
+        resp = ss.post(f"{BASE_URL}/ajax/crew/admin-set-visa.php",
+                       data=data, files=files, allow_redirects=True)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
 def _push_candidate_licences(ss, user_id, licences):
     """Convert-B: push a converted candidate's onboarding licences into SmartStaff
     user_licenses, ONE admin-add-license.php call at a time (sequential — the box
@@ -4264,6 +4318,88 @@ def _push_candidate_inductions(ss, user_id, inductions):
     return results
 
 
+# ─── CONVERT-B: CONTRACT + VISA ───────────────────────────────────────────────
+# Carry the signed employment contract (all crew) and — for working-visa crew —
+# the visa PDF + visa fields across to SmartStaff, the system of record for active
+# crew. Same best-effort, idempotent, sequential contract as the licence/induction
+# pushes: nothing here raises, so a contract/visa problem never aborts the
+# conversion; both SmartStaff endpoints are idempotent per user, so a partial/
+# failed push is simply retried by re-running convert.
+def _push_candidate_contract(ss, user_id, contract):
+    """Push the candidate's signed contract PDF into SmartStaff user_documents
+    (admin-add-contract.php). `contract` is the candidate-detail 'contract' block
+    {url(signed PDF), signed_at, version}. Returns a single {ok, skipped?, error?}
+    dict; never raises."""
+    if not isinstance(contract, dict) or not contract.get("url"):
+        return {"ok": False, "error": "no signed contract on file"}
+    try:
+        r = http.get(contract.get("url"), timeout=20)
+        if r.status_code != 200 or not r.content:
+            return {"ok": False, "error": f"PDF fetch HTTP {r.status_code}"}
+        pdf_bytes = r.content
+    except Exception as e:
+        return {"ok": False, "error": f"PDF fetch failed: {e}"}
+
+    out, err = ss_push_contract(ss, user_id, pdf_bytes,
+                                contract.get("signed_at"), contract.get("version"))
+    if err:
+        return {"ok": False, "error": err}
+    if out.get("skipped"):
+        return {"ok": True, "skipped": True}
+    return {"ok": True, "skipped": False, "id": out.get("id"), "pdf_file": out.get("pdf_file")}
+
+
+def _push_candidate_visa(ss, user_id, cand_id):
+    """Push a working-visa candidate's visa record + PDF into SmartStaff user_visa
+    (admin-set-visa.php). Reads the ADMIN-gated work-eligibility feed for the
+    passport/visa fields + AI-extracted visa facts + recorded VEVO check, downloads
+    the visa PDF, and upserts. Only call this when work_eligibility.status ==
+    'working_visa'. Returns {ok, updated?, error?}; never raises."""
+    feed, ferr = _recruit_fetch_work_eligibility(cand_id)
+    if ferr or not isinstance(feed, dict):
+        return {"ok": False, "error": f"work-eligibility fetch failed: {ferr or 'no data'}"}
+
+    we = feed.get("work_eligibility") or {}
+    ex = feed.get("visa_extraction") or {}
+    vc = feed.get("vevo_check") or {}
+    fields = {
+        "work_eligibility_status": we.get("status"),
+        "passport_number":   we.get("passport_number"),
+        "passport_country":  we.get("passport_country"),
+        "visa_subclass":     ex.get("visa_subclass"),
+        "visa_grant_number": ex.get("visa_grant_number"),
+        "trn":               ex.get("trn"),
+        "visa_grant_date":   ex.get("visa_grant_date"),
+        "visa_expiry":       ex.get("visa_expiry"),
+        "visa_conditions":   ex.get("visa_conditions"),
+        "vevo_verified_at":  vc.get("verified_at"),
+        "vevo_verified_by":  vc.get("verified_by"),
+    }
+    hwl = ex.get("has_work_limitation")
+    if hwl is True:
+        fields["has_work_limitation"] = "1"
+    elif hwl is False:
+        fields["has_work_limitation"] = "0"
+
+    # Visa PDF is optional — a metadata-only upsert still records the fields.
+    pdf_bytes = None
+    visa = feed.get("visa") or {}
+    vurl = visa.get("url")
+    if vurl:
+        try:
+            r = http.get(vurl, timeout=20)
+            if r.status_code == 200 and r.content:
+                pdf_bytes = r.content
+        except Exception:
+            pdf_bytes = None
+
+    out, err = ss_push_visa(ss, user_id, fields, pdf_bytes)
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True, "updated": bool(out.get("updated")),
+            "id": out.get("id"), "visa_pdf": out.get("visa_pdf")}
+
+
 def _recruit_split_name(full):
     """Default first/last split for the preview: first word = firstname, the rest
     = lastname. Ops can edit both in the modal, so this only has to be a sane
@@ -4377,6 +4513,31 @@ def _recruit_fetch_detail(cand_id):
         return None, "not_found"
     if r.status_code != 200:
         print(f"[recruitment] convert detail returned {r.status_code}")
+        return None, "Recruitment service error"
+    try:
+        return r.json(), None
+    except Exception:
+        return None, "Bad response from recruitment service"
+
+
+def _recruit_fetch_work_eligibility(cand_id):
+    """Fetch the ADMIN work-eligibility feed for ONE candidate (passport/visa
+    fields, AI-extracted visa facts, a FRESH signed visa URL, and the recorded VEVO
+    check), exactly like _recruit_fetch_detail but from the admin-gated endpoint.
+    Only used by the convert-B visa push. Returns (dict, error)."""
+    if not GOAT_RECRUITMENT_KEY:
+        return None, "Recruitment key not configured"
+    try:
+        r = http.get(RECRUITMENT_CANDIDATE_WORK_ELIGIBILITY_URL,
+                     headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                     params={"id": cand_id}, timeout=15)
+    except Exception as e:
+        print(f"[recruitment] convert work-eligibility request failed: {e}")
+        return None, "Recruitment service unavailable"
+    if r.status_code == 404:
+        return None, "not_found"
+    if r.status_code != 200:
+        print(f"[recruitment] convert work-eligibility returned {r.status_code}")
         return None, "Recruitment service error"
     try:
         return r.json(), None
@@ -4667,6 +4828,30 @@ def api_recruitment_convert(cand_id):
         print(f"[recruitment] convert induction push crashed: {e}")
         induction_results = []
 
+    # 10. Convert-B — push the signed employment contract into SmartStaff
+    #     user_documents (admin-add-contract.php). Every convertible candidate is
+    #     all_docs_received, so a signed contract always exists. Best-effort +
+    #     idempotent per user: a failure never fails the conversion, and a re-convert
+    #     skips an already-stored contract.
+    try:
+        contract_result = _push_candidate_contract(ss, uid, detail.get("contract"))
+    except Exception as e:
+        print(f"[recruitment] convert contract push crashed: {e}")
+        contract_result = {"ok": False, "error": "contract push crashed"}
+
+    # 11. Convert-B — for a WORKING-VISA candidate only, push the visa record + PDF
+    #     into SmartStaff user_visa (admin-set-visa.php), reading the admin-gated
+    #     work-eligibility feed. Citizen/PR crew get no visa write. Same best-effort +
+    #     idempotent (upsert per user) contract as the pushes above.
+    visa_result = None
+    we_status = (detail.get("work_eligibility") or {}).get("status")
+    if we_status == "working_visa":
+        try:
+            visa_result = _push_candidate_visa(ss, uid, cand_id)
+        except Exception as e:
+            print(f"[recruitment] convert visa push crashed: {e}")
+            visa_result = {"ok": False, "error": "visa push crashed"}
+
     return jsonify({
         "ok":       True,
         "id":       uid,
@@ -4678,6 +4863,8 @@ def api_recruitment_convert(cand_id):
         "warning":  stamp_warning,
         "licences": licence_results,
         "inductions": induction_results,
+        "contract": contract_result,
+        "visa":     visa_result,
     })
 
 
