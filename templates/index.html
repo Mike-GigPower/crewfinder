@@ -3503,18 +3503,19 @@ async function recruitBatchSentToEh(){
   if(ids.length === 0) return;
   const input = prompt(
     `Commencement (start) date for these ${ids.length} applicant(s).\n\n` +
-    `Enter as YYYY-MM-DD (e.g. 2026-09-01). Gig Power runs monthly casual intakes, ` +
+    `Enter as DD-MM-YYYY (e.g. 01-09-2026). Gig Power runs monthly casual intakes, ` +
     `so the whole cohort shares one start date. It's merged into each contract, and ` +
     `sending them to EH emails each applicant their contract to sign.`,
     ''
   );
   if(input === null) return;  // cancelled
-  const v = input.trim();
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(new Date(v + 'T00:00:00').getTime())){
-    alert('Please enter a valid date as YYYY-MM-DD (e.g. 2026-09-01).');
+  const entered = input.trim();
+  const v = recruitDmyToIso(entered);  // ISO for the wire; null if not a real date
+  if(!v){
+    alert('Please enter a valid date as DD-MM-YYYY (e.g. 01-09-2026).');
     return;
   }
-  if(!confirm(`Send ${ids.length} applicant(s) to EH with commencement date ${v}?\n\nThis emails each of them their contract to sign.`)) return;
+  if(!confirm(`Send ${ids.length} applicant(s) to EH with commencement date ${entered}?\n\nThis emails each of them their contract to sign.`)) return;
   const bar = document.getElementById('recruit-batch');
   if(bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
   let ok = 0, fail = 0;
@@ -3583,24 +3584,44 @@ async function recruitSetStatus(id, status, btn){
   }
 }
 
+// Ops enter the commencement date DAY-FIRST (DD-MM-YYYY). Everything downstream —
+// storage, the edge function, the contract merge — stays ISO, so we convert at the
+// boundary. recruitDmyToIso returns "YYYY-MM-DD" or null if it isn't a real
+// calendar date (rejects e.g. 31-02-2026); recruitIsoToDmy is the reverse, for
+// prefilling the prompt from a stored ISO value.
+function recruitDmyToIso(input){
+  const v = String(input == null ? '' : input).trim();
+  if(!/^\d{2}-\d{2}-\d{4}$/.test(v)) return null;
+  const [dd, mm, yyyy] = v.split('-').map(Number);
+  const dt = new Date(yyyy, mm - 1, dd);
+  if(dt.getFullYear() !== yyyy || dt.getMonth() !== mm - 1 || dt.getDate() !== dd) return null;
+  const p = n => String(n).padStart(2, '0');
+  return `${yyyy}-${p(mm)}-${p(dd)}`;
+}
+function recruitIsoToDmy(iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
+}
+
 // "Mark Sent to EH" — like recruitSetStatus, but first collects the ops-entered
 // commencement (start) date, which is merged into the candidate's employment
 // contract and, once set, triggers the contract-signing email (server-side). We
-// prompt for the date and pass it through to set-status as commencement_date.
+// prompt for the date (day-first) and pass ISO through to set-status as
+// commencement_date.
 async function recruitSentToEh(id, btn){
   const cand = _recruitRows.find(c => String(c.id) === String(id)) || {};
   const name = cand.name || 'this applicant';
-  const existing = cand.commencement_date || '';
+  const existing = recruitIsoToDmy(cand.commencement_date);
   const input = prompt(
     `Commencement (start) date for ${name}.\n\n` +
-    `Enter as YYYY-MM-DD (e.g. 2026-08-03). This is merged into their employment ` +
+    `Enter as DD-MM-YYYY (e.g. 01-09-2026). This is merged into their employment ` +
     `contract, and sending them to EH emails their contract to sign.`,
     existing
   );
   if(input === null) return;  // cancelled — no change
-  const v = input.trim();
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(new Date(v + 'T00:00:00').getTime())){
-    alert('Please enter a valid date as YYYY-MM-DD (e.g. 2026-08-03).');
+  const v = recruitDmyToIso(input);  // ISO for the wire; null if not a real date
+  if(!v){
+    alert('Please enter a valid date as DD-MM-YYYY (e.g. 01-09-2026).');
     return;
   }
   if(btn) btn.disabled = true;
