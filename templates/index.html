@@ -3410,20 +3410,64 @@ function recruitClearSelection(){
   recruitUpdateBatchBar();
 }
 // Show the action bar with a live count when ≥1 row is ticked; hide it otherwise.
+// Batch actions valid for a candidate at status `cur`, as a Set of action keys.
+// Mirrors the per-candidate detail-panel logic (RECRUIT_MOVE_LABELS + the same
+// stage guards) so the batch bar and detail panel agree on what's valid per stage:
+//   invite      → Invite to induction (New only)
+//   reinvite    → Re-invite to induction (Invited only)
+//   sent_to_eh  → Mark Sent to EH (Attended / Details Submitted)
+//   hold/not_suitable → the general park/reject actions, on the pre-crew triage
+//                       stages only.
+// Late stages (sent_to_eh, all_docs_received, active_crew, withdrawn) return an
+// empty set — no stage-change batch action applies.
+function recruitBatchActionsFor(cur){
+  switch(cur){
+    case 'applied':               return new Set(['invite','hold','not_suitable']);
+    case 'invited_to_induction':  return new Set(['reinvite','hold','not_suitable']);
+    case 'booked':                return new Set(['hold','not_suitable']);
+    case 'attended':              return new Set(['sent_to_eh','hold','not_suitable']);
+    case 'details_submitted':     return new Set(['sent_to_eh','hold','not_suitable']);
+    case 'on_hold':               return new Set(['hold','not_suitable']);
+    case 'not_suitable':          return new Set(['hold','not_suitable']);
+    default:                      return new Set(); // late stages: no batch actions
+  }
+}
+
+// Stage-aware batch bar: the offered actions are the INTERSECTION of what's valid
+// for every selected candidate's current stage, so a mixed-stage selection only
+// shows universally-valid actions (in practice Hold / Not suitable), never a
+// stage-specific one that would fail for some. An empty intersection (e.g. all
+// late-stage) shows just the count + Clear.
 function recruitUpdateBatchBar(){
   const bar = document.getElementById('recruit-batch');
   if(!bar) return;
   const n = _recruitSelected.size;
   if(n === 0){ bar.style.display = 'none'; bar.innerHTML = ''; return; }
   bar.style.display = 'flex';
+
+  const selStatuses = new Set(
+    Array.from(_recruitSelected)
+      .map(id => (_recruitRows.find(c => String(c.id) === String(id)) || {}).status)
+      .filter(Boolean)
+  );
+  let actions = null;
+  selStatuses.forEach(s => {
+    const set = recruitBatchActionsFor(s);
+    actions = (actions === null) ? new Set(set) : new Set([...actions].filter(a => set.has(a)));
+  });
+  actions = actions || new Set();
+
+  const btns = [];
+  if(actions.has('invite'))       btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchInvite()">Invite to induction</button>`);
+  if(actions.has('reinvite'))     btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchInvite()">Re-invite to induction</button>`);
+  if(actions.has('sent_to_eh'))   btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSentToEh()">Mark Sent to EH</button>`);
+  if(actions.has('hold'))         btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('on_hold')">Hold</button>`);
+  if(actions.has('not_suitable')) btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('not_suitable')">Not suitable</button>`);
+
   bar.innerHTML =
     `<span class="recruit-batch-count">${n} selected</span>`
     + `<button class="recruit-batch-clear" onclick="recruitClearSelection()">Clear</button>`
-    + `<span class="recruit-batch-actions">`
-    +   `<button class="recruit-batch-btn" onclick="recruitBatchInvite()">Invite to induction</button>`
-    +   `<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('on_hold')">Hold</button>`
-    +   `<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('not_suitable')">Not suitable</button>`
-    + `</span>`;
+    + `<span class="recruit-batch-actions">${btns.join('')}</span>`;
 }
 // Batch relabel (Hold / Not suitable) — reuses the single-row set-status route,
 // one call per applicant. No emails are sent.
@@ -3447,6 +3491,45 @@ async function recruitBatchSetStatus(status){
   if(fail) alert(`Moved ${ok} to “${label}”. ${fail} could not be updated.`);
   _recruitSelected.clear();
   await loadRecruitment();  // refetch so cards land in their new piles
+}
+// Batch "Mark Sent to EH" — Gig Power runs MONTHLY casual intakes, and casuals
+// aren't paid unless they work, so the whole cohort commences on ONE shared date.
+// So we prompt ONCE for that date and apply it to every selected candidate (same
+// validation as the per-candidate flow), then send each to EH — which stamps
+// commencement_date and fires their contract-signing email. The per-candidate
+// detail-panel "Mark Sent to EH" stays for one-off sends between intakes.
+async function recruitBatchSentToEh(){
+  const ids = Array.from(_recruitSelected);
+  if(ids.length === 0) return;
+  const input = prompt(
+    `Commencement (start) date for these ${ids.length} applicant(s).\n\n` +
+    `Enter as YYYY-MM-DD (e.g. 2026-09-01). Gig Power runs monthly casual intakes, ` +
+    `so the whole cohort shares one start date. It's merged into each contract, and ` +
+    `sending them to EH emails each applicant their contract to sign.`,
+    ''
+  );
+  if(input === null) return;  // cancelled
+  const v = input.trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(new Date(v + 'T00:00:00').getTime())){
+    alert('Please enter a valid date as YYYY-MM-DD (e.g. 2026-09-01).');
+    return;
+  }
+  if(!confirm(`Send ${ids.length} applicant(s) to EH with commencement date ${v}?\n\nThis emails each of them their contract to sign.`)) return;
+  const bar = document.getElementById('recruit-batch');
+  if(bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
+  let ok = 0, fail = 0;
+  for(const id of ids){
+    try{
+      const r = await fetch('/api/recruitment/set-status', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ id, status:'sent_to_eh', commencement_date: v })
+      });
+      if(r.ok) ok++; else fail++;
+    }catch(e){ fail++; }
+  }
+  if(fail) alert(`Sent ${ok} to EH. ${fail} could not be updated.`);
+  _recruitSelected.clear();
+  await loadRecruitment();
 }
 // Batch invite — reuses the single-row invite route, one call per applicant.
 // This EMAILS each applicant, so it confirms once for the whole batch and
@@ -3956,6 +4039,11 @@ function renderRecruitRow(c, i){
     // So no generic button ever moves anyone INTO it (mirrors active_crew above).
     // The value stays allow-listed server-side for rare manual correction.
     if(s === 'details_submitted') return '';
+    // "All Docs Received" is reached ONLY by the automatic two-signal gate (EH
+    // self-setup complete + contract signed) — never a manual triage destination,
+    // and it has no RECRUIT_MOVE_LABELS entry. Guard it like details_submitted /
+    // active_crew above so the generic button below never renders an "undefined".
+    if(s === 'all_docs_received') return '';
     // A withdrawn applicant is read-only (they've opted out): don't offer the
     // normal triage buttons. Allow only a single "Back to New", in case someone
     // withdrew by mistake and needs putting back in the pipeline.
