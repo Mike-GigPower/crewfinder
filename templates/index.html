@@ -3781,13 +3781,13 @@ function recruitConvertRender(p){
   const worked   = !!p.worked_with_gigpower;
   const ackRequired = hasEmail || hasName || worked;
 
-  // Working-visa work-rights gate. It's an offence to employ a non-citizen without
-  // work rights, so a working-visa applicant needs a conscious VEVO check before
-  // convert. If an admin has recorded the check (vevo_check set) the warning clears;
-  // otherwise the operator must tick a dedicated acknowledgement to proceed. Soft
-  // (non-blocking) — ops stays in control — but forces the check to be conscious.
+  // Working-visa work-rights signal. It's an offence to employ a non-citizen
+  // without work rights. VEVO can only be run by an admin (visa data is admin-only),
+  // so an ops user can't attest to it — we DON'T ask them to. Instead: if an admin
+  // has recorded the check (vevo_check set) we show a green all-clear; otherwise we
+  // show a reminder here and a non-blocking "proceed anyway?" confirm on submit.
   const vevoVerified = !!(p.vevo_check && p.vevo_check.verified_at);
-  const vevoAckNeeded = !!p.working_visa && !vevoVerified;
+  const vevoUnverified = !!p.working_visa && !vevoVerified;
 
   // Warning blocks (only rendered when relevant).
   const matchLine = m => escapeHtml((m.name || '(no name)') + ' — ' + (m.email || 'no email')
@@ -3807,18 +3807,15 @@ function recruitConvertRender(p){
           + '<b style="color:#2dd4bf">✓ Working visa — work rights VEVO-verified'
           + (p.vevo_check.verified_by ? ' by ' + escapeHtml(p.vevo_check.verified_by) : '')
           + (p.vevo_check.verified_at ? ' on ' + recruitDate(p.vevo_check.verified_at) : '') + '.</b></div>';
-  if(vevoAckNeeded)
+  if(vevoUnverified)
     warn += '<div class="rc-conv-warn"><b>This applicant holds a working visa.</b><br>'
-          + 'Confirm their work rights via VEVO before converting — it’s an offence to employ a '
-          + 'non-citizen without work rights. (An admin can record the VEVO check on the applicant’s panel.)</div>';
+          + 'Their work rights haven’t been VEVO-verified by an admin yet — it’s an offence to employ a '
+          + 'non-citizen without work rights. An admin can record the VEVO check on the applicant’s panel; '
+          + 'you’ll be asked to confirm before converting.</div>';
 
   const ackHtml = ackRequired
     ? '<label class="rc-conv-ack"><input type="checkbox" id="rc-conv-ack" onchange="recruitConvertRecheck()">'
       + '<span>I’ve checked — create a NEW crew record anyway.</span></label>'
-    : '';
-  const vevoAckHtml = vevoAckNeeded
-    ? '<label class="rc-conv-ack"><input type="checkbox" id="rc-conv-vevo-ack" onchange="recruitConvertRecheck()">'
-      + '<span>I’ve confirmed this applicant’s work rights via VEVO.</span></label>'
     : '';
 
   // "What will be sent" (name is shown as the editable fields above).
@@ -3837,7 +3834,7 @@ function recruitConvertRender(p){
       efRow('First name *', efInput('rc-conv-first', p.proposed_firstname || ''))
     + efRow('Last name *',  efInput('rc-conv-last',  p.proposed_lastname  || ''))
     + '<div style="font-size:10px;color:var(--muted);padding:0 0 4px 122px">Edit the split if needed (e.g. “Mary Jane Watson”, “de Silva”).</div>'
-    + warn + ackHtml + vevoAckHtml
+    + warn + ackHtml
     + '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">What will be sent to SmartStaff</div>' + sendSummary + '</div>'
     + '<div id="rc-conv-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
@@ -3863,11 +3860,9 @@ function recruitConvertRecheck(){
   const first = (document.getElementById('rc-conv-first') || {}).value;
   const last  = (document.getElementById('rc-conv-last')  || {}).value;
   const ackEl = document.getElementById('rc-conv-ack');
-  const vevoAckEl = document.getElementById('rc-conv-vevo-ack');
   const namesOk = !!(first && first.trim() && last && last.trim());
   const ackOk   = !ackEl || ackEl.checked;
-  const vevoOk  = !vevoAckEl || vevoAckEl.checked;
-  const ok = namesOk && ackOk && vevoOk;
+  const ok = namesOk && ackOk;
   btn.disabled = !ok;
   btn.style.opacity = ok ? '1' : '0.45';
   btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
@@ -3884,10 +3879,16 @@ async function recruitConvertSubmit(id, ackRequired){
   const ackEl = document.getElementById('rc-conv-ack');
   const acknowledged = ackEl ? !!ackEl.checked : false;
   if(ackRequired && !acknowledged){ if(err) err.textContent = 'Please tick the confirm box first.'; return; }
-  // Working-visa work-rights gate (soft, client-side): if the dedicated VEVO ack is
-  // present it must be ticked. The recorded vevo_check flag removes it entirely.
-  const vevoAckEl = document.getElementById('rc-conv-vevo-ack');
-  if(vevoAckEl && !vevoAckEl.checked){ if(err) err.textContent = 'Please confirm work rights via VEVO first.'; return; }
+  // Working-visa work-rights reminder (soft, non-blocking). VEVO is admin-only, so we
+  // don't ask ops to attest to it — we just make them pause. If an admin hasn't
+  // recorded the check (vevo_check), a "proceed anyway?" confirm gates the click;
+  // Cancel aborts, OK proceeds. The recorded flag removes this entirely.
+  const cp = window._recruitConvert || {};
+  const vevoUnverified = !!cp.working_visa && !(cp.vevo_check && cp.vevo_check.verified_at);
+  if(vevoUnverified &&
+     !confirm('Work rights haven’t been VEVO-verified by an admin yet — proceed anyway?')){
+    return;
+  }
 
   if(btn){ btn.disabled = true; btn.textContent = 'Creating…'; }
   try{

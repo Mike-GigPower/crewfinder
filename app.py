@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.5.2"
+APP_VERSION    = "4.6.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -200,6 +200,15 @@ RECRUITMENT_CANDIDATE_DETAIL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/fun
 # sensitive thing we hold. Its proxy route is gated to the ADMIN cohort ONLY
 # (never operations); the edge function returns just { reference, name, health }.
 RECRUITMENT_CANDIDATE_HEALTH_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-health"
+# Same base URL: ADMIN-ONLY immigration detail for ONE candidate — passport/visa
+# data + a signed URL for the visa PDF + the AI-suggested visa facts. Same posture
+# as health: its proxy route is gated to the ADMIN cohort ONLY. The shared detail
+# feed exposes only work_eligibility.status; the sensitive fields come from here.
+RECRUITMENT_CANDIDATE_WORK_ELIGIBILITY_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-work-eligibility"
+# Same base URL: records (or clears) the "VEVO verified" compliance flag on ONE
+# candidate. ADMIN-ONLY proxy route (verifying work rights requires the visa data
+# that only admins can see). Writes the separate vevo_check column.
+RECRUITMENT_VEVO_VERIFY_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-vevo-verify"
 # The only statuses this doorway may set — must match the edge function exactly.
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "all_docs_received", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
@@ -3701,6 +3710,93 @@ def api_recruitment_candidate_health(cand_id):
         return jsonify({"error": "Bad response from recruitment service"}), 502
 
 
+@app.route("/api/recruitment/candidate/<cand_id>/work-eligibility", methods=["GET"])
+@require_cohort("admin")
+def api_recruitment_candidate_work_eligibility(cand_id):
+    """ADMIN-ONLY: a working-visa applicant's immigration detail — passport/visa
+    data, a short-lived signed URL for the visa PDF, and the AI-suggested visa
+    facts.
+
+    SAME GATE AS HEALTH: @require_cohort("admin") — NOT "admin","operations". This
+    decorator IS the real access control (immigration PII): a logged-in operations
+    user is refused here with the standard 403 BEFORE this body runs, so the edge
+    function is never called for them. The shared candidate-detail feed only ever
+    exposes work_eligibility.status; everything sensitive comes from THIS route.
+
+    Same key discipline as the other recruitment routes: GOAT_RECRUITMENT_KEY stays
+    in Python, sent in the X-Goat-Service-Key header, never seen by the browser."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    try:
+        r = http.get(
+            RECRUITMENT_CANDIDATE_WORK_ELIGIBILITY_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            params={"id": cand_id},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] candidate-work-eligibility request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code == 404:
+        return jsonify({"error": "Applicant not found"}), 404
+    if r.status_code != 200:
+        print(f"[recruitment] candidate-work-eligibility edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/vevo-verify", methods=["POST"])
+@require_cohort("admin")
+def api_recruitment_vevo_verify(cand_id):
+    """ADMIN-ONLY: record (or clear) the "VEVO verified" compliance flag after an
+    admin has checked a working-visa applicant's work rights via VEVO.
+
+    Admin-gated for the same reason as the work-eligibility read: verifying work
+    rights requires the visa data only admins can see. We stamp verified_by with
+    the current operator's identity server-side — the browser never supplies it.
+    Body from the browser is just the candidate id in the URL (+ optional
+    {verified:false} to un-tick)."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+
+    data = request.get_json(silent=True) or {}
+    # `verified` defaults to true (record the check); false clears it.
+    verified = data.get("verified", True)
+    # Identity is set server-side from the session, never trusted from the client.
+    ident = current_identity() or {}
+    verified_by = str(ident.get("name") or ident.get("ein") or "admin").strip()
+
+    payload = {"id": cand_id, "verified": bool(verified), "verified_by": verified_by}
+    try:
+        r = http.post(
+            RECRUITMENT_VEVO_VERIFY_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json=payload,
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] vevo-verify request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code == 404:
+        return jsonify({"error": "Applicant not found"}), 404
+    if r.status_code != 200:
+        print(f"[recruitment] vevo-verify edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
 @app.route("/api/recruitment/set-status", methods=["POST"])
 @require_cohort("admin", "operations")
 def api_recruitment_set_status():
@@ -4374,6 +4470,14 @@ def api_recruitment_convert_preview(cand_id):
         "emergency_contact": detail.get("emergency_name") or "",
         "emergency_phone":   detail.get("emergency_phone") or "",
     }
+    # Work-rights signal for the Convert warning. Non-PII only: whether this is a
+    # working-visa applicant (from the shared detail feed's work_eligibility.status)
+    # and whether an admin has recorded the VEVO check (vevo_check). The warning
+    # fires for working_visa applicants and clears once vevo_check is set. It's an
+    # offence to employ a non-citizen without work rights — hence the conscious check.
+    we = detail.get("work_eligibility") or {}
+    working_visa = (we.get("status") == "working_visa")
+    vevo_check = detail.get("vevo_check") or None
     return jsonify({
         "id":                 cand_id,
         "name":               name,
@@ -4384,6 +4488,8 @@ def api_recruitment_convert_preview(cand_id):
         "worked_with_gigpower": worked,
         "email_matches":      email_matches,
         "name_matches":       name_matches,
+        "working_visa":       working_visa,
+        "vevo_check":         vevo_check,
     })
 
 
