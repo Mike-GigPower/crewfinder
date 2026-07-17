@@ -1,6 +1,6 @@
 {
-  "version": "4.6.0",
+  "version": "4.7.0",
   "release_date": "2026-07-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.6.0/TheGOAT.dmg",
-  "release_notes": "Work eligibility is now in Recruitment: every applicant shows their status (Citizen/PR or Working visa, with a list chip), and for visa holders admins can view the visa and its AI-scanned details (labelled 'verify via VEVO'), then record the check with Mark VEVO verified. Converting a visa holder who isn't verified shows a reminder. Also adds a ⧉ New window button to open any tab in its own bookmarkable window."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.7.0/TheGOAT.dmg",
+  "release_notes": "Converting an applicant to crew now stores their signed contract on the SmartStaff crew record, and for working-visa crew also carries across the visa document and details (passport, subclass, expiry, conditions, and the recorded VEVO check) with a visa-worker flag. The convert results now list Contract and Visa outcomes alongside licences and inductions."
 }
