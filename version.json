@@ -1,6 +1,6 @@
 {
-  "version": "4.5.2",
+  "version": "4.6.0",
   "release_date": "2026-07-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.5.2/TheGOAT.dmg",
-  "release_notes": "Commencement dates are now entered day-first (DD-MM-YYYY, e.g. 01-09-2026) when marking applicants Sent to EH, matching Australian format."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.6.0/TheGOAT.dmg",
+  "release_notes": "Work eligibility is now in Recruitment: every applicant shows their status (Citizen/PR or Working visa, with a list chip), and for visa holders admins can view the visa and its AI-scanned details (labelled 'verify via VEVO'), then record the check with Mark VEVO verified. Converting a visa holder who isn't verified shows a reminder. Also adds a ⧉ New window button to open any tab in its own bookmarkable window."
 }
