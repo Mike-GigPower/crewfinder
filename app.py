@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.9.0"
+APP_VERSION    = "4.10.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -8171,6 +8171,40 @@ def api_call_crew_remove(booking_id, call_id, user_id):
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
     result, err = ss_remove_crew_from_call(ss, call_id, user_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+def ss_set_call_boss(ss, call_id, user_id):
+    """Set one crew member as the call boss via SmartStaff's native
+    add-call.php?action=makeboss -- the same request the Set Boss button on the
+    callsheet fires. The native handler clears is_call_boss on EVERY row for the
+    call and then sets it on this one, so single-boss-per-call is structurally
+    guaranteed and we never have to break a tie. It touches nothing else: not
+    status, not paygrade, not the calendar. There is no native UNSET path.
+    Returns ({"ok": True}, None) or (None, error)."""
+    url = f"{BASE_URL}/add-call.php"
+    try:
+        resp = ss.get(url, params={"action": "makeboss", "id": int(call_id),
+                                   "crewID": str(user_id)},
+                      allow_redirects=True, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    return {"ok": True}, None
+
+@app.route("/api/call/<booking_id>/<call_id>/boss/<user_id>", methods=["POST"])
+@require_cohort("admin")
+def api_call_set_boss(booking_id, call_id, user_id):
+    """Designate one crew member as the call boss. Proxies SmartStaff's native
+    makeboss, which clears the flag on all other rows first. booking_id is taken
+    for URL symmetry with the other call routes. This is what rung 1 of the crew
+    contact hierarchy reads, so it changes what crew see in Crew Hub."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    result, err = ss_set_call_boss(ss, call_id, user_id)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)

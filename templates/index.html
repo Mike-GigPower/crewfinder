@@ -3186,6 +3186,13 @@ function showFeedback(msg){const el=document.getElementById('feedback');el.textC
 async function addSelected(confirm){
   const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
   const targets=currentResult?.targets||[];if(!targets.length)return;
+  // Ops rule: a dedicated Crew Boss call carries ONE resource. The crew-facing
+  // contact hierarchy resolves through these calls, so two bosses means every crew
+  // member on the job sees two contacts. Advisory only — confirm and proceed.
+  const bossTargets = targets.filter(t => goatIsBossCallName(t.call_name||''));
+  if(bossTargets.length && crew.length > 1){
+    if(!window.confirm('You\'re adding '+crew.length+' crew to a Crew Boss call ('+bossTargets.map(t=>t.call_name).join(', ')+').\n\nBoss calls should carry one resource — the crew booked on this job will see all of them as their contact.\n\nAdd anyway?')) return;
+  }
   const btn=document.getElementById(confirm?'btn-confirm':'btn-add');
   const orig=btn.textContent;btn.disabled=true;btn.textContent=confirm?'Confirming…':'Adding…';
   // Server-side via THE GOAT's own SmartStaff session (no browser popup, no
@@ -7930,6 +7937,18 @@ function crewStatusInt(status){
   return 0;   // unconfirmed / waiting / unknown
 }
 
+// Mirror of goat_is_boss_call_name() in smartstaff/resolve-call-contact.php.
+// KEEP THE TWO IN SYNC — the PHP resolver is authoritative for what crew actually
+// see; this copy only drives advisory UI warnings, so a drift here is cosmetic,
+// not a correctness bug. Exclusion-based: everything with "boss" in it counts,
+// minus cancellations and two known working calls (verified against live data).
+function goatIsBossCallName(name){
+  var n = String(name||'').toLowerCase().trim();
+  if(n.indexOf('boss') === -1)   return false;
+  if(n.indexOf('cancel') !== -1) return false;
+  return ['imag & boss','crew boss & pushers'].indexOf(n) === -1;
+}
+
 function crewStatusColors(v){
   if(v===5)        return ['#22c55e','rgba(34,197,94,0.12)'];
   if(v===7)        return ['#14b8a6','rgba(20,184,166,0.12)'];
@@ -8047,6 +8066,33 @@ async function promoteBackup(bookingId, callId, userId, btn){
     alert('Could not promote: '+(e.message||e));
   }
 }
+// Admin-only "Set Boss" button, shown next to any crew member who is NOT already
+// the call boss. Proxies SmartStaff's native makeboss, which clears is_call_boss
+// on every other row before setting this one — so there is structurally only ever
+// one boss per call. This is rung 1 of the crew-facing contact hierarchy, so it
+// changes who the crew on this call are told to contact in Crew Hub.
+function crewBossControl(c, bookingId, callId){
+  if(window._cohort !== 'admin' || !c.id) return '';
+  if(c.is_call_boss) return '';
+  return '<button type="button" title="Make call boss (their number is shown to this call\'s crew)"'
+    + ' onclick="setCallBoss(\'' + bookingId + '\',\'' + callId + '\',' + c.id + ',this)"'
+    + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);'
+    + 'background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:2px 6px;'
+    + 'font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&#9733; Boss</button>';
+}
+async function setCallBoss(bookingId, callId, userId, btn){
+  if(!confirm('Make this crew member the boss for this call?\n\nAny existing boss on this call is cleared. Their mobile number will be shown to the crew booked on this call.')) return;
+  if(btn) btn.disabled = true;
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/boss/'+userId, {method:'POST'});
+    var j = await r.json();
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    openCallDialog(bookingId, callId);
+  }catch(e){
+    if(btn) btn.disabled = false;
+    alert('Could not set boss: '+(e.message||e));
+  }
+}
 function entityBtn(label, onclick, opts){
   opts = opts||{};
   const dis = opts.disabled ? 'disabled' : '';
@@ -8113,6 +8159,14 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   document.getElementById('entity-modal-sub').textContent = 'Call #'+callId+' · Booking #'+bookingId;
   const req = (editSrc && editSrc.required != null) ? editSrc.required : (d.crew_required || 0);
   const confirmedCount = crew.filter(function(c){ return (c.status||'').toLowerCase()==='confirmed'; }).length;
+  // A dedicated Crew Boss call should carry exactly ONE resource — the crew-facing
+  // contact hierarchy resolves through it, and two confirmed resources means every
+  // crew member on the job sees two contacts instead of one. Flag it here, where
+  // ops actually look, rather than letting it surface as a crew member ringing the
+  // wrong person. Advisory only — nothing is blocked.
+  const bossCallWarn = (goatIsBossCallName(d.call_name||'') && confirmedCount > 1)
+    ? '<div style="margin-top:10px;font-size:11px;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:4px;padding:6px 8px">&#9888; This Crew Boss call has '+confirmedCount+' confirmed crew. Boss calls should carry one — the crew will see all of them as their contact.</div>'
+    : '';
   const crewRows = crew.length
     ? crew.map(function(c){
         var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(c.mobile)+'</a>' : '';
@@ -8121,13 +8175,14 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // re-confirmed yet — the filling risk ops watch for (get-booking.php sets
         // change_pending, guarded to status 5/7).
         var chg = c.change_pending ? ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>' : '';
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+chg+'</span><span style="display:flex;align-items:center;gap:4px">'+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+chg+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId)+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
     + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
     + entityRow('Crew',  '<span id="call-confirmed-count-'+callId+'">'+confirmedCount+'</span> booked / '+req+' required <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>')
+    + bossCallWarn
     + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Booked Crew</div>'
     + crewRows;
   document.getElementById('entity-modal-actions').innerHTML =
