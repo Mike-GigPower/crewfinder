@@ -101,6 +101,55 @@
 	}
 
 	/*
+	/* SAME-HUMAN GUARD.
+	/*
+	/* The same person can hold TWO user rows — a crew record and a contact
+	/* record (a crew manager who is also a booking's on-site contact is the
+	/* live case: Monty is both). Skip-self by userID alone then hands them
+	/* back to themselves under the other identity — "your contact: you".
+	/*
+	/* The mobile is the cheapest reliable cross-record identity. Compared on
+	/* digits only, so "0466 600 031" and "0466600031" match.
+	*/
+
+	function goat_digits_only($s)
+	{
+		return preg_replace('/[^0-9]/', '', (string) $s);
+	}
+
+	function goat_user_mobile($userID)
+	{
+		static $mob = array();
+
+		$userID = (int) $userID;
+
+		if ($userID <= 0) return '';
+		if (isset($mob[$userID])) return $mob[$userID];
+
+		$mob[$userID] = '';
+
+		$res = mysql_query("SELECT mobile FROM users WHERE id = " . $userID . " LIMIT 1");
+
+		if ($res !== false)
+		{
+			$u = mysql_fetch_object($res);
+			if ($u) $mob[$userID] = goat_digits_only($u->mobile);
+		}
+
+		return $mob[$userID];
+	}
+
+	/* A blank viewer mobile can never match — we do not want every
+	   number-less crew member colliding with every other one. */
+
+	function goat_same_human($viewerMobile, $otherMobile)
+	{
+		if ($viewerMobile === '') return false;
+
+		return (goat_digits_only($otherMobile) === $viewerMobile);
+	}
+
+	/*
 	/* THE RESOLVER. Returns an array of 0..n contacts (see above).
 	/*
 	/* Cached per (callID, viewerUserID) for the life of the request — a shift
@@ -132,6 +181,11 @@
 
 		$viewerOnBossCall = goat_is_boss_call_name($call->call_name);
 
+		/* resolved once; every rung below skips a contact that IS the viewer,
+		   whether by userID or by the same-human mobile match */
+
+		$viewerMobile = goat_user_mobile($viewerUserID);
+
 		/* ---- RUNG 1 — in-call boss ----
 		   Skipped when the viewer is themselves on a dedicated boss call: the
 		   ladder starts below them. add-call.php's makeboss handler clears
@@ -153,7 +207,8 @@
 			{
 				$row = mysql_fetch_object($r1);
 
-				if ($row && $row->firstname !== null)
+				if ($row && $row->firstname !== null
+				    && !goat_same_human($viewerMobile, $row->mobile))
 				{
 					$out = array(goat_contact_from_user($row, 'in_call_boss', ''));
 					$cache[$ck] = $out;
@@ -203,6 +258,7 @@
 						while ($cr = mysql_fetch_object($cres))
 						{
 							if ($cr->firstname === null) continue;
+							if (goat_same_human($viewerMobile, $cr->mobile)) continue;
 							$out[] = goat_contact_from_user($cr, 'boss_call', $bc->call_name);
 						}
 					}
@@ -239,7 +295,8 @@
 				{
 					$u = mysql_fetch_object($ures);
 
-					if ($u && $u->firstname !== null)
+					if ($u && $u->firstname !== null
+					    && !goat_same_human($viewerMobile, $u->mobile))
 					{
 						$out = array(goat_contact_from_user($u, 'onsite', ''));
 						$cache[$ck] = $out;
