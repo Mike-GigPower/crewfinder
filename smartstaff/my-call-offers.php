@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include_once('resolve-call-contact.php');
 
 	/*
 	/* JSON response */
@@ -160,7 +161,10 @@
 			'required'     => (int) $row->required,
 			'link_group'   => $lg,
 			'status'       => (int) $row->status,
-			'is_call_boss' => (int) $row->is_call_boss
+			'is_call_boss' => (int) $row->is_call_boss,
+			/* contact hierarchy — everything emitted here is upcoming by
+			   construction (pass 2 drops started offers and started packages) */
+			'contacts'     => goat_resolve_call_contact((int) $row->call_id, $userID)
 		);
 	}
 

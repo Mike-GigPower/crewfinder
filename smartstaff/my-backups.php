@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include_once('resolve-call-contact.php');
 
 	/*
 	/* JSON response */
@@ -103,6 +104,11 @@
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss
 		);
+
+		/* Contact hierarchy — future standby calls only (see my-shifts.php). */
+
+		if ($endUnix >= time())
+			$entry['contacts'] = goat_resolve_call_contact((int) $row->call_id, $userID);
 
 		/*
 		/* A matched call_change_ack row means this standby call's timing changed

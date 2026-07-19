@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include_once('resolve-call-contact.php');
 
 	/*
 	/* JSON response */
@@ -150,6 +151,19 @@
 			$entry['call_name']    = $row->call_name;
 			$entry['booking_name'] = $row->booking_name;
 			$entry['venue']        = $row->venue_name;
+
+			/*
+			/* Contact hierarchy — who does this crew member call? Resolved at READ
+			/* time, never cached into a notification: the boss can change after an
+			/* offer goes out. See DESIGN-call-contact-hierarchy.
+			/*
+			/* FUTURE SHIFTS ONLY. A finished shift needs no contact, and the window
+			/* here is capped at 120 days — skipping the past keeps the query count
+			/* proportional to what is actually upcoming.
+			*/
+
+			if (strtotime($row->end_dt) >= time())
+				$entry['contacts'] = goat_resolve_call_contact((int) $row->call_id, (int) $row->user_id);
 
 			/*
 			/* A matched call_change_ack row means this confirmed shift has an
