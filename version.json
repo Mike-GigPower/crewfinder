@@ -1,6 +1,6 @@
 {
-  "version": "4.7.0",
-  "release_date": "2026-07-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.7.0/TheGOAT.dmg",
-  "release_notes": "Converting an applicant to crew now stores their signed contract on the SmartStaff crew record, and for working-visa crew also carries across the visa document and details (passport, subclass, expiry, conditions, and the recorded VEVO check) with a visa-worker flag. The convert results now list Contract and Visa outcomes alongside licences and inductions."
+  "version": "4.10.0",
+  "release_date": "2026-07-20",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.10.0/TheGOAT.dmg",
+  "release_notes": "Editing a call's timing after crew are on it now asks confirmed crew to re-confirm the new time, and the call dialog shows an \"awaiting re-confirm\" badge so you can see who hasn't answered. Standby crew get a lighter \"no longer available\" opt-out instead. Crew Utilisation day cells now reveal the shift behind them on hover — venue, booking, call name and times. Crew boss can now be set from the booking dialog, with a warning when a change would leave crew without a contact."
 }
