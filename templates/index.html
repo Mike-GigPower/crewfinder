@@ -3984,6 +3984,625 @@ async function recruitConvertSubmit(id, ackRequired){
   }
 }
 
+// ── COMPLETE KEYPAY SETUP ─────────────────────────────────────────────────────
+// The post-onboarding payroll write for an active_crew candidate. THE GOAT owns
+// the button + this four-stage preview/confirm dialog ONLY. Every byte of KeyPay
+// traffic goes through the keypay-complete-setup edge function via our Flask proxy
+// (/api/recruitment/candidate/<id>/keypay-preview | keypay-commit); the edge
+// function holds the payroll API key and rebuilds the write payload SERVER-SIDE.
+// This dialog renders ONLY what the server returns and NEVER sends a payload — the
+// only operator-supplied value in the whole write is the commencement date.
+// See BRIEF-keypay-complete-setup.md. Every function here is a COMPLETE function
+// (house rule: no hunk edits to dialog code). All colours come from existing
+// tokens — reds via --conflict/--conf-bg, amber via --warn (border/text only,
+// as there is no amber-tint token), gold via --accent/--accent-bg.
+
+// TFD deep link (§3.1). A KeyPay UI URL on the white-label host — deliberately
+// unrelated to the API base. Business 182337 is fixed for Gig Power.
+var KEYPAY_TFD_URL_BASE = 'https://keypay.yourpayroll.com.au/Business/182337/Employee/';
+function keypayTfdUrl(ehId){
+  return KEYPAY_TFD_URL_BASE + encodeURIComponent(String(ehId == null ? '' : ehId)) + '/TaxFileDeclaration';
+}
+
+// SmartStaff stores names HTML-encoded and crew surnames are full of apostrophes,
+// so decode THEN escape (§7) — never escapeHtml alone.
+function keypayEsc(s){ return escapeHtml(decodeEntities(s)); }
+
+// The "Complete KeyPay setup" button for an active_crew candidate's detail panel.
+// Presentation only — the authoritative gate is the admin cohort check in Flask.
+// Returns '' for every non-active_crew candidate (absent entirely, not disabled).
+function keypayButton(c){
+  if(!c || c.status !== 'active_crew') return '';
+  var id   = recruitEsc(String(c.id));
+  var ein  = (c.ein == null ? '' : String(c.ein)).trim();
+  var ehId = (c.eh_employee_id == null ? '' : String(c.eh_employee_id)).trim();
+  var completedAt = c.keypay_setup_completed_at || '';
+  var sentToEh    = !!c.eh_invited_at;   // was this candidate ever sent to Employment Hero?
+
+  // Already completed: secondary-styled, shows the date, still clickable. Re-running
+  // is legitimate — the preview then shows near-zero changes, which is itself the
+  // confirmation that nothing needs doing.
+  if(completedAt){
+    return '<button class="recruit-action" onclick="keypayOpen(\'' + id + '\')" '
+      + 'title="Re-run KeyPay setup — the preview will show near-zero changes">'
+      + 'KeyPay setup completed ' + recruitEsc(recruitDate(completedAt)) + '</button>';
+  }
+  // Enabled ONLY with both ein and eh_employee_id.
+  if(ein && ehId){
+    return '<button class="recruit-action recruit-convert" onclick="keypayOpen(\'' + id + '\')">'
+      + 'Complete KeyPay setup</button>';
+  }
+  // Disabled + a self-diagnosing tooltip (§3 / §7.5). The two eh_employee_id cases
+  // look identical to the operator but have completely different remedies.
+  var tip;
+  if(!ein)            tip = 'Needs an EIN — convert to crew first';
+  else if(!sentToEh)  tip = 'Not yet sent to Employment Hero';
+  else                tip = 'Sent to Employment Hero, but the employee ID is missing — needs backfill';
+  return '<button class="recruit-action" disabled title="' + escapeHtml(tip) + '" '
+    + 'style="opacity:.45;cursor:not-allowed">Complete KeyPay setup</button>';
+}
+
+// Fill the shared entity-modal panes in one call.
+function keypaySet(title, sub, bodyHtml, actionsHtml){
+  document.getElementById('entity-modal-title').textContent   = title;
+  document.getElementById('entity-modal-sub').textContent     = sub || '';
+  document.getElementById('entity-modal-body').innerHTML      = bodyHtml;
+  document.getElementById('entity-modal-actions').innerHTML   = actionsHtml || '';
+}
+
+// A11y (§8): move focus INTO the dialog body (never onto the confirm button, so
+// Enter can't fire the write). The body is made programmatically focusable.
+function keypayFocusBody(){
+  var b = document.getElementById('entity-modal-body');
+  if(!b) return;
+  b.setAttribute('tabindex', '-1');
+  setTimeout(function(){ try{ b.focus(); }catch(e){} }, 40);
+}
+
+// Close the dialog, restore focus, optionally refresh the pipeline. Refuses while
+// a write is in flight (§8) — belt-and-braces with the guard in closeEntityModal.
+function keypayClose(refresh){
+  var kp = window._keypay;
+  if(kp && kp.writing) return;
+  closeEntityModal();
+  var rf = kp && kp.returnFocus;
+  window._keypay = null;
+  if(rf && rf.focus){ try{ rf.focus(); }catch(e){} }
+  if(refresh === true && typeof loadRecruitment === 'function'){ loadRecruitment(); }
+}
+
+// Generic read-side failure (no write happened, so a plain failure is honest).
+function keypayReadError(msg){
+  keypaySet('Complete KeyPay setup', keypayEsc((window._keypay || {}).name || ''),
+    '<div role="alert" style="color:var(--conflict);font-size:12.5px;line-height:1.6;padding:6px 0">'
+      + escapeHtml(msg) + '</div>',
+    entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// STAGE 1 — Read. Calls the read-only preview route (hits an external API, so show
+// a loading state), then branches on the outcome.
+async function keypayOpen(id){
+  var c = (typeof _recruitRows !== 'undefined' && Array.isArray(_recruitRows)
+    ? _recruitRows.find(function(x){ return String(x.id) === String(id); })
+    : null) || {};
+  window._keypay = {
+    id: String(id),
+    ehId: (c.eh_employee_id == null ? '' : String(c.eh_employee_id)),
+    name: c.name || '',
+    date: '',            // ISO YYYY-MM-DD, set at Stage 2
+    dateDisplay: '',     // DD-MM-YYYY exactly as typed
+    preview: null,
+    writing: false,
+    returnFocus: document.activeElement
+  };
+  openEntityModal();
+  keypaySet('Complete KeyPay setup', keypayEsc(c.name || ''),
+    '<div role="status" aria-live="polite" style="color:var(--muted);font-size:12px;padding:8px 0">'
+      + 'Reading the current KeyPay record… this checks an external system and may take a moment.</div>',
+    '');
+  keypayFocusBody();
+  // Stage 1 preview: NO date. This runs the identity guard + completion check
+  // before the operator is asked to type anything.
+  var res = await keypayFetchPreview('');
+  if(res.netError){
+    keypayReadError('Could not reach the KeyPay service. Check your connection and try again.');
+    return;
+  }
+  var r = res.r, p = res.p || {};
+  if(!r.ok || p.error){
+    // Branch on the edge function's own `code` (§8a.1 item 2 prerequisite) — the
+    // old `if(!r.ok||p.error)` collapsed every non-200 preview into one generic
+    // line, swallowing the 409 identity mismatch and blurring the gate reasons.
+    if(p.code === 'IDENTITY_MISMATCH'){ keypayIdentityMismatch(p); return; }
+    keypayReadError(r.status === 403
+      ? 'You do not have access to complete KeyPay setup.'
+      : (p.error || ('Could not read the KeyPay record (HTTP ' + r.status + ').')));
+    return;
+  }
+  window._keypay.preview = p;
+  if(p.eh_employee_id != null) window._keypay.ehId = String(p.eh_employee_id);
+  keypayStage1(p);
+}
+
+// Shared preview fetch (§8a.1a). Called twice: once at Stage 1 with no date (for
+// the identity/completion gate), and again on the Stage 2→3 transition WITH the
+// commencement date so the whole diff — including the Start Date row and its
+// overwrite verdict — is computed server-side. Returns { r, p } or { netError }.
+async function keypayFetchPreview(dateIso){
+  var kp = window._keypay || {};
+  var url = '/api/recruitment/candidate/' + encodeURIComponent(kp.id) + '/keypay-preview'
+    + (dateIso ? ('?commencement_date=' + encodeURIComponent(dateIso)) : '');
+  try{
+    var r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    var p = await r.json().catch(function(){ return {}; });
+    return { r: r, p: p };
+  }catch(e){
+    return { netError: true };
+  }
+}
+
+// STAGE 2 → STAGE 3 transition (§8a.1a). A second preview call carrying the date,
+// so Stage 3 renders entirely from THIS response and commit uses THIS response's
+// before_hash — no client-side Start Date construction anywhere. It is a network
+// call now, so show a loading state. Identity mismatch is terminal, same as the
+// first preview. Any other failure returns the operator to Stage 2 with their
+// entered date still populated, so a transient error costs no typing.
+async function keypayShowPreview(){
+  var kp = window._keypay || {};
+  keypaySet('Complete KeyPay setup', keypayEsc(kp.name || ''),
+    '<div role="status" aria-live="polite" style="color:var(--muted);font-size:12px;padding:8px 0">'
+      + 'Preparing the preview… this checks the current KeyPay record and may take a moment.</div>',
+    '');
+  keypayFocusBody();
+  var res = await keypayFetchPreview(kp.date);
+  if(res.netError){
+    keypayStage2('Couldn’t reach the KeyPay service. Your date is kept — try again.');
+    return;
+  }
+  var r = res.r, p = res.p || {};
+  if(!r.ok || p.error){
+    if(p.code === 'IDENTITY_MISMATCH'){ keypayIdentityMismatch(p); return; }  // terminal, as at Stage 1
+    keypayStage2(r.status === 403
+      ? 'You do not have access to complete KeyPay setup.'
+      : (p.error || ('Couldn’t prepare the preview (HTTP ' + r.status + '). Your date is kept — try again.')));
+    return;
+  }
+  window._keypay.preview = p;   // THIS call's before_hash is what commit will use
+  if(p.eh_employee_id != null) window._keypay.ehId = String(p.eh_employee_id);
+  keypayStage3();
+}
+
+// STAGE 1 branch — (b) self-setup incomplete, (c) clean. Identity mismatch (a) is
+// a 409 handled in keypayOpen, so it never reaches here.
+function keypayStage1(p){
+  // §5.2b (CORRECTED): the edge computes the verdict server-side and sends
+  // { completion: { complete, signals:{active,taxSigned,bank,superFund} } }.
+  // Read `complete` — NEVER recompute it, or the rule ends up implemented twice
+  // and the two copies drift.
+  var comp = p.completion || {};
+  if(comp.complete !== true){ keypayCompletionWarn(comp); return; }
+  keypayStage2();
+}
+
+// (a) Identity mismatch — TERMINAL. Three-field comparison, no path forward.
+function keypayIdentityMismatch(p){
+  // §8a.1 item 2: the edge sends a 409 with
+  //   identity: { mismatches[], keypay:{firstName,surname,emailAddress},
+  //               candidate:{firstName,surname,email} }
+  // Note the asymmetry — candidate side uses `email`, KeyPay side `emailAddress`.
+  var idc = p.identity || {};
+  var cand = idc.candidate || {};
+  var kp   = idc.keypay || {};
+  var cmp = {
+    first_name: { candidate: cand.firstName, keypay: kp.firstName },
+    surname:    { candidate: cand.surname,   keypay: kp.surname },
+    email:      { candidate: cand.email,     keypay: kp.emailAddress },
+  };
+  var thStyle = 'text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:0 14px 6px 0';
+  function row(label, pair){
+    pair = pair || {};
+    return '<tr>'
+      + '<th scope="row" style="text-align:left;font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:6px 12px 6px 0;white-space:nowrap;vertical-align:top">' + label + '</th>'
+      + '<td style="padding:6px 14px 6px 0;color:var(--text);font-size:12px">' + keypayEsc(pair.candidate == null || pair.candidate === '' ? '—' : pair.candidate) + '</td>'
+      + '<td style="padding:6px 0;color:var(--text);font-size:12px">' + keypayEsc(pair.keypay == null || pair.keypay === '' ? '—' : pair.keypay) + '</td>'
+      + '</tr>';
+  }
+  var body =
+      '<div role="alert" style="border:1px solid var(--conflict);background:var(--conf-bg);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--conflict);font-size:13px;margin-bottom:4px">This does not look like the right employee.</div>'
+    + '<div style="font-size:12px;color:var(--text);line-height:1.6;margin-bottom:10px">The Employment Hero record linked to this candidate has different details.</div>'
+    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:max-content">'
+    + '<thead><tr><th style="width:92px"></th>'
+    + '<th scope="col" style="' + thStyle + '">Candidate</th>'
+    + '<th scope="col" style="text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:0 0 6px 0">Employment Hero</th>'
+    + '</tr></thead><tbody>'
+    + row('First name', cmp.first_name)
+    + row('Surname', cmp.surname)
+    + row('Email', cmp.email)
+    + '</tbody></table></div>'
+    + '<div style="font-size:12px;color:var(--text);line-height:1.6;margin-top:10px">The stored employee ID may point at the wrong person. Check in KeyPay before continuing.</div>'
+    + '</div>';
+  keypaySet('This does not look like the right employee', '', body, entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// (b) Self-setup incomplete — warn, but allow through. Booleans only (§5.2b) —
+// the server never sends a BSB or any value here.
+function keypayCompletionWarn(comp){
+  function yn(v){ return v ? 'yes' : 'no'; }
+  // §8a.1 item 1: the signals live under completion.signals.{taxSigned,bank,
+  // superFund} (not tfdSigned/bankAccountPresent/superFundPresent). These are
+  // shown only so the operator sees WHICH piece is missing; the verdict was the
+  // server's `complete`, already read in keypayStage1.
+  var sig = (comp && comp.signals) || {};
+  var body =
+      '<div role="alert" style="border:1px solid var(--warn);background:var(--surface2);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--warn);font-size:13px;margin-bottom:6px">This candidate may not have finished KeyPay self-setup.</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.7">'
+    +   'Tax file declaration signed: <b>' + yn(sig.taxSigned) + '</b> &middot; '
+    +   'Bank account: <b>' + yn(sig.bank) + '</b> &middot; '
+    +   'Super fund: <b>' + yn(sig.superFund) + '</b></div>'
+    + '<div style="font-size:12px;color:var(--muted);line-height:1.6;margin-top:8px">Continuing is safe, but check you have the right candidate.</div>'
+    + '</div>';
+  keypaySet('Complete KeyPay setup', keypayEsc((window._keypay || {}).name || ''), body,
+    entityBtn('Close', 'keypayClose()') + entityBtn('Continue anyway', 'keypayStage2()', { primary: true }));
+  keypayFocusBody();
+}
+
+// STAGE 2 — Commencement date. The only operator-supplied value in the write.
+// Not pre-filled (a plausible pre-fill is the one most likely to be clicked past).
+function keypayStage2(errMsg){
+  var kp = window._keypay || {};
+  // errMsg is set when Stage 3's preview call failed and bounced back here — the
+  // date field stays pre-filled from kp.dateDisplay so no typing is lost (§8a.1a).
+  var body =
+      '<div style="font-size:13px;color:var(--text);font-weight:600;margin-bottom:4px">When did they start?</div>'
+    + '<div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:12px">The commencement date from their contract. This is written to their payroll record.</div>'
+    + efRow('Start date',
+        '<input id="kp-date" type="text" inputmode="numeric" autocomplete="off" placeholder="DD-MM-YYYY" '
+        + 'value="' + escapeHtml(kp.dateDisplay || '') + '" '
+        + 'onkeydown="if(event.key===\'Enter\'){event.preventDefault();keypayDateContinue();}" '
+        + 'oninput="keypayDateClearError()" style="' + EF_INPUT_STYLE + '">')
+    + '<div style="font-size:10px;color:var(--muted);padding:0 0 4px 122px">Enter as DD-MM-YYYY (e.g. 01-09-2026).</div>'
+    + '<div id="kp-date-error" role="alert" style="color:var(--conflict);font-size:11.5px;padding:6px 0 0;min-height:14px">' + (errMsg ? escapeHtml(errMsg) : '') + '</div>';
+  keypaySet('When did they start?', keypayEsc(kp.name || ''), body,
+    entityBtn('Close', 'keypayClose()') + entityBtn('Continue', 'keypayDateContinue()', { primary: true, id: 'kp-date-continue' }));
+  setTimeout(function(){ var f = document.getElementById('kp-date'); if(f) f.focus(); }, 40);
+}
+function keypayDateClearError(){ var e = document.getElementById('kp-date-error'); if(e) e.textContent = ''; }
+
+// Validate format explicitly, then range-check: reject beyond ~12 months past /
+// ~6 months future outright; require a second confirmation outside ±31 days.
+function keypayDateContinue(){
+  var el  = document.getElementById('kp-date');
+  var err = document.getElementById('kp-date-error');
+  var raw = el ? el.value.trim() : '';
+  var iso = recruitDmyToIso(raw);   // null unless a real DD-MM-YYYY calendar date
+  if(!iso){
+    if(err) err.textContent = 'Enter a valid date as DD-MM-YYYY (e.g. 01-09-2026).';
+    return;
+  }
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var d = new Date(iso + 'T00:00:00');
+  var days = Math.round((d - today) / 86400000);
+  if(days < -366 || days > 183){
+    if(err) err.textContent = 'That date is out of range (more than ~12 months ago or ~6 months ahead). Check the year.';
+    return;
+  }
+  window._keypay.date = iso;
+  window._keypay.dateDisplay = raw;
+  if(days < -31 || days > 31){ keypayDateConfirm(days); return; }
+  keypayShowPreview();   // §8a.1a: re-fetch preview WITH the date, then render Stage 3
+}
+
+// Out-of-band second confirmation (§5.3).
+function keypayDateConfirm(days){
+  var kp = window._keypay || {};
+  var months = Math.max(1, Math.round(Math.abs(days) / 30));
+  var phrase = (days < 0)
+    ? ('That start date is ' + months + ' month' + (months === 1 ? '' : 's') + ' ago.')
+    : ('That start date is ' + months + ' month' + (months === 1 ? '' : 's') + ' from now.');
+  var body =
+      '<div role="alert" style="border:1px solid var(--warn);background:var(--surface2);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--warn);font-size:13px;margin-bottom:4px">' + escapeHtml(phrase) + '</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.6">You entered <b>' + keypayEsc(kp.dateDisplay) + '</b>. Check it against the contract before continuing.</div>'
+    + '</div>';
+  keypaySet('Check that start date', keypayEsc(kp.name || ''), body,
+    entityBtn('Change it', 'keypayStage2()') + entityBtn('Use this date', 'keypayShowPreview()', { primary: true }));
+  keypayFocusBody();
+}
+
+// STAGE 3 — Preview. The three-column diff that does the real work of the feature.
+function keypayStage3(){
+  var kp = window._keypay || {};
+  var p  = kp.preview || {};
+  var rows = Array.isArray(p.diff) ? p.diff : [];
+
+  // §8a.1a: Stage 3 renders ENTIRELY from this response — the preview was re-fetched
+  // with the commencement date, so the Start Date row (value + overwrite verdict) is
+  // computed server-side like every other row. No client-side Start Date construction
+  // and no date-portion comparison exist here: one code path, no drift.
+  //
+  // Each diff row is { field, label, current, next, source, overwritesNonEmpty }.
+  // Display `label`; read `next`; TRUST the server's `overwritesNonEmpty` — never
+  // recompute the danger verdict.
+  var anyOverwrite = false;
+
+  var trs = rows.map(function(row){
+    row = row || {};
+    var current    = (row.current == null ? '' : String(row.current));
+    var becomesStr = (row.next == null ? '' : String(row.next));
+    var isOverwrite = row.overwritesNonEmpty === true;
+    var isUnchanged = current === becomesStr;
+    if(isOverwrite) anyOverwrite = true;
+
+    var rowStyle = '', curStyle = 'color:var(--muted)', becStyle = 'color:var(--text);font-weight:600', marker = '';
+    if(isOverwrite){
+      // Loud, and distinguished by MORE than colour (§8): a ⚠ overwrite label + strike-through.
+      rowStyle = 'background:var(--conf-bg)';
+      curStyle = 'color:var(--conflict);text-decoration:line-through';
+      becStyle = 'color:var(--conflict);font-weight:700';
+      marker   = ' <span style="color:var(--conflict);font-weight:700;font-size:10px">&#9888; overwrite</span>';
+    }else if(isUnchanged){
+      becStyle = 'color:var(--muted)';   // muted so the eye goes to real changes
+    }
+    var emptyTag = '<span style="color:var(--muted);font-style:italic">empty</span>';
+    return '<tr style="' + rowStyle + '">'
+      + '<td style="padding:6px 12px 6px 8px;font-size:11px;color:var(--text);white-space:nowrap">' + keypayEsc(row.label || row.field || '') + marker + '</td>'
+      + '<td style="padding:6px 12px;font-size:12px;' + curStyle + '">' + (current === '' ? emptyTag : keypayEsc(current)) + '</td>'
+      + '<td style="padding:6px 12px;font-size:12px;' + becStyle + '">' + (becomesStr === '' ? emptyTag : keypayEsc(becomesStr)) + '</td>'
+      + '<td style="padding:6px 8px;font-size:10px;color:var(--muted);white-space:nowrap">' + keypayEsc(row.source || '') + '</td>'
+      + '</tr>';
+  }).join('');
+
+  var writeEnabled = !!p.write_enabled;
+
+  // Write disabled is the EXPECTED §8 read-only state — it must read as normal.
+  var disabledBanner = writeEnabled ? '' :
+      '<div style="border:1px solid var(--border-gold);background:var(--accent-bg);border-radius:6px;padding:10px 12px;margin-bottom:10px;font-size:12.5px;color:var(--text);line-height:1.6">'
+    + '<b style="color:var(--accent)">Preview only.</b> Writing to KeyPay is not enabled yet, so this is a dry run — nothing will be saved.</div>';
+
+  var overwriteBanner = anyOverwrite
+    ? '<div role="alert" style="border:1px solid var(--conflict);background:var(--conf-bg);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--conflict);font-weight:600">&#9888; A row in red would overwrite an existing payroll value. Check it before saving.</div>'
+    : '';
+
+  var th = 'text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);border-bottom:1px solid var(--border)';
+  var table =
+      '<div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">'
+    + '<table style="border-collapse:collapse;width:100%;min-width:max-content">'
+    + '<thead><tr>'
+    +   '<th scope="col" style="' + th + ';padding:8px 12px 8px 8px">Field</th>'
+    +   '<th scope="col" style="' + th + ';padding:8px 12px">Current in KeyPay</th>'
+    +   '<th scope="col" style="' + th + ';padding:8px 12px">Will become</th>'
+    +   '<th scope="col" style="' + th + ';padding:8px 8px">Source</th>'
+    + '</tr></thead><tbody>' + (trs || '<tr><td colspan="4" style="padding:10px;color:var(--muted);font-size:12px">No fields returned.</td></tr>') + '</tbody></table></div>';
+
+  // Footer, ALWAYS present (§3, Stage 3).
+  var footer =
+      '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">'
+    + 'This does not complete the tax file declaration. You will need to finish that in KeyPay after saving.</div>';
+
+  keypaySet('Preview the KeyPay write', keypayEsc(kp.name || ''),
+    disabledBanner + overwriteBanner + table + footer,
+    // §4: a single explicit confirm — NOT default-focused, NOT Enter-triggerable.
+    // With writes disabled it is REPLACED (§5 WRITE_DISABLED), not just disabled.
+    writeEnabled
+      ? entityBtn('Back', 'keypayStage2()') + entityBtn('Complete KeyPay setup', 'keypayCommit()', { primary: true, id: 'kp-confirm' })
+      : entityBtn('Back', 'keypayStage2()') + entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// STAGE 4 — Confirm. Disable on click, show progress (a double-submit is a
+// duplicate-write attempt). No retry anywhere in this path.
+async function keypayCommit(){
+  var kp = window._keypay || {};
+  var btn = document.getElementById('kp-confirm');
+  if(!btn || kp.writing) return;
+  kp.writing = true;
+  btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'progress'; btn.textContent = 'Saving…';
+  // Disable Back too, so nothing navigates mid-write.
+  document.querySelectorAll('#entity-modal-actions button').forEach(function(b){ b.disabled = true; });
+  var r, d;
+  try{
+    r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(kp.id) + '/keypay-commit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commencement_date: kp.date, before_hash: (kp.preview || {}).before_hash || '' })
+    });
+    d = await r.json().catch(function(){ return {}; });
+  }catch(e){
+    // No response at all — outcome UNKNOWN. Never a plain failure, never a retry.
+    kp.writing = false;
+    keypayTimeout();
+    return;
+  }
+  kp.writing = false;
+  keypayCommitResult(r.status, d || {});
+}
+
+// Route the commit response to the right §5 screen. Each state has distinct copy —
+// a generic failure banner is not acceptable on a payroll write.
+function keypayCommitResult(status, d){
+  // Branch on the exact code literals the edge function emits (§8a.1). Order
+  // matters: NOT_IN_WRITE_ALLOWLIST is a 403 and must be caught before the
+  // generic `status === 403` → WRITE_DISABLED fallback.
+  var code = d.code || '';
+  if(status >= 200 && status < 300 && (d.ok || code === 'SUCCESS')){ keypaySuccess(d); return; }
+  if(code === 'DUPLICATE_SUSPECTED')                                { keypayDuplicate(d); return; }
+  // Three distinct timeout/outcome-unknown codes from the edge, plus Flask's own
+  // TIMEOUT_UNKNOWN. None render as failure; none offer a retry (§8a.2).
+  if(code === 'OUTCOME_UNKNOWN' || code === 'OUTCOME_LIKELY_APPLIED'
+     || code === 'OUTCOME_LIKELY_NOT_APPLIED' || code === 'TIMEOUT_UNKNOWN'){ keypayTimeout(code); return; }
+  if(code === 'CALIBRATION_REQUIRED')                               { keypayCalibration(); return; }
+  if(code === 'STALE_PREVIEW')                                      { keypayStale(); return; }
+  if(code === 'NOT_IN_WRITE_ALLOWLIST')                            { keypayAllowlist(); return; }
+  if(code === 'WRITE_DISABLED' || status === 403)                  { keypayWriteDisabled(); return; }
+  // The commit re-verifies identity on a fresh read and can 409 here too.
+  if(code === 'IDENTITY_MISMATCH')                                 { keypayIdentityMismatch(d); return; }
+  if(code === 'WRITE_REJECTED' || d.keypay_detail != null || d.keypay_status != null){ keypayKeypayError(d); return; }
+  keypayGenericFailure(d, status);
+}
+
+// Success — confirmation + the "Still to do" block with the TFD deep link.
+function keypaySuccess(d){
+  var kp = window._keypay || {};
+  var ehId = (d.eh_employee_id != null) ? String(d.eh_employee_id) : kp.ehId;
+  var tfd  = keypayTfdUrl(ehId);
+  var body =
+      '<div style="border:1px solid var(--border-gold);background:var(--accent-bg);border-radius:6px;padding:12px 14px;margin-bottom:12px">'
+    + '<div style="font-weight:700;color:var(--accent);font-size:14px">KeyPay setup completed.</div></div>'
+    + '<div style="border:1px solid var(--warn);background:var(--surface2);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--warn);font-size:12px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Still to do</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.7">The tax file declaration hasn’t been lodged with the ATO. That has to be done in KeyPay.</div>'
+    + '<div style="margin-top:10px"><a href="' + escapeHtml(tfd) + '" target="_blank" rel="noopener noreferrer" '
+    +   'style="display:inline-block;background:var(--surface2);border:1px solid var(--border-gold);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;color:var(--accent);text-decoration:none">Open tax file declaration &#8599;</a></div>'
+    + '</div>';
+  keypaySet('KeyPay setup completed', keypayEsc(kp.name || ''), body,
+    entityBtn('Done', 'keypayClose(true)', { primary: true }));
+  keypayFocusBody();
+}
+
+// Duplicate suspected — the loudest state in the feature. Must not be quiet, and
+// must say "do not run this again".
+function keypayDuplicate(d){
+  var kp = window._keypay || {};
+  // §8a.1 item 3: the edge sends { code:"DUPLICATE_SUSPECTED", expected_id,
+  // returned:{ id, ... } } — the returned id is nested under `returned`.
+  var returnedId = (d.returned && d.returned.id != null) ? d.returned.id
+    : (d.returned_id != null ? d.returned_id : null);
+  var returned = (returnedId != null) ? String(returnedId) : '?';
+  var expected = (d.expected_id != null) ? String(d.expected_id) : kp.ehId;
+  var body =
+      '<div role="alert" style="border:2px solid var(--conflict);background:var(--conf-bg);border-radius:6px;padding:14px 16px">'
+    + '<div style="font-weight:800;color:var(--conflict);font-size:15px;margin-bottom:8px">A duplicate employee may have been created.</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.7">KeyPay returned employee ID <b>' + keypayEsc(returned) + '</b>, but this candidate is linked to <b>' + keypayEsc(expected) + '</b>.</div>'
+    + '<div style="font-size:13px;color:var(--conflict);font-weight:700;line-height:1.6;margin-top:10px">Do not run this again. Check both records in KeyPay before doing anything else.</div>'
+    + '</div>';
+  keypaySet('Possible duplicate employee', keypayEsc(kp.name || ''), body, entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// Timeout / outcome unknown (§8a.2). The edge distinguishes THREE situations, plus
+// Flask's own socket timeout — genuinely different operator positions, so each gets
+// its own copy. Reporting failure would invite the retry that creates a duplicate,
+// so NONE of the four reads as a failure and NONE offers a retry button: the only
+// way forward is close + re-preview, so the operator sees current state first.
+function keypayTimeout(code){
+  var kp = window._keypay || {};
+  var tfd = keypayTfdUrl(kp.ehId);
+  var title, heading, detail;
+  if(code === 'OUTCOME_LIKELY_APPLIED'){
+    // Strongest anti-retry framing — a retry here is the duplicate scenario.
+    title   = 'This probably saved';
+    heading = 'This probably saved, but we couldn’t confirm it.';
+    detail  = 'Check the employee in KeyPay before doing anything else.';
+  }else if(code === 'OUTCOME_LIKELY_NOT_APPLIED'){
+    title   = 'This probably didn’t save';
+    heading = 'This probably didn’t save.';
+    detail  = 'Check in KeyPay, then run it again if the details are still missing.';
+  }else{
+    // OUTCOME_UNKNOWN and Flask's TIMEOUT_UNKNOWN — the existing wording.
+    title   = 'Outcome unknown';
+    heading = 'We didn’t get a response from KeyPay, so we don’t know whether this saved.';
+    detail  = 'Check the employee in KeyPay before trying again.';
+  }
+  var body =
+      '<div role="alert" style="border:1px solid var(--warn);background:var(--surface2);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--warn);font-size:13px;margin-bottom:6px">' + escapeHtml(heading) + '</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.7">' + escapeHtml(detail) + '</div>'
+    + '</div>';
+  keypaySet(title, keypayEsc(kp.name || ''), body,
+    '<a href="' + escapeHtml(tfd) + '" target="_blank" rel="noopener noreferrer" '
+    + 'style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;color:var(--muted);text-decoration:none">Open in KeyPay &#8599;</a>'
+    + entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// §8a.3 — 403 NOT_IN_WRITE_ALLOWLIST. Distinct from WRITE_DISABLED: writes ARE
+// enabled, just limited to specific candidates (the §8 step-4 single-candidate
+// rail). Labelling it "writes not enabled" would suggest the flag failed to take.
+function keypayAllowlist(){
+  var kp = window._keypay || {};
+  var body =
+      '<div role="alert" style="border:1px solid var(--warn);background:var(--surface2);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--warn);font-size:13px;margin-bottom:6px">This candidate isn’t on the write allowlist.</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.7">Writes are enabled, but limited to specific candidates right now.</div>'
+    + '</div>';
+  keypaySet('Not on the write allowlist', keypayEsc(kp.name || ''), body,
+    entityBtn('Back', 'keypayStage3()') + entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// Write disabled reached at commit (normally caught at preview) — reads as normal.
+function keypayWriteDisabled(){
+  var kp = window._keypay || {};
+  var body =
+      '<div style="border:1px solid var(--border-gold);background:var(--accent-bg);border-radius:6px;padding:12px 14px;font-size:12.5px;color:var(--text);line-height:1.7">'
+    + '<b style="color:var(--accent)">Preview only.</b> Writing to KeyPay is not enabled yet, so this is a dry run — nothing was saved.</div>';
+  keypaySet('Preview only', keypayEsc(kp.name || ''), body,
+    entityBtn('Back', 'keypayStage3()') + entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// Stale before_hash — the record changed since preview. Force a fresh read.
+function keypayStale(){
+  var kp = window._keypay || {};
+  var body =
+      '<div role="alert" style="border:1px solid var(--warn);background:var(--surface2);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--warn);font-size:13px;margin-bottom:6px">This record changed while you were reviewing it.</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.7">Someone may have edited it in KeyPay. Start again so you can see the current values.</div>'
+    + '</div>';
+  keypaySet('Record changed', keypayEsc(kp.name || ''), body,
+    entityBtn('Reload preview', 'keypayReload()', { primary: true }) + entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+function keypayReload(){ var kp = window._keypay || {}; keypayOpen(kp.id); }
+
+// 409 CALIBRATION_REQUIRED — should not occur post-calibration; handle anyway.
+function keypayCalibration(){
+  var kp = window._keypay || {};
+  var body =
+      '<div role="alert" style="border:1px solid var(--conflict);background:var(--conf-bg);border-radius:6px;padding:12px 14px">'
+    + '<div style="font-weight:700;color:var(--conflict);font-size:13px;margin-bottom:6px">KeyPay setup isn’t calibrated yet.</div>'
+    + '<div style="font-size:12.5px;color:var(--text);line-height:1.7">The payroll templates and values this write depends on haven’t been confirmed against KeyPay, so nothing was saved. A developer needs to finish calibration before setup can run.</div>'
+    + '</div>';
+  keypaySet('Setup not calibrated', keypayEsc(kp.name || ''), body, entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// KeyPay non-2xx — show KeyPay's raw response body verbatim (its validation
+// messages are specific and far more useful than a generic banner). Clean failure.
+function keypayKeypayError(d){
+  var kp = window._keypay || {};
+  var status = (d.keypay_status != null) ? (' (HTTP ' + keypayEsc(String(d.keypay_status)) + ')') : '';
+  // §8a.1 item 7: the edge sends the raw KeyPay body as `keypay_detail`. Keep
+  // `keypay_body` as a fallback in case it ever changes back.
+  var rawBody = (d.keypay_detail != null) ? d.keypay_detail : d.keypay_body;
+  var raw = (rawBody != null)
+    ? (typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody, null, 2))
+    : (d.error || 'No response body.');
+  var body =
+      '<div role="alert" style="border:1px solid var(--conflict);background:var(--conf-bg);border-radius:6px;padding:12px 14px;margin-bottom:10px">'
+    + '<div style="font-weight:700;color:var(--conflict);font-size:13px">KeyPay rejected the write' + status + '.</div>'
+    + '<div style="font-size:12px;color:var(--text);line-height:1.6;margin-top:4px">Nothing was saved. KeyPay’s own message is below — it usually says exactly what to fix.</div></div>'
+    + '<pre style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;color:var(--text);white-space:pre-wrap;word-break:break-word;overflow-x:auto;max-height:280px;overflow-y:auto;margin:0">' + keypayEsc(raw) + '</pre>';
+  keypaySet('KeyPay rejected the write', keypayEsc(kp.name || ''), body,
+    entityBtn('Back', 'keypayStage3()') + entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
+// Anything else — fail loud but plainly, echoing whatever the server said.
+function keypayGenericFailure(d, status){
+  var kp = window._keypay || {};
+  var msg = d.error || ('The write failed (HTTP ' + status + ').');
+  var body =
+      '<div role="alert" style="border:1px solid var(--conflict);background:var(--conf-bg);border-radius:6px;padding:12px 14px;font-size:12.5px;color:var(--text);line-height:1.7">'
+    + '<div style="font-weight:700;color:var(--conflict);margin-bottom:4px">Couldn’t complete KeyPay setup.</div>' + escapeHtml(msg) + '</div>';
+  keypaySet('Could not complete setup', keypayEsc(kp.name || ''), body,
+    entityBtn('Back', 'keypayStage3()') + entityBtn('Close', 'keypayClose()'));
+  keypayFocusBody();
+}
+
 // Escape applicant-supplied text so it can never inject HTML.
 function recruitEsc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m =>
@@ -4247,6 +4866,10 @@ function renderRecruitRow(c, i){
   const activeCrewNote = (cur === 'active_crew')
     ? `<span class="recruit-empty">Converted to crew${einVal ? ' · EIN ' + recruitEsc(einVal) : ''}</span>`
     : '';
+  // "Complete KeyPay setup" — the post-onboarding payroll write, on active_crew
+  // candidates only. Enabled with ein + eh_employee_id; otherwise a self-diagnosing
+  // disabled tooltip. See keypayButton() and BRIEF-keypay-complete-setup.md.
+  const keypayBtn = keypayButton(c);
   // On a Sent-to-EH candidate, surface WHY convert isn't available yet — which of
   // the two gate signals (EH self-setup, contract) are still outstanding. Once
   // both land, the gate advances them to All Docs Received and Convert appears.
@@ -4260,7 +4883,7 @@ function renderRecruitRow(c, i){
           : '';
       })()
     : '';
-  const allActions = convertBtn + actions + activeCrewNote + waitingNote;
+  const allActions = convertBtn + keypayBtn + actions + activeCrewNote + waitingNote;
 
   // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
   const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
@@ -7898,7 +8521,12 @@ function resetManualBooking(){
 window._bookingIndex = window._bookingIndex || {};   // booking_id -> {name, venue, calls:[{call_id, call_name}]}
 
 function openEntityModal(){ document.getElementById('entity-modal').style.display = 'flex'; }
-function closeEntityModal(){ document.getElementById('entity-modal').style.display = 'none'; }
+function closeEntityModal(){
+  // Never dismiss while a KeyPay payroll write is in flight (§8) — closing mid-write
+  // would drop the outcome screen. Applies to the ✕, backdrop click and global Esc.
+  if(window._keypay && window._keypay.writing) return;
+  document.getElementById('entity-modal').style.display = 'none';
+}
 
 document.addEventListener('keydown', function(e){
   if(e.key === 'Escape'){

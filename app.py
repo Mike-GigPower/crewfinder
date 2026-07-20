@@ -250,6 +250,15 @@ RECRUITMENT_CANDIDATE_WORK_ELIGIBILITY_URL = "https://ihyvwhquycsxhmhulzmu.supab
 # candidate. ADMIN-ONLY proxy route (verifying work rights requires the visa data
 # that only admins can see). Writes the separate vevo_check column.
 RECRUITMENT_VEVO_VERIFY_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-vevo-verify"
+# Same base URL: the KeyPay "complete setup" edge function. Invoked in two modes —
+# "preview" (read-only: GET the EH employee, run the identity guard, return the
+# before-state + computed after-state) and "commit" (re-GET, re-verify, rebuild
+# the payload SERVER-SIDE, POST to KeyPay, re-GET). The Flask proxy below forwards
+# ONLY {candidate_id, commencement_date, before_hash} + acting_user_id — never a
+# KeyPay payload (see BRIEF-keypay-complete-setup.md §7.2). The write itself is
+# gated inside the edge function by KEYPAY_WRITE_ENABLED === "true" (a Supabase
+# secret), NOT here — Flask/UI gating is presentation only and is not the control.
+KEYPAY_COMPLETE_SETUP_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/keypay-complete-setup"
 # The only statuses this doorway may set — must match the edge function exactly.
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "all_docs_received", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
@@ -4907,6 +4916,153 @@ def api_recruitment_convert(cand_id):
         "contract": contract_result,
         "visa":     visa_result,
     })
+
+
+# ─── COMPLETE KEYPAY SETUP ────────────────────────────────────────────────────
+# The post-onboarding payroll write for an active_crew candidate. THE GOAT owns
+# the button + the four-stage preview/confirm dialog ONLY; every byte of KeyPay
+# traffic goes through the keypay-complete-setup edge function, which holds the
+# EH_PAYROLL_API_KEY (a Supabase secret that must never reach Flask or the
+# browser). See BRIEF-keypay-complete-setup.md for the full rationale.
+#
+# TRUST BOUNDARY (§7.2): these routes are NOT a generic pass-through. The commit
+# route forwards EXACTLY three client values — candidate_id, commencement_date,
+# before_hash — and drops anything else in the body. The edge function rebuilds
+# the whole KeyPay payload server-side from a fresh GET + hardcoded constants, so
+# the only operator-controllable value in the entire write is the commencement
+# date. Relaying arbitrary JSON here would reintroduce the boundary one layer up
+# and make that server-side rebuild worthless.
+#
+# acting_user_id (§5.1a / §7.2) is set HERE from the server session — never read
+# from the request body — and the edge function writes it into its redacted
+# before/after log line only. It is an opaque internal id (no name, no email),
+# never enters the payload rebuild, and never gates behaviour.
+#
+# AUTH: ships ADMIN-ONLY (§5.1a staging — widening to operations is a separate,
+# dated one-line commit after the §8 step-5 verification). Server-side cohort
+# gating is authoritative; hiding the button in index.html is presentation only.
+# X-Goat-Service-Key authenticates the FLASK SERVICE, not the human — both checks
+# are needed. The write-enable gate lives in the edge function, not here.
+def _keypay_acting_user_id():
+    """Opaque internal user id for the acting operator, from the session identity.
+    Log-only per §7.2 — never used for any decision, never returned to the client."""
+    return str((current_identity() or {}).get("user_id", "") or "")
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/keypay-preview", methods=["GET"])
+@require_cohort("admin")
+def api_recruitment_keypay_preview(cand_id):
+    """Stage 1 of the KeyPay flow: read-only. Asks the edge function to GET the EH
+    employee, run the identity guard, and return the before-state + computed
+    after-state (diff fields only — never the raw employee object; §5.2a).
+
+    Preview is NEVER write-gated (§8): it is the validation the staged rollout
+    depends on. We forward the edge function's own status + JSON verbatim so the
+    dialog can render every §5 server state (identity mismatch, WRITE_DISABLED on
+    the eventual commit, etc.) with its own specific copy."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing candidate id"}), 400
+    # OPTIONAL Stage-2 date passthrough. The dialog re-calls preview after the
+    # operator enters the commencement date so the edge computes the Start Date
+    # diff row (and its overwrite verdict) server-side. Read-only and re-validated
+    # independently at commit, so it does not widen the §7.2 trust boundary. Only
+    # this one extra value is forwarded; anything else on the query string is
+    # ignored. Omitted when absent so the edge shows its placeholder row.
+    commencement_date = str(request.args.get("commencement_date", "")).strip()
+    edge_body = {
+        "mode":           "preview",
+        "candidate_id":   cand_id,
+        "acting_user_id": _keypay_acting_user_id(),  # log-only, from session
+    }
+    if commencement_date:
+        edge_body["commencement_date"] = commencement_date
+    try:
+        r = http.post(
+            KEYPAY_COMPLETE_SETUP_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json=edge_body,
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"[keypay] preview request failed: {e}")
+        return jsonify({"error": "KeyPay service unavailable"}), 502
+    # Pass the edge function's status + body straight through. A read has no
+    # unknown-outcome hazard, so a failure here is a plain failure.
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        print(f"[keypay] preview edge function returned {r.status_code}")
+        return jsonify({"error": "KeyPay service error"}), 502
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/keypay-commit", methods=["POST"])
+@require_cohort("admin")
+def api_recruitment_keypay_commit(cand_id):
+    """Stage 4 of the KeyPay flow: the live payroll write. Forwards EXACTLY
+    candidate_id + commencement_date + before_hash (+ session acting_user_id);
+    everything else in the body is dropped, not relayed (§7.2). The edge function
+    re-GETs, re-verifies identity, checks before_hash, rebuilds the payload from
+    constants, POSTs to KeyPay, asserts the returned id, and re-GETs.
+
+    Fail-LOUD, never fail-open (§7.3), and — critically — NO auto-retry: retrying
+    a write of unknown outcome is how a duplicate employee gets created. A network
+    timeout here does NOT mean the write failed; the edge function may have
+    completed it. So a timeout is surfaced as outcome-UNKNOWN (504 + code), which
+    the dialog renders as "check KeyPay before retrying", never as a failure."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing candidate id"}), 400
+
+    body = request.get_json(silent=True) or {}
+    # Forward ONLY these two client-supplied values — nothing else crosses.
+    commencement_date = str(body.get("commencement_date", "")).strip()
+    before_hash       = str(body.get("before_hash", "")).strip()
+    if not commencement_date:
+        return jsonify({"error": "Missing commencement date"}), 400
+    if not before_hash:
+        return jsonify({"error": "Missing before_hash — re-run the preview"}), 400
+
+    try:
+        r = http.post(
+            KEYPAY_COMPLETE_SETUP_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json={
+                "mode":              "commit",
+                "candidate_id":      cand_id,
+                "commencement_date": commencement_date,
+                "before_hash":       before_hash,
+                "acting_user_id":    _keypay_acting_user_id(),  # log-only, from session
+            },
+            # Longer than the edge function's own ~30s AbortController so its
+            # outcome-unknown handling wins the race rather than our socket.
+            timeout=40,
+        )
+    except http.exceptions.Timeout:
+        # Outcome unknown — the write may have landed. Do NOT report failure and
+        # do NOT retry (§5.4 / §7.3). The dialog turns this into the "we didn't
+        # get a response, check KeyPay" screen.
+        print("[keypay] commit timed out — outcome unknown, no retry")
+        return jsonify({
+            "error": "No response from KeyPay — the outcome is unknown.",
+            "code":  "TIMEOUT_UNKNOWN",
+        }), 504
+    except Exception as e:
+        print(f"[keypay] commit request failed: {e}")
+        return jsonify({"error": "KeyPay service unavailable"}), 502
+    # Forward the edge function's own status + body verbatim so the dialog can
+    # render each distinct outcome — 403 WRITE_DISABLED, 409 stale before_hash /
+    # CALIBRATION_REQUIRED, a duplicate-id mismatch, KeyPay's raw validation body,
+    # or success — with the right copy. A generic banner is not acceptable here.
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        print(f"[keypay] commit edge function returned {r.status_code}")
+        return jsonify({"error": "KeyPay service error"}), 502
 
 
 @app.route("/api/availability", methods=["POST"])
