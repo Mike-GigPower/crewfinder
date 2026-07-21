@@ -9689,14 +9689,34 @@ async function generateTimesheet(bookingId){
   }catch(e){ showFeedback('Generate failed: '+e.message); }
 }
 
+// Guards against a second click while a sheet is already being generated —
+// each click would otherwise create a separate Google Sheet for the booking.
+var _gsheetInFlight = false;
+
 async function generateGoogleSheet(bookingId){
-  showFeedback('Creating Google Sheet… this can take a few seconds');
+  if(_gsheetInFlight) return;
+  _gsheetInFlight = true;
+
+  // Working state — opened immediately so the click is unmistakably registered,
+  // and persistent (unlike showFeedback, which self-clears after 2.5s) because
+  // generation runs for several seconds.
+  document.getElementById('entity-modal-title').textContent = 'Creating Google Sheet';
+  document.getElementById('entity-modal-sub').textContent   = 'Booking ' + bookingId;
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);line-height:1.5;padding:4px 0">'
+    + '<div style="width:14px;height:14px;flex:none;border:2px solid var(--border);border-top-color:var(--accent);'
+    + 'border-radius:50%;animation:spin .7s linear infinite"></div>'
+    + '<div>Copying the crew master and building a tab for each call. This can take '
+    + 'a few seconds — please don&#39;t click again.</div></div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  openEntityModal();
+
   try{
     const res = await fetch('/api/booking/'+bookingId+'/generate-gsheet');
     let j = {};
     try{ j = await res.json(); }catch(e){}
 
-    // Failure — show a persistent popup instead of a 2.5s toast, so it can't be missed
+    // Failure — persistent popup instead of a 2.5s toast, so it can't be missed
     if(!res.ok || j.error){
       document.getElementById('entity-modal-title').textContent = 'Google Sheet failed';
       document.getElementById('entity-modal-sub').textContent   = 'Booking ' + bookingId;
@@ -9734,7 +9754,19 @@ async function generateGoogleSheet(bookingId){
     openEntityModal();
     showFeedback('');
   }catch(e){
-    showFeedback('Sheet failed: '+e.message);
+    // Network/parse failure — surface in the modal too, since it's already open
+    document.getElementById('entity-modal-title').textContent = 'Google Sheet failed';
+    document.getElementById('entity-modal-sub').textContent   = 'Booking ' + bookingId;
+    document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:13px;color:var(--muted);line-height:1.5">'
+      + escapeHtml(e.message || 'Request failed') + '</div>';
+    document.getElementById('entity-modal-actions').innerHTML =
+      '<button onclick="closeEntityModal()" style="padding:7px 14px;border:1px solid var(--border);'
+      + 'border-radius:4px;background:var(--surface2);color:var(--muted);cursor:pointer;font-size:12px">Close</button>';
+    openEntityModal();
+    showFeedback('');
+  }finally{
+    _gsheetInFlight = false;
   }
 }
 
