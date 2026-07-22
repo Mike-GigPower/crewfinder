@@ -1,6 +1,6 @@
 {
-  "version": "4.10.1",
+  "version": "4.10.2",
   "release_date": "2026-07-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.10.1/TheGOAT.dmg",
-  "release_notes": "Restores Google Sheet timesheet generation. Google authorisation had lapsed, causing the Google Sheet button to fail with a token error. Updated credentials are included in this build — all users must update for timesheet generation to work."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.10.2/TheGOAT.dmg",
+  "release_notes": "The Generate Google Sheet button now shows a progress spinner while the sheet is being built, so it's clear the click registered, and blocks a second click that would otherwise create a duplicate sheet."
 }
