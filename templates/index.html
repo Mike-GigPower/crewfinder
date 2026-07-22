@@ -263,6 +263,20 @@ tr.skipped{opacity:.6}
 #crew-card .cc-stat{font-weight:600}
 #crew-card .cc-stat-late{color:var(--warn,#f59e0b)}
 #crew-card .cc-stat-ns{color:var(--conflict,#ef4444)}
+/* Crew-details header banner (admin edit dialog) */
+.ce-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:0 0 14px;margin-bottom:12px;border-bottom:1px solid var(--border)}
+.ce-hdr-left{min-width:0;flex:1}
+.ce-hdr-right{flex-shrink:0}
+.ce-hdr-photo{width:76px;height:76px;object-fit:cover;border-radius:6px;border:1px solid var(--border);background:var(--surface);display:block}
+.ce-hdr-photo-ph{width:76px;height:76px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px dashed var(--border);background:var(--surface);color:var(--muted);font-size:10px;text-align:center;padding:4px}
+/* reuse the CrewFinder rollover stat styling outside #crew-card */
+.ce-hdr .cc-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 4px}
+.ce-hdr .cc-stats{margin-bottom:0}
+.ce-hdr .cc-stat-row{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.7}
+.ce-hdr .cc-stat-period{min-width:34px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+.ce-hdr .cc-stat{font-weight:600}
+.ce-hdr .cc-stat-late{color:var(--warn,#f59e0b)}
+.ce-hdr .cc-stat-ns{color:var(--conflict,#ef4444)}
 .tl-time-header{position:relative;height:20px}
 .tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%);white-space:nowrap}
 .section-row-tl td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
@@ -6732,6 +6746,17 @@ async function openCrewEdit(id){
   document.getElementById('entity-modal-title').textContent = (window._crewEditNameLF || window._crewEditName || 'Edit Crew Member');
   document.getElementById('entity-modal-sub').textContent   = 'EIN '+String(c.ein||'')+' \u00b7 ID '+String(c.id);
 
+  // \u2500\u2500 header banner: reliability + Work Visa flag (left), photo (right) \u2500\u2500
+  const _cePhoto = (c.id != null)
+    ? '<img class="ce-hdr-photo" src="/api/crew-photo/'+encodeURIComponent(c.id)+'" alt="" '
+      + 'onerror="this.outerHTML=\'<div class=&quot;ce-hdr-photo-ph&quot;>No photo</div>\'">'
+    : '<div class="ce-hdr-photo-ph">No photo</div>';
+  const ceHeader =
+      '<div class="ce-hdr">'
+    +   '<div class="ce-hdr-left">' + crewStatsHtml({stats: c.stats}) + _ceVisaBadge(c) + '</div>'
+    +   '<div class="ce-hdr-right">' + _cePhoto + '</div>'
+    + '</div>';
+
   const detailsHtml =
       efRow('First name',      efInput('ce-first', c.firstname))
     + efRow('Last name',       efInput('ce-last', c.lastname))
@@ -6763,7 +6788,8 @@ async function openCrewEdit(id){
     + '</div>';
 
   document.getElementById('entity-modal-body').innerHTML =
-      ceTabBar
+      ceHeader
+    + ceTabBar
     + '<div id="ce-panel-details">'+detailsHtml+'</div>'
     + '<div id="ce-panel-inductions" style="display:none"></div>'
     + '<div id="ce-panel-licences" style="display:none"></div>'
@@ -6773,6 +6799,30 @@ async function openCrewEdit(id){
       entityBtn('Cancel', 'openCrewListModal(_crewListActive)')
     + entityBtn('Save changes', "submitCrewEdit('"+String(c.id)+"')", {primary:true, id:'ce-submit'});
   ceShowTab(String(c.id), 'details');
+}
+
+// Work Visa flag for the crew-details header. Renders nothing unless the crew
+// member is flagged is_visa_worker. With an expiry it colour-codes exactly like
+// the induction badges: past today -> expired (red), within 14 days -> expiring
+// (amber), otherwise neutral. No expiry on file -> plain neutral "Work Visa".
+function _ceVisaBadge(c){
+  if(!c || !Number(c.is_visa_worker)) return '';
+  const exp = String(c.visa_expiry||'').trim();
+  if(!exp){
+    return '<div style="margin-top:6px"><span class="induction-warn" style="margin-left:0">Work Visa</span></div>';
+  }
+  const m = exp.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  let cls = 'induction-warn', label = 'Work Visa';
+  if(m){
+    const d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));  // local, no TZ shift
+    const today = new Date(); today.setHours(0,0,0,0);
+    const days = Math.round((d - today)/86400000);
+    const nice = d.toLocaleDateString('en-AU', {day:'2-digit', month:'short', year:'numeric'});
+    if(days < 0){ cls='induction-expired'; label='Work Visa · expired '+nice; }
+    else if(days <= 14){ cls='induction-expiring'; label='Work Visa · expires '+nice; }
+    else { cls='induction-warn'; label='Work Visa · exp '+nice; }
+  }
+  return '<div style="margin-top:6px"><span class="'+cls+'" style="margin-left:0">'+escapeHtml(label)+'</span></div>';
 }
 
 async function submitCrewEdit(id){
@@ -9427,18 +9477,21 @@ function _clBuildHtml(data, opts){
   if(opts.email) optCols.push({key:'email', label:'Email', width:'200'});
 
   const css =
-      'body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#000}'
-    + 'h1{font-size:18px;margin:0 0 8px}'
-    + '.hdr{border-collapse:collapse;width:100%;margin-bottom:12px}'
+      '@page{size:A4;margin:12mm}'
+    + 'body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#000}'
+    + 'h1{font-size:18px;margin:0 0 8px;page-break-after:avoid}'
+    + '.hdr{border-collapse:collapse;width:100%;margin-bottom:12px;page-break-inside:avoid}'
     + '.hdr th,.hdr td{font-size:12px;border:1px solid #000;padding:5px;text-align:left;vertical-align:top}'
     + '.hdr th{background:#e7e7e7;width:120px;white-space:nowrap}'
     + '.crew{border-collapse:collapse;width:100%}'
     + '.crew th,.crew td{font-size:12px;border:1px solid #000;padding:5px;text-align:left}'
-    + '.crew th{background:#e7e7e7}'
+    + '.crew thead th{background:#e7e7e7}'
+    + '.crew thead{display:table-header-group}'
+    + '.crew tr{page-break-inside:avoid}'
     + '.wr{height:22px}'
     + '.toolbar{margin-bottom:16px}'
     + '.toolbar button{font-size:13px;padding:8px 14px;cursor:pointer}'
-    + '@media print{.toolbar{display:none}.call{page-break-after:always}.call:last-child{page-break-after:auto}}';
+    + '@media print{body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}.toolbar{display:none}.call{page-break-after:always}.call:last-child{page-break-after:auto}}';
 
   const parts = [];
   parts.push('<!doctype html><html><head><meta charset="utf-8"><title>'
@@ -9470,11 +9523,12 @@ function _clBuildHtml(data, opts){
 
     // crew table
     parts.push('<table class="crew">');
-    let head = '<tr><th>Name</th>';
+    let head = '<thead><tr><th>Name</th>';
     optCols.forEach(function(col){ head += '<th width="'+col.width+'">'+col.label+'</th>'; });
-    head += '<th width="45">On</th><th width="45">Break</th><th width="45">Off</th></tr>';
+    head += '<th width="45">On</th><th width="45">Break</th><th width="45">Off</th></tr></thead>';
     parts.push(head);
 
+    parts.push('<tbody>');
     if(!crew.length){
       const span = 4 + optCols.length;
       parts.push('<tr><td colspan="'+span+'" style="color:#666">No crew to list for this call.</td></tr>');
@@ -9489,6 +9543,7 @@ function _clBuildHtml(data, opts){
         parts.push(row);
       });
     }
+    parts.push('</tbody>');
     parts.push('</table>');
     parts.push('</div>');
   });

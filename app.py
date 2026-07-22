@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.10.2"
+APP_VERSION    = "4.10.3"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -5251,16 +5251,24 @@ def api_availability():
                         reason   = f"Unavailable: {u.get('reason','Leave/unavailable')}"
                         break
 
-            # Induction check — only if call has a known venue
+            # Induction check — only for venues in the controlled induction list.
+            # The booking's venue arrives as a NAME (e.g. "Rod Laver Arena"), but
+            # INDUCTION_VENUE_MAP is keyed by CODE ("RLA"), so resolve the name to
+            # its code first — same as the compliance-tool path. Without this only
+            # venues whose name equalled their code (MCEC, Forum, Crown…) were ever
+            # assessed; named venues silently produced no warning. A venue not in
+            # the controlled list yields no code -> no warning.
             induction_warning = ""
             if t["venue"]:
-                ind_status, ind_venue = induction_status_for_venue(inductions, t["venue"])
-                if ind_status == "Incomplete":
-                    induction_warning = f"No induction: {t['venue']}"
-                elif ind_status == "Expired":
-                    induction_warning = f"Expired induction: {t['venue']}"
-                elif ind_status == "Expiring Soon":
-                    induction_warning = f"Expiring induction: {t['venue']}"
+                ind_code = _induction_code_for_venue_name(t["venue"])
+                if ind_code:
+                    ind_status, ind_venue = induction_status_for_venue(inductions, ind_code)
+                    if ind_status == "Incomplete":
+                        induction_warning = f"No induction: {t['venue']}"
+                    elif ind_status == "Expired":
+                        induction_warning = f"Expired induction: {t['venue']}"
+                    elif ind_status == "Expiring Soon":
+                        induction_warning = f"Expiring induction: {t['venue']}"
 
             call_results.append({
                 "call_id":           t["call_id"],
