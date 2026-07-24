@@ -134,26 +134,13 @@
 	}
 
 	/*
-	/* Resolve the affected set. Feeds are directional, but by the time rows
-	/* exist the PACKAGE is the unit the crew member was offered — one card,
-	/* one Accept, one Decline (DESIGN §3.3 / §3.4).
-	/*
-	/*   CONFIRM (5): the package. Every still-offered row in it moves.
-	/*   DECLINE (6): the package, PLUS every transitively-upstream call this
-	/*                user holds a row on — including confirmed ones, whose
-	/*                commitment is broken by the decline. Those get their
-	/*                calendar row removed. Downstream rows held independently
-	/*                are left alone and reported back.
-	/*
-	/* goat_user_package always returns at least $callID, so an unfed call
-	/* falls through to exactly the old single-call behaviour.
+	/* Resolve the affected set. On a decline this is now goat_decline_scope —
+	/* the same helper my-call-offers.php uses to tell the crew member what
+	/* they are about to lose, so the warning and the action cannot diverge.
 	*/
 
 	$package = goat_user_package($userID, $callID);
 	$callIDs = $package;
-
-	/* rows this user holds, with their current status — used by the decline
-	/* path to decide what is upstream and what is already confirmed */
 
 	$heldStatus = array();
 	$hres = mysql_query("SELECT callID, status FROM call_crew_map
@@ -167,32 +154,21 @@
 		}
 	}
 
-	$breakCommitment = array();   /* confirmed upstream rows to un-confirm */
+	$breakCommitment = array();
 
 	if ($callStatus == 6)
 	{
-		foreach ($package as $pc)
+		$scope   = goat_decline_scope($userID, $callID);
+		$callIDs = array_keys($scope);
+
+		foreach ($scope as $cid => $st)
 		{
-			$ups = goat_calls_upstream($pc);
-
-			foreach ($ups as $u)
+			/* confirmed/backup rows outside the offered package are the ones
+			/* whose commitment is being broken — they bypass the status guard
+			/* and lose their calendar entry */
+			if ($st > 1 && !in_array($cid, $package))
 			{
-				if (!isset($heldStatus[$u]))
-				{
-					continue;   /* not their row */
-				}
-
-				if (in_array($u, $callIDs))
-				{
-					continue;   /* already in the set */
-				}
-
-				$callIDs[] = $u;
-
-				if ($heldStatus[$u] > 1)
-				{
-					$breakCommitment[$u] = true;
-				}
+				$breakCommitment[$cid] = true;
 			}
 		}
 	}

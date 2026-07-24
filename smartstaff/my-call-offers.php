@@ -181,6 +181,7 @@
 			'link_group'   => $lg,
 			'package_id'   => goat_package_id($pkg),
 			'commits_to'   => goat_commits_to((int) $row->call_id),
+			'declining_withdraws' => goat_declining_withdraws($userID, (int) $row->call_id),
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss,
 			/* contact hierarchy — everything emitted here is upcoming by

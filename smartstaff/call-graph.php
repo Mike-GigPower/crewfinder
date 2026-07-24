@@ -424,6 +424,132 @@
 			return $out;
 		}
 
+		/*
+		/* What declining $callID will actually touch for this crew member.
+		/*
+		/* Mirrors respond-to-call.php's decline resolution exactly — and is
+		/* now the single source of it, so the Crew Hub prompt and the endpoint
+		/* cannot disagree. A warning that no longer matches what the endpoint
+		/* does is worse than no warning.
+		/*
+		/* Scope:
+		/*   - the PACKAGE (locked, offered rows the crew member holds)
+		/*   - PLUS every transitively-upstream call they hold a row on,
+		/*     including CONFIRMED ones, whose commitment the decline breaks
+		/*
+		/* Downstream rows held independently are NOT included: being on the
+		/* load out never required being on the load-in.
+		/*
+		/* Returns array(call_id => status_int) for every call that would move,
+		/* INCLUDING the seed call. Callers that want "what else" should unset
+		/* the seed.
+		*/
+
+		function goat_decline_scope($userID, $callID)
+		{
+			$userID = (int) $userID;
+			$callID = (int) $callID;
+
+			if ($userID <= 0 || $callID <= 0)
+			{
+				return array();
+			}
+
+			/* every row this crew member holds, with status */
+
+			$heldStatus = array();
+			$hres = mysql_query("SELECT callID, status FROM call_crew_map
+			                     WHERE userID = " . $userID);
+
+			if ($hres !== false)
+			{
+				while ($hrow = mysql_fetch_object($hres))
+				{
+					$heldStatus[(int) $hrow->callID] = (int) $hrow->status;
+				}
+			}
+
+			$package = goat_user_package($userID, $callID);
+			$scope   = array();
+
+			foreach ($package as $pc)
+			{
+				$scope[$pc] = isset($heldStatus[$pc]) ? $heldStatus[$pc] : 0;
+			}
+
+			/* upstream holders — their commitment is broken by the decline */
+
+			foreach ($package as $pc)
+			{
+				$ups = goat_calls_upstream($pc);   /* locked only, by default */
+
+				foreach ($ups as $u)
+				{
+					if (!isset($heldStatus[$u]))
+					{
+						continue;   /* not their row */
+					}
+
+					if (isset($scope[$u]))
+					{
+						continue;   /* already in the set */
+					}
+
+					$scope[$u] = $heldStatus[$u];
+				}
+			}
+
+			return $scope;
+		}
+
+		/*
+		/* What the crew member loses if they decline this call — the decline
+		/* scope minus the call itself, with enough detail for the Hub to name
+		/* each one and flag which were already accepted.
+		/*
+		/* `confirmed` is the important flag: withdrawing an OFFERED row is
+		/* unremarkable, but withdrawing a CONFIRMED one takes back a shift they
+		/* had already planned around, and the prompt should say so plainly.
+		*/
+
+		function goat_declining_withdraws($userID, $callID)
+		{
+			$scope = goat_decline_scope($userID, $callID);
+
+			unset($scope[(int) $callID]);
+
+			if (!count($scope))
+			{
+				return array();
+			}
+
+			$ids = array_keys($scope);
+
+			$res = mysql_query("SELECT id, call_name, start_date, start_time
+			                    FROM calls WHERE id IN (" . implode(',', $ids) . ")
+			                    ORDER BY start_date ASC, start_time ASC");
+
+			$out = array();
+
+			if ($res !== false)
+			{
+				while ($row = mysql_fetch_object($res))
+				{
+					$cid     = (int) $row->id;
+					$dateStr = date('Y-m-d', (int) $row->start_date);
+
+					$out[] = array(
+						'call_id'   => $cid,
+						'call_name' => $row->call_name,
+						'start'     => date('Y-m-d\TH:i:s', strtotime($dateStr . ' ' . $row->start_time)),
+						'confirmed' => (isset($scope[$cid]) && ($scope[$cid] == 5 || $scope[$cid] == 7)) ? true : false
+					);
+				}
+			}
+
+			return $out;
+		}
+
 	}
 
 ?>
