@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.10.3"
+APP_VERSION    = "4.11.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1721,56 +1721,146 @@ def fetch_booking_bulk(ss, booking_id):
     return data, None
 
 
-def expand_linked_calls(ss, calls):
-    """Widen an outgoing offer to include any linked siblings, so the same crew
-    are offered the whole linked group (linked calls are answered as a unit —
-    respond-to-call.php cascades the response). Group membership is resolved
-    server-side from get-booking.php, so it is correct regardless of what the
-    Crew Finder currently has in view. Deduped by call_id. On any lookup failure
-    the original calls are returned unchanged — an offer is never blocked."""
-    if not calls:
-        return calls
+def _ss_booking_graph(ss, booking_ids):
+    """Fetch each booking once and return (graph, held).
 
-    booking_ids = set()
-    for c in calls:
-        bid = c.get("booking_id")
-        if bid:
-            booking_ids.add(str(bid))
+      graph — call_id -> {"feeds": [ids], "call_name": str, "booking_id": str}
+      held  — (crew_id, call_id) -> status label, for EVERY call_crew_map row
+              in those bookings
 
-    group_of   = {}   # call_id -> link_group
-    members_of = {}   # link_group -> [ {call_id, call_name, booking_id} ]
+    get-booking.php emits crew[].status as a LABEL, not an int:
+      5 -> 'confirmed', 1 -> 'sent', 6 -> 'declined', 8 -> 'noshow',
+      7 -> 'backup', anything else -> 'unconfirmed'
+    (see $crewStatusMap in get-booking.php). Status 2 falls through to
+    'unconfirmed', which is fine — callers only need "is there a row, and is it
+    a declined one".
+    """
+    graph, held = {}, {}
     for bid in booking_ids:
-        data, err = fetch_booking_bulk(ss, bid)
+        data, err = fetch_booking_bulk(ss, str(bid))
         if err or not isinstance(data, dict):
             continue
         for bc in (data.get("calls") or []):
-            g = bc.get("link_group")
-            if g is None:
-                continue
-            try:
-                g = int(g)
-            except Exception:
-                continue
-            if g <= 0:
-                continue
             cid = str(bc.get("call_id"))
-            group_of[cid] = g
-            members_of.setdefault(g, []).append({
-                "call_id":    cid,
+            graph[cid] = {
+                "feeds":      [str(t) for t in (bc.get("feeds") or [])],
                 "call_name":  bc.get("call_name", cid),
-                "booking_id": bid,
-            })
+                "booking_id": str(bid),
+            }
+            for row in (bc.get("crew") or []):
+                held[(str(row.get("id")), cid)] = row.get("status") or ""
+    return graph, held
 
+
+def _held_blocking(held, crew_id, call_id):
+    """True if this crew member holds a row we must NOT let addToCall destroy.
+
+    addToCall opens with an unconditional DELETE of the existing row — no
+    status check, no removeFromCalendar. So re-adding someone wipes their
+    status, is_call_boss and goat_note, and for a CONFIRMED row also orphans
+    their calendar entry.
+
+    A 'declined' row is the deliberate exception: re-offering someone who said
+    no is a normal ops action, and delete-then-insert is how it works today.
+    Preserving that keeps existing behaviour intact.
+    """
+    st = held.get((str(crew_id), str(call_id)))
+    if st is None:
+        return False
+    return st != "declined"
+
+
+# Statuses that mean the crew member has already ANSWERED for this call.
+# They must not be told it is on offer — by SMS or by push. Crew still at
+# unconfirmed/sent are NOT here: re-notifying someone who hasn't answered is a
+# legitimate chase and is how ops use Send SMS today.
+ANSWERED = ("confirmed", "backup", "noshow")
+
+
+def _already_answered(held, crew_id, call_id):
+    """True if this crew member has already answered for this call.
+
+    ALWAYS pass the PRE-write `held` map, never a post-write one: the question
+    is what they had already answered before this request, not what this
+    request just created. A post-write map would report every row we just
+    wrote as present and give the opposite answer.
+    """
+    return held.get((str(crew_id), str(call_id))) in ANSWERED
+
+
+def expand_downstream_calls(calls, graph):
+    """Widen an outgoing offer to the downstream closure of each selected call.
+
+    `graph` comes from _ss_booking_graph (A4), which fetches each booking once
+    and is shared with the held-row check — so expansion costs no extra request.
+
+    A feed edge (A -> B) means crew booked on A are also booked on B, so
+    offering A must also offer B, transitively. The reverse is NOT true —
+    offering B says nothing about A. This asymmetry is the whole point: a
+    5-person show call can feed a 20-person load out without requiring the
+    other 15 to be free for the show call.
+
+    Resolved server-side from get-booking.php, so it is correct regardless of
+    what the Crew Finder currently has in view. Deduped by call_id.
+
+    Ordered so the calls with nothing downstream of them are written FIRST,
+    matching respond-to-call.php. Under MyISAM there are no transactions, so a
+    partial failure must leave a recoverable state: a crew member booked on the
+    load out but not yet the load-in is harmless, while the reverse breaks the
+    invariant that holding a row commits you to everything downstream.
+
+    On any LOOKUP failure the original calls are returned unchanged — an offer
+    is never blocked by a failed graph read. Write failures are handled
+    separately and DO block; see api_goat_add_crew.
+    """
+    if not calls or not graph:
+        return calls
+
+    # BFS forward from every selected call. Visited set makes cycles harmless —
+    # a migrated symmetric link IS a cycle (A->B and B->A).
     expanded = list(calls)
     seen = set(str(c.get("call_id")) for c in calls)
-    for c in calls:
-        g = group_of.get(str(c.get("call_id")))
-        if not g:
-            continue
-        for m in members_of.get(g, []):
-            if m["call_id"] not in seen:
-                expanded.append(m)
-                seen.add(m["call_id"])
+    frontier = [str(c.get("call_id")) for c in calls]
+    depth = 0
+
+    while frontier and depth < 10:
+        nxt = []
+        for cid in frontier:
+            node = graph.get(cid)
+            if not node:
+                continue
+            for t in node["feeds"]:
+                if t in seen:
+                    continue
+                seen.add(t)
+                tnode = graph.get(t) or {}
+                expanded.append({
+                    "call_id":    t,
+                    "call_name":  tnode.get("call_name", t),
+                    "booking_id": tnode.get("booking_id"),
+                    "_carried":   True,
+                })
+                nxt.append(t)
+        frontier = nxt
+        depth += 1
+
+    # Ascending downstream count: terminal calls first, feeders last.
+    # Depths live in a local dict — never a module-level or default-argument
+    # cache, which would persist across requests while `graph` does not.
+    depths = {}
+    for c in expanded:
+        cid = str(c.get("call_id"))
+        stack, walked, n = [cid], set([cid]), 0
+        while stack:
+            cur = stack.pop()
+            for t in (graph.get(cur, {}).get("feeds") or []):
+                if t not in walked:
+                    walked.add(t)
+                    stack.append(t)
+                    n += 1
+        depths[cid] = n
+
+    expanded.sort(key=lambda c: depths[str(c.get("call_id"))])
     return expanded
 
 
@@ -3062,35 +3152,57 @@ def ss_update_call_bulk(ss, call_id, call):
     return data, None
 
 
-def ss_link_calls_bulk(ss, action, call_ids):
-    """Link or unlink a set of calls via link-calls.php (admin session).
+def ss_call_feeds(ss, action, source_call=None, target_calls=None,
+                  booking_id=None, confirm=False):
+    """Proxy smartstaff/call-feeds.php (admin session).
 
-    action   : 'link' (needs >=2 call_ids, same booking, all unlinked) or
-               'unlink' (clears link_group; dissolves singleton groups).
-    call_ids : list of call ids.
+      action='add'    — {source_call, target_calls:[...], confirm}
+                        409 + {needs_confirm, warnings} if the edge would
+                        over-subscribe the target, link overlapping calls, or
+                        be redundant; resend with confirm=True to override.
+      action='remove' — {source_call, target_calls:[...]}
+      action='list'   — {booking_id}
 
-    Returns (result, error). On a link the endpoint returns {ok, link_group,
-    call_ids}; on unlink {ok, unlinked, dissolved_singletons}.
+    Returns (result, error), matching ss_link_calls_bulk's contract.
+
+    NOTE: a 409 is a real RESULT, not an error — it carries needs_confirm and
+    the warnings list, and the caller re-posts with confirm=True. It is
+    returned as (data, None) and must stay ahead of the generic >=400 branch.
     """
-    url = f"{BASE_URL}/ajax/crew/link-calls.php"
+    payload = {"action": action}
+    if source_call is not None:
+        payload["source_call"] = int(source_call)
+    if target_calls:
+        payload["target_calls"] = [int(t) for t in target_calls]
+    if booking_id is not None:
+        payload["booking_id"] = int(booking_id)
+    if confirm:
+        payload["confirm"] = True
+
+    url = f"{BASE_URL}/ajax/crew/call-feeds.php"
     try:
-        resp = ss.post(url, json={"action": action, "call_ids": call_ids}, timeout=60)
+        resp = ss.post(url, json=payload, timeout=60)
     except Exception as e:
         return None, f"request failed: {e}"
-    if resp.status_code != 200:
-        detail = ""
-        try:
-            j = resp.json()
-            detail = j.get("error", "")
-            if j.get("errors"):
-                detail = (detail + ": " + "; ".join(j["errors"])).strip(": ")
-        except Exception:
-            detail = (resp.text or "")[:200]
-        return None, detail or f"HTTP {resp.status_code}"
+
     try:
         data = resp.json()
-    except Exception as e:
-        return None, f"bad JSON: {e}"
+    except Exception:
+        return None, f"HTTP {resp.status_code}: unparseable response"
+
+    # 409 is a real result (needs_confirm), not an error — pass it through
+    # before the generic error branch below.
+    if resp.status_code == 409:
+        return data, None
+
+    if resp.status_code != 200:
+        detail = ""
+        if isinstance(data, dict):
+            detail = data.get("error", "")
+            if data.get("errors"):
+                detail = (detail + ": " + "; ".join(data["errors"])).strip(": ")
+        return None, detail or f"HTTP {resp.status_code}"
+
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
     return data, None
@@ -5866,6 +5978,11 @@ def _bulk_call_to_scrape_shape(r):
         "notes":        r.get("notes", "") or "",
         "booking_name": r.get("booking_name", "") or "",
         "link_group":   r.get("link_group"),
+        "feeds":        r.get("feeds") or [],
+        "fed_by":       r.get("fed_by") or [],
+        "committed":    r.get("committed"),
+        "reserved":     r.get("reserved"),
+        "free_to_fill": r.get("free_to_fill"),
     }
 
 
@@ -7149,42 +7266,123 @@ def api_goat():
 @app.route("/api/goat/add-crew", methods=["POST"])
 @require_cohort("admin")
 def api_goat_add_crew():
-    """Add crew to calls server-side using the existing SmartStaff session."""
+    """Add crew to calls server-side using the existing SmartStaff session.
+
+    Offers expand to the downstream closure of each selected call, so one
+    request per crew member covers the whole package. add-call.php's
+    `addtocalls` mode loops the ids server-side and echoes a comma-separated
+    list of the call ids that FAILED (empty body = all succeeded), which is
+    both faster and more informative than one request per crew-call pair.
+
+    Two hazards from sss::addToCall, both handled here:
+
+      1. addToCall opens with an UNCONDITIONAL delete of the crew member's
+         existing row on that call — no status check, no removeFromCalendar.
+         Calling it for someone already CONFIRMED wipes their confirmed row
+         back to status 0 and orphans their calendar entry. So any call where
+         they already hold a row is excluded from the request.
+
+      2. addToCall returns false on a calendar clash. Previously we only
+         checked resp.status_code, which is 200 either way — so a clashing
+         crew member silently didn't get the row and the Finder reported
+         success. Now the failure list is parsed AND the rows are read back.
+    """
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
 
     body    = request.get_json(force=True)
     crew    = body.get("crew", [])
-    calls   = body.get("calls", [])
-    calls   = expand_linked_calls(ss, calls)
+    selected = body.get("calls", [])
     confirm = body.get("confirm", False)
     action  = "confcrew" if confirm else "addcrew"
 
+    if not crew or not selected:
+        return jsonify({"results": []})
+
+    booking_ids = set(str(c["booking_id"]) for c in selected if c.get("booking_id"))
+    graph, held = _ss_booking_graph(ss, booking_ids)
+    calls = expand_downstream_calls(selected, graph)
+
+    call_by_id = {str(c["call_id"]): c for c in calls}
+    ordered_ids = [str(c["call_id"]) for c in calls]
+
     results = []
-    for call in calls:
-        for c in crew:
-            url = f"{BASE_URL}/add-call.php?action={action}&id={call['call_id']}&userID={c['crew_id']}"
-            try:
-                resp = ss.get(url, allow_redirects=True)
-                ok = resp.status_code == 200
+    import time
+
+    for c in crew:
+        crew_id = c["crew_id"]
+
+        # (1) exclude calls where a row already exists that we must not destroy
+        todo = [cid for cid in ordered_ids if not _held_blocking(held, crew_id, cid)]
+
+        for cid in ordered_ids:
+            if _held_blocking(held, crew_id, cid):
                 results.append({
                     "crew":    c["name"],
-                    "call":    call.get("call_name", call["call_id"]),
-                    "success": ok,
+                    "call":    call_by_id[cid].get("call_name", cid),
+                    "success": True,
+                    "skipped": "already on this call",
+                })
+
+        if not todo:
+            continue
+
+        url = (f"{BASE_URL}/add-call.php?action={action}"
+               f"&userID={crew_id}&addtocalls={','.join(todo)}")
+
+        try:
+            resp = ss.get(url, allow_redirects=True)
+            failed = set()
+            if resp.status_code == 200:
+                text = (resp.text or "").strip()
+                if text:
+                    failed = set(t.strip() for t in text.split(",") if t.strip())
+            else:
+                failed = set(todo)
+
+            # (2) read back — belt and braces, independent of the response body.
+            # MUST be a fresh fetch: `held` was captured before the writes.
+            #
+            # An empty graph means the READ failed, not that the rows are
+            # missing. Do not convert an unverifiable result into a failure —
+            # the bug being fixed was silent success, and confident-but-wrong
+            # failure is no better. Report it as unverified and let the UI say so.
+            graph_after, held_after = _ss_booking_graph(ss, booking_ids)
+            verified = bool(graph_after)
+
+            if verified:
+                for cid in todo:
+                    if held_after.get((str(crew_id), cid)) is None:
+                        failed.add(cid)
+
+            for cid in todo:
+                ok = cid not in failed
+                results.append({
+                    "crew":     c["name"],
+                    "call":     call_by_id[cid].get("call_name", cid),
+                    "success":  ok,
+                    "verified": verified,
+                    "error":    None if ok else "Unavailable — clashes with an existing confirmed shift",
+                    "note":     None if verified else "Could not verify — check the call before relying on this",
                 })
                 # Crew Hub push: an offer row was just written at status 0.
-                # Only on a plain add — "Add & Confirm" (confcrew) is not an offer.
-                if ok and action == "addcrew":
-                    gp_notify_offer(c["crew_id"], call)
-            except Exception as e:
+                # Only on a plain add — confcrew is not an offer — and never to
+                # someone who has already answered for this call.
+                # `held` (pre-write), never `held_after`.
+                if ok and action == "addcrew" and not _already_answered(held, crew_id, cid):
+                    gp_notify_offer(crew_id, call_by_id[cid])
+
+        except Exception as e:
+            for cid in todo:
                 results.append({
                     "crew":    c["name"],
-                    "call":    call.get("call_name", call["call_id"]),
+                    "call":    call_by_id[cid].get("call_name", cid),
                     "success": False,
                     "error":   str(e),
                 })
-            import time; time.sleep(0.8)
+
+        time.sleep(0.8)
 
     return jsonify({"results": results})
 
@@ -7192,51 +7390,152 @@ def api_goat_add_crew():
 @app.route("/api/goat/send-sms", methods=["POST"])
 @require_cohort("admin")
 def api_goat_send_sms():
-    """Add crew to calls and send SMS server-side using the existing SmartStaff session."""
+    """Add crew to calls and send SMS server-side using the existing SmartStaff session.
+
+    Step 1 (the add) uses the same batch path as api_goat_add_crew: offers
+    expand to the downstream closure, one `addtocalls` request per crew member,
+    calls where a row already exists are excluded (addToCall's unconditional
+    delete would wipe it), and the failure list is parsed AND read back.
+
+    Step 2 (sendsms) is unchanged in shape, but a crew member whose ADD FAILED
+    for a given call is excluded from that call's SMS — texting someone about a
+    shift they were never actually put on is worse than not texting them.
+    Already-held crew are included: their add didn't fail, they are on the call.
+    """
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
 
-    body  = request.get_json(force=True)
-    crew  = body.get("crew", [])
-    calls = body.get("calls", [])
-    calls = expand_linked_calls(ss, calls)
+    body     = request.get_json(force=True)
+    crew     = body.get("crew", [])
+    selected = body.get("calls", [])
+
+    if not crew or not selected:
+        return jsonify({"results": []})
+
+    booking_ids = set(str(c["booking_id"]) for c in selected if c.get("booking_id"))
+    graph, held = _ss_booking_graph(ss, booking_ids)
+    calls = expand_downstream_calls(selected, graph)
+
+    call_by_id  = {str(c["call_id"]): c for c in calls}
+    ordered_ids = [str(c["call_id"]) for c in calls]
 
     import time
     results = []
 
-    # Step 1: add crew
-    for call in calls:
-        for c in crew:
-            url = f"{BASE_URL}/add-call.php?action=addcrew&id={call['call_id']}&userID={c['crew_id']}"
-            try:
-                ss.get(url, allow_redirects=True)
-            except Exception:
-                pass
-            time.sleep(0.8)
+    # Per call, the crew ids that actually hold a row and may therefore be SMSed.
+    sms_ok = dict((cid, set()) for cid in ordered_ids)
+
+    # Step 1: add crew — batch, with the exclusion and read-back from A3.
+    for c in crew:
+        crew_id = c["crew_id"]
+        todo    = [cid for cid in ordered_ids if not _held_blocking(held, crew_id, cid)]
+
+        for cid in ordered_ids:
+            if _held_blocking(held, crew_id, cid):
+                # Already on the call — not a failure, so still SMS-eligible.
+                sms_ok[cid].add(crew_id)
+                results.append({
+                    "crew":    c["name"],
+                    "call":    call_by_id[cid].get("call_name", cid),
+                    "success": True,
+                    "skipped": "already on this call",
+                })
+
+        if not todo:
+            continue
+
+        url = (f"{BASE_URL}/add-call.php?action=addcrew"
+               f"&userID={crew_id}&addtocalls={','.join(todo)}")
+
+        try:
+            resp = ss.get(url, allow_redirects=True)
+            failed = set()
+            if resp.status_code == 200:
+                text = (resp.text or "").strip()
+                if text:
+                    failed = set(t.strip() for t in text.split(",") if t.strip())
+            else:
+                failed = set(todo)
+
+            # Fresh fetch: `held` was captured before the writes.
+            _, held_after = _ss_booking_graph(ss, booking_ids)
+            for cid in todo:
+                if held_after.get((str(crew_id), cid)) is None:
+                    failed.add(cid)
+
+            for cid in todo:
+                if cid in failed:
+                    results.append({
+                        "crew":    c["name"],
+                        "call":    call_by_id[cid].get("call_name", cid),
+                        "success": False,
+                        "error":   "Unavailable — clashes with an existing confirmed shift",
+                    })
+                else:
+                    sms_ok[cid].add(crew_id)
+
+        except Exception as e:
+            for cid in todo:
+                results.append({
+                    "crew":    c["name"],
+                    "call":    call_by_id[cid].get("call_name", cid),
+                    "success": False,
+                    "error":   str(e),
+                })
+
+        time.sleep(0.8)
 
     # Step 2: send SMS per call
     # SmartStaff's add-call.php sendsms handler splices crewSelectList into a
     # SQL IN(...) clause, so it must be a single comma-separated value, not
     # repeated query params. With repeated params, PHP keeps only the last
     # one and only the last crew member gets the SMS.
-    crew_params = "crewSelectList=" + ",".join(c["crew_id"] for c in crew)
-    for call in calls:
-        url = f"{BASE_URL}/add-call.php?action=sendsms&id={call['call_id']}&bookingID={call['booking_id']}&{crew_params}"
+    for cid in ordered_ids:
+        call = call_by_id[cid]
+
+        # One exclusion, BOTH channels (SMS and Crew Hub push). sms_ok already
+        # drops crew whose add failed; _already_answered additionally drops
+        # anyone who has confirmed / is backup / was marked no-show, so we never
+        # tell someone a shift they already answered is "on offer".
+        #
+        # `held` is the PRE-write map and is the correct one here: it reflects
+        # what they had already answered, not what this request just created.
+        # `held_after` is also in scope (it leaks from the step-1 loop) and would
+        # give the opposite answer — do not substitute it.
+        notify_crew = [
+            c for c in crew
+            if c["crew_id"] in sms_ok[cid]
+            and not _already_answered(held, c["crew_id"], cid)
+        ]
+
+        if not notify_crew:
+            # Nobody left to notify on this call. Deliberately NO result row:
+            # everyone here either already answered (a skip row was emitted in
+            # step 1) or failed to add (a failure row was emitted in step 1), so
+            # the detail is already reported per crew member. Emitting a
+            # per-call success:false here would render as a red failure for what
+            # is in fact correct behaviour.
+            continue
+
+        crew_params = "crewSelectList=" + ",".join(str(c["crew_id"]) for c in notify_crew)
+        url = (f"{BASE_URL}/add-call.php?action=sendsms&id={cid}"
+               f"&bookingID={call.get('booking_id')}&{crew_params}")
         try:
             resp = ss.get(url, allow_redirects=True)
             ok = resp.status_code == 200
             results.append({
-                "call":    call.get("call_name", call["call_id"]),
+                "call":    call.get("call_name", cid),
                 "success": ok,
             })
             # Crew Hub push: SMS offer just went out to these crew for this call.
+            # Same notify_crew list as the send — one exclusion, both channels.
             if ok:
-                for c in crew:
+                for c in notify_crew:
                     gp_notify_offer(c["crew_id"], call)
         except Exception as e:
             results.append({
-                "call":    call.get("call_name", call["call_id"]),
+                "call":    call.get("call_name", cid),
                 "success": False,
                 "error":   str(e),
             })
@@ -8222,40 +8521,58 @@ def api_booking_add_call(booking_id):
     return jsonify({"ok": True, "call_id": call_id})
 
 
-@app.route("/api/calls/link", methods=["POST"])
+@app.route("/api/calls/feeds/add", methods=["POST"])
 @require_cohort("admin")
-def api_calls_link():
-    """Link a set of calls (Phase 2). Proxies link-calls.php (admin-only). Body:
-    {call_ids:[>=2]} — all must be in the same booking and currently unlinked.
-    Grouping only; never touches call_crew_map / calendars. The response cascade
-    that makes linked calls answer as a unit lives in respond-to-call.php."""
+def api_calls_feeds_add():
+    """Add feed edges. Proxies call-feeds.php (admin-only). Body:
+    {source_call, target_calls:[>=1], confirm?} — crew booked on source are also
+    booked on every target. All calls must be in the same booking.
+
+    Edges only; never touches call_crew_map / calendars. The response cascade
+    that makes a package answer as a unit lives in respond-to-call.php.
+
+    Returns the endpoint's {needs_confirm, warnings} body (with its 409) when the
+    edge would over-subscribe a target, link overlapping calls, or be redundant —
+    the client re-posts with confirm:true to override."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
-    body     = request.get_json(force=True) or {}
-    call_ids = [c for c in (body.get("call_ids") or []) if str(c).strip()]
-    if len(call_ids) < 2:
-        return jsonify({"error": "Select at least two calls to link"}), 400
-    result, err = ss_link_calls_bulk(ss, "link", call_ids)
+    body         = request.get_json(force=True) or {}
+    source_call  = body.get("source_call")
+    target_calls = [c for c in (body.get("target_calls") or []) if str(c).strip()]
+    if not str(source_call or "").strip():
+        return jsonify({"error": "Pick the call crew come from"}), 400
+    if not target_calls:
+        return jsonify({"error": "Select at least one call they should also work"}), 400
+    result, err = ss_call_feeds(ss, "add", source_call=source_call,
+                                target_calls=target_calls,
+                                confirm=bool(body.get("confirm")))
     if err:
         return jsonify({"error": err}), 502
+    # Preserve the 409 so the client's needs_confirm branch fires.
+    if isinstance(result, dict) and result.get("needs_confirm"):
+        return jsonify(result), 409
     return jsonify(result)
 
 
-@app.route("/api/calls/unlink", methods=["POST"])
+@app.route("/api/calls/feeds/remove", methods=["POST"])
 @require_cohort("admin")
-def api_calls_unlink():
-    """Unlink a set of calls (Phase 2). Proxies link-calls.php (admin-only). Body:
-    {call_ids:[>=1]} — clears link_group; any group left with a single call is
-    dissolved by the endpoint."""
+def api_calls_feeds_remove():
+    """Remove feed edges. Proxies call-feeds.php (admin-only). Body:
+    {source_call, target_calls:[>=1]} — removes those individual edges, not a
+    whole group: one call can feed several targets and they are independent."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
-    body     = request.get_json(force=True) or {}
-    call_ids = [c for c in (body.get("call_ids") or []) if str(c).strip()]
-    if not call_ids:
-        return jsonify({"error": "No calls to unlink"}), 400
-    result, err = ss_link_calls_bulk(ss, "unlink", call_ids)
+    body         = request.get_json(force=True) or {}
+    source_call  = body.get("source_call")
+    target_calls = [c for c in (body.get("target_calls") or []) if str(c).strip()]
+    if not str(source_call or "").strip():
+        return jsonify({"error": "No source call given"}), 400
+    if not target_calls:
+        return jsonify({"error": "No feeds to remove"}), 400
+    result, err = ss_call_feeds(ss, "remove", source_call=source_call,
+                                target_calls=target_calls)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)

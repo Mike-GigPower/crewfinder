@@ -97,6 +97,10 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .call-card:hover,.call-card.selected{background:var(--accent-bg);border-bottom-color:var(--accent)}
 .call-card.selected{background:var(--accent-bg);border-bottom-color:var(--accent);border-left:3px solid var(--accent)}
 .call-card.selected .call-num{color:var(--accent)}
+/* "carried": selected only because an upstream call feeds it. Lighter than a
+   deliberate pick — dashed edge, no fill. Must follow .selected to win on
+   equal specificity, since a carried card also carries .selected. */
+.call-card.carried{background:transparent;border-left:3px dashed var(--accent)}
 .call-select-hint{font-size:9px;color:var(--muted);padding:4px 12px 6px;text-align:center;border-bottom:1px solid var(--border)}
 .selected-calls-bar{display:none;padding:6px 12px;background:var(--accent-bg);border-bottom:1px solid var(--accent);font-size:10px;color:var(--accent);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .selected-calls-bar .sc-chip{background:var(--surface2);border:1px solid var(--accent);color:var(--accent);padding:1px 7px;border-radius:10px;font-size:10px;display:flex;align-items:center;gap:4px}
@@ -2101,7 +2105,6 @@ async function loadCalls(force=false){
       const b=bookingMap[bid];
       window._bookingIndex[b.booking_id]={name:b.booking_name,venue:b.venue||'',calls:b.calls.map(function(c){return {call_id:c.call_id,call_name:c.call_name};})};
       const callsHtml=b.calls.map(c=>{
-        const bookedOk=c.booked>=c.required;
         const safeNotes=(c.notes||'').replace(/"/g,'&quot;');
         const notesHtml=c.notes?('<div class="call-notes" title="'+safeNotes+'">&#9998; '+c.notes+'</div>'):'';
         const callJson=JSON.stringify(c).replace(/'/g,'&#39;');
@@ -2110,11 +2113,11 @@ async function loadCalls(force=false){
           +(c.unfilled?'<div class="unfilled-dot"></div>':'')
           +'<span class="call-num">#'+c.call_num+'</span>'
           +'<span class="call-name" onclick="event.stopPropagation();openCallDialog(\''+c.booking_id+'\',\''+c.call_id+'\')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="View call">'+(c.call_name||'Call')+'</span>'
-          +((c.link_group!==null&&c.link_group!==undefined&&Number(c.link_group)>0)?'<span title="Linked \u2014 offering this call also offers its linked calls" style="display:inline-flex;align-items:center;gap:2px;font-size:9px;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;margin-left:6px">\ud83d\udd17</span>':'')
+          +finderFeedChips(c)
           +'</div>'
           +'<div class="call-meta">'
           +'<span>'+c.date+'</span><span>'+c.time+'</span><span>'+c.length+'h</span>'
-          +'<span class="call-booked '+(bookedOk?'ok':'warn')+'">'+(c.booked+'/'+c.required)+' booked</span>'
+          +finderBookedSpan(c)
           +'</div>'
           +notesHtml
           +'</div>';
@@ -2140,15 +2143,69 @@ function _finderSetCall(call, selected){
   if(card){ if(selected) card.classList.add('selected'); else card.classList.remove('selected'); }
 }
 
-function _finderLinkedSiblings(call){
-  // Displayed calls sharing this call's link_group (excludes the call itself).
-  var g = call.link_group;
-  if(g===null || g===undefined || Number(g)<=0) return [];
-  var out = [];
-  (window._finderCalls||[]).forEach(function(c){
-    if(String(c.call_id)!==String(call.call_id) && Number(c.link_group)===Number(g)) out.push(c);
-  });
+function _finderDownstreamCalls(call){
+  // Displayed calls reachable from this one by following feeds FORWARD,
+  // transitively. Excludes the call itself. Upstream calls are never
+  // included — selecting the load out must not drag in the load-ins.
+  var all = window._finderCalls || [];
+  var byId = {};
+  all.forEach(function(c){ byId[String(c.call_id)] = c; });
+
+  var start = String(call.call_id);
+  var seen  = {}; seen[start] = true;
+  var stack = [start];
+  var out   = [];
+  var guard = 0;
+
+  while(stack.length && guard++ < 200){
+    var cur = byId[stack.pop()];
+    if(!cur) continue;
+    (cur.feeds || []).forEach(function(t){
+      t = String(t);
+      if(seen[t]) return;      // visited set: cycles (migrated symmetric
+      seen[t] = true;          // links are cycles) terminate here
+      stack.push(t);
+      if(byId[t]) out.push(byId[t]);   // only calls actually on screen
+    });
+  }
   return out;
+}
+
+function finderFeedChips(c){
+  var out = '';
+  var nDown = (c.feeds  || []).length;
+  var nUp   = (c.fed_by || []).length;
+  var s = 'display:inline-flex;align-items:center;gap:2px;font-size:9px;font-weight:600;'
+        + 'border-radius:3px;padding:0 4px;margin-left:6px;';
+  if(nDown) out += '<span title="Feeds '+nDown+' call'+(nDown>1?'s':'')
+    +' — offering this call also offers them" style="'+s
+    +'color:var(--accent);border:1px solid var(--accent)">\u2193 feeds '+nDown+'</span>';
+  if(nUp) out += '<span title="Fed by '+nUp+' call'+(nUp>1?'s':'')
+    +' — crew from those calls are carried into this one" style="'+s
+    +'color:var(--muted);border:1px solid var(--border)">\u2191 fed by '+nUp+'</span>';
+  // Only when feeds actually cause the overage. free_to_fill also goes
+  // negative on a plainly over-booked call (more confirmed than required),
+  // which ops do deliberately and constantly — chipping those would be noise.
+  // reserved > 0 isolates the case this feature is about.
+  if(c.reserved > 0 && typeof c.free_to_fill === 'number' && c.free_to_fill < 0)
+    out += '<span title="Over-subscribed by '+(-c.free_to_fill)+'" style="'+s
+    +'color:var(--conflict);border:1px solid var(--conflict)">over by '+(-c.free_to_fill)+'</span>';
+  return out;
+}
+
+function finderBookedSpan(c){
+  // Three-part count only when slots are actually reserved. Falls back to the
+  // plain booked/required for unfed calls AND for fed calls whose feeders are
+  // already full (reserved 0) — which is most migrated links, so the fallback
+  // is the common path, not the edge case.
+  if(c.reserved > 0){
+    var ftf = (typeof c.free_to_fill === 'number') ? c.free_to_fill : 0;
+    return '<span class="call-booked '+(ftf < 0 ? 'warn' : 'ok')+'">'
+      + (c.required||0)+' required \u00b7 '+c.reserved+' reserved \u00b7 '
+      + ftf+' to fill</span>';
+  }
+  var bookedOk = c.booked >= c.required;
+  return '<span class="call-booked '+(bookedOk?'ok':'warn')+'">'+(c.booked+'/'+c.required)+' booked</span>';
 }
 
 function handleCallClick(event, call){
@@ -2157,13 +2214,19 @@ function handleCallClick(event, call){
     // Single click: replace selection
     selectedCalls.clear();
     document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('selected'));
+    document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('carried'));
   }
   // Cmd+click on an already-selected call deselects; otherwise select.
   const makeSelected = !(multi && selectedCalls.has(call.call_id));
   _finderSetCall(call, makeSelected);
-  // Linked calls follow the same action, so a linked group is always selected,
-  // offered, and availability-checked together.
-  _finderLinkedSiblings(call).forEach(function(sib){ _finderSetCall(sib, makeSelected); });
+  // Downstream calls follow the same action: offering this call also offers
+  // everything it feeds, and the availability check must intersect across all
+  // of them. Upstream calls are deliberately NOT touched.
+  _finderDownstreamCalls(call).forEach(function(t){
+    _finderSetCall(t, makeSelected);
+    var card = document.querySelector('.call-card[data-call-id="'+t.call_id+'"]');
+    if(card){ if(makeSelected) card.classList.add('carried'); else card.classList.remove('carried'); }
+  });
   updateCallSelectionUI();
   greyOutResults();
 }
@@ -2171,6 +2234,7 @@ function handleCallClick(event, call){
 function clearCallSelection(){
   selectedCalls.clear();
   document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('selected'));
+  document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('carried'));
   updateCallSelectionUI();
 }
 
@@ -3196,6 +3260,76 @@ function copyNames(){navigator.clipboard.writeText([...selected.keys()].join('\n
 function copyPhones(){navigator.clipboard.writeText([...selected.values()].map(c=>c.name+'\t'+c.phone).join('\n'));showFeedback('Copied with phones')}
 function showFeedback(msg){const el=document.getElementById('feedback');el.textContent=msg;setTimeout(()=>el.textContent='',2500)}
 
+// ── OFFER RESULTS ──
+// /api/goat/add-crew and /api/goat/send-sms now report a per crew-member,
+// per-call outcome: success, `skipped` ("already on this call"), or a failure
+// with a reason. A calendar clash used to be a SILENT no-op that still reported
+// success, so surfacing this is the user-facing half of that fix — do not
+// collapse it back to a bare success count.
+//
+// send-sms returns two row shapes: add-phase rows carry `crew`, the per-call
+// SMS rows do not. That is how they are told apart below.
+function offerResultTally(results){
+  var t = {added:0, skipped:0, failed:0, unverified:0, rows:[]};
+  (results||[]).forEach(function(r){
+    if(r.skipped){ t.skipped++; t.rows.push({kind:'skipped', r:r}); }
+    else if(r.success){
+      t.added++;
+      // verified===false means the post-write read-back could not run — the row
+      // was most likely written, but we cannot confirm it. A THIRD state, not a
+      // green tick and not a red cross. Rows with no `verified` key at all
+      // (skips, exceptions, the SMS-phase rows) are left alone.
+      if(r.verified === false){ t.unverified++; t.rows.push({kind:'unverified', r:r}); }
+    }
+    else { t.failed++; t.rows.push({kind:'failed', r:r}); }
+  });
+  return t;
+}
+
+function showOfferResults(title, results){
+  var t = offerResultTally(results);
+  if(!t.failed && !t.skipped && !t.unverified) return t;   // clean run — the button text says enough
+
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = title;
+  document.getElementById('entity-modal-sub').textContent =
+    t.added+' added / '+t.unverified+" couldn't verify / "
+    +t.skipped+' already on call / '+t.failed+' failed';
+
+  var body = t.rows.map(function(x){
+    var colour, tag, why;
+    if(x.kind === 'failed'){
+      colour = 'var(--conflict)';
+      tag    = 'failed';
+      why    = x.r.error || 'Unknown reason';
+    } else if(x.kind === 'unverified'){
+      colour = 'var(--warn)';
+      tag    = "couldn't verify";
+      why    = x.r.note || 'Could not confirm this row was written';
+    } else {
+      colour = 'var(--muted)';
+      tag    = 'already on call';
+      why    = x.r.skipped || '';
+    }
+    var who = x.r.crew ? (escapeHtml(String(x.r.crew))+' - ') : '';
+    return '<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border)">'
+      + '<span style="font-size:11px;color:'+colour+';font-weight:600;min-width:100px">'+tag+'</span>'
+      + '<span style="flex:1;font-size:12px;color:var(--text)">'+who+escapeHtml(String(x.r.call||''))
+      + '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(String(why))+'</div>'
+      + '</span></div>';
+  }).join('');
+
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:11px;color:var(--muted);padding-bottom:8px;line-height:1.5">'
+    + 'Crew already on a call keep their existing row - their status, call-boss flag and calendar entry are left intact. '
+    + 'A failure means SmartStaff refused the booking, usually a clash with an already-confirmed shift, so no row was created. '
+    + "\"Couldn't verify\" means the write most likely went through but the read-back didn't run, so it hasn't been confirmed - "
+    + 'check those calls before relying on them.'
+    + '</div>' + body;
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  return t;
+}
+
 // ── SMARTSTAFF ACTIONS ──
 async function addSelected(confirm){
   const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
@@ -3222,8 +3356,12 @@ async function addSelected(confirm){
     });
     const j=await r.json();
     if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
-    const results=j.results||[];const ok=results.filter(x=>x.success).length;
-    btn.textContent='Done - '+ok+' added'+(results.length>ok?' ('+(results.length-ok)+' failed)':'');
+    const results=j.results||[];
+    const t=showOfferResults(confirm?'Add & Confirm - results':'Add crew - results', results);
+    btn.textContent='Done - '+t.added+' added'
+      +(t.unverified?', '+t.unverified+' unverified':'')
+      +(t.skipped?', '+t.skipped+' already on call':'')
+      +(t.failed?', '+t.failed+' failed':'');
   }catch(e){
     btn.textContent='Failed';
     alert((confirm?'Add & Confirm':'Add')+' failed: '+(e.message||e));
@@ -3249,8 +3387,12 @@ async function sendSMS(){
     });
     const j=await r.json();
     if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
-    const results=j.results||[];const ok=results.filter(x=>x.success).length;
-    btn.textContent='SMS sent ('+ok+' call'+(ok===1?'':'s')+', '+crew.length+' crew)';
+    const results=j.results||[];
+    const t=showOfferResults('Send SMS - results', results);
+    // SMS-phase rows have no `crew` field; add-phase rows do.
+    const smsOk=results.filter(x=>x.success && !x.crew).length;
+    btn.textContent='SMS sent ('+smsOk+' call'+(smsOk===1?'':'s')+', '+crew.length+' crew)'
+      +(t.failed?' - '+t.failed+' issue'+(t.failed===1?'':'s'):'');
   }catch(e){
     btn.textContent='Failed';
     alert('Send SMS failed: '+(e.message||e));
@@ -9827,7 +9969,7 @@ async function generateGoogleSheet(bookingId){
 
 async function openBookingDialog(bookingId){
   openEntityModal();
-  _bkLinkMode = false; _bkLinkSel = {};
+  _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {};
   const cached = window._bookingIndex[bookingId];
   document.getElementById('entity-modal-title').textContent = cached ? cached.name : 'Booking';
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
@@ -9863,79 +10005,195 @@ function bkCallBlock(bookingId, c){
     + '<span style="display:flex;align-items:center">'+conf+'<span style="font-size:10px;color:var(--accent)">view →</span></span></div>';
 }
 
-// ── LINKED CALLS (booking dialog) ────────────────────────────────────────────
-// Calls sharing a link_group answer as one unit (the response cascade lives in
-// respond-to-call.php). Here we show a per-group 🔗 chip and give admins a
-// link/unlink mode. Linking posts to /api/calls/link (-> link-calls.php).
-var _bkLinkMode = false;
-var _bkLinkSel  = {};   // { call_id: true } while in link mode
-var BK_GROUP_COLORS = ['#e0b64a','#5aa9e6','#7ac74f','#e08a5a','#b47ae6','#4ac7c7'];
+// ── CALL FEEDS (booking dialog) ──────────────────────────────────────────────
+// A feed edge (source -> target) means crew booked on the source are also
+// booked on the target. Direction matters: offering the source offers the
+// target, but not the reverse. The response cascade lives in
+// respond-to-call.php; here we show directional chips and give admins a
+// two-step editor. Saving posts to /api/calls/feeds/add -> call-feeds.php.
+//
+// A migrated symmetric link shows as BOTH "feeds 1" and "fed by 1" on each
+// call — that is what a two-way pair looks like in this model, not a bug.
+var _bkFeedMode = false;
+var _bkFeedSrc  = null;   // call_id of the chosen feeder, or null
+var _bkFeedSel  = {};     // { call_id: true } receiving calls, while in feed mode
 
-function bkGroupMap(calls){
-  // distinct link_groups, in call order -> {label 'A'..,'color'}
-  var map = {}, i = 0;
+function bkFeedMaps(calls){
+  // Build lookup maps once per render: call_id -> call, and the two edge
+  // directions straight off the payload (get-booking.php emits feeds/fed_by).
+  var byId = {}, feedsOf = {}, fedByOf = {};
   (calls||[]).forEach(function(c){
-    var g = c.link_group;
-    if(g !== null && g !== undefined && Number(g) > 0 && !map[g]){
-      map[g] = { label: String.fromCharCode(65 + (i % 26)), color: BK_GROUP_COLORS[i % BK_GROUP_COLORS.length] };
-      i++;
-    }
+    var id = String(c.call_id);
+    byId[id]    = c;
+    feedsOf[id] = (c.feeds  || []).map(String);
+    fedByOf[id] = (c.fed_by || []).map(String);
   });
-  return map;
+  return { byId: byId, feedsOf: feedsOf, fedByOf: fedByOf };
 }
 
-function bkChainChip(g, gm){
-  if(g === null || g === undefined || Number(g) <= 0 || !gm[g]) return '';
-  var e = gm[g];
-  return '<span title="Linked group '+e.label+' — these calls are answered together" style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:600;color:'+e.color+';border:1px solid '+e.color+';border-radius:3px;padding:1px 5px;margin-left:8px">🔗 '+e.label+'</span>';
+function bkFeedName(maps, callId){
+  var c = maps.byId[String(callId)];
+  return c ? escapeHtml(decodeEntities(c.call_name || 'Call')) : ('#'+callId);
 }
 
-function bkCallRow(bookingId, c, gm){
-  var g = c.link_group;
-  var chip = bkChainChip(g, gm);
-  var isLinked = (g !== null && g !== undefined && Number(g) > 0 && gm[g]);
-  if(_bkLinkMode){
-    var checked = _bkLinkSel[c.call_id] ? 'checked' : '';
-    var unlinkBtn = isLinked
-      ? '<span onclick="event.preventDefault();event.stopPropagation();bkUnlinkCall(\''+bookingId+'\',\''+c.call_id+'\')" style="font-size:9px;color:var(--conflict);cursor:pointer;margin-left:8px">unlink</span>'
-      : '';
-    return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)">'
-      + '<input type="checkbox" '+checked+' onchange="bkToggleSel(\''+bookingId+'\',\''+c.call_id+'\',this.checked)">'
-      + '<span style="flex:1;font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+chip+'</span>'
-      + unlinkBtn
-      + '</label>';
+function bkFeedChips(c, maps){
+  // Directional chips. Down = this call feeds others; up = others feed it.
+  // Tooltips list the call names so ops don't have to open each one.
+  var id     = String(c.call_id);
+  var down   = maps.feedsOf[id] || [];
+  var up     = maps.fedByOf[id] || [];
+  var base   = 'display:inline-flex;align-items:center;gap:3px;font-size:9px;'
+             + 'font-weight:600;border-radius:3px;padding:1px 5px;margin-left:8px';
+  var out    = '';
+
+  if(down.length){
+    var dNames = down.map(function(t){ return bkFeedName(maps, t); }).join(', ');
+    out += '<span title="Feeds: '+dNames+' — offering this call also offers them" '
+         + 'style="'+base+';color:var(--accent);border:1px solid var(--accent)">'
+         + '\u2193 feeds '+down.length+'</span>';
   }
-  var conf = '<span style="font-size:10px;color:var(--muted);margin-right:10px">'+(c.confirmed||0)+' booked</span>';
-  return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)" onmouseover="this.style.borderColor=\'var(--border-gold)\'" onmouseout="this.style.borderColor=\'var(--border)\'">'
-    + '<span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+chip+'</span>'
-    + '<span style="display:flex;align-items:center">'+conf+'<span style="font-size:10px;color:var(--accent)">view →</span></span></div>';
+  if(up.length){
+    var uNames = up.map(function(s){ return bkFeedName(maps, s); }).join(', ');
+    out += '<span title="Fed by: '+uNames+' — crew from those calls are carried into this one" '
+         + 'style="'+base+';color:var(--muted);border:1px solid var(--border)">'
+         + '\u2191 fed by '+up.length+'</span>';
+  }
+  // Over-subscribed only when feeds actually cause it. free_to_fill also goes
+  // negative on a plainly over-booked call, which ops do deliberately.
+  if(c.reserved > 0 && typeof c.free_to_fill === 'number' && c.free_to_fill < 0){
+    out += '<span title="Over-subscribed by '+(-c.free_to_fill)+' — more crew are committed here than the call requires" '
+         + 'style="'+base+';color:var(--conflict);border:1px solid var(--conflict)">'
+         + 'over by '+(-c.free_to_fill)+'</span>';
+  }
+  return out;
+}
+
+function bkFeedCount(c){
+  // Three-part count only when slots are actually reserved. Falls back to the
+  // plain display for unfed calls AND for fed calls whose feeders are full —
+  // which is most migrated links, so the fallback is the common path.
+  if(c.reserved > 0){
+    return '<span style="font-size:10px;color:var(--muted);margin-right:10px">'
+      + (c.required||0)+' required \u00b7 '+c.reserved+' reserved \u00b7 '
+      + (c.free_to_fill||0)+' to fill</span>';
+  }
+  return '<span style="font-size:10px;color:var(--muted);margin-right:10px">'
+    + (c.confirmed||0)+' booked</span>';
+}
+
+function bkFeedEdgeList(bookingId, c, maps){
+  // Outgoing edges for this call, each individually removable. Shown only in
+  // feed mode — outside it the chips carry the information more compactly.
+  var down = maps.feedsOf[String(c.call_id)] || [];
+  if(!down.length) return '';
+  var items = down.map(function(t){
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;'
+      + 'color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px">'
+      + '\u2192 '+bkFeedName(maps, t)
+      + '<span onclick="event.preventDefault();event.stopPropagation();'
+      + 'bkFeedRemove(\''+bookingId+'\',\''+c.call_id+'\',\''+t+'\')" '
+      + 'title="Remove this feed" '
+      + 'style="color:var(--conflict);cursor:pointer;font-weight:700">\u00d7</span></span>';
+  }).join(' ');
+  return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 0 26px">'+items+'</div>';
+}
+
+function bkCallRow(bookingId, c, maps){
+  var chips = bkFeedChips(c, maps);
+  var name  = escapeHtml(decodeEntities(c.call_name || 'Call'));
+
+  if(_bkFeedMode){
+    var isSrc = (_bkFeedSrc !== null && String(_bkFeedSrc) === String(c.call_id));
+    var edges = bkFeedEdgeList(bookingId, c, maps);
+
+    // Step 1 — no feeder chosen yet: every row is a picker.
+    if(_bkFeedSrc === null){
+      return '<div onclick="bkPickSource(\''+bookingId+'\',\''+c.call_id+'\')" '
+        + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
+        + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
+        + 'background:var(--surface2)" '
+        + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
+        + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
+        + '<span style="font-size:12px;color:var(--text)">'+name+chips+'</span>'
+        + '<span style="font-size:10px;color:var(--accent)">crew come from here \u2192</span>'
+        + '</div>' + edges;
+    }
+
+    // Step 2a — the chosen feeder, pinned at the top of the reading order.
+    if(isSrc){
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
+        + 'border:1px solid var(--accent);border-radius:4px;margin-bottom:5px;background:var(--surface2)">'
+        + '<span style="font-size:12px;color:var(--text)">'+name+chips+'</span>'
+        + '<span onclick="bkClearSource(\''+bookingId+'\')" '
+        + 'style="font-size:10px;color:var(--muted);cursor:pointer">change</span>'
+        + '</div>' + edges;
+    }
+
+    // Step 2b — candidate receiving calls.
+    var checked = _bkFeedSel[c.call_id] ? 'checked' : '';
+    return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;'
+      + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
+      + 'background:var(--surface2)">'
+      + '<input type="checkbox" '+checked+' '
+      + 'onchange="bkToggleFeedSel(\''+bookingId+'\',\''+c.call_id+'\',this.checked)">'
+      + '<span style="flex:1;font-size:12px;color:var(--text)">'+name+chips+'</span>'
+      + '</label>' + edges;
+  }
+
+  // Normal mode.
+  return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" '
+    + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
+    + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
+    + 'background:var(--surface2)" '
+    + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
+    + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
+    + '<span style="font-size:12px;color:var(--text)">'+name+chips+'</span>'
+    + '<span style="display:flex;align-items:center">'+bkFeedCount(c)
+    + '<span style="font-size:10px;color:var(--accent)">view \u2192</span></span></div>';
 }
 
 function bkCallsSection(bookingId, d){
-  var calls = (d && d.calls) || [];
-  var gm = bkGroupMap(calls);
+  var calls    = (d && d.calls) || [];
+  var maps     = bkFeedMaps(calls);
   var hasCalls = calls.length > 0;
 
   var toggle = (d && hasCalls)
-    ? (_bkLinkMode
-        ? '<span onclick="bkToggleLinkMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>'
-        : '<span onclick="bkToggleLinkMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">🔗 Link calls</span>')
+    ? (_bkFeedMode
+        ? '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>'
+        : '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">\u21e2 Call feeds</span>')
     : '';
   var header = '<div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
     + '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Calls</span>'
     + toggle + '</div>';
 
+  // In feed mode with a feeder chosen, float it to the top so the two-step
+  // relationship reads top-down.
+  var ordered = calls.slice();
+  if(_bkFeedMode && _bkFeedSrc !== null){
+    ordered.sort(function(a, b){
+      var as = String(a.call_id) === String(_bkFeedSrc) ? 0 : 1;
+      var bs = String(b.call_id) === String(_bkFeedSrc) ? 0 : 1;
+      return as - bs;
+    });
+  }
+
   var list = hasCalls
-    ? calls.map(function(c){ return bkCallRow(bookingId, c, gm); }).join('')
+    ? ordered.map(function(c){ return bkCallRow(bookingId, c, maps); }).join('')
     : '<div style="color:var(--muted);font-size:12px">No calls on this booking yet.</div>';
 
   var footer = '';
-  if(_bkLinkMode){
-    var n = Object.keys(_bkLinkSel).length;
-    footer = '<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
-      + entityBtn('🔗 Link selected'+(n?' ('+n+')':''), "bkLinkSelected('"+bookingId+"')", {primary:true, id:'bk-link-go'})
-      + '<span style="font-size:10px;color:var(--muted)">Tick two or more unlinked calls, then link them.</span></div>'
-      + '<div id="bk-link-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
+  if(_bkFeedMode){
+    if(_bkFeedSrc === null){
+      footer = '<div style="font-size:10px;color:var(--muted);margin-top:6px">'
+        + 'Pick the call crew come <em>from</em>. Anyone booked there will also be booked on the calls you choose next.</div>'
+        + '<div id="bk-feed-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
+    } else {
+      var n = Object.keys(_bkFeedSel).length;
+      footer = '<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
+        + entityBtn('\u21e2 Save feeds'+(n?' ('+n+')':''), "bkFeedSave('"+bookingId+"')", {primary:true, id:'bk-feed-go'})
+        + '<span style="font-size:10px;color:var(--muted)">Tick the calls those crew should also work.</span></div>'
+        + '<div id="bk-feed-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
+    }
   } else if(d){
     footer = '<div onclick="openAddCallForm(\''+bookingId+'\')" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 10px;border:1px dashed var(--border);border-radius:4px;margin-top:2px;cursor:pointer;color:var(--muted);font-size:11px" onmouseover="this.style.borderColor=\'var(--border-gold)\';this.style.color=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.color=\'var(--muted)\'">+ Add call</div>';
   }
@@ -9947,47 +10205,102 @@ function bkRerenderCalls(bookingId){
   if(wrap) wrap.innerHTML = bkCallsSection(bookingId, window._curBookingEdit);
 }
 
-function bkToggleLinkMode(bookingId){
-  _bkLinkMode = !_bkLinkMode;
-  _bkLinkSel = {};
+function bkToggleFeedMode(bookingId){
+  _bkFeedMode = !_bkFeedMode;
+  _bkFeedSrc  = null;
+  _bkFeedSel  = {};
   bkRerenderCalls(bookingId);
 }
 
-function bkToggleSel(bookingId, callId, checked){
-  if(checked) _bkLinkSel[callId] = true; else delete _bkLinkSel[callId];
+function bkPickSource(bookingId, callId){
+  _bkFeedSrc = callId;
+  _bkFeedSel = {};
   bkRerenderCalls(bookingId);
 }
 
-async function bkLinkSelected(bookingId){
-  var ids = Object.keys(_bkLinkSel);
-  var st = document.getElementById('bk-link-status');
-  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.textContent=m; } }
-  if(ids.length < 2) return fail('Tick at least two calls to link.');
-  if(st){ st.style.color='var(--muted)'; st.textContent='Linking…'; }
-  var btn = document.getElementById('bk-link-go'); if(btn) btn.disabled = true;
+function bkClearSource(bookingId){
+  _bkFeedSrc = null;
+  _bkFeedSel = {};
+  bkRerenderCalls(bookingId);
+}
+
+function bkToggleFeedSel(bookingId, callId, checked){
+  if(checked) _bkFeedSel[callId] = true; else delete _bkFeedSel[callId];
+  bkRerenderCalls(bookingId);
+}
+
+async function bkFeedSave(bookingId, confirmOverride){
+  // call-feeds.php returns needs_confirm with a warnings array for overlapping
+  // calls, over-subscription, and redundant edges. All are overridable — ops
+  // sometimes add the edge first and fix `required` after — so we surface them
+  // and offer "Save anyway" rather than refusing.
+  var ids = Object.keys(_bkFeedSel);
+  var st  = document.getElementById('bk-feed-status');
+  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.innerHTML=m; } }
+
+  if(_bkFeedSrc === null) return fail('Pick the call crew come from first.');
+  if(!ids.length) return fail('Tick at least one call they should also work.');
+
+  if(st){ st.style.color='var(--muted)'; st.textContent='Saving\u2026'; }
+  var btn = document.getElementById('bk-feed-go'); if(btn) btn.disabled = true;
+
   try{
-    var resp = await fetch('/api/calls/link', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({call_ids: ids})});
+    var resp = await fetch('/api/calls/feeds/add', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        source_call:  _bkFeedSrc,
+        target_calls: ids,
+        confirm:      confirmOverride ? true : false
+      })
+    });
+    var j = await resp.json();
+
+    if(j && j.needs_confirm){
+      var lines = (j.warnings||[]).map(function(w){
+        return '\u2022 '+escapeHtml(decodeEntities(w.call_name||''))+' \u2014 '+escapeHtml(w.message||'');
+      }).join('<br>');
+      fail(lines
+        + '<br><span onclick="bkFeedSave(\''+bookingId+'\', true)" '
+        + 'style="color:var(--accent);cursor:pointer;text-decoration:underline">Save anyway</span>');
+      if(btn) btn.disabled = false;
+      return;
+    }
+
+    if(!resp.ok || (j && j.error)){
+      fail((j && j.error) ? escapeHtml(j.error) : ('HTTP '+resp.status));
+      if(btn) btn.disabled = false;
+      return;
+    }
+
+    _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {};
+    delete window._bookingIndex[bookingId];
+    openBookingDialog(bookingId);
+  }catch(e){
+    fail('Save failed: '+escapeHtml(e.message));
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function bkFeedRemove(bookingId, sourceId, targetId){
+  // Removes ONE edge, not a whole group — a call can feed several targets and
+  // they are independent.
+  var st = document.getElementById('bk-feed-status');
+  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.textContent=m; } }
+  try{
+    var resp = await fetch('/api/calls/feeds/remove', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({source_call: sourceId, target_calls: [targetId]})
+    });
     var j = await resp.json();
     if(!resp.ok || (j && j.error)){
       fail((j && j.error) ? j.error : ('HTTP '+resp.status));
-      if(btn) btn.disabled = false; return;
+      return;
     }
-    _bkLinkMode = false; _bkLinkSel = {};
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
-  }catch(e){ fail('Link failed: '+e.message); if(btn) btn.disabled = false; }
-}
-
-async function bkUnlinkCall(bookingId, callId){
-  var st = document.getElementById('bk-link-status');
-  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.textContent=m; } }
-  try{
-    var resp = await fetch('/api/calls/unlink', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({call_ids: [callId]})});
-    var j = await resp.json();
-    if(!resp.ok || (j && j.error)){ fail((j && j.error) ? j.error : ('HTTP '+resp.status)); return; }
-    delete window._bookingIndex[bookingId];
-    openBookingDialog(bookingId);
-  }catch(e){ fail('Unlink failed: '+e.message); }
+  }catch(e){ fail('Remove failed: '+e.message); }
 }
 
 function renderBookingDialog(bookingId, d, cached){
@@ -11043,7 +11356,10 @@ async function executeGoatAction(cardId){
     });
     const data = await resp.json();
 
-    const allOk = (data.results || []).every(r => r.success);
+    // Skipped rows report success:true (the row was deliberately left alone),
+    // so only real failures make this partial.
+    const t = offerResultTally(data.results || []);
+    const allOk = t.failed === 0;
     const label = allOk ? '✓ Done' : '⚠ Partial — check SmartStaff';
     delete _goatConfirmPayloads[cardId];
 
@@ -11052,8 +11368,14 @@ async function executeGoatAction(cardId){
         `<span style="color:${allOk?'var(--accent)':'var(--warn)'};font-size:12px">${label}</span>`;
     }
     appendGoatMessage('goat', allOk
-      ? `Done — ${crew.map(c=>c.name).join(', ')} added to the call. That's how the GOAT operates. 🐐`
-      : `Partial success — some actions may not have gone through. Worth checking SmartStaff directly.`
+      ? `Done — ${crew.map(c=>c.name).join(', ')} added to the call.` +
+        (t.skipped ? ` ${t.skipped} already had a row, so I left those alone.` : '') +
+        (t.unverified ? ` ${t.unverified} couldn't be verified — worth a look before you rely on them.` : '') +
+        ` That's how the GOAT operates. 🐐`
+      : `Partial — ${t.added} added, ${t.failed} refused (usually a clash with a confirmed shift)` +
+        (t.skipped ? `, ${t.skipped} already on the call` : '') +
+        (t.unverified ? `, ${t.unverified} unverified` : '') +
+        `. Worth checking SmartStaff directly.`
     );
   } catch(e){
     if(card){
