@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.11.0"
+APP_VERSION    = "4.11.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -7329,6 +7329,7 @@ def api_goat_add_crew():
             continue
 
         url = (f"{BASE_URL}/add-call.php?action={action}"
+               f"&id={todo[0]}"
                f"&userID={crew_id}&addtocalls={','.join(todo)}")
 
         try:
@@ -7446,6 +7447,7 @@ def api_goat_send_sms():
             continue
 
         url = (f"{BASE_URL}/add-call.php?action=addcrew"
+               f"&id={todo[0]}"
                f"&userID={crew_id}&addtocalls={','.join(todo)}")
 
         try:
