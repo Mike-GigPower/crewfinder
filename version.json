@@ -1,6 +1,6 @@
 {
-  "version": "4.11.0",
+  "version": "4.11.1",
   "release_date": "2026-07-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.11.0/TheGOAT.dmg",
-  "release_notes": "Calls can now feed into each other — crew booked on a load-in are automatically offered the load out, and one call can be fed by several load-ins; the booking dialog gains a feeds editor and Crew Finder shows reserved slots; offers that clash with an already-confirmed shift are now reported instead of failing silently."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.11.1/TheGOAT.dmg",
+  "release_notes": "Fixes a fault in 4.11.0 that stopped crew being added to calls. Add, Add & Confirm and Send SMS all failed with a clash message that wasn't the real cause. Nothing was written and no crew were notified. All three work again."
 }
