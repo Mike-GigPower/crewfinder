@@ -93,6 +93,7 @@
 			/* GROUP BY join — a single pass over the windowed calls' crew rows. A
 			/* correlated per-row subquery here timed the endpoint out (read>20s). */
 			COUNT(CASE WHEN ccm.status = 5 THEN 1 END) AS booked,
+			COUNT(CASE WHEN ccm.status IN (0,1,2,5) THEN 1 END) AS committed,
 			c.notes       AS notes,
 			b.name        AS booking_name,
 			v.venue       AS venue_name,
@@ -152,10 +153,202 @@
 			'end_iso'      => date('Y-m-d\TH:i:s', $end_unix),
 			'booked'       => $booked,
 			'required'     => $required,
+			'committed'    => (int) $row->committed,
 			'link_group'   => ($row->link_group === null ? null : (int) $row->link_group),
 			'full'         => ($booked >= $required && $required > 0),
 			'notes'        => $row->notes,
 		);
+	}
+
+	/*
+	/* Feeds + reserved slots, in two set-based queries over the windowed calls.
+	/* Deliberately NOT per-row helper calls — see the timeout note above.
+	*/
+
+	/* Edges for every booking represented in the window. Feeds never cross a
+	/* booking, so this is the complete subgraph needed for reachability — and
+	/* it is bounded, unlike walking the whole table. */
+
+	$bookingIDs = array();
+
+	foreach ($calls as $c)
+	{
+		$bookingIDs[(int) $c['booking_id']] = true;
+	}
+
+	$feedsOf = array();
+	$fedByOf = array();
+
+	if (count($bookingIDs))
+	{
+		$bList = implode(',', array_keys($bookingIDs));
+
+		$fres = mysql_query("SELECT source_call, target_call FROM call_feeds
+		                     WHERE booking_id IN (" . $bList . ")");
+
+		if ($fres !== false)
+		{
+			while ($frow = mysql_fetch_object($fres))
+			{
+				$s = (int) $frow->source_call;
+				$t = (int) $frow->target_call;
+
+				if (!isset($feedsOf[$s])) { $feedsOf[$s] = array(); }
+				if (!isset($fedByOf[$t])) { $fedByOf[$t] = array(); }
+
+				$feedsOf[$s][] = $t;
+				$fedByOf[$t][] = $s;
+			}
+		}
+	}
+
+	/* every feeder id referenced — sources with targets, plus any id appearing
+	/* as a source in a fed_by list — is what the gap query needs */
+
+	$feeders = array();
+
+	foreach ($feedsOf as $s => $ts)
+	{
+		$feeders[$s] = true;
+	}
+
+	foreach ($fedByOf as $t => $srcs)
+	{
+		foreach ($srcs as $sid)
+		{
+			$feeders[$sid] = true;
+		}
+	}
+
+	/* required + committed for every feeder, one query */
+
+	$gapOf = array();   /* feeder call id -> max(0, required - committed) */
+
+	if (count($feeders))
+	{
+		$fList = implode(',', array_keys($feeders));
+
+		$gres = mysql_query("SELECT c.id,
+		                            c.required,
+		                            COUNT(CASE WHEN ccm.status IN (0,1,2,5) THEN 1 END) AS committed
+		                     FROM calls c
+		                     LEFT JOIN call_crew_map ccm ON ccm.callID = c.id
+		                     WHERE c.id IN (" . $fList . ")
+		                     GROUP BY c.id");
+
+		if ($gres !== false)
+		{
+			while ($grow = mysql_fetch_object($gres))
+			{
+				$gap = (int) $grow->required - (int) $grow->committed;
+				$gapOf[(int) $grow->id] = ($gap > 0) ? $gap : 0;
+			}
+		}
+	}
+
+	/* Forward reachability over the in-memory adjacency. Depth capped at 10,
+	/* visited set makes cycles (migrated symmetric links) harmless. */
+
+	if (!function_exists('goat_bulk_reaches'))
+	{
+		function goat_bulk_reaches($feedsOf, $from, $to)
+		{
+			$seen     = array($from => true);
+			$frontier = array($from);
+			$depth    = 0;
+
+			while (count($frontier) && $depth < 10)
+			{
+				$next = array();
+
+				foreach ($frontier as $n)
+				{
+					if (!isset($feedsOf[$n]))
+					{
+						continue;
+					}
+
+					foreach ($feedsOf[$n] as $m)
+					{
+						if ($m === $to)
+						{
+							return true;
+						}
+
+						if (!isset($seen[$m]))
+						{
+							$seen[$m] = true;
+							$next[]   = $m;
+						}
+					}
+				}
+
+				$frontier = $next;
+				$depth++;
+			}
+
+			return false;
+		}
+	}
+
+	/* fold into each emitted call */
+
+	foreach ($calls as $i => $c)
+	{
+		$cid        = (int) $c['call_id'];
+		$reserved   = 0;
+		$rowFeeders = isset($fedByOf[$cid]) ? $fedByOf[$cid] : array();
+		$keep       = array();
+
+		foreach ($rowFeeders as $f)
+		{
+			$drop = false;
+
+			foreach ($rowFeeders as $g)
+			{
+				if ($f === $g)
+				{
+					continue;
+				}
+
+				if (!goat_bulk_reaches($feedsOf, $f, $g))
+				{
+					continue;
+				}
+
+				$mutual = goat_bulk_reaches($feedsOf, $g, $f);
+
+				if (!$mutual)
+				{
+					$drop = true;
+					break;
+				}
+
+				if ($g < $f)
+				{
+					$drop = true;
+					break;
+				}
+			}
+
+			if (!$drop)
+			{
+				$keep[] = $f;
+			}
+		}
+
+		foreach ($keep as $s)
+		{
+			if (isset($gapOf[$s]))
+			{
+				$reserved += $gapOf[$s];
+			}
+		}
+
+		$calls[$i]['feeds']        = isset($feedsOf[$cid]) ? $feedsOf[$cid] : array();
+		$calls[$i]['fed_by']       = $rowFeeders;
+		$calls[$i]['reserved']     = $reserved;
+		$calls[$i]['free_to_fill'] = (int) $c['required'] - (int) $c['committed'] - $reserved;
 	}
 
 	echo json_encode(array(

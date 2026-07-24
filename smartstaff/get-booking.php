@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include('call-graph.php');
 
 	/*
 	/* JSON response */
@@ -93,6 +94,39 @@
 	/* calls + per-call crew roster
 	*/
 
+	/*
+	/* Feed edges for this booking, in one query. Built into two maps so the
+	/* per-call emit below is a lookup, not a query.
+	*/
+
+	$feedsOf  = array();   /* call_id -> [target ids] */
+	$fedByOf  = array();   /* call_id -> [source ids] */
+
+	$fres = mysql_query("SELECT source_call, target_call FROM call_feeds
+	                     WHERE booking_id = " . $bookingID);
+
+	if ($fres !== false)
+	{
+		while ($frow = mysql_fetch_object($fres))
+		{
+			$s = (int) $frow->source_call;
+			$t = (int) $frow->target_call;
+
+			if (!isset($feedsOf[$s]))
+			{
+				$feedsOf[$s] = array();
+			}
+
+			if (!isset($fedByOf[$t]))
+			{
+				$fedByOf[$t] = array();
+			}
+
+			$feedsOf[$s][] = $t;
+			$fedByOf[$t][] = $s;
+		}
+	}
+
 	$calls = array();
 	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes, link_group
 	                     FROM calls
@@ -155,6 +189,8 @@
 				}
 			}
 
+			$fc = goat_call_feed_counts($callID);
+
 			$calls[] = array(
 				'call_id'    => $callID,
 				'call_name'  => $call->call_name,
@@ -164,6 +200,11 @@
 				'required'   => (int) $call->required,
 				'notes'      => $call->notes,
 				'link_group' => ($call->link_group === null ? null : (int) $call->link_group),
+				'feeds'        => isset($feedsOf[$callID]) ? $feedsOf[$callID] : array(),
+				'fed_by'       => isset($fedByOf[$callID]) ? $fedByOf[$callID] : array(),
+				'committed'    => $fc['committed'],
+				'reserved'     => $fc['reserved'],
+				'free_to_fill' => $fc['free_to_fill'],
 				'booked'     => $booked,
 				'confirmed'  => $confirmed,
 				'crew'       => $crew,

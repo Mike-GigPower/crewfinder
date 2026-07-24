@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include('call-graph.php');
 	include_once('resolve-call-contact.php');
 
 	/*
@@ -89,6 +90,7 @@
 
 	$rows          = array();
 	$startedGroups = array();
+	$startedCalls  = array();
 
 	while ($row = mysql_fetch_object($res))
 	{
@@ -111,9 +113,13 @@
 
 		$lg = ($row->link_group === null ? null : (int) $row->link_group);
 
-		if ($hasStarted && $lg !== null && $lg > 0)
+		/* A started call poisons its whole package — the crew member can no
+		/* longer accept any of it, so the package is dropped as a unit. Marked
+		/* by call id (not group id) because feeds have no group token. */
+
+		if ($hasStarted)
 		{
-			$startedGroups[$lg] = true;
+			$startedCalls[(int) $row->call_id] = true;
 		}
 
 		$rows[] = array(
@@ -140,14 +146,27 @@
 			continue;   /* this call has already started */
 		}
 
-		$lg = $r['lg'];
+		/* drop this offer if any call in its package has already started */
 
-		if ($lg !== null && $lg > 0 && isset($startedGroups[$lg]))
+		$pkg     = goat_user_package($userID, (int) $r['row']->call_id);
+		$poisoned = false;
+
+		foreach ($pkg as $pc)
 		{
-			continue;   /* a linked call in this package has started — drop the package */
+			if (isset($startedCalls[$pc]))
+			{
+				$poisoned = true;
+				break;
+			}
+		}
+
+		if ($poisoned)
+		{
+			continue;
 		}
 
 		$row = $r['row'];
+		$lg  = $r['lg'];
 
 		$offers[] = array(
 			'call_id'      => (int) $row->call_id,
@@ -160,6 +179,8 @@
 			'est_length'   => (double) $row->est_length,
 			'required'     => (int) $row->required,
 			'link_group'   => $lg,
+			'package_id'   => goat_package_id($pkg),
+			'commits_to'   => goat_commits_to((int) $row->call_id),
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss,
 			/* contact hierarchy — everything emitted here is upcoming by
