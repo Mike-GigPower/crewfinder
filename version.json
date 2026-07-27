@@ -1,6 +1,6 @@
 {
-  "version": "4.11.1",
-  "release_date": "2026-07-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.11.1/TheGOAT.dmg",
-  "release_notes": "Fixes a fault in 4.11.0 that stopped crew being added to calls. Add, Add & Confirm and Send SMS all failed with a clash message that wasn't the real cause. Nothing was written and no crew were notified. All three work again."
+  "version": "4.12.0",
+  "release_date": "2026-07-27",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.12.0/TheGOAT.dmg",
+  "release_notes": "Adds the ability to block crew from directly accessing SmartStaff"
 }
