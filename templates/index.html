@@ -1707,6 +1707,13 @@ a.recruit-action{text-decoration:none;display:inline-block}
             <div class="admin-card-desc">Assign users to Operations, Leadership or Crew.</div>
           </div>
         </button>
+        <button class="admin-card" onclick="adminDirectLoginBlock()">
+          <div class="admin-card-icon">🔒</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Direct SmartStaff Login</div>
+            <div class="admin-card-desc">Control who can log in to the SmartStaff website directly.</div>
+          </div>
+        </button>
       </div>
     </div>
   </div><!-- end tab-administration -->
@@ -8295,6 +8302,73 @@ async function _cohortSet(ein, cohort){
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
     openCohortModal();   // re-render the list with the new state
+  }catch(e){
+    if(err) err.textContent = e.message;
+  }
+}
+
+// ── Direct SmartStaff login block (Administration > Access) ─────────────────
+// Runtime toggle for the global.php guard. Blocks plain crew/leadership from the
+// SmartStaff website directly; admin + operations, THE GOAT and Crew Hub are all
+// exempt. Backed by /api/direct-login-block -> manage-direct-login.php.
+function adminDirectLoginBlock(){ openDirectLoginModal(); }
+
+async function openDirectLoginModal(){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Direct SmartStaff Login';
+  document.getElementById('entity-modal-sub').textContent   = 'Controls who can log in to the SmartStaff website directly';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = entityBtn('Close','closeEntityModal()');
+
+  let state;
+  try{
+    const r = await fetch('/api/direct-login-block');
+    state = await r.json();
+    if(!r.ok || state.error) throw new Error(state.error || ('HTTP '+r.status));
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+
+  const on = !!state.enabled;
+  const pill = on
+    ? '<span style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--conflict);background:var(--conf-bg);border-radius:3px;padding:3px 9px">Blocked</span>'
+    : '<span style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--available);background:var(--avail-bg);border-radius:3px;padding:3px 9px">Allowed</span>';
+
+  const toggleBtn = on
+    ? '<button class="btn-logout" onclick="setDirectLoginBlock(false)">Allow direct login</button>'
+    : '<button class="btn-logout" style="border-color:var(--conflict);color:var(--conflict)" onclick="confirmEnableDirectLogin()">Block direct login</button>';
+
+  let meta = '';
+  if(state.updated_at){
+    meta = '<div style="font-size:11px;color:var(--muted);padding-top:10px">Last changed '
+      + (state.updated_by ? 'by '+escapeHtml(state.updated_by)+' ' : '')
+      + 'on '+escapeHtml(String(state.updated_at))+'</div>';
+  }
+
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:11px;color:var(--muted);line-height:1.5;padding:0 0 12px">Blocks <b>crew and leadership</b> from logging into the SmartStaff website directly. <b>Admin</b> and <b>Operations</b> are unaffected, and so are <b>THE GOAT</b> and <b>Crew Hub</b>. Blocked users see a page pointing them to Crew Hub.</div>'
+    + '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">'
+      + '<div style="flex:1;font-size:13px;color:var(--text)">Current state '+pill+'</div>'
+      + toggleBtn
+    + '</div>'
+    + '<div id="dlb-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-top:8px"></div>'
+    + meta;
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+}
+
+function confirmEnableDirectLogin(){
+  const ok = confirm('Block direct SmartStaff login?\n\nCrew and leadership will be logged out of the SmartStaff website and sent to Crew Hub. Admin and Operations, THE GOAT and Crew Hub are unaffected.\n\nMake sure everyone who needs THE GOAT is on the latest build first.');
+  if(ok) setDirectLoginBlock(true);
+}
+
+async function setDirectLoginBlock(enabled){
+  const err = document.getElementById('dlb-error'); if(err) err.textContent = '';
+  try{
+    const r = await fetch('/api/direct-login-block', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: !!enabled})});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openDirectLoginModal();   // re-fetch and re-render with the new state
   }catch(e){
     if(err) err.textContent = e.message;
   }

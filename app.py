@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.11.1"
+APP_VERSION    = "4.12.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -594,7 +594,10 @@ def require_cohort(*allowed):
 def create_ss_session(username, password):
     """Login to SmartStaff and return a session object."""
     ss = http.Session()
-    ss.headers.update({"User-Agent": "Mozilla/5.0"})
+    # The "(TheGOAT)" marker lets the SmartStaff direct-login guard recognise and
+    # exempt the app: it follows the post-login redirect to a non-/ajax/ page, so
+    # without this marker a crew/leadership login through THE GOAT would be blocked.
+    ss.headers.update({"User-Agent": "Mozilla/5.0 (TheGOAT)"})
     # Set a 30s timeout on all requests via a custom adapter
     from requests.adapters import HTTPAdapter
     adapter = HTTPAdapter()
@@ -3697,6 +3700,30 @@ def api_cohort():
         return (resp.text, resp.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return jsonify({"error": f"cohort request failed: {e}"}), 502
+
+@app.route("/api/direct-login-block", methods=["GET", "POST"])
+@require_cohort("admin")
+def api_direct_login_block():
+    """Admin-only proxy to manage-direct-login.php. GET reports the current state
+    of the SmartStaff direct-login block (plus who last changed it); POST sets it.
+    The block stops plain crew/leadership from logging into the SmartStaff website
+    directly (admin + operations are exempt); THE GOAT and Crew Hub are unaffected.
+    The PHP independently re-gates on admin."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    url = f"{BASE_URL}/ajax/crew/manage-direct-login.php"
+    try:
+        if request.method == "POST":
+            body    = request.get_json(silent=True) or {}
+            enabled = "1" if body.get("enabled") else "0"
+            resp = ss.post(url, data={"action": "set", "enabled": enabled}, timeout=15)
+        else:
+            resp = ss.get(url, params={"action": "get"}, timeout=15)
+        return (resp.text, resp.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return jsonify({"error": f"direct-login-block request failed: {e}"}), 502
 
 @app.route("/api/calls")
 @require_cohort("admin")
