@@ -143,7 +143,22 @@
 
 	/* ---- update status ---- */
 
-	$db->update('call_crew_map', array('status' => $db->sc($status)), 'callID=' . $callID . ' AND userID=' . $userID);
+	$updFields = array('status' => $db->sc($status));
+
+	/*
+	/* Tag ops-entered resolutions so response-time stats can exclude them: the
+	/* duration would measure how long ops took to type it in, not how long the
+	/* crew member took to answer. Only on a genuine offered -> resolved move;
+	/* tagging every write would leave 'ops' stuck on a row the trigger later
+	/* needs to treat as a crew response. The trigger still stamps responded_at
+	/* (the row DID resolve), so it is never miscounted as a non-response. */
+
+	if (in_array($prevStatus, array(0, 1)) && in_array($status, array(5, 6, 7, 8)))
+	{
+		$updFields['responded_src'] = $db->sc('ops');
+	}
+
+	$db->update('call_crew_map', $updFields, 'callID=' . $callID . ' AND userID=' . $userID);w_map', array('status' => $db->sc($status)), 'callID=' . $callID . ' AND userID=' . $userID);
 
 	$err         = mysql_error();
 	$updAffected = mysql_affected_rows();   /* capture NOW; the calendar call below runs its own queries */
