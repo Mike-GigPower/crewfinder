@@ -5,6 +5,11 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	/* For goat_feeds_have_mode() only — this endpoint deliberately keeps its
+	/* own set-based copy of the reduction rather than calling the per-row
+	/* helpers (see the correlated-subquery timeout note below). Including
+	/* call-graph.php just defines functions; it runs no queries. */
+	include('call-graph.php');
 
 	/*
 	/* JSON response */
@@ -176,15 +181,23 @@
 		$bookingIDs[(int) $c['booking_id']] = true;
 	}
 
-	$feedsOf = array();
-	$fedByOf = array();
+	$feedsOf  = array();   /* ALL modes — goat_bulk_reaches walks this */
+	$fedByOf  = array();   /* ALL modes */
+	$feedsRec = array();   /* recommended subset */
+	$fedByRec = array();
+	$edgeMode = array();   /* "source:target" -> 'locked'|'recommended' */
 
 	if (count($bookingIDs))
 	{
 		$bList = implode(',', array_keys($bookingIDs));
 
-		$fres = mysql_query("SELECT source_call, target_call FROM call_feeds
-		                     WHERE booking_id IN (" . $bList . ")");
+		/* Same capability guard as get-booking.php: before the migration,
+		/* selecting `mode` fails and empties the feed maps. */
+
+		$modeSel = goat_feeds_have_mode() ? 'mode' : "'locked' AS mode";
+
+		$fres = mysql_query("SELECT source_call, target_call, " . $modeSel . "
+		                     FROM call_feeds WHERE booking_id IN (" . $bList . ")");
 
 		if ($fres !== false)
 		{
@@ -198,6 +211,18 @@
 
 				$feedsOf[$s][] = $t;
 				$fedByOf[$t][] = $s;
+
+				/* mode of the edge s -> t, for the reserved/likely split */
+				$edgeMode[$s . ':' . $t] = $frow->mode;
+
+				if ($frow->mode === 'recommended')
+				{
+					if (!isset($feedsRec[$s])) { $feedsRec[$s] = array(); }
+					if (!isset($fedByRec[$t])) { $fedByRec[$t] = array(); }
+
+					$feedsRec[$s][] = $t;
+					$fedByRec[$t][] = $s;
+				}
 			}
 		}
 	}
@@ -296,9 +321,9 @@
 	foreach ($calls as $i => $c)
 	{
 		$cid        = (int) $c['call_id'];
-		$reserved   = 0;
 		$rowFeeders = isset($fedByOf[$cid]) ? $fedByOf[$cid] : array();
 		$keep       = array();
+		$lostTo     = array();
 
 		foreach ($rowFeeders as $f)
 		{
@@ -320,13 +345,15 @@
 
 				if (!$mutual)
 				{
-					$drop = true;
+					$drop       = true;
+					$lostTo[$f] = $g;
 					break;
 				}
 
 				if ($g < $f)
 				{
-					$drop = true;
+					$drop       = true;
+					$lostTo[$f] = $g;
 					break;
 				}
 			}
@@ -337,18 +364,52 @@
 			}
 		}
 
-		foreach ($keep as $s)
+		/* mixed-nest rule (DESIGN §5.2): a survivor that absorbed a LOCKED
+		/* feeder counts as locked, whatever its own edge mode. Over-stating
+		/* reserved is the safe direction. */
+
+		$firm = array();
+
+		foreach ($lostTo as $dropped => $survivor)
 		{
-			if (isset($gapOf[$s]))
+			$dm = isset($edgeMode[$dropped . ':' . $cid]) ? $edgeMode[$dropped . ':' . $cid] : 'locked';
+
+			if ($dm === 'locked')
 			{
-				$reserved += $gapOf[$s];
+				$firm[$survivor] = true;
 			}
 		}
 
-		$calls[$i]['feeds']        = isset($feedsOf[$cid]) ? $feedsOf[$cid] : array();
-		$calls[$i]['fed_by']       = $rowFeeders;
-		$calls[$i]['reserved']     = $reserved;
-		$calls[$i]['free_to_fill'] = (int) $c['required'] - (int) $c['committed'] - $reserved;
+		$reserved = 0;
+		$likely   = 0;
+
+		foreach ($keep as $s)
+		{
+			if (!isset($gapOf[$s]))
+			{
+				continue;
+			}
+
+			$sm       = isset($edgeMode[$s . ':' . $cid]) ? $edgeMode[$s . ':' . $cid] : 'locked';
+			$isLocked = ($sm === 'locked') || isset($firm[$s]);
+
+			if ($isLocked)
+			{
+				$reserved += $gapOf[$s];
+			}
+			else
+			{
+				$likely += $gapOf[$s];
+			}
+		}
+
+		$calls[$i]['feeds']              = isset($feedsOf[$cid])  ? $feedsOf[$cid]  : array();
+		$calls[$i]['fed_by']             = $rowFeeders;
+		$calls[$i]['feeds_recommended']  = isset($feedsRec[$cid]) ? $feedsRec[$cid] : array();
+		$calls[$i]['fed_by_recommended'] = isset($fedByRec[$cid]) ? $fedByRec[$cid] : array();
+		$calls[$i]['reserved']           = $reserved;
+		$calls[$i]['likely']             = $likely;
+		$calls[$i]['free_to_fill']       = (int) $c['required'] - (int) $c['committed'] - $reserved - $likely;
 	}
 
 	echo json_encode(array(

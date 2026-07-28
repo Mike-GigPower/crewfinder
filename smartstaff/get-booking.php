@@ -99,11 +99,24 @@
 	/* per-call emit below is a lookup, not a query.
 	*/
 
-	$feedsOf  = array();   /* call_id -> [target ids] */
-	$fedByOf  = array();   /* call_id -> [source ids] */
+	/* feeds / fed_by carry ALL modes and must keep doing so: offer expansion
+	/* uses them and a recommended edge still creates rows. The recommended
+	/* subset is emitted alongside, and the client derives locked by difference,
+	/* so the shipped app's consumption of feeds/fed_by is unchanged. */
 
-	$fres = mysql_query("SELECT source_call, target_call FROM call_feeds
-	                     WHERE booking_id = " . $bookingID);
+	$feedsOf  = array();   /* call_id -> [target ids], ALL modes */
+	$fedByOf  = array();   /* call_id -> [source ids], ALL modes */
+	$feedsRec = array();   /* recommended subset */
+	$fedByRec = array();
+
+	/* Selecting `mode` outright would fail before the migration has run, and a
+	/* failed query here empties the feed maps and takes offer expansion with
+	/* it. Fall back to a literal 'locked' — v4.11.0 semantics. */
+
+	$modeSel = goat_feeds_have_mode() ? 'mode' : "'locked' AS mode";
+
+	$fres = mysql_query("SELECT source_call, target_call, " . $modeSel . "
+	                     FROM call_feeds WHERE booking_id = " . $bookingID);
 
 	if ($fres !== false)
 	{
@@ -124,6 +137,22 @@
 
 			$feedsOf[$s][] = $t;
 			$fedByOf[$t][] = $s;
+
+			if ($frow->mode === 'recommended')
+			{
+				if (!isset($feedsRec[$s]))
+				{
+					$feedsRec[$s] = array();
+				}
+
+				if (!isset($fedByRec[$t]))
+				{
+					$fedByRec[$t] = array();
+				}
+
+				$feedsRec[$s][] = $t;
+				$fedByRec[$t][] = $s;
+			}
 		}
 	}
 
@@ -200,11 +229,14 @@
 				'required'   => (int) $call->required,
 				'notes'      => $call->notes,
 				'link_group' => ($call->link_group === null ? null : (int) $call->link_group),
-				'feeds'        => isset($feedsOf[$callID]) ? $feedsOf[$callID] : array(),
-				'fed_by'       => isset($fedByOf[$callID]) ? $fedByOf[$callID] : array(),
-				'committed'    => $fc['committed'],
-				'reserved'     => $fc['reserved'],
-				'free_to_fill' => $fc['free_to_fill'],
+				'feeds'              => isset($feedsOf[$callID]) ? $feedsOf[$callID] : array(),
+				'fed_by'             => isset($fedByOf[$callID]) ? $fedByOf[$callID] : array(),
+				'feeds_recommended'  => isset($feedsRec[$callID]) ? $feedsRec[$callID] : array(),
+				'fed_by_recommended' => isset($fedByRec[$callID]) ? $fedByRec[$callID] : array(),
+				'committed'          => $fc['committed'],
+				'reserved'           => $fc['reserved'],
+				'likely'             => $fc['likely'],
+				'free_to_fill'       => $fc['free_to_fill'],
 				'booked'     => $booked,
 				'confirmed'  => $confirmed,
 				'crew'       => $crew,

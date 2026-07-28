@@ -67,8 +67,17 @@
 			die('{"error":"booking_id required"}');
 		}
 
-		$res   = mysql_query("SELECT source_call, target_call FROM call_feeds
-		                      WHERE booking_id = " . $bookingID);
+		/* Read path, so the same capability guard as get-booking.php: before the
+		/* migration an outright `mode` select fails and this would report NO
+		/* edges for a booking that has them. Falling back to the literal
+		/* 'locked' is also the correct answer pre-migration — every edge is.
+		/* (The `add` WRITE below is deliberately left unguarded: there is no
+		/* sensible fallback for a write, and it should fail loudly.) */
+
+		$modeSel = goat_feeds_have_mode() ? 'mode' : "'locked' AS mode";
+
+		$res   = mysql_query("SELECT source_call, target_call, " . $modeSel . "
+		                      FROM call_feeds WHERE booking_id = " . $bookingID);
 		$edges = array();
 
 		if ($res !== false)
@@ -77,7 +86,8 @@
 			{
 				$edges[] = array(
 					'source_call' => (int) $row->source_call,
-					'target_call' => (int) $row->target_call
+					'target_call' => (int) $row->target_call,
+					'mode'        => $row->mode
 				);
 			}
 		}
@@ -115,6 +125,16 @@
 	{
 		send_status(422, 'Unprocessable Entity');
 		die('{"error":"target_calls must contain at least one call id other than source_call"}');
+	}
+
+	/* Anything other than the exact string 'recommended' is treated as locked.
+	/* An unrecognised value must never silently produce a WEAKER edge. */
+
+	$mode = 'locked';
+
+	if (isset($payload->mode) && $payload->mode === 'recommended')
+	{
+		$mode = 'recommended';
 	}
 
 	/* ======================= ADD ======================= */
@@ -192,7 +212,9 @@
 					'type'      => 'overlap',
 					'call_id'   => $t,
 					'call_name' => $info[$t]->call_name,
-					'message'   => 'These calls overlap in time, so crew can never be confirmed for both.'
+					'message'   => ($mode === 'recommended')
+						? 'These calls overlap in time, so crew can work one or the other but not both.'
+						: 'These calls overlap in time, so crew can never be confirmed for both.'
 				);
 			}
 
@@ -210,7 +232,7 @@
 			*/
 
 			$before = goat_call_feed_counts($t);
-			$after  = goat_call_feed_counts_with($t, $source);
+			$after  = goat_call_feed_counts_with($t, $source, $mode);
 
 			if ($after['free_to_fill'] < 0 && $after['free_to_fill'] < $before['free_to_fill'])
 			{
@@ -226,9 +248,20 @@
 			/* Redundant edge — the source already reaches this target through
 			/* another feed, so the edge commits nobody who is not already
 			/* committed. Harmless once reserved() ignores it, but it muddies
-			/* the graph and is almost always a mistake. */
+			/* the graph and is almost always a mistake.
+			/*
+			/* A LOCKED edge is redundant only if the source already reaches the
+			/* target through a LOCKED path. A locked edge duplicating a
+			/* recommended path is NOT redundant — it strengthens a preference
+			/* into a commitment, which is a deliberate act.
+			/*
+			/* A RECOMMENDED edge is redundant if the source already reaches the
+			/* target by ANY path: a locked path already commits them (strictly
+			/* stronger), and a recommended path already prefers them. */
 
-			$existingDown = goat_calls_downstream($source);
+			$existingDown = ($mode === 'recommended')
+				? goat_calls_downstream($source, 'any')
+				: goat_calls_downstream($source, 'locked');
 
 			if (in_array($t, $existingDown))
 			{
@@ -249,16 +282,22 @@
 			die();
 		}
 
-		/* insert, ignoring duplicates via uniq_edge */
+		/* Upsert. uniq_edge (source_call, target_call) still holds — an edge is
+		/* locked OR recommended, never both — so re-saving the same pair with a
+		/* different mode must CHANGE it rather than fail. $mode is already
+		/* constrained to two literals above, so the escape is belt and braces
+		/* rather than the actual guard. */
 
 		$added = array();
 		$now   = time();
 
 		foreach ($targets as $t)
 		{
-			mysql_query("INSERT IGNORE INTO call_feeds
-			             (booking_id, source_call, target_call, created)
-			             VALUES (" . $bookingID . ", " . $source . ", " . $t . ", " . $now . ")");
+			mysql_query("INSERT INTO call_feeds
+			             (booking_id, source_call, target_call, mode, created)
+			             VALUES (" . $bookingID . ", " . $source . ", " . $t . ",
+			                     '" . mysql_real_escape_string($mode) . "', " . $now . ")
+			             ON DUPLICATE KEY UPDATE mode = VALUES(mode)");
 
 			if (mysql_error())
 			{
@@ -274,6 +313,7 @@
 			'action'      => 'add',
 			'booking_id'  => $bookingID,
 			'source_call' => $source,
+			'mode'        => $mode,
 			'targets'     => $added,
 			'warnings'    => $warnings
 		));

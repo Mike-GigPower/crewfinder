@@ -22,9 +22,51 @@
 	if (!function_exists('goat_feed_step'))
 	{
 
-		/* One BFS hop. $ids is an array of ints, $direction is 'down' or 'up'. */
+		/*
+		/* Does call_feeds have the `mode` column yet?
+		/*
+		/* Checked once per request and cached in a static. If the migration
+		/* has not run, every mode-filtered query would fail and return empty —
+		/* which does NOT merely disable the new feature, it collapses
+		/* goat_user_package to a single call and silently stops migrated
+		/* linked calls from cascading. Falling back to "no filter" instead
+		/* means every edge behaves as locked, which is exactly v4.11.0.
+		/*
+		/* This also makes the migration's rollback (DROP COLUMN mode) safe on
+		/* its own, without a matching PHP rollback.
+		*/
 
-		function goat_feed_step($ids, $direction)
+		function goat_feeds_have_mode()
+		{
+			static $has = null;
+
+			if ($has !== null)
+			{
+				return $has;
+			}
+
+			$has = false;
+			$res = mysql_query("SHOW COLUMNS FROM `call_feeds` LIKE 'mode'");
+
+			if ($res !== false && mysql_num_rows($res) > 0)
+			{
+				$has = true;
+			}
+
+			return $has;
+		}
+
+		/* One BFS hop. $ids is an array of ints, $direction is 'down' or 'up',
+		/* $mode is 'locked', 'recommended' or 'any'.
+		/*
+		/* $mode DEFAULTS TO 'locked'. Any caller not explicitly updated keeps
+		/* locked-only semantics, which is the safe failure: a missed 'any'
+		/* leaves the recommended feature incomplete, whereas a missed 'locked'
+		/* would let recommended edges cascade and commit crew to calls they
+		/* never agreed to.
+		*/
+
+		function goat_feed_step($ids, $direction, $mode = 'locked')
 		{
 			if (!is_array($ids) || !count($ids))
 			{
@@ -49,19 +91,36 @@
 
 			$list = implode(',', $clean);
 
+			$modeSql = '';
+
+			if (goat_feeds_have_mode())
+			{
+				if ($mode === 'locked')
+				{
+					$modeSql = " AND f.mode = 'locked'";
+				}
+				else if ($mode === 'recommended')
+				{
+					$modeSql = " AND f.mode = 'recommended'";
+				}
+				/* 'any' adds nothing */
+			}
+			/* No column: no filter. Every edge reads as locked — v4.11.0
+			/* behaviour — rather than every query returning nothing. */
+
 			if ($direction === 'down')
 			{
 				$sql = "SELECT DISTINCT f.target_call AS n
 				        FROM call_feeds f
 				        INNER JOIN calls c ON c.id = f.target_call
-				        WHERE f.source_call IN (" . $list . ")";
+				        WHERE f.source_call IN (" . $list . ")" . $modeSql;
 			}
 			else
 			{
 				$sql = "SELECT DISTINCT f.source_call AS n
 				        FROM call_feeds f
 				        INNER JOIN calls c ON c.id = f.source_call
-				        WHERE f.target_call IN (" . $list . ")";
+				        WHERE f.target_call IN (" . $list . ")" . $modeSql;
 			}
 
 			$res = mysql_query($sql);
@@ -82,7 +141,7 @@
 		/* Depth capped at 10 as a runaway guard — a legitimate feed chain is
 		/* two or three deep. */
 
-		function goat_calls_traverse($callID, $direction)
+		function goat_calls_traverse($callID, $direction, $mode = 'locked')
 		{
 			$callID = (int) $callID;
 
@@ -97,7 +156,7 @@
 
 			while (count($frontier) && $depth < 10)
 			{
-				$next     = goat_feed_step($frontier, $direction);
+				$next     = goat_feed_step($frontier, $direction, $mode);
 				$frontier = array();
 
 				foreach ($next as $n)
@@ -117,28 +176,60 @@
 			return array_keys($seen);
 		}
 
-		function goat_calls_downstream($callID)
+		function goat_calls_downstream($callID, $mode = 'locked')
 		{
-			return goat_calls_traverse($callID, 'down');
+			return goat_calls_traverse($callID, 'down', $mode);
 		}
 
-		function goat_calls_upstream($callID)
+		function goat_calls_upstream($callID, $mode = 'locked')
 		{
-			return goat_calls_traverse($callID, 'up');
+			return goat_calls_traverse($callID, 'up', $mode);
 		}
 
-		/* Immediate feeders only — used by the reserved-slot maths, which must
-		/* not walk transitively (a middle call's `required` already accounts
-		/* for its own feeders). */
+		/* Immediate targets of $callID.
+		/*
+		/* NOTE THE DEFAULT: locked only. Callers wanting the recommended
+		/* targets (the Finder ranking set) must pass 'recommended'
+		/* explicitly, and callers wanting everything must pass 'any'.
+		/* Getting this wrong yields a quietly short list, not an error. */
 
-		function goat_call_immediate_feeders($callID)
+		function goat_call_immediate_targets($callID, $mode = 'locked')
 		{
-			return goat_feed_step(array((int) $callID), 'up');
+			return goat_feed_step(array((int) $callID), 'down', $mode);
 		}
 
-		function goat_call_immediate_targets($callID)
+		/* Immediate feeders of $callID with the mode of each edge INTO this
+		/* call. Returns array(call_id => 'locked'|'recommended').
+		/*
+		/* The counting maths needs both the id and the mode, and needs every
+		/* feeder regardless of mode — see goat_call_feed_counts_with. */
+
+		function goat_call_feeders_modes($callID)
 		{
-			return goat_feed_step(array((int) $callID), 'down');
+			$callID = (int) $callID;
+			$out    = array();
+
+			if ($callID <= 0)
+			{
+				return $out;
+			}
+
+			$sel = goat_feeds_have_mode() ? 'f.mode' : "'locked'";
+
+			$res = mysql_query("SELECT f.source_call AS n, " . $sel . " AS m
+			                    FROM call_feeds f
+			                    INNER JOIN calls c ON c.id = f.source_call
+			                    WHERE f.target_call = " . $callID);
+
+			if ($res !== false)
+			{
+				while ($row = mysql_fetch_object($res))
+				{
+					$out[(int) $row->n] = $row->m;
+				}
+			}
+
+			return $out;
 		}
 
 		/*
@@ -178,6 +269,9 @@
 
 			while (count($frontier) && $depth < 10)
 			{
+				/* LOCKED ONLY (the default). A recommended edge does not
+				/* commit the crew member to anything, so its calls are
+				/* answered independently and must never join a package. */
 				$next = array_merge(
 					goat_feed_step($frontier, 'down'),
 					goat_feed_step($frontier, 'up')
@@ -249,15 +343,23 @@
 		/* which is what every migrated symmetric link looks like — so exactly
 		/* one representative is kept, the lowest call id. Dropping both would
 		/* report reserved 0 for every migrated group of three or more.
+		/*
+		/* Reachability runs at 'any': a RECOMMENDED edge still creates rows, so
+		/* crew sets nest regardless of mode. Reducing each mode separately
+		/* would double-count the same bodies.
+		/*
+		/* Returns array('keep' => [ids], 'lostTo' => array(droppedId => keptId))
+		/* so callers can apply the mixed-nest rule (DESIGN §5.2).
 		*/
 
 		function goat_maximal_feeders($feeders)
 		{
-			$keep = array();
+			$keep   = array();
+			$lostTo = array();
 
 			foreach ($feeders as $f)
 			{
-				$downF = goat_calls_downstream($f);
+				$downF = goat_calls_downstream($f, 'any');
 				$drop  = false;
 
 				foreach ($feeders as $g)
@@ -272,18 +374,20 @@
 						continue;   /* f does not reach g */
 					}
 
-					$downG  = goat_calls_downstream($g);
+					$downG  = goat_calls_downstream($g, 'any');
 					$mutual = in_array($f, $downG);
 
 					if (!$mutual)
 					{
-						$drop = true;   /* f is strictly upstream of g */
+						$drop        = true;   /* f is strictly upstream of g */
+						$lostTo[$f]  = $g;
 						break;
 					}
 
 					if ($g < $f)
 					{
-						$drop = true;   /* same mutual group, keep the lowest id */
+						$drop        = true;   /* same mutual group, keep lowest id */
+						$lostTo[$f]  = $g;
 						break;
 					}
 				}
@@ -294,7 +398,7 @@
 				}
 			}
 
-			return $keep;
+			return array('keep' => $keep, 'lostTo' => $lostTo);
 		}
 
 		function goat_call_feed_counts($callID)
@@ -303,9 +407,27 @@
 		}
 
 		/*
-		/* As goat_call_feed_counts, but treats $extraSource as an ADDITIONAL
-		/* immediate feeder that is not yet in the database. Used by
-		/* call-feeds.php to answer "what would this edge do?" without writing
+		/* Capacity, split by firmness:
+		/*
+		/*   reserved(T) = unfilled slots on maximal LOCKED feeders
+		/*   likely(T)   = unfilled slots on maximal RECOMMENDED feeders
+		/*   free_to_fill = required - committed - reserved - likely
+		/*
+		/* likely IS subtracted, so the parts sum to required and free_to_fill
+		/* is the number ops can safely book. The split tells them how much of
+		/* what is held is soft, so they can over-book deliberately.
+		/*
+		/* MIXED NESTS (DESIGN §5.2): when the reduction drops a feeder, the
+		/* survivor inherits the FIRMER mode. If any dropped feeder's own edge
+		/* into this call was locked, the survivor counts as reserved. Example:
+		/* A and B both feed T, A -> B exists, A -> T is locked and B -> T is
+		/* recommended. A is strictly upstream of B so A drops — without this
+		/* rule A's genuinely committed crew would be reported as merely likely.
+		/* Over-stating reserved is the safe direction: it is the number ops
+		/* read when deciding whether to book more.
+		/*
+		/* $extraSource / $extraMode splice in a not-yet-written edge so
+		/* call-feeds.php can answer "what would this edge do?" without writing
 		/* it — MyISAM has no transactions, so insert-and-roll-back is not an
 		/* option.
 		/*
@@ -315,33 +437,62 @@
 		/* migrated symmetric link). Accepted: the check is advisory and
 		/* overridable, and the persistent flag catches the result either way.
 		/*
-		/* free_to_fill may be negative — that is the over-subscription signal
+		/* free_to_fill may be negative: that is the over-subscription signal
 		/* (DESIGN §3.6) and must not be clamped.
 		*/
 
-		function goat_call_feed_counts_with($callID, $extraSource)
+		function goat_call_feed_counts_with($callID, $extraSource, $extraMode = 'locked')
 		{
 			$callID      = (int) $callID;
 			$extraSource = (int) $extraSource;
 			$required    = goat_call_required($callID);
 			$committed   = goat_call_committed($callID);
-			$feeders     = goat_call_immediate_feeders($callID);
+			$modeOf      = goat_call_feeders_modes($callID);
 
-			if ($extraSource > 0 && $extraSource !== $callID && !in_array($extraSource, $feeders))
+			if ($extraSource > 0 && $extraSource !== $callID && !isset($modeOf[$extraSource]))
 			{
-				$feeders[] = $extraSource;
+				$modeOf[$extraSource] = ($extraMode === 'recommended') ? 'recommended' : 'locked';
 			}
 
-			$keep     = goat_maximal_feeders($feeders);
+			$feeders = array_keys($modeOf);
+			$red     = goat_maximal_feeders($feeders);
+			$keep    = $red['keep'];
+			$lostTo  = $red['lostTo'];
+
+			/* mixed-nest rule: a survivor that absorbed a locked feeder counts
+			/* as locked, whatever its own edge mode */
+
+			$firm = array();
+
+			foreach ($lostTo as $dropped => $survivor)
+			{
+				if (isset($modeOf[$dropped]) && $modeOf[$dropped] === 'locked')
+				{
+					$firm[$survivor] = true;
+				}
+			}
+
 			$reserved = 0;
+			$likely   = 0;
 
 			foreach ($keep as $s)
 			{
 				$gap = goat_call_required($s) - goat_call_committed($s);
 
-				if ($gap > 0)
+				if ($gap <= 0)
+				{
+					continue;
+				}
+
+				$isLocked = (isset($modeOf[$s]) && $modeOf[$s] === 'locked') || isset($firm[$s]);
+
+				if ($isLocked)
 				{
 					$reserved += $gap;
+				}
+				else
+				{
+					$likely += $gap;
 				}
 			}
 
@@ -349,7 +500,8 @@
 				'required'     => $required,
 				'committed'    => $committed,
 				'reserved'     => $reserved,
-				'free_to_fill' => $required - $committed - $reserved
+				'likely'       => $likely,
+				'free_to_fill' => $required - $committed - $reserved - $likely
 			);
 		}
 
