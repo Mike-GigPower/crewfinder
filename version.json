@@ -1,6 +1,6 @@
 {
-  "version": "4.12.0",
-  "release_date": "2026-07-27",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.12.0/TheGOAT.dmg",
-  "release_notes": "Adds the ability to block crew from directly accessing SmartStaff"
+  "version": "4.12.1",
+  "release_date": "2026-07-29",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.12.1/TheGOAT.dmg",
+  "release_notes": "Adds scrolling tab bar to the Goat UI"
 }
