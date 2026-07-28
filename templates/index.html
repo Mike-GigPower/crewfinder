@@ -309,8 +309,19 @@ tr.skipped{opacity:.6}
 .update-banner a{color:var(--accent);font-weight:600;text-decoration:none;font-family:'Rajdhani',sans-serif}
 .update-banner a:hover{text-decoration:underline}
 .update-banner-close{margin-left:auto;background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;line-height:1;padding:0}
-.tab-bar{display:flex;gap:0;padding:0;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
-.tab-btn{padding:0 20px;height:40px;font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+.tab-bar{display:flex;gap:0;padding:0;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;min-width:0}
+/* The inner scroller is the ONE horizontal scroll container. Its native
+   scrollbar is hidden on purpose — the chevrons are the affordance, and on
+   macOS the overlay scrollbar would sit on top of the active tab's 2px gold
+   underline. */
+.tab-bar-scroll{display:flex;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scroll-behavior:smooth;scrollbar-width:none;-ms-overflow-style:none}
+.tab-bar-scroll::-webkit-scrollbar{display:none}
+/* flex:0 0 auto is load-bearing: without it the buttons shrink to fit and the
+   row never actually overflows, so no scrollbar and no chevrons. */
+.tab-btn{flex:0 0 auto;padding:0 20px;height:40px;font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+.tab-scroll-arrow{flex:0 0 auto;display:none;width:26px;height:40px;padding:0;background:var(--surface);border:none;color:var(--accent);font-family:'Rajdhani',sans-serif;font-size:20px;line-height:1;cursor:pointer;transition:background .15s}
+.tab-scroll-arrow:hover{background:rgba(212,175,55,0.08)}
+.tab-scroll-arrow.show{display:block}
 .tab-btn:hover{color:var(--text);background:rgba(212,175,55,0.04)}
 .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);background:rgba(212,175,55,0.05)}
 .tab-panel{display:none;flex:1;overflow:hidden;flex-direction:row;min-height:0}
@@ -492,6 +503,7 @@ tr.skipped{opacity:.6}
   letter-spacing:.08em;text-transform:uppercase;
   padding:5px 12px;border-radius:3px;
   cursor:pointer;transition:all .2s;white-space:nowrap;
+  flex:0 0 auto;   /* pinned outside .tab-bar-scroll — never squash it */
 }
 .btn-ask-goat:hover{background:rgba(212,175,55,0.18);border-color:var(--accent);box-shadow:0 0 12px rgba(212,175,55,0.2)}
 .btn-ask-goat.active{background:rgba(212,175,55,0.2);border-color:var(--accent);box-shadow:0 0 16px rgba(212,175,55,0.3)}
@@ -977,6 +989,9 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <button class="update-banner-close" onclick="document.getElementById('update-banner').classList.remove('show')">&#215;</button>
 </div>
 <div class="tab-bar">
+  <button class="tab-scroll-arrow" id="tab-arrow-left" type="button"
+          aria-label="Scroll tabs left" onclick="scrollTabs(-1)">&lsaquo;</button>
+  <div class="tab-bar-scroll" id="tab-bar-scroll">
   <button class="tab-btn active" id="tab-btn-schedule" onclick="switchTab('schedule')">📅 Schedule</button>
   <button class="tab-btn" id="tab-btn-all-bookings" onclick="switchTab('all-bookings')">📚 All Bookings</button>
   <button class="tab-btn" id="tab-btn-crew-finder" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
@@ -986,7 +1001,10 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <button class="tab-btn" id="tab-btn-administration" onclick="switchTab('administration')">⚙ Administration</button>
   <button class="tab-btn" id="tab-btn-recruitment" onclick="switchTab('recruitment')">🧑‍💼 Recruitment</button>
   <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
-  <button class="tab-btn" id="btn-tab-popout" style="margin-left:auto"
+  </div><!-- /.tab-bar-scroll -->
+  <button class="tab-scroll-arrow" id="tab-arrow-right" type="button"
+          aria-label="Scroll tabs right" onclick="scrollTabs(1)">&rsaquo;</button>
+  <button class="tab-btn" id="btn-tab-popout"
           title="Open the current tab in a new window"
           onclick="popOutCurrentTab()">⧉ New window</button>
   <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat" style="align-self:center;margin-right:10px">
@@ -2022,6 +2040,12 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       switchTab(wantTab);
     }
   }
+  // Tab-bar overflow chevrons. Must run AFTER the await above: applyCohort has
+  // by now hidden any cohort-gated tab buttons, so scrollWidth is correct.
+  const tabScroller = document.getElementById('tab-bar-scroll');
+  if(tabScroller) tabScroller.addEventListener('scroll', updateTabArrows);
+  window.addEventListener('resize', updateTabArrows);
+  updateTabArrows();
 });
 
 async function loadGroups(){
@@ -3428,6 +3452,39 @@ function switchTab(tab){
   // Reflect the active tab in the URL so it can be deep-linked / popped out.
   // replaceState (not `location.hash=`) keeps the back button clean and fires no event.
   try { history.replaceState(null, '', location.pathname + '#' + tab); } catch(e) {}
+  // Keep the newly-active tab visible when the row is scrolled — matters for
+  // deep-links (#recruitment on a narrow window) and for the pop-out button.
+  // block:'nearest' is required: without it scrollIntoView also tries to scroll
+  // ancestors vertically, and body is overflow:hidden in a fixed-height column.
+  const activeBtn = document.getElementById('tab-btn-' + tab);
+  if(activeBtn && activeBtn.scrollIntoView){
+    activeBtn.scrollIntoView({behavior:'smooth', block:'nearest', inline:'nearest'});
+  }
+  updateTabArrows();
+}
+
+// ── TAB-BAR OVERFLOW ────────────────────────────────────────────────────────
+// Show a chevron only when there is somewhere to scroll in that direction.
+// Called on scroll, on resize, from switchTab, and once on load (after
+// applyCohort, since hiding tab buttons changes scrollWidth).
+function updateTabArrows(){
+  const sc = document.getElementById('tab-bar-scroll');
+  const L  = document.getElementById('tab-arrow-left');
+  const R  = document.getElementById('tab-arrow-right');
+  if(!sc || !L || !R) return;
+  const max = sc.scrollWidth - sc.clientWidth;   // ~0 when everything fits
+  // The ±1 fuzz is deliberate: sub-pixel layout means scrollLeft rarely lands
+  // exactly on 0 or on max, and a strict compare leaves a chevron stuck on.
+  L.classList.toggle('show', max > 1 && sc.scrollLeft > 1);
+  R.classList.toggle('show', max > 1 && sc.scrollLeft < max - 1);
+}
+
+// One click nudges by 60% of the visible width, floored at 160px so a very
+// narrow window still moves roughly one tab at a time.
+function scrollTabs(dir){
+  const sc = document.getElementById('tab-bar-scroll');
+  if(!sc) return;
+  sc.scrollBy({left: dir * Math.max(160, sc.clientWidth * 0.6), behavior:'smooth'});
 }
 
 // Open whatever tab is currently active in a fresh browser view, deep-linked via
