@@ -92,6 +92,10 @@
 			c.call_name     AS call_name,
 			b.name          AS booking_name,
 			v.venue         AS venue_name,
+			v.address       AS venue_address,
+			v.suburb        AS venue_suburb,
+			v.state         AS venue_state,
+			v.postcode      AS venue_postcode,
 			cca.prev_start_date AS prev_start_date,
 			cca.prev_start_time AS prev_start_time,
 			cca.prev_est_length AS prev_est_length,
@@ -150,7 +154,11 @@
 			$entry['booking_id']   = (int) $row->booking_id;
 			$entry['call_name']    = $row->call_name;
 			$entry['booking_name'] = $row->booking_name;
-			$entry['venue']        = $row->venue_name;
+			$entry['venue']          = $row->venue_name;
+			$entry['venue_address']  = (string) $row->venue_address;
+			$entry['venue_suburb']   = (string) $row->venue_suburb;
+			$entry['venue_state']    = (string) $row->venue_state;
+			$entry['venue_postcode'] = (string) $row->venue_postcode;
 
 			/*
 			/* Contact hierarchy — who does this crew member call? Resolved at READ
