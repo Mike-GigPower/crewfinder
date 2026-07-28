@@ -194,22 +194,28 @@
 
 		if (!$viewerOnBossCall)
 		{
-			$r1 = mysql_query("SELECT u.firstname, u.lastname, u.mobile, u.phone
+			/* is_call_boss is a binary(50) column — makeboss writes the STRING
+			   '1', stored as byte 0x31 null-padded to 50 bytes. "is_call_boss = 1"
+			   in SQL is unreliable across MySQL versions on that type, so we do
+			   NOT filter on it in SQL: we select it and cast in PHP, exactly as
+			   get-booking.php and the other endpoints do. (int) reads the leading
+			   byte and stops at the null, giving a clean 1 or 0. */
+
+			$r1 = mysql_query("SELECT ccm.is_call_boss, u.firstname, u.lastname, u.mobile, u.phone
 			                   FROM call_crew_map ccm
 			                   LEFT JOIN users u ON u.id = ccm.userID
-			                   WHERE ccm.callID       = " . $callID . "
-			                     AND ccm.is_call_boss = 1
-			                     AND ccm.status       = 5
-			                     AND ccm.userID      <> " . $viewerUserID . "
-			                   LIMIT 1");
+			                   WHERE ccm.callID  = " . $callID . "
+			                     AND ccm.status  = 5
+			                     AND ccm.userID <> " . $viewerUserID . "");
 
 			if ($r1 !== false)
 			{
-				$row = mysql_fetch_object($r1);
-
-				if ($row && $row->firstname !== null
-				    && !goat_same_human($viewerMobile, $row->mobile))
+				while ($row = mysql_fetch_object($r1))
 				{
+					if ((int) $row->is_call_boss !== 1) continue;
+					if ($row->firstname === null) continue;
+					if (goat_same_human($viewerMobile, $row->mobile)) continue;
+
 					$out = array(goat_contact_from_user($row, 'in_call_boss', ''));
 					$cache[$ck] = $out;
 					return $out;
@@ -245,7 +251,7 @@
 
 					if (!($bw['start'] < $w['end'] && $bw['end'] > $w['start'])) continue;
 
-					$cres = mysql_query("SELECT u.firstname, u.lastname, u.mobile, u.phone
+					$cres = mysql_query("SELECT ccm.is_call_boss, u.firstname, u.lastname, u.mobile, u.phone
 					                     FROM call_crew_map ccm
 					                     LEFT JOIN users u ON u.id = ccm.userID
 					                     WHERE ccm.callID  = " . ((int) $bc->id) . "
@@ -253,15 +259,45 @@
 					                       AND ccm.userID <> " . $viewerUserID . "
 					                     ORDER BY u.lastname ASC, u.firstname ASC");
 
+					/*
+					/* POC nomination — "the boss of the bosses".
+					/*
+					/* A big call can name several crew bosses on one Crew Boss
+					/* call. Ops nominate one as point-of-contact via the SAME
+					/* is_call_boss flag (makeboss enforces one per call), read
+					/* here with the (int) cast for the binary(50) reason above.
+					/*
+					/* If exactly one is flagged, that person IS the contact for
+					/* this boss call. If NONE is flagged we fall back to every
+					/* confirmed boss — the multi-name card is itself the prompt
+					/* to go nominate. We collect both passes in one loop.
+					*/
+
+					$bossAll  = array();
+					$bossPOC  = array();
+
 					if ($cres !== false)
 					{
 						while ($cr = mysql_fetch_object($cres))
 						{
 							if ($cr->firstname === null) continue;
 							if (goat_same_human($viewerMobile, $cr->mobile)) continue;
-							$out[] = goat_contact_from_user($cr, 'boss_call', $bc->call_name);
+
+							$contact = goat_contact_from_user($cr, 'boss_call', $bc->call_name);
+
+							$bossAll[] = $contact;
+
+							if ((int) $cr->is_call_boss === 1)
+								$bossPOC[] = $contact;
 						}
 					}
+
+					/* nominated POC wins for THIS boss call; else all its bosses */
+
+					$picked = (count($bossPOC) > 0) ? $bossPOC : $bossAll;
+
+					foreach ($picked as $contact)
+						$out[] = $contact;
 				}
 			}
 
