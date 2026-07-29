@@ -201,6 +201,27 @@
 		$srcStart = (int) $info[$source]->start_date + goat_time_to_secs($info[$source]->start_time);
 		$srcEnd   = $srcStart + (int) round(((double) $info[$source]->est_length) * 3600);
 
+		/* Which of these targets already have an edge from this source. The
+		/* redundancy warning below applies only to NEW edges: re-saving an
+		/* existing edge, or changing its mode, is a deliberate act and warning
+		/* about it trains ops to click through the interstitial that also carries
+		/* the over-subscription and overlap warnings. */
+		$existing = array();
+		$eres = mysql_query("SELECT target_call FROM call_feeds
+		                     WHERE source_call = " . $source . "
+		                       AND target_call IN (" . implode(',', $targets) . ")");
+		if ($eres !== false)
+		{
+			while ($erow = mysql_fetch_object($eres))
+			{
+				$existing[(int) $erow->target_call] = true;
+			}
+		}
+		/* Hoisted out of the target loop — depends on $source and $mode only. */
+		$existingDown = ($mode === 'recommended')
+			? goat_calls_downstream($source, 'any')
+			: goat_calls_downstream($source, 'locked');
+
 		foreach ($targets as $t)
 		{
 			$tStart = (int) $info[$t]->start_date + goat_time_to_secs($info[$t]->start_time);
@@ -259,11 +280,7 @@
 			/* target by ANY path: a locked path already commits them (strictly
 			/* stronger), and a recommended path already prefers them. */
 
-			$existingDown = ($mode === 'recommended')
-				? goat_calls_downstream($source, 'any')
-				: goat_calls_downstream($source, 'locked');
-
-			if (in_array($t, $existingDown))
+			if (!isset($existing[$t]) && in_array($t, $existingDown))
 			{
 				$warnings[] = array(
 					'type'      => 'redundant',
