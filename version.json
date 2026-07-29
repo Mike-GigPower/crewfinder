@@ -1,6 +1,6 @@
 {
-  "version": "4.12.1",
+  "version": "4.13.0",
   "release_date": "2026-07-29",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.12.1/TheGOAT.dmg",
-  "release_notes": "Adds scrolling tab bar to the Goat UI"
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.13.0/TheGOAT.dmg",
+  "release_notes": "Call feeds can now be set as recommended — crew are preferred for a call rather than committed to it, and answer each call separately."
 }
