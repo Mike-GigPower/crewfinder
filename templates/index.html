@@ -18,6 +18,8 @@
   --accent-bg:rgba(212,175,55,0.08);
   --accent2:#e31e24;
   --accent2-bg:rgba(227,30,36,0.08);
+  --suggest:#9d8cd4;
+  --suggest-bg:rgba(157,140,212,0.08);
   --available:#d4af37;
   --avail-bg:rgba(212,175,55,0.1);
   --conflict:#e31e24;
@@ -105,7 +107,7 @@ input[type=range]{flex:1;accent-color:var(--accent)}
    picked (solid) > carried (dashed) > considered (dotted). Scoped so it can't
    win the cascade over a card that is also selected/carried (source order would
    otherwise let dotted override solid, inverting the hierarchy). */
-.call-card.considered:not(.selected):not(.carried){background:transparent;border-left:3px dotted var(--muted)}
+.call-card.considered:not(.selected):not(.carried){background:transparent;border-left:3px dotted var(--suggest)}
 .call-select-hint{font-size:9px;color:var(--muted);padding:4px 12px 6px;text-align:center;border-bottom:1px solid var(--border)}
 .selected-calls-bar{display:none;padding:6px 12px;background:var(--accent-bg);border-bottom:1px solid var(--accent);font-size:10px;color:var(--accent);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .selected-calls-bar .sc-chip{background:var(--surface2);border:1px solid var(--accent);color:var(--accent);padding:1px 7px;border-radius:10px;font-size:10px;display:flex;align-items:center;gap:4px}
@@ -132,6 +134,7 @@ tr.partial .name-cell{border-left-color:var(--warn)}
 .cb-pill{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600}
 .cb-pill.ok{color:var(--available);background:var(--avail-bg)}
 .cb-pill.no{color:var(--conflict);background:var(--conf-bg)}
+.cb-pill.soft{color:var(--suggest);background:var(--suggest-bg)}
 .call-card-top{display:flex;align-items:center;gap:7px;margin-bottom:3px}
 .call-num{font-size:10px;color:var(--muted)}
 .call-name{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
@@ -245,7 +248,7 @@ tr.skipped{opacity:.6}
 .tl-th-scroll::-webkit-scrollbar-thumb{background:var(--border-gold);border-radius:5px}
 .tl-target{position:absolute;top:0;bottom:0;background:rgba(10,124,62,.08);border-left:2px dashed rgba(10,124,62,.4);border-right:2px dashed rgba(10,124,62,.4);pointer-events:none}
 /* Soft (considered) target band: fainter, dotted — matches the .considered card. */
-.tl-target.soft{background:rgba(120,120,120,.05);border-left:2px dotted var(--muted);border-right:2px dotted var(--muted)}
+.tl-target.soft{background:var(--suggest-bg);border-left:2px dotted var(--suggest);border-right:2px dotted var(--suggest)}
 .tl-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border);pointer-events:none}
 .tl-bar{position:absolute;top:4px;bottom:4px;border-radius:3px;opacity:.85;cursor:default;transition:opacity .15s}
 .tl-bar:hover{opacity:1}
@@ -1753,6 +1756,7 @@ let selectedCalls=new Map(), // call_id → call object
     currentResult=null,currentView='timeline';
 let geoMode='venue', _geoActive=false;  // distance-filter state
 let _showRanking=false;                 // show "Available for X of Y" — only when the set is mixed (soft targets in play)
+let _softCallIds=new Set();             // call_ids of soft (considered) targets in the current result — for chip marking
 
 let _bookedCollapsed=false;             // ALREADY BOOKED panel collapse state (session-scoped)
 let _selCollapsed=false;                // SELECTED panel chips collapse state (session-scoped)
@@ -2242,13 +2246,13 @@ function finderFeedChips(c){
     +'color:var(--accent);border:1px solid var(--accent)">\u2193 feeds '+nDown+'</span>';
   if(nDownRec > 0) out += '<span title="Suggests '+nDownRec+' call'+(nDownRec>1?'s':'')
     +' — crew here are preferred for them, but answer separately" style="'+s
-    +'color:var(--accent);border:1px dashed var(--accent)">\u2193 suggests '+nDownRec+'</span>';
+    +'color:var(--suggest);border:1px dashed var(--suggest)">\u2193 suggests '+nDownRec+'</span>';
   if(nUp > 0) out += '<span title="Fed by '+nUp+' call'+(nUp>1?'s':'')
     +' — crew from those calls are carried into this one" style="'+s
     +'color:var(--muted);border:1px solid var(--border)">\u2191 fed by '+nUp+'</span>';
   if(nUpRec > 0) out += '<span title="Suggested by '+nUpRec+' call'+(nUpRec>1?'s':'')
     +' — crew from those calls are preferred here, but answer separately" style="'+s
-    +'color:var(--muted);border:1px dashed var(--border)">\u2191 suggested by '+nUpRec+'</span>';
+    +'color:var(--suggest);border:1px dashed var(--suggest)">\u2191 suggested by '+nUpRec+'</span>';
   // Only when feeds actually cause the overage. free_to_fill also goes
   // negative on a plainly over-booked call (more confirmed than required),
   // which ops do deliberately and constantly — chipping those would be noise.
@@ -2977,9 +2981,16 @@ function inductionWarnHtml(crew){
 }
 function breakdownHtml(crew){
   if(!crew.call_results||crew.call_results.length<=1)return '';
-  return '<div class="call-breakdown">'+crew.call_results.map(r=>
-    '<span class="cb-pill '+(r.available?'ok':'no')+'" title="'+(r.available?'Available':'Conflict: '+r.detail)+'">#'+r.call_num+'</span>'
-  ).join('')+'</div>';
+  return '<div class="call-breakdown">'+crew.call_results.map(function(r){
+    var soft = _softCallIds.has(String(r.call_id));
+    // Conflict beats mode: a clash stays red (.no) even when it's a soft call.
+    // A soft call the crew is free for is violet (.soft, ranked-against, not
+    // searched). The ~ prefix marks the soft call in either case.
+    var cls = r.available ? (soft?'soft':'ok') : 'no';
+    var tip = (soft?'Considered (ranked, not searched) — ':'')
+            + (r.available?'Available':'Conflict: '+r.detail);
+    return '<span class="cb-pill '+cls+'" title="'+tip+'">'+(soft?'~':'')+'#'+r.call_num+'</span>';
+  }).join('')+'</div>';
 }
 
 // ── TABLE VIEW ──
@@ -2987,6 +2998,7 @@ function renderTable(result,targets){
   const{available,conflicts,skipped}=result;
   const multiCall=targets.length>1;
   _showRanking = !!result._softInPlay && rankingActive(available);
+  _softCallIds = new Set((result.soft_targets||[]).map(t=>String(t.call_id)));
   _geoActive = !!result.origin_label;
   const sortTh=(label,key)=>{
     const active=_sortBy===key, arrow=active?(_sortDir==='asc'?'\u25B2':'\u25BC'):'';
@@ -3092,6 +3104,7 @@ function addTableRow(tbody,crew,status,targets){
 function renderTimeline(result,details,targets){
   const{available,conflicts,skipped}=result;
   _showRanking = !!result._softInPlay && rankingActive(available);
+  _softCallIds = new Set((result.soft_targets||[]).map(t=>String(t.call_id)));
   const targetDate=details.start_dt.split('T')[0];
 
   // Build target windows from all selected calls, PLUS soft (considered) calls —
@@ -10303,7 +10316,7 @@ function bkFeedChips(c, maps){
   }
   if(downRec.length){
     out += '<span title="Suggests: '+names(downRec)+' — crew here are preferred for them, but answer separately" '
-         + 'style="'+base+';color:var(--accent);border:1px dashed var(--accent)">'
+         + 'style="'+base+';color:var(--suggest);border:1px dashed var(--suggest)">'
          + '\u2193 suggests '+downRec.length+'</span>';
   }
   if(upLocked.length){
@@ -10313,7 +10326,7 @@ function bkFeedChips(c, maps){
   }
   if(upRec.length){
     out += '<span title="Suggested by: '+names(upRec)+' — crew from those calls are preferred here, but answer separately" '
-         + 'style="'+base+';color:var(--muted);border:1px dashed var(--border)">'
+         + 'style="'+base+';color:var(--suggest);border:1px dashed var(--suggest)">'
          + '\u2191 suggested by '+upRec.length+'</span>';
   }
   // Over-subscribed only when feeds actually cause it. free_to_fill also goes
@@ -10353,7 +10366,7 @@ function bkFeedEdgeList(bookingId, c, maps){
   var rec = {}; (maps.feedsRecOf[String(c.call_id)] || []).forEach(function(t){ rec[String(t)] = true; });
   var items = down.map(function(t){
     var isRec  = !!rec[String(t)];
-    var border = isRec ? '1px dotted var(--muted)' : '1px solid var(--border)';
+    var border = isRec ? '1px dotted var(--suggest)' : '1px solid var(--border)';
     return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;'
       + 'color:var(--muted);border:'+border+';border-radius:3px;padding:1px 5px"'
       + (isRec ? ' title="Recommended edge \u2014 a preference, not a lock"' : '') + '>'
