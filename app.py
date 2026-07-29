@@ -5222,6 +5222,7 @@ def api_availability():
     origin          = data.get("origin")        # {"mode":"venue"} or {"mode":"postcode","postcode":"3000"}
     only_ids        = data.get("only_crew_ids")
     spot_ids        = set(str(x) for x in only_ids) if only_ids else None
+    soft_ids        = set(str(x) for x in (data.get("soft_call_ids") or []))
 
     # Support both single call (legacy) and multiple calls
     # Multi-call payload: { "calls": [ {booking_id, call_id, start_dt, end_dt, venue, call_num, call_name}, ... ] }
@@ -5249,6 +5250,7 @@ def api_availability():
             "start":      datetime.fromisoformat(c["start_dt"]),
             "end":        datetime.fromisoformat(c["end_dt"]),
             "venue":      c.get("venue", ""),
+            "soft":       str(c["call_id"]) in soft_ids,
         })
 
     today = datetime.now()
@@ -5420,7 +5422,7 @@ def api_availability():
                 "detail":            reason,
                 "induction_warning": induction_warning,
             })
-            if conflict:
+            if conflict and not t.get("soft"):
                 any_conflict = True
 
         avail_count = sum(1 for r in call_results if r["available"])
@@ -5469,6 +5471,8 @@ def api_availability():
             "call_results":        call_results,
             "avail_count":         avail_count,
             "total_calls":         total_calls,
+            "free_for":            avail_count,
+            "free_of":             len(targets),
             "detail":              conflict_details,
             "induction_warnings":  induction_warnings,
         }
@@ -5489,6 +5493,11 @@ def api_availability():
     # Sort: full availability first, then partial, then by rating desc
     available.sort(key=lambda x: (-x["avail_count"], -x["rating"]))
     conflicts.sort(key=lambda x: x["rating"], reverse=True)
+
+    # Design §6: rank available by free_for (over the whole target set)
+    # descending, ties keeping existing order. Stable sort => no-op when every
+    # target is hard (free_for == free_of for all).
+    available.sort(key=lambda c: -(c.get("free_for") or 0))
 
     return jsonify({
         "available":   available,

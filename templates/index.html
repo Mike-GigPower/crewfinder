@@ -101,6 +101,11 @@ input[type=range]{flex:1;accent-color:var(--accent)}
    deliberate pick — dashed edge, no fill. Must follow .selected to win on
    equal specificity, since a carried card also carries .selected. */
 .call-card.carried{background:transparent;border-left:3px dashed var(--accent)}
+/* "considered": ranked, not selected. Weaker than carried — the hierarchy is
+   picked (solid) > carried (dashed) > considered (dotted). Scoped so it can't
+   win the cascade over a card that is also selected/carried (source order would
+   otherwise let dotted override solid, inverting the hierarchy). */
+.call-card.considered:not(.selected):not(.carried){background:transparent;border-left:3px dotted var(--muted)}
 .call-select-hint{font-size:9px;color:var(--muted);padding:4px 12px 6px;text-align:center;border-bottom:1px solid var(--border)}
 .selected-calls-bar{display:none;padding:6px 12px;background:var(--accent-bg);border-bottom:1px solid var(--accent);font-size:10px;color:var(--accent);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .selected-calls-bar .sc-chip{background:var(--surface2);border:1px solid var(--accent);color:var(--accent);padding:1px 7px;border-radius:10px;font-size:10px;display:flex;align-items:center;gap:4px}
@@ -109,6 +114,7 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .sc-clear{margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:10px;font-family:'Share Tech Mono',monospace;padding:0}
 .sc-clear:hover{color:var(--conflict)}
 .status-partial{font-size:10px;font-weight:600;color:var(--warn);background:rgba(245,158,11,0.1);padding:2px 7px;border-radius:4px}
+.rank-line{font-size:9px;color:var(--muted);margin-top:2px}
 .induction-warn{font-size:10px;font-weight:600;color:var(--muted);background:var(--surface2);border:1px solid var(--border);padding:2px 7px;border-radius:3px;margin-left:4px;white-space:nowrap}
 .induction-warn.amber{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
 .induction-warn.red{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
@@ -1739,10 +1745,12 @@ a.recruit-action{text-decoration:none;display:inline-block}
 <script>
 // ── STATE ──
 let selectedCalls=new Map(), // call_id → call object
+    consideredCalls=new Map(),   // call_id → call, ranked but not filtered
     allGroups=[],activeGroups=new Set(),
     selected=new Map(),  // crew name → crew entry (for adding to SmartStaff)
     currentResult=null,currentView='timeline';
 let geoMode='venue', _geoActive=false;  // distance-filter state
+let _showRanking=false;                 // show "Available for X of Y" — only when the set is mixed (soft targets in play)
 
 let _bookedCollapsed=false;             // ALREADY BOOKED panel collapse state (session-scoped)
 let _selCollapsed=false;                // SELECTED panel chips collapse state (session-scoped)
@@ -2191,14 +2199,31 @@ function _finderDownstreamCalls(call){
   while(stack.length && guard++ < 200){
     var cur = byId[stack.pop()];
     if(!cur) continue;
+    var rec = {}; (cur.feeds_recommended || []).forEach(function(t){ rec[String(t)] = true; });
     (cur.feeds || []).forEach(function(t){
       t = String(t);
+      if(rec[t]) return;       // recommended edges do not carry
       if(seen[t]) return;      // visited set: cycles (migrated symmetric
       seen[t] = true;          // links are cycles) terminate here
       stack.push(t);
       if(byId[t]) out.push(byId[t]);   // only calls actually on screen
     });
   }
+  return out;
+}
+
+function _finderConsideredCalls(call){
+  // Immediate recommended targets that are on screen. Not transitive — a
+  // recommended edge is a preference, and preferences do not compound.
+  var all  = window._finderCalls || [];
+  var byId = {};
+  all.forEach(function(c){ byId[String(c.call_id)] = c; });
+  var cur  = byId[String(call.call_id)];
+  if(!cur) return [];
+  var out = [];
+  (cur.feeds_recommended || []).forEach(function(t){
+    if(byId[String(t)]) out.push(byId[String(t)]);
+  });
   return out;
 }
 
@@ -2226,7 +2251,7 @@ function finderFeedChips(c){
   // negative on a plainly over-booked call (more confirmed than required),
   // which ops do deliberately and constantly — chipping those would be noise.
   // reserved > 0 isolates the case this feature is about.
-  if(c.reserved > 0 && typeof c.free_to_fill === 'number' && c.free_to_fill < 0)
+  if((c.reserved > 0 || c.likely > 0) && typeof c.free_to_fill === 'number' && c.free_to_fill < 0)
     out += '<span title="Over-subscribed by '+(-c.free_to_fill)+'" style="'+s
     +'color:var(--conflict);border:1px solid var(--conflict)">over by '+(-c.free_to_fill)+'</span>';
   return out;
@@ -2257,6 +2282,8 @@ function handleCallClick(event, call){
     selectedCalls.clear();
     document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('selected'));
     document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('carried'));
+    consideredCalls.clear();
+    document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('considered'));
   }
   // Cmd+click on an already-selected call deselects; otherwise select.
   const makeSelected = !(multi && selectedCalls.has(call.call_id));
@@ -2269,14 +2296,25 @@ function handleCallClick(event, call){
     var card = document.querySelector('.call-card[data-call-id="'+t.call_id+'"]');
     if(card){ if(makeSelected) card.classList.add('carried'); else card.classList.remove('carried'); }
   });
+  // Recommended targets are ranked, not searched-for: they join consideredCalls
+  // (soft) and never enter selectedCalls.
+  _finderConsideredCalls(call).forEach(function(t){
+    if(makeSelected) consideredCalls.set(t.call_id, t);
+    else consideredCalls.delete(t.call_id);
+    var card = document.querySelector('.call-card[data-call-id="'+t.call_id+'"]');
+    if(card){ if(makeSelected) card.classList.add('considered');
+              else card.classList.remove('considered'); }
+  });
   updateCallSelectionUI();
   greyOutResults();
 }
 
 function clearCallSelection(){
   selectedCalls.clear();
+  consideredCalls.clear();
   document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('selected'));
   document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('carried'));
+  document.querySelectorAll('.call-card').forEach(c=>c.classList.remove('considered'));
   updateCallSelectionUI();
 }
 
@@ -2367,6 +2405,7 @@ async function runSearch(){
     const resp=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         calls: callPayload,
+        soft_call_ids: built.softIds,
         required_groups: [...activeGroups],
         min_rating:parseInt(document.getElementById('rating-slider').value),
         exclude_pt: !!(document.getElementById('exclude-pt') && document.getElementById('exclude-pt').checked),
@@ -2375,9 +2414,10 @@ async function runSearch(){
     const result=await resp.json();
     if(result.error){alert(result.error);return;}
 
-    // Fetch already-booked crew for the first call (if single call search)
+    // Fetch already-booked crew for the first call (single HARD call only —
+    // soft targets riding in `calls` must not suppress the booked-crew list).
     let bookedCrew = [];
-    if(calls.length === 1){
+    if(built.hardCount === 1){
       try{
         const bc = await fetch(`/api/booked-crew/${calls[0].booking_id}/${calls[0].call_id}`);
         const bcData = await bc.json();
@@ -2385,6 +2425,8 @@ async function runSearch(){
       } catch(e){}
     }
     result.bookedCrew = bookedCrew;
+    // Gate the ranking line: only meaningful when soft targets were searched.
+    result._softInPlay = (built.softIds || []).length > 0;
 
     // Use first call's details as reference for timeline date
     _goatSpec=null;                       // fresh search clears any GOAT filter
@@ -2399,10 +2441,16 @@ async function runSearch(){
   }
 }
 // Build the /api/availability call payload for the currently-selected calls.
-// Returns {calls, detailsArr, callPayload}, or null if a call detail errored
-// (the alert is raised here). Shared by runSearch and spotCheckCrew.
+// Returns {calls, detailsArr, callPayload, softIds, hardCount}, or null if a
+// call detail errored (the alert is raised here). Shared by runSearch and
+// spotCheckCrew. Soft (considered) calls ride in the same `calls` array — they
+// need start_dt/end_dt like any target — but stay out of selectedCalls.
 async function buildCallPayload(){
-  const calls=[...selectedCalls.values()];
+  const hard = [...selectedCalls.values()];
+  // Selected wins: a call that is both selected and a recommended target of
+  // another selected call must stay a hard constraint, not a soft one.
+  const soft = [...consideredCalls.values()].filter(c => !selectedCalls.has(c.call_id));
+  const calls = hard.concat(soft);
   const detailsArr=await Promise.all(calls.map(c=>
     fetch('/api/call/'+c.booking_id+'/'+c.call_id).then(r=>r.json())
   ));
@@ -2416,7 +2464,8 @@ async function buildCallPayload(){
     end_dt:     detailsArr[i].end_dt,
     venue:      c.venue || detailsArr[i].venue,  // prefer dashboard venue, fall back to callsheet
   }));
-  return {calls, detailsArr, callPayload};
+  const softIds = soft.map(c => c.call_id);
+  return {calls, detailsArr, callPayload, softIds, hardCount: hard.length};
 }
 
 // Load the {id,name,ein} roster once (admin only) and populate the spot-check
@@ -2449,19 +2498,20 @@ async function spotCheckCrew(){
     const {calls, detailsArr, callPayload}=built;
 
     const resp=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ calls: callPayload, only_crew_ids:[match.id] })});
+      body:JSON.stringify({ calls: callPayload, soft_call_ids: built.softIds, only_crew_ids:[match.id] })});
     const result=await resp.json();
     if(result.error){ alert(result.error); return; }
 
-    // Already-booked crew (single-call only), same as runSearch.
+    // Already-booked crew (single HARD call only), same as runSearch.
     let bookedCrew=[];
-    if(calls.length===1){
+    if(built.hardCount===1){
       try{
         const bc=await fetch(`/api/booked-crew/${calls[0].booking_id}/${calls[0].call_id}`);
         bookedCrew=(await bc.json()).crew||[];
       }catch(e){}
     }
     result.bookedCrew=bookedCrew;
+    result._softInPlay = (built.softIds || []).length > 0;
 
     _goatSpec=null; const gi=document.getElementById('goat-ask-input'); if(gi) gi.value='';
     _cfNameFilter=''; const nf=document.getElementById('cf-name-filter'); if(nf) nf.value='';
@@ -2760,6 +2810,29 @@ function wireTip(bar,tip){
   bar.addEventListener('mouseleave',hideTlTip);
 }
 
+// True when at least one available crew member is free for fewer than the whole
+// target set. Gated at the call site by result._softInPlay so that an ordinary
+// all-locked search — where partials come from carried hard calls, not soft
+// targets — shows no ranking line (regression parity with v4.13.0).
+function rankingActive(available){
+  return (available||[]).some(function(c){
+    var ff = (c.free_for != null) ? c.free_for : c.avail_count;
+    var fo = (c.free_of  != null) ? c.free_of  : c.total_calls;
+    return ff != null && fo != null && ff !== fo;
+  });
+}
+
+// "Available for X of Y" — the server ranks by free_for (§6); this exposes it.
+// Suppressed unless the whole result set is mixed (see _showRanking), so an
+// ordinary all-free search doesn't grow a column of identical "1 of 1".
+function _rankLine(crew){
+  if(!_showRanking) return '';
+  var ff = (crew.free_for != null) ? crew.free_for : crew.avail_count;
+  var fo = (crew.free_of  != null) ? crew.free_of  : crew.total_calls;
+  if(ff == null || fo == null) return '';
+  return '<div class="rank-line">Available for '+ff+' of '+fo+'</div>';
+}
+
 function statusLabel(crew, targets, rowStatus){
   if(rowStatus==='skipped'){
     return '<span class="status-skipped">SKIPPED</span>';
@@ -2778,14 +2851,14 @@ function statusLabel(crew, targets, rowStatus){
     return '<span class="status-conflict">CONFLICTED</span>';
   }
   if(!targets||targets.length<=1){
-    return crew.partial
+    return (crew.partial
       ? '<span class="status-partial">'+(crew.avail_count)+'/'+crew.total_calls+' calls</span>'
-      : '<span class="status-available">AVAILABLE</span>';
+      : '<span class="status-available">AVAILABLE</span>')+_rankLine(crew);
   }
   if(crew.partial){
-    return '<span class="status-partial">'+crew.avail_count+'/'+crew.total_calls+' calls</span>';
+    return '<span class="status-partial">'+crew.avail_count+'/'+crew.total_calls+' calls</span>'+_rankLine(crew);
   }
-  return '<span class="status-available">ALL '+targets.length+' CALLS</span>';
+  return '<span class="status-available">ALL '+targets.length+' CALLS</span>'+_rankLine(crew);
 }
 
 // #2 — multi-line call-detail tooltip for a shift bar.
@@ -2898,6 +2971,7 @@ function breakdownHtml(crew){
 function renderTable(result,targets){
   const{available,conflicts,skipped}=result;
   const multiCall=targets.length>1;
+  _showRanking = !!result._softInPlay && rankingActive(available);
   _geoActive = !!result.origin_label;
   const sortTh=(label,key)=>{
     const active=_sortBy===key, arrow=active?(_sortDir==='asc'?'\u25B2':'\u25BC'):'';
@@ -3002,6 +3076,7 @@ function addTableRow(tbody,crew,status,targets){
 // ── TIMELINE VIEW ──
 function renderTimeline(result,details,targets){
   const{available,conflicts,skipped}=result;
+  _showRanking = !!result._softInPlay && rankingActive(available);
   const targetDate=details.start_dt.split('T')[0];
 
   // Build target windows from all selected calls
@@ -10221,7 +10296,7 @@ function bkFeedChips(c, maps){
   }
   // Over-subscribed only when feeds actually cause it. free_to_fill also goes
   // negative on a plainly over-booked call, which ops do deliberately.
-  if(c.reserved > 0 && typeof c.free_to_fill === 'number' && c.free_to_fill < 0){
+  if((c.reserved > 0 || c.likely > 0) && typeof c.free_to_fill === 'number' && c.free_to_fill < 0){
     out += '<span title="Over-subscribed by '+(-c.free_to_fill)+' — more crew are committed here than the call requires" '
          + 'style="'+base+';color:var(--conflict);border:1px solid var(--conflict)">'
          + 'over by '+(-c.free_to_fill)+'</span>';
@@ -10251,10 +10326,16 @@ function bkFeedEdgeList(bookingId, c, maps){
   // feed mode — outside it the chips carry the information more compactly.
   var down = maps.feedsOf[String(c.call_id)] || [];
   if(!down.length) return '';
+  // Recommended edges look different here too, so Ops can spot which existing
+  // edge to fix: dotted border + a "~" prefix, matching the considered styling.
+  var rec = {}; (maps.feedsRecOf[String(c.call_id)] || []).forEach(function(t){ rec[String(t)] = true; });
   var items = down.map(function(t){
+    var isRec  = !!rec[String(t)];
+    var border = isRec ? '1px dotted var(--muted)' : '1px solid var(--border)';
     return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;'
-      + 'color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px">'
-      + '\u2192 '+bkFeedName(maps, t)
+      + 'color:var(--muted);border:'+border+';border-radius:3px;padding:1px 5px"'
+      + (isRec ? ' title="Recommended edge \u2014 a preference, not a lock"' : '') + '>'
+      + '\u2192 '+(isRec?'~':'')+bkFeedName(maps, t)
       + '<span onclick="event.preventDefault();event.stopPropagation();'
       + 'bkFeedRemove(\''+bookingId+'\',\''+c.call_id+'\',\''+t+'\')" '
       + 'title="Remove this feed" '
