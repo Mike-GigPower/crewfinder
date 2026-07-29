@@ -5425,8 +5425,15 @@ def api_availability():
             if conflict and not t.get("soft"):
                 any_conflict = True
 
-        avail_count = sum(1 for r in call_results if r["available"])
-        total_calls = len(targets)
+        # Availability splits along hard vs soft. The partial bucket and the
+        # "x/y calls" label are about the calls actually being filled (hard), so
+        # a clash on a soft/considered target must not read as partial. free_for
+        # / free_of stay over the WHOLE set — that is design §6's ranking.
+        soft_result_ids = set(str(t["call_id"]) for t in targets if t.get("soft"))
+        free_all    = sum(1 for r in call_results if r["available"])
+        avail_count = sum(1 for r in call_results
+                          if r["available"] and str(r["call_id"]) not in soft_result_ids)
+        total_calls = sum(1 for t in targets if not t.get("soft"))
 
         # Collect all induction warnings across calls (deduplicated)
         induction_warnings = list(dict.fromkeys(
@@ -5471,7 +5478,7 @@ def api_availability():
             "call_results":        call_results,
             "avail_count":         avail_count,
             "total_calls":         total_calls,
-            "free_for":            avail_count,
+            "free_for":            free_all,
             "free_of":             len(targets),
             "detail":              conflict_details,
             "induction_warnings":  induction_warnings,
@@ -5497,15 +5504,25 @@ def api_availability():
     # Design §6: rank available by free_for (over the whole target set)
     # descending, ties keeping existing order. Stable sort => no-op when every
     # target is hard (free_for == free_of for all).
-    available.sort(key=lambda c: -(c.get("free_for") or 0))
+    available.sort(key=lambda c: (-(c.get("avail_count") or 0),
+                                  -(c.get("free_for") or 0)))
+
+    def _ser_target(t):
+        return {"call_id": t["call_id"], "booking_id": t["booking_id"], "call_num": t["call_num"],
+                "call_name": t["call_name"], "start_dt": t["start"].isoformat(),
+                "end_dt": t["end"].isoformat(), "venue": t["venue"]}
+    # Report hard (actually-searched) calls as `targets`; soft/considered ones
+    # ride separately so the UI can rank against them without counting them as
+    # searched calls (a 1-hard search must not render "ALL 2 CALLS").
+    hard_targets = [_ser_target(t) for t in targets if not t.get("soft")]
+    soft_targets = [_ser_target(t) for t in targets if t.get("soft")]
 
     return jsonify({
-        "available":   available,
-        "conflicts":   conflicts,
-        "skipped":     skipped,
-        "targets":     [{"call_id": t["call_id"], "booking_id": t["booking_id"], "call_num": t["call_num"],
-                         "call_name": t["call_name"], "start_dt": t["start"].isoformat(),
-                         "end_dt": t["end"].isoformat(), "venue": t["venue"]} for t in targets],
+        "available":    available,
+        "conflicts":    conflicts,
+        "skipped":      skipped,
+        "targets":      hard_targets,
+        "soft_targets": soft_targets,
         # Legacy single-call fields for backward compat
         "call_id":    targets[0]["call_id"],
         "booking_id": targets[0]["booking_id"],

@@ -244,6 +244,8 @@ tr.skipped{opacity:.6}
 .tl-th-scroll::-webkit-scrollbar-track{background:var(--surface2)}
 .tl-th-scroll::-webkit-scrollbar-thumb{background:var(--border-gold);border-radius:5px}
 .tl-target{position:absolute;top:0;bottom:0;background:rgba(10,124,62,.08);border-left:2px dashed rgba(10,124,62,.4);border-right:2px dashed rgba(10,124,62,.4);pointer-events:none}
+/* Soft (considered) target band: fainter, dotted — matches the .considered card. */
+.tl-target.soft{background:rgba(120,120,120,.05);border-left:2px dotted var(--muted);border-right:2px dotted var(--muted)}
 .tl-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border);pointer-events:none}
 .tl-bar{position:absolute;top:4px;bottom:4px;border-radius:3px;opacity:.85;cursor:default;transition:opacity .15s}
 .tl-bar:hover{opacity:1}
@@ -2297,8 +2299,21 @@ function handleCallClick(event, call){
     if(card){ if(makeSelected) card.classList.add('carried'); else card.classList.remove('carried'); }
   });
   // Recommended targets are ranked, not searched-for: they join consideredCalls
-  // (soft) and never enter selectedCalls.
-  _finderConsideredCalls(call).forEach(function(t){
+  // (soft) and never enter selectedCalls. Collect them from the clicked call AND
+  // every call it carries — Load In carries LX (locked), and LX → Load Out
+  // (recommended) must still be considered. Dedupe, and skip anything already
+  // selected: selected is a hard constraint and wins (same rule as
+  // buildCallPayload). Computing the set the same way for add and remove means
+  // deselect clears exactly what select would have added.
+  var considered = {};
+  [call].concat(_finderDownstreamCalls(call)).forEach(function(src){
+    _finderConsideredCalls(src).forEach(function(t){
+      if(selectedCalls.has(t.call_id)) return;
+      considered[String(t.call_id)] = t;
+    });
+  });
+  Object.keys(considered).forEach(function(id){
+    var t = considered[id];
     if(makeSelected) consideredCalls.set(t.call_id, t);
     else consideredCalls.delete(t.call_id);
     var card = document.querySelector('.call-card[data-call-id="'+t.call_id+'"]');
@@ -3079,11 +3094,17 @@ function renderTimeline(result,details,targets){
   _showRanking = !!result._softInPlay && rankingActive(available);
   const targetDate=details.start_dt.split('T')[0];
 
-  // Build target windows from all selected calls
-  const targetWindows=(targets&&targets.length?targets:[{start_dt:details.start_dt,end_dt:details.end_dt}]).map(t=>({
+  // Build target windows from all selected calls, PLUS soft (considered) calls —
+  // seeing the call you're being ranked against is useful. statusLabel still
+  // counts hard `targets` only (soft is passed via result.soft_targets, not
+  // folded into targets), so the "ALL N CALLS" label stays hard-only.
+  const tlTargets=(targets||[]).map(t=>({...t,_soft:false}))
+    .concat((result.soft_targets||[]).map(t=>({...t,_soft:true})));
+  const targetWindows=(tlTargets.length?tlTargets:[{start_dt:details.start_dt,end_dt:details.end_dt}]).map(t=>({
     startH:dtToH(t.start_dt,targetDate),
     endH:dtToH(t.end_dt,targetDate),
-    label:'#'+(t.call_num||'')+(t.call_name?' '+t.call_name:''),
+    label:(t._soft?'~ ':'')+'#'+(t.call_num||'')+(t.call_name?' '+t.call_name:''),
+    soft:!!t._soft,
   }));
 
   // Scrollable bounds: 24h before earliest call start, 24h after latest call end.
@@ -3190,9 +3211,10 @@ function renderTimeline(result,details,targets){
     inner.style.width=innerWidth+'px';
     dynTicks.forEach(h=>{const line=document.createElement('div');line.className='tl-grid';line.style.left=pxD(h)+'px';inner.appendChild(line)});
 
-    // One highlight band per selected call
+    // One highlight band per target call — hard (searched) and soft (considered,
+    // ranked-against). Soft bands are lighter so they read as context, not filter.
     targetWindows.forEach(tw=>{
-      const bg=document.createElement('div');bg.className='tl-target';
+      const bg=document.createElement('div');bg.className='tl-target'+(tw.soft?' soft':'');
       bg.style.left=pxD(tw.startH)+'px';
       bg.style.width=(pxD(tw.endH)-pxD(tw.startH))+'px';
       bg.title=tw.label;
