@@ -1,6 +1,6 @@
 {
-  "version": "4.13.0",
+  "version": "4.14.0",
   "release_date": "2026-07-29",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.13.0/TheGOAT.dmg",
-  "release_notes": "Call feeds can now be set as recommended — crew are preferred for a call rather than committed to it, and answer each call separately."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.14.0/TheGOAT.dmg",
+  "release_notes": "Recommended feeds now rank crew in the Crew Finder instead of filtering them, and show in purple to distinguish them from locked feeds."
 }
