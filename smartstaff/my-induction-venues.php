@@ -13,20 +13,19 @@
 
 	/*
 	/* SELF endpoint — full induction list for the logged-in / asserted user.
-	/* Mirrors the crew "My Inductions" page: every active induction venue
-	/* (venues.active = 1 AND venues.has_induction = 1) LEFT JOINed to this
-	/* user's crew_venue_induction rows, so Incomplete venues appear too.
+	/* Every active induction venue (venues.active = 1 AND venues.has_induction = 1)
+	/* LEFT JOINed to this user's crew_venue_induction rows, so Incomplete venues
+	/* appear too.
 	/*
-	/* Status policy is the SmartStaff one (see venue-inductions.php), 30-day
-	/* months, so the portal matches the admin Induction Checker:
-	/*   Incomplete      complete_date IS NULL
-	/*   Expired         >= 12 months old
-	/*   Expiring Soon   >= 11 months old
-	/*   Complete        otherwise
-	/*
-	/* Deliberately a SEPARATE endpoint from my-inductions.php (which stays an
-	/* INNER JOIN, completed-only) so the GOAT MY STATUS / bulk consumers that
-	/* depend on "present row = Complete" do not regress.
+	/* Status policy now reads per-venue validity from the induction catalogue
+	/* (venue_induction_catalogue via venue_induction_covers) and uses the unified
+	/* day-based arithmetic shared with THE GOAT and Crew Hub:
+	/*   expiry = complete_date + round(validity_months/12*365) days
+	/*   Expired       now > expiry
+	/*   Expiring Soon within warn_days of expiry
+	/*   Complete      otherwise
+	/*   Incomplete    no completion row
+	/* Venues with no catalogue row fall back to 12 months / 14-day warn.
 	*/
 
 	$userID = (int) goat_acting_user_id();
@@ -37,16 +36,21 @@
 		die('{"error":"not authorised"}');
 	}
 
-	$month = 2592000;
-	$now   = time();
+	$now = time();
 
 	$sql = "SELECT v.id AS venue_id,
 	               v.venue AS venue_name,
 	               i.complete_date AS complete_date,
-	               i.file AS file
+	               i.file AS file,
+	               cat.validity_months AS validity_months,
+	               cat.warn_days AS warn_days
 	        FROM venues v
 	        LEFT JOIN crew_venue_induction i
 	               ON i.venue_id = v.id AND i.crew_id = " . $userID . "
+	        LEFT JOIN venue_induction_covers cov
+	               ON cov.venue_id = v.id
+	        LEFT JOIN venue_induction_catalogue cat
+	               ON cat.id = cov.catalogue_id
 	        WHERE v.active = 1 AND v.has_induction = 1
 	        ORDER BY v.id ASC";
 
@@ -72,13 +76,17 @@
 		}
 		else
 		{
-			$months = abs((int) round(($now - (int) $cd) / $month));
+			$validity = ($row->validity_months !== null) ? (int) $row->validity_months : 12;
+			$warn     = ($row->warn_days !== null) ? (int) $row->warn_days : 14;
 
-			if ($months >= 12)
+			$days   = (int) round($validity / 12.0 * 365);
+			$expiry = (int) $cd + ($days * 86400);
+
+			if ($now > $expiry)
 			{
 				$status = 'Expired';
 			}
-			else if ($months >= 11)
+			else if (($expiry - $now) <= ($warn * 86400))
 			{
 				$status = 'Expiring Soon';
 			}
