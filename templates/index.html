@@ -2204,16 +2204,24 @@ function _finderDownstreamCalls(call){
 
 function finderFeedChips(c){
   var out = '';
-  var nDown = (c.feeds  || []).length;
-  var nUp   = (c.fed_by || []).length;
+  var nDownRec = (c.feeds_recommended  || []).length;
+  var nUpRec   = (c.fed_by_recommended || []).length;
+  var nDown = (c.feeds  || []).length - nDownRec;
+  var nUp   = (c.fed_by || []).length - nUpRec;
   var s = 'display:inline-flex;align-items:center;gap:2px;font-size:9px;font-weight:600;'
         + 'border-radius:3px;padding:0 4px;margin-left:6px;';
-  if(nDown) out += '<span title="Feeds '+nDown+' call'+(nDown>1?'s':'')
+  if(nDown > 0) out += '<span title="Feeds '+nDown+' call'+(nDown>1?'s':'')
     +' — offering this call also offers them" style="'+s
     +'color:var(--accent);border:1px solid var(--accent)">\u2193 feeds '+nDown+'</span>';
-  if(nUp) out += '<span title="Fed by '+nUp+' call'+(nUp>1?'s':'')
+  if(nDownRec > 0) out += '<span title="Suggests '+nDownRec+' call'+(nDownRec>1?'s':'')
+    +' — crew here are preferred for them, but answer separately" style="'+s
+    +'color:var(--accent);border:1px dashed var(--accent)">\u2193 suggests '+nDownRec+'</span>';
+  if(nUp > 0) out += '<span title="Fed by '+nUp+' call'+(nUp>1?'s':'')
     +' — crew from those calls are carried into this one" style="'+s
     +'color:var(--muted);border:1px solid var(--border)">\u2191 fed by '+nUp+'</span>';
+  if(nUpRec > 0) out += '<span title="Suggested by '+nUpRec+' call'+(nUpRec>1?'s':'')
+    +' — crew from those calls are preferred here, but answer separately" style="'+s
+    +'color:var(--muted);border:1px dashed var(--border)">\u2191 suggested by '+nUpRec+'</span>';
   // Only when feeds actually cause the overage. free_to_fill also goes
   // negative on a plainly over-booked call (more confirmed than required),
   // which ops do deliberately and constantly — chipping those would be noise.
@@ -2229,11 +2237,14 @@ function finderBookedSpan(c){
   // plain booked/required for unfed calls AND for fed calls whose feeders are
   // already full (reserved 0) — which is most migrated links, so the fallback
   // is the common path, not the edge case.
-  if(c.reserved > 0){
+  if(c.reserved > 0 || c.likely > 0){
     var ftf = (typeof c.free_to_fill === 'number') ? c.free_to_fill : 0;
+    var parts = [(c.required||0)+' required'];
+    if(c.reserved > 0) parts.push(c.reserved+' reserved');
+    if(c.likely > 0)   parts.push(c.likely+' likely');
+    parts.push(ftf+' to fill');
     return '<span class="call-booked '+(ftf < 0 ? 'warn' : 'ok')+'">'
-      + (c.required||0)+' required \u00b7 '+c.reserved+' reserved \u00b7 '
-      + ftf+' to fill</span>';
+      + parts.join(' \u00b7 ')+'</span>';
   }
   var bookedOk = c.booked >= c.required;
   return '<span class="call-booked '+(bookedOk?'ok':'warn')+'">'+(c.booked+'/'+c.required)+' booked</span>';
@@ -10100,7 +10111,7 @@ async function generateGoogleSheet(bookingId){
 
 async function openBookingDialog(bookingId){
   openEntityModal();
-  _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {};
+  _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
   const cached = window._bookingIndex[bookingId];
   document.getElementById('entity-modal-title').textContent = cached ? cached.name : 'Booking';
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
@@ -10148,18 +10159,22 @@ function bkCallBlock(bookingId, c){
 var _bkFeedMode = false;
 var _bkFeedSrc  = null;   // call_id of the chosen feeder, or null
 var _bkFeedSel  = {};     // { call_id: true } receiving calls, while in feed mode
+var _bkFeedRecommended = false;  // save edges as recommended, not locked
 
 function bkFeedMaps(calls){
   // Build lookup maps once per render: call_id -> call, and the two edge
   // directions straight off the payload (get-booking.php emits feeds/fed_by).
-  var byId = {}, feedsOf = {}, fedByOf = {};
+  var byId = {}, feedsOf = {}, fedByOf = {}, feedsRecOf = {}, fedByRecOf = {};
   (calls||[]).forEach(function(c){
     var id = String(c.call_id);
     byId[id]    = c;
     feedsOf[id] = (c.feeds  || []).map(String);
     fedByOf[id] = (c.fed_by || []).map(String);
+    feedsRecOf[id] = (c.feeds_recommended  || []).map(String);
+    fedByRecOf[id] = (c.fed_by_recommended || []).map(String);
   });
-  return { byId: byId, feedsOf: feedsOf, fedByOf: fedByOf };
+  return { byId: byId, feedsOf: feedsOf, fedByOf: fedByOf,
+           feedsRecOf: feedsRecOf, fedByRecOf: fedByRecOf };
 }
 
 function bkFeedName(maps, callId){
@@ -10170,24 +10185,39 @@ function bkFeedName(maps, callId){
 function bkFeedChips(c, maps){
   // Directional chips. Down = this call feeds others; up = others feed it.
   // Tooltips list the call names so ops don't have to open each one.
-  var id     = String(c.call_id);
-  var down   = maps.feedsOf[id] || [];
-  var up     = maps.fedByOf[id] || [];
+  var id       = String(c.call_id);
+  var downAll  = maps.feedsOf[id] || [];
+  var upAll    = maps.fedByOf[id] || [];
+  var downRec  = maps.feedsRecOf[id] || [];
+  var upRec    = maps.fedByRecOf[id] || [];
+  var recDownSet = {}; downRec.forEach(function(t){ recDownSet[t] = true; });
+  var recUpSet   = {}; upRec.forEach(function(s){ recUpSet[s] = true; });
+  var downLocked = downAll.filter(function(t){ return !recDownSet[t]; });
+  var upLocked   = upAll.filter(function(s){ return !recUpSet[s]; });
   var base   = 'display:inline-flex;align-items:center;gap:3px;font-size:9px;'
              + 'font-weight:600;border-radius:3px;padding:1px 5px;margin-left:8px';
   var out    = '';
+  function names(list){ return list.map(function(t){ return bkFeedName(maps, t); }).join(', '); }
 
-  if(down.length){
-    var dNames = down.map(function(t){ return bkFeedName(maps, t); }).join(', ');
-    out += '<span title="Feeds: '+dNames+' — offering this call also offers them" '
+  if(downLocked.length){
+    out += '<span title="Feeds: '+names(downLocked)+' — offering this call also offers them" '
          + 'style="'+base+';color:var(--accent);border:1px solid var(--accent)">'
-         + '\u2193 feeds '+down.length+'</span>';
+         + '\u2193 feeds '+downLocked.length+'</span>';
   }
-  if(up.length){
-    var uNames = up.map(function(s){ return bkFeedName(maps, s); }).join(', ');
-    out += '<span title="Fed by: '+uNames+' — crew from those calls are carried into this one" '
+  if(downRec.length){
+    out += '<span title="Suggests: '+names(downRec)+' — crew here are preferred for them, but answer separately" '
+         + 'style="'+base+';color:var(--accent);border:1px dashed var(--accent)">'
+         + '\u2193 suggests '+downRec.length+'</span>';
+  }
+  if(upLocked.length){
+    out += '<span title="Fed by: '+names(upLocked)+' — crew from those calls are carried into this one" '
          + 'style="'+base+';color:var(--muted);border:1px solid var(--border)">'
-         + '\u2191 fed by '+up.length+'</span>';
+         + '\u2191 fed by '+upLocked.length+'</span>';
+  }
+  if(upRec.length){
+    out += '<span title="Suggested by: '+names(upRec)+' — crew from those calls are preferred here, but answer separately" '
+         + 'style="'+base+';color:var(--muted);border:1px dashed var(--border)">'
+         + '\u2191 suggested by '+upRec.length+'</span>';
   }
   // Over-subscribed only when feeds actually cause it. free_to_fill also goes
   // negative on a plainly over-booked call, which ops do deliberately.
@@ -10200,13 +10230,17 @@ function bkFeedChips(c, maps){
 }
 
 function bkFeedCount(c){
-  // Three-part count only when slots are actually reserved. Falls back to the
-  // plain display for unfed calls AND for fed calls whose feeders are full —
-  // which is most migrated links, so the fallback is the common path.
-  if(c.reserved > 0){
+  // Four-part count once slots are reserved OR likely. required and to-fill are
+  // structural; reserved and likely are dropped when zero, so an all-locked
+  // booking (no likely) renders byte-identically to before. Falls back to the
+  // plain display for unfed calls AND for fed calls whose feeders are full.
+  if(c.reserved > 0 || c.likely > 0){
+    var parts = [(c.required||0)+' required'];
+    if(c.reserved > 0) parts.push(c.reserved+' reserved');
+    if(c.likely > 0)   parts.push(c.likely+' likely');
+    parts.push((c.free_to_fill||0)+' to fill');
     return '<span style="font-size:10px;color:var(--muted);margin-right:10px">'
-      + (c.required||0)+' required \u00b7 '+c.reserved+' reserved \u00b7 '
-      + (c.free_to_fill||0)+' to fill</span>';
+      + parts.join(' \u00b7 ')+'</span>';
   }
   return '<span style="font-size:10px;color:var(--muted);margin-right:10px">'
     + (c.confirmed||0)+' booked</span>';
@@ -10320,8 +10354,13 @@ function bkCallsSection(bookingId, d){
         + '<div id="bk-feed-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
     } else {
       var n = Object.keys(_bkFeedSel).length;
-      footer = '<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
-        + entityBtn('\u21e2 Save feeds'+(n?' ('+n+')':''), "bkFeedSave('"+bookingId+"')", {primary:true, id:'bk-feed-go'})
+      var recChecked = _bkFeedRecommended ? ' checked' : '';
+      var btnLabel = _bkFeedRecommended ? '\u21e2 Save recommended' : '\u21e2 Save feeds';
+      footer = '<label style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);margin-top:6px;cursor:pointer">'
+        + '<input type="checkbox"'+recChecked+' onchange="bkToggleFeedRecommended(\''+bookingId+'\', this.checked)">'
+        + 'Recommended only \u2014 crew from this call are preferred for the calls below, but can be offered and answered separately.</label>'
+        + '<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
+        + entityBtn(btnLabel+(n?' ('+n+')':''), "bkFeedSave('"+bookingId+"')", {primary:true, id:'bk-feed-go'})
         + '<span style="font-size:10px;color:var(--muted)">Tick the calls those crew should also work.</span></div>'
         + '<div id="bk-feed-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
     }
@@ -10340,23 +10379,31 @@ function bkToggleFeedMode(bookingId){
   _bkFeedMode = !_bkFeedMode;
   _bkFeedSrc  = null;
   _bkFeedSel  = {};
+  _bkFeedRecommended = false;
   bkRerenderCalls(bookingId);
 }
 
 function bkPickSource(bookingId, callId){
   _bkFeedSrc = callId;
   _bkFeedSel = {};
+  _bkFeedRecommended = false;
   bkRerenderCalls(bookingId);
 }
 
 function bkClearSource(bookingId){
   _bkFeedSrc = null;
   _bkFeedSel = {};
+  _bkFeedRecommended = false;
   bkRerenderCalls(bookingId);
 }
 
 function bkToggleFeedSel(bookingId, callId, checked){
   if(checked) _bkFeedSel[callId] = true; else delete _bkFeedSel[callId];
+  bkRerenderCalls(bookingId);
+}
+
+function bkToggleFeedRecommended(bookingId, checked){
+  _bkFeedRecommended = !!checked;
   bkRerenderCalls(bookingId);
 }
 
@@ -10382,7 +10429,8 @@ async function bkFeedSave(bookingId, confirmOverride){
       body: JSON.stringify({
         source_call:  _bkFeedSrc,
         target_calls: ids,
-        confirm:      confirmOverride ? true : false
+        confirm:      confirmOverride ? true : false,
+        mode: _bkFeedRecommended ? 'recommended' : 'locked'
       })
     });
     var j = await resp.json();
@@ -10404,7 +10452,7 @@ async function bkFeedSave(bookingId, confirmOverride){
       return;
     }
 
-    _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {};
+    _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
   }catch(e){

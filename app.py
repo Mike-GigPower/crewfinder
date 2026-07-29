@@ -3156,10 +3156,11 @@ def ss_update_call_bulk(ss, call_id, call):
 
 
 def ss_call_feeds(ss, action, source_call=None, target_calls=None,
-                  booking_id=None, confirm=False):
+                  booking_id=None, confirm=False, mode=None):
     """Proxy smartstaff/call-feeds.php (admin session).
 
-      action='add'    — {source_call, target_calls:[...], confirm}
+      action='add'    — {source_call, target_calls:[...], confirm, mode}
+                        mode is 'locked' (default) or 'recommended'.
                         409 + {needs_confirm, warnings} if the edge would
                         over-subscribe the target, link overlapping calls, or
                         be redundant; resend with confirm=True to override.
@@ -3181,6 +3182,8 @@ def ss_call_feeds(ss, action, source_call=None, target_calls=None,
         payload["booking_id"] = int(booking_id)
     if confirm:
         payload["confirm"] = True
+    if mode is not None:
+        payload["mode"] = "recommended" if mode == "recommended" else "locked"
 
     url = f"{BASE_URL}/ajax/crew/call-feeds.php"
     try:
@@ -6007,6 +6010,9 @@ def _bulk_call_to_scrape_shape(r):
         "link_group":   r.get("link_group"),
         "feeds":        r.get("feeds") or [],
         "fed_by":       r.get("fed_by") or [],
+        "likely":             r.get("likely"),
+        "feeds_recommended":  r.get("feeds_recommended") or [],
+        "fed_by_recommended": r.get("fed_by_recommended") or [],
         "committed":    r.get("committed"),
         "reserved":     r.get("reserved"),
         "free_to_fill": r.get("free_to_fill"),
@@ -8573,9 +8579,11 @@ def api_calls_feeds_add():
         return jsonify({"error": "Pick the call crew come from"}), 400
     if not target_calls:
         return jsonify({"error": "Select at least one call they should also work"}), 400
+    mode = body.get("mode")
     result, err = ss_call_feeds(ss, "add", source_call=source_call,
                                 target_calls=target_calls,
-                                confirm=bool(body.get("confirm")))
+                                confirm=bool(body.get("confirm")),
+                                mode=mode)
     if err:
         return jsonify({"error": err}), 502
     # Preserve the 409 so the client's needs_confirm branch fires.
