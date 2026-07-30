@@ -1,6 +1,6 @@
 {
-  "version": "4.15.0",
+  "version": "4.16.0",
   "release_date": "2026-07-30",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.15.0/TheGOAT.dmg",
-  "release_notes": "Crew Lists now remembers your choices — optional columns and confirmed-vs-rostered are kept per person, so your defaults don't change anyone else's."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.16.0/TheGOAT.dmg",
+  "release_notes": "Induction expiry now reads each venue's real validity period from the catalogue. Palais Theatre and Federation Square were being calculated at 12 months and are corrected to 24 and 36; 19 crew were wrongly showing as expired."
 }
