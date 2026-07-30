@@ -12,6 +12,7 @@ import os
 import re
 import io
 import math
+import hashlib
 import types
 import difflib
 import threading
@@ -100,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.14.1"
+APP_VERSION    = "4.15.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -575,6 +576,41 @@ def current_cohort():
     privilege) if identity wasn't captured for any reason."""
     ident = current_identity()
     return (ident or {}).get("cohort", "crew")
+
+
+def current_pref_key():
+    """Stable, opaque per-person id for storing UI preferences. '' if unknown.
+
+    NOT the EIN. A live admin whoami returns ein "0" — admin accounts carry a
+    placeholder rather than a real EIN. Keying preferences on it would put every
+    admin (Mike, Rich, Monty, Joe) in a single shared bucket, so one person
+    changing a default would silently change everyone's. EIN is the right join
+    key for crew records and the wrong one for operator preferences.
+
+    Fallback chain, most stable first:
+      1. whoami.php's user_id — SmartStaff's own primary key for the account.
+         Used when present; the login fallback dict already references it.
+      2. The session's login username, which is captured on BOTH the direct
+         login path and the admin-elevation path, so it's always available
+         however the operator reached admin.
+
+    The chosen value is hashed, so no username or personal name is written into
+    browser storage (or, later, a preferences table). It's a plain digest with
+    no salt, which is deliberate: the same person must get the same key on every
+    login, on every app rebuild, forever — a random or rotating value would
+    orphan their saved preferences. This is an identifier, not a credential.
+    """
+    sid = session.get("sid")
+    if not sid:
+        return ""
+    ident = _ss_identity.get(sid) or {}
+    raw = ident.get("user_id")
+    if raw in (None, "", 0, "0"):
+        raw = (_ss_creds.get(sid) or {}).get("username") or ""
+    raw = str(raw).strip().lower()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 def require_cohort(*allowed):
     """Route guard: 401 if not logged in, 403 if the session's cohort isn't in
@@ -7683,6 +7719,9 @@ def api_whoami():
         "can_elevate": bool(ident.get("can_elevate", False)),
         "elevated":    session.get("sid") in _pre_elevation,
         "ss_base":     BASE_URL,
+        # Opaque per-person id for UI preferences. Safe to expose: a one-way
+        # digest, no name or username in it, and it grants nothing on its own.
+        "pref_key":    current_pref_key(),
     })
 
 
