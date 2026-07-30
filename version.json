@@ -1,6 +1,6 @@
 {
-  "version": "4.14.0",
-  "release_date": "2026-07-29",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.14.0/TheGOAT.dmg",
-  "release_notes": "Recommended feeds now rank crew in the Crew Finder instead of filtering them, and show in purple to distinguish them from locked feeds."
+  "version": "4.14.1",
+  "release_date": "2026-07-30",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.14.1/TheGOAT.dmg",
+  "release_notes": "Crew Lists default to Phone and Confirmed crew only. Over-booked calls now show red in the Schedule instead of green. Apostrophe surnames no longer appear as HTML entities in generated timesheets."
 }
