@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.15.0"
+APP_VERSION    = "4.16.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -905,8 +905,13 @@ def delete_own_unavailability(ss, event_id):
 def _compute_induction_status(inductions):
     """Given a {venue: {status, completed}} dict, return {venue: {status,
     completed[, expiry]}} with Expired / Expiring Soon / Complete computed from
-    the completion date and the venue's expiry policy. Shared by the admin
-    Induction Checker and the crew self-view so they can never diverge."""
+    the completion date and the venue's expiry policy.
+
+    Arithmetic and validity lookup both live in _induction_expiry(), which the
+    Crew Finder path (induction_status_for_venue) also uses — so the admin
+    Induction Checker, the crew self-view and availability gating cannot diverge.
+    Before Phase 1b this docstring claimed that while a second copy of the rule
+    existed a few hundred lines below; now it is actually true."""
     venue_status = {}
     for venue_name, ind_data in (inductions or {}).items():
         if venue_name.strip().lower() in INDUCTION_EXCLUDE:
@@ -919,21 +924,14 @@ def _compute_induction_status(inductions):
         if status == "Incomplete" or not completed:
             venue_status[venue_name] = {"status": "Incomplete", "completed": ""}
         else:
-            try:
-                completed_dt = datetime.strptime(completed, "%d %b %Y")
-                days   = 730 if venue_name.lower() in INDUCTION_24_MONTH else 365
-                expiry = completed_dt + timedelta(days=days)
-                now    = datetime.now()
-                if now > expiry:
-                    st = "Expired"
-                elif (expiry - now).days <= 14:
-                    st = "Expiring Soon"
-                else:
-                    st = "Complete"
+            st, expiry = _induction_expiry(venue_name, completed)
+            if st is None:
+                # Unparseable completion date — keep SmartStaff's own status
+                # rather than inventing one.
+                venue_status[venue_name] = {"status": status, "completed": completed}
+            else:
                 venue_status[venue_name] = {"status": st, "completed": completed,
                                             "expiry": expiry.strftime("%d %b %Y")}
-            except Exception:
-                venue_status[venue_name] = {"status": status, "completed": completed}
     return venue_status
 
 def load_cache():
@@ -1142,6 +1140,152 @@ def _filter_inductions(inductions):
     """Drop INDUCTION_EXCLUDE labels from a {venue: {...}} inductions dict."""
     return {k: v for k, v in (inductions or {}).items()
             if k.strip().lower() not in INDUCTION_EXCLUDE}
+
+# ─── INDUCTION CATALOGUE (Phase 1b) ───────────────────────────────────────────
+# Validity policy lives in SmartStaff MySQL (venue_induction_catalogue +
+# venue_induction_covers) and is read through get-induction-catalogue.php, since
+# THE GOAT has no direct MySQL access. This replaces the hardcoded validity above
+# as the SOURCE, while the constants remain the FALLBACK: an unreachable endpoint
+# degrades to previous behaviour rather than to "everything is 12 months".
+#
+# Cached in memory only. Deliberately not written beside the executable: BASE_DIR
+# in a frozen build points inside the app bundle, which can be read-only once
+# notarised, and a preference cache is the wrong place to discover that.
+
+INDUCTION_CATALOGUE_TTL_MIN = 15
+_induction_catalogue_cache  = {"data": None, "fetched_at": None, "failed_at": None}
+_induction_catalogue_lock   = threading.Lock()
+
+
+def load_induction_catalogue(ss=None):
+    """Normalised catalogue dict, or None if it can't be read.
+
+    Returns {"rows": [...], "warn_days_default": int}, rows pre-sorted by
+    sort_order so keyword matching is deterministic rather than dependent on the
+    order MySQL happened to return.
+
+    Never raises and never returns a partial structure — callers treat None as
+    "use the constants". A failed fetch is negatively cached for the same TTL so
+    a dead endpoint isn't re-hit on every Crew Finder search, and is logged once
+    per window rather than once per call.
+    """
+    now = datetime.now()
+    ttl = INDUCTION_CATALOGUE_TTL_MIN * 60
+    with _induction_catalogue_lock:
+        cached   = _induction_catalogue_cache.get("data")
+        fetched  = _induction_catalogue_cache.get("fetched_at")
+        failed   = _induction_catalogue_cache.get("failed_at")
+    if cached is not None and fetched is not None and (now - fetched).total_seconds() < ttl:
+        return cached
+    if failed is not None and (now - failed).total_seconds() < ttl:
+        return cached                      # may be None; caller falls back
+    if ss is None:
+        # session.get() raises outside a Flask request context rather than
+        # returning None, so this must be guarded even though every current
+        # caller is inside a route.
+        try:
+            ss = get_ss_session()
+        except Exception:
+            ss = None
+    if not ss:
+        with _induction_catalogue_lock:
+            _induction_catalogue_cache["failed_at"] = now
+        return cached
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/get-induction-catalogue.php", timeout=10)
+        if resp.status_code != 200:
+            raise ValueError(f"HTTP {resp.status_code}")
+        data = resp.json()
+        raw  = data.get("inductions")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("no inductions in response")
+        default_warn = int(data.get("warn_days_default") or 14)
+        rows = []
+        for r in raw:
+            kws = [str(k).strip().lower()
+                   for k in (r.get("match_keywords") or []) if str(k).strip()]
+            wd = r.get("warn_days")
+            rows.append({
+                "code":            r.get("code") or "",
+                "validity_months": int(r.get("validity_months") or 12),
+                "warn_days":       int(wd) if wd is not None else default_warn,
+                "match_keywords":  kws,
+                "sort_order":      int(r.get("sort_order") or 0),
+                "show_in_checker": bool(r.get("show_in_checker", True)),
+                "published":       bool(r.get("published", True)),
+            })
+        rows.sort(key=lambda x: (x["sort_order"], x["code"]))
+        out = {"rows": rows, "warn_days_default": default_warn}
+        with _induction_catalogue_lock:
+            _induction_catalogue_cache["data"]       = out
+            _induction_catalogue_cache["fetched_at"] = now
+            _induction_catalogue_cache["failed_at"]  = None
+        return out
+    except Exception as e:
+        with _induction_catalogue_lock:
+            _induction_catalogue_cache["failed_at"] = now
+        if failed is None:
+            app.logger.warning(f"induction catalogue fetch failed: {e}")
+        return cached
+
+
+def _induction_validity_for_label(label):
+    """(validity_months, warn_days) for a SmartStaff induction label.
+
+    Matching is substring containment, case-insensitive — identical to what
+    INDUCTION_VENUE_MAP does — so only the SOURCE of the numbers changes here,
+    not the matching rule. Changing both at once would make the grid diff
+    uninterpretable.
+    """
+    ll = (label or "").lower()
+    cat = load_induction_catalogue()
+    if cat:
+        for row in cat["rows"]:                      # pre-sorted: first match wins
+            for kw in row["match_keywords"]:
+                if kw and kw in ll:
+                    return row["validity_months"], row["warn_days"]
+        return 12, cat["warn_days_default"]          # covered by no catalogue row
+    return (24 if ll in INDUCTION_24_MONTH else 12), 14
+
+
+def _induction_expiry(label, completed):
+    """(status, expiry_datetime) for one induction record.
+
+    Returns (None, None) when the completion date can't be parsed, so callers
+    keep whatever status SmartStaff supplied rather than inventing one.
+
+    THE single source of induction arithmetic in THE GOAT. Matches the unified
+    rule used by my-induction-venues.php and venue-inductions.php:
+        days   = round(validity_months / 12 * 365)    # 12->365, 24->730, 36->1095
+        expiry = completed + days
+        Expired        now > expiry
+        Expiring Soon  (expiry - now) <= warn_days * 86400   <- SECONDS, not days
+        Complete       otherwise
+    The seconds comparison matters: timedelta.days truncates, so a 14.4-day gap
+    read as 14 and reported "Expiring Soon" while the PHP surfaces said
+    "Complete". That one-day disagreement is what this unification removes.
+    """
+    if not completed:
+        return "Incomplete", None
+    dt = None
+    try:
+        from dateutil import parser as dateparser
+        dt = dateparser.parse(completed)
+    except Exception:
+        try:
+            dt = datetime.strptime(completed, "%d %b %Y")
+        except Exception:
+            return None, None
+    months, warn_days = _induction_validity_for_label(label)
+    days   = round(months / 12 * 365)
+    expiry = dt + timedelta(days=days)
+    now    = datetime.now()
+    if now > expiry:
+        return "Expired", expiry
+    if (expiry - now).total_seconds() <= warn_days * 86400:
+        return "Expiring Soon", expiry
+    return "Complete", expiry
+
 
 def _induction_code_for_venue_name(venue_name):
     """Reverse INDUCTION_VENUE_MAP: a venue NAME ('Rod Laver Arena') -> its code
@@ -1450,10 +1594,18 @@ def resolve_origin(origin, targets):
 
 def induction_status_for_venue(inductions, venue_code):
     """Given inductions dict and venue code, return:
-      'Complete'   — valid induction
-      'Expired'    — completed but past validity period
-      'Incomplete' — never completed
-      None         — venue not in induction list (no check possible)
+      'Complete'      — valid induction
+      'Expiring Soon' — valid but within the venue's warn window
+      'Expired'       — completed but past validity period
+      'Incomplete'    — never completed
+      None            — venue not in induction list (no check possible)
+
+    Venue-code resolution still goes through INDUCTION_VENUE_MAP. The catalogue
+    has no rows for RLA/MCA/JCA/AAMI/Centrepiece/Hamer Hall — they are folded into
+    MELB_PARK and Sidney Myer — so resolving codes against it would return no
+    match and silently stop gating those six venues. Status arithmetic comes from
+    the catalogue via _induction_expiry(); only the code lookup is still local.
+    Repointing code resolution is Phase 3, once the catalogue exposes codes.
     """
     keywords = INDUCTION_VENUE_MAP.get(venue_code, [])
     if not keywords:
@@ -1462,6 +1614,11 @@ def induction_status_for_venue(inductions, venue_code):
     for venue_name, data in inductions.items():
         vl = venue_name.lower()
         if not any(k in vl for k in keywords):
+            continue
+        if vl.strip() in INDUCTION_EXCLUDE:
+            # Match _compute_induction_status. Currently inert (no
+            # INDUCTION_VENUE_MAP keyword matches an excluded label), but the two
+            # paths should not differ on which labels they honour.
             continue
 
         # Handle both old cache format (string) and new (dict)
@@ -1479,27 +1636,10 @@ def induction_status_for_venue(inductions, venue_code):
         if not completed:
             return "Incomplete", venue_name
 
-        # Parse completion date and check expiry
-        try:
-            from dateutil import parser as dateparser
-            completed_dt = dateparser.parse(completed)
-        except Exception:
-            # Try manual parse: "19 Nov 2025"
-            try:
-                completed_dt = datetime.strptime(completed, "%d %b %Y")
-            except Exception:
-                return status, venue_name  # can't parse, assume valid
-
-        # Determine validity period in days (approx)
-        days = 730 if vl in INDUCTION_24_MONTH else 365
-        expiry = completed_dt + timedelta(days=days)
-        now = datetime.now()
-        if now > expiry:
-            return "Expired", venue_name
-        elif (expiry - now).days <= 14:
-            return "Expiring Soon", venue_name
-
-        return "Complete", venue_name
+        st, _expiry = _induction_expiry(venue_name, completed)
+        if st is None:
+            return status, venue_name      # unparseable date, assume valid
+        return st, venue_name
 
     return None, ""
 
