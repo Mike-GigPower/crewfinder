@@ -708,6 +708,7 @@ tr.skipped{opacity:.6}
 .sched-call-status.full{color:var(--available)}
 .sched-call-status.partial{color:var(--warn)}
 .sched-call-status.empty{color:var(--conflict)}
+.sched-call-status.over{color:var(--conflict)}
 
 /* Timeline right panel */
 .sched-timeline-wrap{min-width:max-content}
@@ -725,6 +726,11 @@ tr.skipped{opacity:.6}
 .sched-call-block.full{background:rgba(34,197,94,0.2);border-left:2px solid #22c55e;color:#22c55e}
 .sched-call-block.partial{background:rgba(245,158,11,0.15);border-left:2px solid var(--warn);color:var(--warn)}
 .sched-call-block.empty{background:rgba(227,30,36,0.1);border-left:2px solid var(--accent2);color:var(--accent2)}
+/* Over-booked: required was reduced below the number already booked. Same red as
+   an empty call — both mean "this call needs an operator's attention" — but a
+   separate class so the two can be told apart in code and in the booking
+   summary line, and so the colour can be split later without touching logic. */
+.sched-call-block.over{background:rgba(227,30,36,0.1);border-left:2px solid var(--accent2);color:var(--accent2)}
 .sched-call-block.clash{background:rgba(249,115,22,0.2);border-left:2px solid #f97316;color:#f97316;animation:clashPulse 2s ease-in-out infinite}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
 .crew-clash{color:#ef4444!important;font-weight:700}
@@ -9761,12 +9767,12 @@ function openCrewLists(bookingId){
       '<div style="padding:6px 0">'
     + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Break / Off write-in columns are always shown. The list opens in a new tab, ready to print or save as PDF.</div>'
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding-bottom:6px">Optional columns</div>'
-    + _clCheckbox('cl-col-ein','EIN',true)
-    + _clCheckbox('cl-col-phone','Phone',false)
+    + _clCheckbox('cl-col-ein','EIN',false)
+    + _clCheckbox('cl-col-phone','Phone',true)
     + _clCheckbox('cl-col-email','Email',false)
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:14px 0 6px">Who to include</div>'
-    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="confirmed"> Confirmed crew only</label>'
-    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="rostered" checked> All rostered (excludes declined &amp; no-shows)</label>'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="confirmed" checked> Confirmed crew only</label>'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="rostered"> All rostered (excludes declined &amp; no-shows)</label>'
     + '<div id="cl-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
     + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
@@ -9785,7 +9791,7 @@ async function crewListGenerate(bookingId){
     ein:   !!(document.getElementById('cl-col-ein')   || {}).checked,
     phone: !!(document.getElementById('cl-col-phone') || {}).checked,
     email: !!(document.getElementById('cl-col-email') || {}).checked,
-    who:   (document.querySelector('input[name="cl-who"]:checked') || {}).value || 'rostered'
+    who:   (document.querySelector('input[name="cl-who"]:checked') || {}).value || 'confirmed'
   };
   const status = document.getElementById('cl-status');
   if(status){ status.style.color='var(--muted)'; status.textContent='Building crew lists…'; }
@@ -12029,6 +12035,29 @@ async function loadSchedule(force=false){
   }
 }
 
+/* Staffing colour for one call block in the Schedule.
+   Single source of truth — both the collapsed booking header row and the
+   expanded per-call rows call this, so the two can't drift apart.
+
+     over    booked exceeds required (e.g. required cut 10 -> 8 after the crew
+             were already booked). Red, same as empty: an operator has to act.
+     full    booked meets required exactly.
+     partial some booked, short of required.
+     empty   nobody booked.
+
+   'over' is deliberately tested BEFORE 'full', because an over-booked call also
+   satisfies booked >= required and would otherwise come out green.
+   required === 0 is left out of the over test: a call with no requirement set
+   isn't over-booked, it just hasn't been specified yet. */
+function _schedFillClass(c){
+  const req = c.required || 0;
+  const bk  = c.booked   || 0;
+  if(req > 0 && bk >  req) return 'over';
+  if(req > 0 && bk >= req) return 'full';
+  if(bk > 0)               return 'partial';
+  return 'empty';
+}
+
 function renderSchedule(){
   if(!_schedData) return;
 
@@ -12112,7 +12141,7 @@ function renderSchedule(){
         // Takes precedence over staffing colour: even a 4/4 booked call
         // gets the orange clash marker if any of its crew clashes elsewhere.
         const hasClash = (c.clashes && c.clashes.length > 0);
-        const cls    = hasClash ? 'clash' : (c.full ? 'full' : c.booked > 0 ? 'partial' : 'empty');
+        const cls    = hasClash ? 'clash' : _schedFillClass(c);
         const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
         let clashLabel = '';
         if(hasClash){
@@ -12153,9 +12182,12 @@ function renderSchedule(){
       ? fmtDate(firstDate)
       : `${fmtDate(firstDate)} – ${fmtDate(lastDate)}`;
     const totalCalls   = booking.calls.length;
-    const fullCalls    = booking.calls.filter(c=>c.full).length;
-    const partialCalls = booking.calls.filter(c=>!c.full && c.booked>0).length;
-    const emptyCalls   = booking.calls.filter(c=>c.booked===0).length;
+    // Counted off the same helper the blocks use, so the summary can never
+    // disagree with the colours next to it.
+    const overCalls    = booking.calls.filter(c=>_schedFillClass(c)==='over').length;
+    const fullCalls    = booking.calls.filter(c=>_schedFillClass(c)==='full').length;
+    const partialCalls = booking.calls.filter(c=>_schedFillClass(c)==='partial').length;
+    const emptyCalls   = booking.calls.filter(c=>_schedFillClass(c)==='empty').length;
 
     const hasNotes = booking.calls.some(c => c.notes);
 
@@ -12180,6 +12212,7 @@ function renderSchedule(){
               ${fullCalls ? `<span style="color:#22c55e"> · ${fullCalls} full</span>` : ''}
               ${partialCalls ? `<span style="color:var(--warn)"> · ${partialCalls} partial</span>` : ''}
               ${emptyCalls ? `<span style="color:var(--accent2)"> · ${emptyCalls} empty</span>` : ''}
+              ${overCalls ? `<span style="color:var(--accent2)"> · ${overCalls} over-booked</span>` : ''}
             </div>
           </div>
         </div>
@@ -12191,8 +12224,8 @@ function renderSchedule(){
 
     for(const call of booking.calls){
       const hasClash = (call.clashes && call.clashes.length > 0);
-      const cls    = hasClash ? 'clash' : (call.full ? 'full' : call.booked > 0 ? 'partial' : 'empty');
-      const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)'};
+      const cls    = hasClash ? 'clash' : _schedFillClass(call);
+      const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)', over:'var(--accent2)'};
       const statusColor = colors[cls];
 
       const isToday = call.date_iso === today;
@@ -12329,7 +12362,7 @@ function schedMarkCallClash(callId, hasClash){
   // Update all rendered blocks for this call in the schedule grid
   document.querySelectorAll(`[data-call-id-block="${callId}"]`).forEach(el => {
     if(hasClash){
-      el.classList.remove('full','partial','empty');
+      el.classList.remove('full','partial','empty','over');
       el.classList.add('clash');
     }
   });
