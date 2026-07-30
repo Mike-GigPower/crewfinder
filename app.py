@@ -100,7 +100,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.14.0"
+APP_VERSION    = "4.14.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -9213,11 +9213,21 @@ def _gather_timesheet_calls(ss, booking_id):
     """(booking_name, gen_calls, error) for the timesheet generators. gen_calls is
     one dict per call with its CONFIRMED crew (last, first, EIN, phone). EIN + split
     names come from get-call-times (status 5 = confirmed); phone from the booking
-    roster, joined on user id."""
+    roster, joined on user id.
+
+    All free-text values are run through html.unescape before they leave this
+    function. SmartStaff's ajax endpoints HTML-escape their JSON, so a name like
+    O'Brien arrives as "O&#39;Brien". That renders correctly by accident when it
+    goes into a web page, but a spreadsheet cell has no HTML layer to decode it,
+    so the raw entity would be written into the sheet verbatim. Same treatment as
+    the schedule assignments reader further up this file."""
+    from html import unescape
+
     booking, err = fetch_booking_bulk(ss, booking_id)
     if err:
         return None, None, err
     booking_name = (booking.get("name") if isinstance(booking, dict) else None) or ("Booking " + str(booking_id))
+    booking_name = unescape(booking_name)
     bcalls = booking.get("calls", []) if isinstance(booking, dict) else []
 
     def _call_sched_dt(c):
@@ -9252,14 +9262,14 @@ def _gather_timesheet_calls(ss, booking_id):
                     continue  # confirmed only
                 uid = m.get("user_id")
                 crew_out.append({
-                    "lastname":  m.get("lastname") or "",
-                    "firstname": m.get("firstname") or "",
+                    "lastname":  unescape(m.get("lastname") or ""),
+                    "firstname": unescape(m.get("firstname") or ""),
                     "ein":       m.get("ein"),
                     "phone":     phone_by_uid.get(uid, ""),
                 })
         gen_calls.append({
             "call_id":   cid,
-            "call_name": c.get("call_name") or ("Call " + str(cid)),
+            "call_name": unescape(c.get("call_name") or ("Call " + str(cid))),
             "call_time": _call_sched_dt(c),
             "crew":      crew_out,
         })
