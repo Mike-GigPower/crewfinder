@@ -36,6 +36,85 @@
 	$twelve_mo_ago = strtotime('-1 year');   /* leap-safe; whole-second unix ts */
 
 	/*
+	/* 0. induction policy (the catalogue) — emitted ONCE, not per crew member.
+	/*
+	/* Phase 1c. Crew Hub's computeVenueStatus carries its own local 24-month set;
+	/* this lets it read the real per-venue policy instead, and gives the reminders
+	/* cron validity_changed_at for the self-suppress guard.
+	/*
+	/* Keyed by venue NAME because that is how each crew member's `inductions` map
+	/* is keyed, so the consumer joins on a key it already holds. One entry per
+	/* COVERED venue (23 at time of writing), not per catalogue row, since several
+	/* venues share one induction (Melbourne Park covers five arenas).
+	/*
+	/* A venue ABSENT from this block has no catalogue row: fall back to 12 months
+	/* and warn_days_default, the same fallback every other surface uses.
+	/*
+	/* Built BEFORE the crew roster because it does not depend on it, and because
+	/* the no-crew early return below must emit the same response shape.
+	*/
+
+	/* Must match get-induction-catalogue.php and the Phase 1a crew-facing files.
+	/* Phase 2 should move this into goat_settings so it has a single home. */
+	$WARN_DAYS_DEFAULT = 14;
+
+	$induction_policy = array();
+
+	$sql_policy = "
+		SELECT v.venue AS venue_name,
+		       c.code AS code,
+		       c.validity_months AS validity_months,
+		       c.warn_days AS warn_days,
+		       c.show_in_checker AS show_in_checker,
+		       c.published AS published,
+		       c.validity_changed_at AS validity_changed_at
+		FROM venue_induction_catalogue c
+		INNER JOIN venue_induction_covers cov ON cov.catalogue_id = c.id
+		INNER JOIN venues v ON v.id = cov.venue_id
+		ORDER BY c.sort_order ASC, v.venue ASC
+	";
+
+	$policy_result = mysql_query($sql_policy);
+
+	if ($policy_result !== false)
+	{
+		while ($row = mysql_fetch_object($policy_result))
+		{
+			/*
+			/* INNER JOIN on venues is deliberate: covers.venue_id carries no FK
+			/* (venues is MyISAM, cross-engine FK unenforceable), so an orphaned
+			/* covers row pointing at a deleted venue is dropped here rather than
+			/* emitted under an empty key.
+			/*
+			/* warn_days stays null when NULL — the consumer resolves it against
+			/* warn_days_default. Collapsing it here would lose the distinction
+			/* between "inherits the default" and "explicitly set to 14", which
+			/* the Phase 2 editor needs.
+			*/
+			$induction_policy[$row->venue_name] = array(
+				'code'                => $row->code,
+				'validity_months'     => (int) $row->validity_months,
+				'warn_days'           => ($row->warn_days !== null) ? (int) $row->warn_days : null,
+				'show_in_checker'     => ((int) $row->show_in_checker === 1),
+				'published'           => ((int) $row->published === 1),
+				'validity_changed_at' => $row->validity_changed_at ? $row->validity_changed_at : null
+			);
+		}
+	}
+
+	/*
+	/* A failed policy query leaves the block EMPTY rather than 500-ing the whole
+	/* roster: consumers fall back to 12 / warn_days_default and the crew list
+	/* still loads. Same posture as sections 2-4 below.
+	/*
+	/* Cast to object on emit: an empty PHP array json_encodes as [] , but this is
+	/* a MAP keyed by venue name and a consumer expecting an object would break on
+	/* an array. (object) gives {} when empty and the same keys when populated.
+	/* Note this is the OPPOSITE of get-induction-catalogue.php, which needs
+	/* array_values() because its payload really is a list.
+	*/
+
+	/*
 	/* 1. crew roster
 	*/
 
@@ -101,7 +180,11 @@
 
 	if (count($crew_by_id) == 0)
 	{
-		echo json_encode(array('crew' => array()));
+		echo json_encode(array(
+			'crew'              => array(),
+			'induction_policy'  => (object) $induction_policy,
+			'warn_days_default' => (int) $WARN_DAYS_DEFAULT,
+		));
 		return;
 	}
 
@@ -227,7 +310,9 @@
 	*/
 
 	echo json_encode(array(
-		'crew' => array_values($crew_by_id),
+		'crew'              => array_values($crew_by_id),
+		'induction_policy'  => (object) $induction_policy,
+		'warn_days_default' => (int) $WARN_DAYS_DEFAULT,
 	));
 
 ?>
