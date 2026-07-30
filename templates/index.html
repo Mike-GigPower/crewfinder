@@ -1786,6 +1786,77 @@ function hToLabel(h,targetDate){
 }
 
 
+// ── PER-PERSON UI PREFERENCES ───────────────────────────────────────────────
+// The ONLY way any feature should read or write a remembered UI choice.
+//
+// Why a boundary instead of calling localStorage directly: preferences are
+// stored on this Mac today, which is fine while THE GOAT ships as a DMG and
+// each operator has their own machine. If it ever becomes a web app, or an
+// operator wants their settings to follow them between machines, the store has
+// to move server-side. Because every feature goes through get/set here and
+// nothing else knows where the data lives, that move is a change to the three
+// functions below — not to every call site scattered through this file.
+//
+// Keyed by whoami's pref_key (an opaque per-person digest), so four admins on
+// one machine keep separate preferences. Falls back to 'anon' before whoami has
+// resolved, which is safe because nothing reads prefs during page load.
+//
+// Never store anything sensitive here — it's plain text on disk. Display and
+// filter choices only.
+const goatPrefs = (function(){
+  const NS = 'goat_prefs';
+
+  function storeKey(){
+    const pk = (window._identity && window._identity.pref_key) || 'anon';
+    return NS + ':' + pk;
+  }
+
+  function readAll(){
+    // Any failure (private mode, corrupt JSON, storage disabled) degrades to
+    // "no preferences saved" rather than breaking the calling feature.
+    try{
+      const raw = localStorage.getItem(storeKey());
+      const parsed = raw ? JSON.parse(raw) : {};
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    }catch(e){
+      return {};
+    }
+  }
+
+  return {
+    /* area: feature name e.g. 'crewList'. name: setting. fallback: first-run value. */
+    get(area, name, fallback){
+      const a = readAll()[area];
+      if(!a || typeof a !== 'object' || !(name in a)) return fallback;
+      const v = a[name];
+      return (v === undefined || v === null) ? fallback : v;
+    },
+    set(area, name, value){
+      try{
+        const data = readAll();
+        if(!data[area] || typeof data[area] !== 'object') data[area] = {};
+        data[area][name] = value;
+        localStorage.setItem(storeKey(), JSON.stringify(data));
+        return true;
+      }catch(e){
+        return false;   // preference not saved; the action itself still proceeds
+      }
+    },
+    /* Escape hatch — resets one feature's remembered choices to first-run. */
+    clearArea(area){
+      try{
+        const data = readAll();
+        delete data[area];
+        localStorage.setItem(storeKey(), JSON.stringify(data));
+        return true;
+      }catch(e){
+        return false;
+      }
+    }
+  };
+})();
+
+
 // ── COHORT / role-aware UI ──────────────────────────────────────────────────
 window._cohort = 'admin';
 // SmartStaff base URL — overwritten from /api/whoami so test builds open the
@@ -9761,18 +9832,28 @@ function _abCallWhen(startUnix, startTime){
 // (get-booking.php), which now carries ein + email on each crew member.
 
 function openCrewLists(bookingId){
+  // Remembered per-person choices. The object below is the FIRST-RUN default —
+  // what a fresh install shows before anyone has generated a list. Anything the
+  // operator picked last time overrides it. `who` is validated because storage
+  // is editable and a bad value would leave both radios unchecked.
+  const saved = goatPrefs.get('crewList', 'lastUsed', {}) || {};
+  const d = Object.assign({ein:false, phone:true, email:false, who:'confirmed'},
+                          (typeof saved === 'object' ? saved : {}));
+  if(d.who !== 'confirmed' && d.who !== 'rostered') d.who = 'confirmed';
+
   document.getElementById('entity-modal-title').textContent = 'Create Crew Lists';
   document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="padding:6px 0">'
     + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Break / Off write-in columns are always shown. The list opens in a new tab, ready to print or save as PDF.</div>'
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding-bottom:6px">Optional columns</div>'
-    + _clCheckbox('cl-col-ein','EIN',false)
-    + _clCheckbox('cl-col-phone','Phone',true)
-    + _clCheckbox('cl-col-email','Email',false)
+    + _clCheckbox('cl-col-ein','EIN',!!d.ein)
+    + _clCheckbox('cl-col-phone','Phone',!!d.phone)
+    + _clCheckbox('cl-col-email','Email',!!d.email)
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:14px 0 6px">Who to include</div>'
-    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="confirmed" checked> Confirmed crew only</label>'
-    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="rostered"> All rostered (excludes declined &amp; no-shows)</label>'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="confirmed"'+(d.who==='confirmed'?' checked':'')+'> Confirmed crew only</label>'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer"><input type="radio" name="cl-who" value="rostered"'+(d.who==='rostered'?' checked':'')+'> All rostered (excludes declined &amp; no-shows)</label>'
+    + '<div style="font-size:10px;color:var(--muted);padding-top:12px;font-style:italic">Your selections are remembered for next time on this Mac.</div>'
     + '<div id="cl-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
     + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
@@ -9794,6 +9875,13 @@ async function crewListGenerate(bookingId){
     who:   (document.querySelector('input[name="cl-who"]:checked') || {}).value || 'confirmed'
   };
   const status = document.getElementById('cl-status');
+
+  // Remember these choices for next time. Saved BEFORE the fetch, so the
+  // preference sticks even if the build then fails — the operator's intent
+  // doesn't depend on whether SmartStaff answered. A storage failure is
+  // ignored on purpose: not saving a preference must never block the list.
+  goatPrefs.set('crewList', 'lastUsed', opts);
+
   if(status){ status.style.color='var(--muted)'; status.textContent='Building crew lists…'; }
 
   // Open the tab NOW, synchronously inside the click, so the browser doesn't
