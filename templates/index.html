@@ -1870,6 +1870,10 @@ window._cohort = 'admin';
 // test copy, not prod. Default to prod until whoami resolves.
 window._ssBase = 'https://smartstaffsolutions.com';
 function ssUrl(path){ return (window._ssBase || 'https://smartstaffsolutions.com') + path; }
+// Crew Hub (the Next.js portal at crew.gigpower.com). Same shape as ssUrl so a
+// test instance can be pointed at by setting window._hubBase. app.py hardcodes
+// the same host for the push webhooks (GP_PUSH_URL and friends).
+function hubUrl(path){ return (window._hubBase || 'https://crew.gigpower.com') + path; }
 // Cohorts with leadership-equivalent access IN THE GOAT (read-only, all-crew
 // views). operations == leadership here; the Gig Power website maps the same
 // values to different privileges. Single source so a new leadership-class
@@ -11212,6 +11216,7 @@ function renderBookingDialog(bookingId, d, cached){
         ? entityBtn('✎ Edit', "openBookingEditForm('"+bookingId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
     + entityBtn('📋 Crew Lists', "openCrewLists('"+bookingId+"')")
+    + entityBtn('💬 Crew Notes', "openCrewNotes('"+bookingId+"')", {title:'Post notes for crew in the Crew Hub'})
     + entityBtn('📥 Import Times', "openTimesImport('"+bookingId+"')")
     + entityBtn('📊 Generate Google Sheet', "generateGoogleSheet('"+bookingId+"')")
     + entityBtn('Close', 'closeEntityModal()');
@@ -13040,6 +13045,18 @@ function toggleSchedBooking(bid){
       } catch(e){ renderCallStatusBadge(el, {confirmed:0,waiting:0,declined:0,required:0,crew:[]}, null); }
     });
   }
+}
+
+// Crew Notes live in the Crew Hub, not here — ops edit call notes in this
+// dialog but compose CREW-facing notes in the portal, so this closes the
+// context switch. Deliberately a WIDER gate than the admin-only buttons
+// alongside it: crew notes are posted by operations and viewed by leadership,
+// so it uses isReadOnlyCohort (the existing leadership-class helper) rather
+// than the _cohort !== 'admin' test the neighbours use. Not an oversight.
+function openCrewNotes(bookingId){
+  if(!bookingId) return;
+  if(window._cohort !== 'admin' && !window.isReadOnlyCohort()) return;
+  window.open(hubUrl('/leadership/schedule?booking=' + encodeURIComponent(bookingId)), '_blank');
 }
 
 function openSmartStaffBooking(bookingId){
