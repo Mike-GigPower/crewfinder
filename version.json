@@ -1,6 +1,6 @@
 {
-  "version": "4.17.1",
+  "version": "4.18.0",
   "release_date": "2026-08-03",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.17.1/TheGOAT.dmg",
-  "release_notes": "Fixes Crew Finder search failing at venues with a controlled induction, and Manage Inductions showing an empty catalogue."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.18.0/TheGOAT.dmg",
+  "release_notes": "Adds a Crew Notes button to the booking dialog, opening that booking in the Crew Hub where notes for crew are posted. The existing Notes field is unchanged and stays operations-only."
 }
