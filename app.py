@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.17.0"
+APP_VERSION    = "4.17.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1609,6 +1609,12 @@ def induction_status_for_venue(inductions, venue_code):
     if not keywords:
         return None, ""
 
+    # SmartStaff sends [] (not {}) for crew with no inductions — PHP encodes an
+    # empty array as a JSON list. Ingestion normalises it, but crew_cache.json
+    # written by v4.17.0 already holds [] for those crew, so guard here too.
+    if not isinstance(inductions, dict):
+        return None, ""
+
     for venue_name, data in inductions.items():
         vl = venue_name.lower()
         if not any(k in vl for k in keywords):
@@ -2475,7 +2481,7 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "paygradeID": int(c.get("paygradeID") or 0),
             "active":     int(c.get("active") or 0),
             "groups":     c.get("groups", []) or [],
-            "inductions": c.get("inductions", {}),
+            "inductions": c.get("inductions") or {},
             "ein":        c.get("ein") or c.get("id"),  # prefer endpoint EIN; fall back to userID
             "postcode":   str(c.get("postcode") or "").strip(),
             "notes":      c.get("notes") or "",          # users.notes — for the name-hover card
