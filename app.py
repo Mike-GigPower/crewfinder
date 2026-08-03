@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.16.0"
+APP_VERSION    = "4.17.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -914,8 +914,6 @@ def _compute_induction_status(inductions):
     existed a few hundred lines below; now it is actually true."""
     venue_status = {}
     for venue_name, ind_data in (inductions or {}).items():
-        if venue_name.strip().lower() in INDUCTION_EXCLUDE:
-            continue
         if isinstance(ind_data, str):
             status, completed = ind_data, ""
         else:
@@ -1128,19 +1126,6 @@ INDUCTION_VENUE_MAP = {
 # Matches against lowercase venue name from SmartStaff
 INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne"}
 
-# Induction labels THE GOAT no longer monitors. SmartStaff still stores them
-# per-crew; we strip them at ingestion so they never reach the cache, the
-# Induction Checker, the Crew Finder, or the GOAT assistant, and also guard the
-# status computation for the one path that reads live (uncached) data. This is
-# "stop monitoring", not "delete" — the SmartStaff records are untouched.
-# Compared case-insensitively after trimming.
-INDUCTION_EXCLUDE = {"vaccination status"}
-
-def _filter_inductions(inductions):
-    """Drop INDUCTION_EXCLUDE labels from a {venue: {...}} inductions dict."""
-    return {k: v for k, v in (inductions or {}).items()
-            if k.strip().lower() not in INDUCTION_EXCLUDE}
-
 # ─── INDUCTION CATALOGUE (Phase 1b) ───────────────────────────────────────────
 # Validity policy lives in SmartStaff MySQL (venue_induction_catalogue +
 # venue_induction_covers) and is read through get-induction-catalogue.php, since
@@ -1227,6 +1212,19 @@ def load_induction_catalogue(ss=None):
         if failed is None:
             app.logger.warning(f"induction catalogue fetch failed: {e}")
         return cached
+
+
+def _invalidate_induction_catalogue():
+    """Drop the cached catalogue so the next read re-fetches from SmartStaff.
+
+    Called after every successful catalogue write/delete from the admin editor:
+    without it, an edit wouldn't reach the Induction Checker / Crew Finder until
+    the 15-minute TTL lapsed. Clears failed_at too so a prior negative-cache
+    window can't suppress the immediate re-fetch."""
+    with _induction_catalogue_lock:
+        _induction_catalogue_cache["data"]       = None
+        _induction_catalogue_cache["fetched_at"] = None
+        _induction_catalogue_cache["failed_at"]  = None
 
 
 def _induction_validity_for_label(label):
@@ -1614,11 +1612,6 @@ def induction_status_for_venue(inductions, venue_code):
     for venue_name, data in inductions.items():
         vl = venue_name.lower()
         if not any(k in vl for k in keywords):
-            continue
-        if vl.strip() in INDUCTION_EXCLUDE:
-            # Match _compute_induction_status. Currently inert (no
-            # INDUCTION_VENUE_MAP keyword matches an excluded label), but the two
-            # paths should not differ on which labels they honour.
             continue
 
         # Handle both old cache format (string) and new (dict)
@@ -2157,7 +2150,7 @@ def scrape_crew_inductions(ss, crew_id):
             if venue_name and status_text in ("Complete", "Incomplete", "Expired", "Expiring Soon"):
                 inductions[venue_name] = {"status": status_text, "completed": completed}
 
-    return _filter_inductions(inductions)
+    return inductions
 
 def get_crew_shifts(ss, crew_id, today):
     """DEPRECATED (Crew Finder migration): superseded by fetch_shifts_bulk /
@@ -2482,7 +2475,7 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "paygradeID": int(c.get("paygradeID") or 0),
             "active":     int(c.get("active") or 0),
             "groups":     c.get("groups", []) or [],
-            "inductions": _filter_inductions(c.get("inductions", {})),
+            "inductions": c.get("inductions", {}),
             "ein":        c.get("ein") or c.get("id"),  # prefer endpoint EIN; fall back to userID
             "postcode":   str(c.get("postcode") or "").strip(),
             "notes":      c.get("notes") or "",          # users.notes — for the name-hover card
@@ -5760,7 +5753,6 @@ def api_inductions():
         venue_name
         for data in cache.values()
         for venue_name in data.get("inductions", {})
-        if venue_name.strip().lower() not in INDUCTION_EXCLUDE
     })
 
     result = []
@@ -9798,6 +9790,201 @@ def api_admin_delete_venue(venue_id):
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
     data, status = ss_delete_venue(ss, venue_id)
+    return jsonify(data), status
+
+
+# ── Manage Inductions (catalogue editor) ─────────────────────────────────────
+# The induction catalogue (venue_induction_catalogue + venue_induction_covers)
+# behind get/save/delete-induction-catalogue.php, edited by admins. Reads reuse
+# the same admin session as the venue endpoints.
+#
+# CRITICAL divergence from the venue helpers: save/delete do NOT flatten non-200
+# into an error string. The PHP returns meaningful 409s the UI must act on —
+#   save:   {"error":"venue already assigned","conflicts":[{venue_id,title}]}
+#           {"error":"code in use"}
+#   delete: {"error":"in use","count":N}
+# — so ss_save_induction / ss_delete_induction forward the PHP status + parsed
+# body verbatim (like ss_delete_venue / ss_delete_customer), and the routes
+# jsonify(data), status straight through so the conflict reaches the browser
+# intact instead of collapsing to a 502. The venue multi-select reuses the
+# existing list-venues.php route (api_admin_venue_list) — no new list route here.
+
+def ss_induction_list(ss):
+    """Full catalogue via get-induction-catalogue.php. Returns (list, error).
+    Each row carries venue_ids so the route can derive covered_count. Reads are
+    goat_can_read_all()-gated PHP-side; the admin session satisfies that."""
+    url = f"{BASE_URL}/ajax/crew/get-induction-catalogue.php"
+    try:
+        resp = ss.get(url, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return (data.get("inductions") or []), None
+
+
+def ss_save_induction(ss, payload):
+    """Insert / update / preview via save-induction-catalogue.php (form-encoded,
+    so the endpoint's $_POST reads it). Returns (data, status, error): a
+    transport failure sets error (data None, status 502); otherwise the PHP's
+    JSON body + status propagate verbatim, so a 200 write, a 200 preview, a 409
+    conflict/code-in-use or a 400 all reach the caller intact rather than
+    collapsing to a generic error string."""
+    url = f"{BASE_URL}/ajax/crew/save-induction-catalogue.php"
+    try:
+        resp = ss.post(url, data=dict(payload or {}), timeout=60)
+    except Exception as e:
+        return None, 502, f"request failed: {e}"
+    try:
+        data = resp.json()
+    except Exception:
+        detail = (resp.text or "")[:200]
+        return None, (resp.status_code if resp.status_code >= 400 else 502), (detail or f"HTTP {resp.status_code}")
+    return data, resp.status_code, None
+
+
+def ss_delete_induction(ss, cat_id):
+    """Guarded delete via delete-induction-catalogue.php. Returns (data, status,
+    error): the 409 in-use guard ({"error":"in use","count":N}) must reach the
+    UI as a block, so the PHP status + parsed body are forwarded verbatim rather
+    than flattened."""
+    url = f"{BASE_URL}/ajax/crew/delete-induction-catalogue.php"
+    try:
+        resp = ss.post(url, data={"id": int(cat_id)}, timeout=60)
+    except Exception as e:
+        return None, 502, f"request failed: {e}"
+    try:
+        data = resp.json()
+    except Exception:
+        detail = (resp.text or "")[:200]
+        return None, (resp.status_code if resp.status_code >= 400 else 502), (detail or f"HTTP {resp.status_code}")
+    return data, resp.status_code, None
+
+
+@app.route("/api/admin/induction-list")
+@require_cohort("admin")
+def api_admin_induction_list():
+    """Catalogue list for the Manage Inductions UI. Each row gets covered_count
+    (number of venues it covers) alongside the raw catalogue fields."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    rows, err = ss_induction_list(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    for r in rows:
+        r["covered_count"] = len(r.get("venue_ids") or [])
+    return jsonify({"inductions": rows})
+
+
+@app.route("/api/admin/induction/<cat_id>")
+@require_cohort("admin")
+def api_admin_get_induction(cat_id):
+    """One catalogue row's detail, to pre-fill the admin edit form. There is no
+    separate PHP read endpoint — filter the list for this id."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        want = int(cat_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad id"}), 400
+    rows, err = ss_induction_list(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    for r in rows:
+        if int(r.get("id") or 0) == want:
+            r["covered_count"] = len(r.get("venue_ids") or [])
+            return jsonify(r)
+    return jsonify({"error": "not found"}), 404
+
+
+@app.route("/api/admin/induction/<cat_id>", methods=["POST"])
+@require_cohort("admin")
+def api_admin_save_induction(cat_id):
+    """Insert / update / preview one catalogue row. cat_id == "new" -> id=0
+    (insert). Forwards save-induction-catalogue.php's JSON + status straight
+    through, so a 409 (venue already assigned / code in use), a 400, or a 200
+    preview all reach the browser intact. On a real 200 write (not a preview),
+    invalidate the catalogue cache so the edit shows in the Checker / Crew Finder
+    immediately rather than after the 15-minute TTL."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(silent=True)
+    src  = body if isinstance(body, dict) else request.form
+
+    fields = ("code", "title", "validity_months", "warn_days", "show_in_checker",
+              "published", "crew_note", "ops_note", "links", "match_keywords",
+              "sort_order", "venue_ids", "preview")
+    payload = {}
+    for k in fields:
+        if k not in src:
+            continue
+        v = src.get(k)
+        if v is None:
+            continue
+        # Normalise JSON-body shapes to what the PHP $_POST reader expects. A
+        # form submission already sends strings, so these branches only fire on
+        # the JSON path. venue_ids MUST become a comma string: requests would
+        # encode a Python list as repeated venue_ids= (no []), which PHP collapses
+        # to the last value — the PHP's explode(',', ...) path is the safe one.
+        if k == "venue_ids" and isinstance(v, (list, tuple)):
+            v = ",".join(str(int(x)) for x in v if str(x).strip() != "")
+        elif k == "match_keywords" and isinstance(v, (list, tuple)):
+            v = ",".join(str(x).strip() for x in v if str(x).strip() != "")
+        elif k == "links" and not isinstance(v, str):
+            v = json.dumps(v)
+        payload[k] = v
+
+    if str(cat_id) == "new":
+        payload["id"] = 0
+    else:
+        try:
+            payload["id"] = int(cat_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "bad id"}), 400
+
+    data, status, err = ss_save_induction(ss, payload)
+    if err:
+        return jsonify({"error": err}), status
+    is_preview = str(payload.get("preview", "")).strip().lower() in ("1", "true", "on")
+    if status == 200 and not is_preview:
+        _invalidate_induction_catalogue()
+    return jsonify(data), status
+
+
+@app.route("/api/admin/induction/<cat_id>/delete", methods=["POST"])
+@require_cohort("admin")
+def api_admin_delete_induction(cat_id):
+    """Guarded delete of one catalogue row. Forwards delete-induction-
+    catalogue.php's JSON + status, so a 409 in-use ({"error":"in use",
+    "count":N}) reaches the UI as a block instead of a 502. On a 200 success,
+    invalidate the catalogue cache."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        cid = int(cat_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad id"}), 400
+    data, status, err = ss_delete_induction(ss, cid)
+    if err:
+        return jsonify({"error": err}), status
+    if status == 200:
+        _invalidate_induction_catalogue()
     return jsonify(data), status
 
 

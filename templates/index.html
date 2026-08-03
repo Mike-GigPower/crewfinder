@@ -1731,6 +1731,13 @@ a.recruit-action{text-decoration:none;display:inline-block}
             <div class="admin-card-desc">Search, view, create and edit contact records.</div>
           </div>
         </button>
+        <button class="admin-card" onclick="adminInductionList()">
+          <div class="admin-card-icon">🎫</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Manage Inductions</div>
+            <div class="admin-card-desc">Define venue induction validity, links and coverage.</div>
+          </div>
+        </button>
       </div>
 
       <div class="admin-hub-section">Access</div>
@@ -8202,6 +8209,476 @@ async function doDeleteVenue(){
   }catch(e){
     if(err) err.textContent = e.message;
     if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+  }
+}
+
+// ── Manage Inductions (list → click-row → edit modal, with create + guarded delete) ──
+// Mirrors the Manage Venue flow exactly, swapping venue → induction-catalogue
+// endpoints. Two divergences the venue editor doesn't have: (1) a validity-change
+// PREVIEW gate — editing validity_months re-dates every crew who hold it, so we
+// POST preview:1 first and confirm the impact before the real write; (2) the 409s
+// carry an actionable body (venue-already-assigned conflicts on save, in-use count
+// on delete) which we surface inline and keep the modal open, exactly like
+// doDeleteVenue's 409 block. Shared helpers (openEntityModal, efRow, efInput,
+// efTextarea, entityBtn, EF_INPUT_STYLE, escapeHtml) are reused, never redefined.
+let _inductionListData      = [];    // rows currently loaded from the server
+let _inductionListPublished = true;  // true = Published set, false = Unpublished set
+
+function adminInductionList(){ openInductionListModal(true); }
+
+async function openInductionListModal(published){
+  _inductionListPublished = (published !== false);
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Manage Inductions';
+  document.getElementById('entity-modal-sub').textContent   = 'Define venue induction validity, links and coverage';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-body').innerHTML =
+      _inductionListControls()
+    + '<div id="ind-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadInductionList();
+}
+
+function _inductionListControls(){
+  var seg = function(label, isPub){
+    var on = (isPub === _inductionListPublished);
+    return '<button class="btn-logout" onclick="_inductionListSetPublished('+(isPub?'true':'false')+')" '
+      + 'style="'+(on?'border-color:var(--accent);color:var(--accent)':'')+'">'+label+'</button>';
+  };
+  return '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%;margin-bottom:10px" onclick="openInductionEdit(\'new\')">+ New induction</button>'
+    + '<div id="ind-list-flash"></div>'
+    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+    + '<input id="ind-list-search" oninput="_renderInductionList()" placeholder="Search inductions…" style="'+EF_INPUT_STYLE+';flex:1">'
+    + seg('Published', true)
+    + seg('Unpublished', false)
+    + '</div>'
+    + '<div id="ind-list-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>';
+}
+
+async function _inductionListSetPublished(published){
+  if(_inductionListPublished === published) return;
+  _inductionListPublished = published;
+  document.getElementById('entity-modal-body').innerHTML =
+      _inductionListControls()
+    + '<div id="ind-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadInductionList();
+}
+
+async function _loadInductionList(){
+  try{
+    var r = await fetch('/api/admin/induction-list');
+    var d = await r.json();
+    if(d.error) throw new Error(d.error);
+    _inductionListData = d.inductions || [];
+  }catch(e){
+    var rows = document.getElementById('ind-list-rows');
+    if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load inductions: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  _renderInductionList();
+}
+
+function _renderInductionList(){
+  var box = document.getElementById('ind-list-search');
+  var q = box ? box.value : '';
+  var needle = q.toLowerCase().trim();
+
+  var rows = _inductionListData.filter(function(v){
+    return String(v.published) === (_inductionListPublished ? '1' : '0');
+  });
+  if(needle){
+    rows = rows.filter(function(v){
+      return ((v.title||'')+' '+(v.code||'')).toLowerCase().indexOf(needle) >= 0;
+    });
+  }
+  rows.sort(function(a,b){
+    var sa = parseInt(a.sort_order,10) || 0, sb = parseInt(b.sort_order,10) || 0;
+    if(sa !== sb) return sa - sb;
+    return (a.title||'').toLowerCase() < (b.title||'').toLowerCase() ? -1 : 1;
+  });
+
+  var total = _inductionListData.filter(function(v){
+    return String(v.published) === (_inductionListPublished ? '1' : '0');
+  }).length;
+  var cnt = document.getElementById('ind-list-count');
+  if(cnt) cnt.textContent = rows.length + ' of ' + total + ' shown';
+
+  // one-shot success banner set by a save/delete, cleared as soon as it renders
+  var flash = document.getElementById('ind-list-flash');
+  if(flash){
+    if(window._inductionFlash){
+      flash.innerHTML = '<div style="border:1px solid var(--accent);border-radius:5px;background:rgba(212,175,55,0.08);color:var(--accent);font-size:12px;padding:8px 11px;margin-bottom:10px">'+escapeHtml(window._inductionFlash)+'</div>';
+      window._inductionFlash = '';
+    } else {
+      flash.innerHTML = '';
+    }
+  }
+
+  var chip = function(label){
+    return '<span style="font-size:10px;color:var(--accent);border:1px solid var(--border-gold);border-radius:3px;padding:1px 5px;margin-left:6px">'+label+'</span>';
+  };
+
+  var html = rows.length
+    ? rows.map(function(v){
+        var covered = (v.covered_count != null ? v.covered_count : (v.venue_ids||[]).length);
+        var meta = covered + ' venue' + (covered===1?'':'s') + ' · ' + (v.validity_months||0) + ' mo';
+        var chips = (String(v.published)==='1' ? chip('Published') : '')
+                  + (String(v.show_in_checker)==='1' ? chip('In Checker') : '');
+        return '<div onclick="openInductionEdit(\''+String(v.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="flex:1;min-width:0">'
+            + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(v.title||'')+chips+'</div>'
+            + '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(meta)+'</div>'
+          + '</div>'
+          + '<span style="color:var(--muted);font-size:14px">›</span>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No inductions'+(needle?' match “'+escapeHtml(q)+'”':' in this set')+'.</div>';
+
+  var target = document.getElementById('ind-list-rows');
+  if(target) target.innerHTML = html;
+}
+
+async function openInductionEdit(id){
+  openEntityModal();
+  var isNew = (String(id) === 'new');
+  document.getElementById('entity-modal-title').textContent = isNew ? 'New induction' : 'Edit induction';
+  document.getElementById('entity-modal-sub').textContent   = '';
+  document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
+  document.getElementById('entity-modal-actions').innerHTML  = '';
+
+  // Load the row detail (edit) and the venue picker (both) up front.
+  var v = {};
+  try{
+    if(!isNew){
+      var r = await fetch('/api/admin/induction/'+encodeURIComponent(id));
+      v = await r.json();
+      if(!r.ok || v.error) throw new Error(v.error || ('HTTP '+r.status));
+    }
+    var vr = await fetch('/api/admin/venue-list');   // existing route, {venues:[{id,name,active}]}
+    var vd = await vr.json();
+    if(vd.error) throw new Error(vd.error);
+    window._indVenues = (vd.venues || []).filter(function(x){ return String(x.active) === '1'; });
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load induction: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close', 'openInductionListModal(_inductionListPublished)');
+    return;
+  }
+
+  window._inductionEditId    = isNew ? 'new' : String(v.id);
+  window._inductionEditIsNew = isNew;
+  window._inductionEditTitle = v.title || '';
+  // Loaded validity drives the preview gate: only re-date when it actually changes.
+  window._indLoadedValidity  = isNew ? null : (parseInt(v.validity_months,10) || 0);
+  if(!isNew) document.getElementById('entity-modal-title').textContent = (v.title || 'Edit induction');
+
+  // ---- Code: editable on new (uppercased on input), READ-ONLY on edit ----
+  // Set-once (Decision 4): rewriting it would orphan the onboarding/convert path.
+  var codeField = isNew
+    ? '<input id="ind-code" type="text" oninput="this.value=this.value.toUpperCase()" value="" style="'+EF_INPUT_STYLE+'">'
+    : '<div style="font-size:12px;color:var(--text);padding:7px 0;font-family:\'Share Tech Mono\',monospace">'+escapeHtml(v.code||'')+'</div>'
+      + '<div style="font-size:10px;color:var(--muted)">Code is set when the induction is created and can’t be changed.</div>';
+
+  // ---- Covered venues: active-only checklist, pre-checked from venue_ids ----
+  var checkedIds = {};
+  (v.venue_ids || []).forEach(function(id){ checkedIds[String(id)] = true; });
+  var venueRows = window._indVenues.length
+    ? window._indVenues.map(function(x){
+        var on = checkedIds[String(x.id)] ? ' checked' : '';
+        return '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);cursor:pointer;padding:3px 0">'
+          + '<input type="checkbox" class="ind-venue-chk" value="'+x.id+'"'+on+'> '+escapeHtml(x.name||'')+'</label>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:11px">No active venues.</div>';
+  var venuePicker = '<div style="max-height:22vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px 9px">'+venueRows+'</div>';
+
+  // ---- Validity: show years when the stored months divide evenly ----
+  var vm = isNew ? '' : (parseInt(v.validity_months,10) || 0);
+  var valNum = '', valUnit = 'months';
+  if(vm && vm % 12 === 0){ valNum = vm/12; valUnit = 'years'; }
+  else if(vm){ valNum = vm; valUnit = 'months'; }
+  var validityField = '<div style="display:flex;gap:8px">'
+    + '<input id="ind-validity" type="number" min="0" value="'+valNum+'" style="'+EF_INPUT_STYLE+';flex:1">'
+    + '<select id="ind-validity-unit" style="'+EF_INPUT_STYLE+';width:auto">'
+    +   '<option value="months"'+(valUnit==='months'?' selected':'')+'>months</option>'
+    +   '<option value="years"'+(valUnit==='years'?' selected':'')+'>years</option>'
+    + '</select></div>';
+
+  // ---- Warn-from: blank = inherit the 14-day default (submit '', never 14) ----
+  var warnVal = (!isNew && v.warn_days != null && String(v.warn_days) !== '') ? String(v.warn_days) : '';
+  var warnField = '<input id="ind-warn" type="number" min="0" value="'+escapeHtml(warnVal)+'" placeholder="14 (default)" style="'+EF_INPUT_STYLE+'">'
+    + '<div style="font-size:10px;color:var(--muted)">Days before expiry to flag as Expiring Soon. Leave blank to use the 14-day default.</div>';
+
+  // ---- Ops note: internal, visually distinct muted panel ----
+  var opsPanel = '<div style="background:var(--surface2);border:1px dashed var(--border);border-radius:4px;padding:8px 9px">'
+    + '<div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:5px">Internal — not shown to crew</div>'
+    + efTextarea('ind-ops-note', v.ops_note) + '</div>';
+
+  // ---- Links: repeatable rows, seeded from v.links (JSON string or array) ----
+  var seed = [];
+  try{
+    var raw = v.links;
+    if(typeof raw === 'string' && raw.trim()) raw = JSON.parse(raw);
+    if(Array.isArray(raw)) seed = raw;
+  }catch(e){ seed = []; }
+  window._indLinks = seed.map(function(l){
+    l = l || {};
+    return { kind: (l.kind || 'register'), label: (l.label || ''), url: (l.url || '') };
+  });
+
+  var checkbox = function(cid, label, on){
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);cursor:pointer;padding-top:7px">'
+      + '<input type="checkbox" id="'+cid+'"'+(on?' checked':'')+'> '+label+'</label>';
+  };
+
+  var kw = Array.isArray(v.match_keywords) ? v.match_keywords.join(', ') : (v.match_keywords || '');
+  var matching = '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--muted)">▸ Matching (advanced)</summary>'
+    + '<div style="padding-top:8px">'
+    + efTextarea('ind-keywords', kw)
+    + '<div style="font-size:10px;color:var(--muted);padding-top:4px">Comma-separated. A single keyword can’t contain a comma.</div>'
+    + '</div></details>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Title*',          efInput('ind-title', v.title))
+    + efRow('Code'+(isNew?'*':''), codeField)
+    + efRow('Covered venues', venuePicker)
+    + efRow('Validity',       validityField)
+    + efRow('Warn from',      warnField)
+    + efRow('Crew note',      efTextarea('ind-crew-note', v.crew_note))
+    + efRow('Ops note',       opsPanel)
+    + efRow('Links',          '<div id="ind-links-rows"></div>'
+        + '<button type="button" onclick="_indAddLinkRow()" class="btn-logout" style="margin-top:6px;font-size:11px">+ Add link</button>')
+    + efRow('',               checkbox('ind-show-checker', 'Show on Induction Checker', String(v.show_in_checker)==='1'))
+    + efRow('',               checkbox('ind-published', 'Publish to Crew Hub', String(v.published)==='1'))
+    + efRow('Sort order',     efInput('ind-sort', (v.sort_order != null ? v.sort_order : ''), 'number'))
+    + efRow('',               matching)
+    + '<div id="ind-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>'
+    + (isNew ? '' : '<div id="ind-delete-zone" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">' + _indDeleteBtnHtml() + '</div>');
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel', 'openInductionListModal(_inductionListPublished)')
+    + entityBtn('Save changes', "submitInductionEdit('"+String(window._inductionEditId)+"')", {primary:true, id:'ind-submit'});
+
+  _indRenderLinks();
+}
+
+// ---- Links: state in window._indLinks, container re-rendered on every change ----
+var IND_LINK_KINDS = ['register','sitemap','info','parking','contact'];
+
+function _indRenderLinks(){
+  var box = document.getElementById('ind-links-rows');
+  if(!box) return;
+  var links = window._indLinks || [];
+  if(!links.length){
+    box.innerHTML = '<div style="font-size:11px;color:var(--muted)">No links yet.</div>';
+    return;
+  }
+  box.innerHTML = links.map(function(l, i){
+    var opts = IND_LINK_KINDS.map(function(k){
+      return '<option value="'+k+'"'+(k===l.kind?' selected':'')+'>'+k+'</option>';
+    }).join('');
+    return '<div style="display:flex;gap:6px;align-items:center;padding-bottom:6px">'
+      + '<select onchange="_indLinkField('+i+',\'kind\',this.value)" style="'+EF_INPUT_STYLE+';width:auto">'+opts+'</select>'
+      + '<input value="'+escapeHtml(l.label)+'" oninput="_indLinkField('+i+',\'label\',this.value)" placeholder="Label" style="'+EF_INPUT_STYLE+';flex:1">'
+      + '<input value="'+escapeHtml(l.url)+'" oninput="_indLinkField('+i+',\'url\',this.value)" placeholder="https://…" style="'+EF_INPUT_STYLE+';flex:2">'
+      + '<button type="button" onclick="_indRemoveLinkRow('+i+')" title="Remove" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 4px">✕</button>'
+      + '</div>';
+  }).join('');
+}
+
+function _indLinkField(i, field, value){
+  if(window._indLinks && window._indLinks[i]) window._indLinks[i][field] = value;
+}
+function _indAddLinkRow(){
+  if(!window._indLinks) window._indLinks = [];
+  window._indLinks.push({ kind:'register', label:'', url:'' });
+  _indRenderLinks();
+}
+function _indRemoveLinkRow(i){
+  if(window._indLinks) window._indLinks.splice(i, 1);
+  _indRenderLinks();
+}
+
+// Collect the form into the payload the Flask route expects (venue_ids as an
+// int array; links as an array; match_keywords as an array). Shared by submit,
+// the preview probe, and the unpublish-instead action so they never diverge.
+function _indCollectPayload(){
+  var val = function(eid){ var el=document.getElementById(eid); return el ? String(el.value).trim() : ''; };
+  var chk = function(eid){ var el=document.getElementById(eid); return (el && el.checked) ? '1' : '0'; };
+
+  var num  = parseFloat(val('ind-validity'));
+  var unit = (document.getElementById('ind-validity-unit')||{value:'months'}).value;
+  var months = isNaN(num) ? '' : String(Math.round(num * (unit === 'years' ? 12 : 1)));
+
+  var warnRaw = val('ind-warn');   // '' => inherit default (PHP maps '' -> NULL)
+
+  var venueIds = Array.prototype.slice.call(document.querySelectorAll('.ind-venue-chk:checked'))
+    .map(function(c){ return parseInt(c.value, 10); })
+    .filter(function(n){ return !isNaN(n); });
+
+  var links = (window._indLinks || [])
+    .filter(function(l){ return (l.label||'').trim() || (l.url||'').trim(); })
+    .map(function(l){ return { kind: l.kind||'register', label: (l.label||'').trim(), url: (l.url||'').trim() }; });
+
+  var kw = val('ind-keywords').split(',').map(function(s){ return s.trim().toLowerCase(); }).filter(function(s){ return s; });
+
+  var payload = {
+    title:           val('ind-title'),
+    validity_months: months,
+    warn_days:       warnRaw,
+    show_in_checker: chk('ind-show-checker'),
+    published:       chk('ind-published'),
+    crew_note:       val('ind-crew-note'),
+    ops_note:        val('ind-ops-note'),
+    links:           links,
+    match_keywords:  kw,
+    sort_order:      val('ind-sort'),
+    venue_ids:       venueIds
+  };
+  if(window._inductionEditIsNew) payload.code = val('ind-code');   // code is set-once, insert only
+  return payload;
+}
+
+async function submitInductionEdit(id){
+  var err = document.getElementById('ind-error');
+  var btn = document.getElementById('ind-submit');
+  if(err) err.textContent = '';
+  var isNew = (String(id) === 'new');
+
+  var payload = _indCollectPayload();
+  if(!payload.title){ if(err) err.textContent = 'Title is required.'; return; }
+  if(isNew && !payload.code){ if(err) err.textContent = 'Code is required for a new induction.'; return; }
+
+  // ---- Validity-change PREVIEW gate (edit + changed validity only) ----
+  // Re-dating shifts every holder's expiry; confirm the impact before writing.
+  if(!isNew){
+    var newMonths = parseInt(payload.validity_months, 10);
+    if(!isNaN(newMonths) && newMonths !== window._indLoadedValidity){
+      if(btn){ btn.disabled = true; btn.textContent = 'Checking…'; }
+      try{
+        var pr = await fetch('/api/admin/induction/'+encodeURIComponent(id), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(Object.assign({}, payload, { preview: '1' }))
+        });
+        var pd = await pr.json();
+        if(!pr.ok || pd.error) throw new Error(pd.error || ('HTTP '+pr.status));
+        var msg = 'Changing “'+(window._inductionEditTitle||'this induction')+'” to '+newMonths+' months re-dates '
+          + (pd.total||0)+' crew: '+(pd.to_expired||0)+' → Expired, '+(pd.to_expiring||0)+' → Expiring Soon.\n\n'
+          + 'Affected crew won’t be re-notified for this change.\n\nApply this change?';
+        if(!window.confirm(msg)){
+          if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+          return;   // Cancel → abort, no write
+        }
+      }catch(e){
+        if(err) err.textContent = 'Preview failed: '+e.message;
+        if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+        return;
+      }
+    }
+  }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/admin/induction/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    // 409s carry an actionable body — surface it and keep the modal open.
+    if(r.status === 409){
+      if(d.conflicts && d.conflicts.length){
+        var lines = d.conflicts.map(function(c){
+          return '• Venue #'+c.venue_id+' is already under “'+(c.title||'another induction')+'”';
+        }).join('\n');
+        if(err) err.textContent = 'Some venues are already assigned:\n'+lines;
+      } else if(d.error === 'code in use'){
+        if(err) err.textContent = 'That code is already in use — choose another.';
+      } else {
+        if(err) err.textContent = d.error || 'Conflict — not saved.';
+      }
+      if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+      return;
+    }
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._inductionFlash = isNew ? 'Induction created.' : 'Saved.';
+    openInductionListModal(_inductionListPublished);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+  }
+}
+
+// ── Delete: quiet last-resort link → inline confirm → guarded POST ──
+// Like doDeleteVenue: understated, and a 409 in-use is a block, not a failure —
+// it nudges toward the reversible Unpublish + off-Checker action instead.
+function _indDeleteBtnHtml(){
+  return '<button onclick="deleteInductionPrompt()" style="background:none;border:none;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer;text-decoration:underline;padding:0">Delete this induction permanently</button>';
+}
+
+function deleteInductionPrompt(){
+  var zone = document.getElementById('ind-delete-zone');
+  if(!zone) return;
+  zone.innerHTML =
+      '<div style="font-size:12px;color:var(--text);padding:2px 0 8px">Delete <b>'+escapeHtml(window._inductionEditTitle||'this induction')+'</b>? This can’t be undone. If any crew have completed it, unpublishing keeps the history instead.</div>'
+    + '<div id="ind-del-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-bottom:6px;white-space:pre-line"></div>'
+    + '<div id="ind-del-actions" style="display:flex;gap:8px;flex-wrap:wrap">'
+    +   entityBtn('Cancel', 'cancelDeleteInduction()')
+    +   '<button id="ind-del-confirm" onclick="doDeleteInduction()" style="background:var(--conflict);border:1px solid var(--conflict);color:#fff;border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer">Confirm delete</button>'
+    + '</div>';
+}
+
+function cancelDeleteInduction(){
+  var zone = document.getElementById('ind-delete-zone');
+  if(zone) zone.innerHTML = _indDeleteBtnHtml();
+}
+
+async function doDeleteInduction(){
+  var id  = window._inductionEditId;
+  var btn = document.getElementById('ind-del-confirm');
+  var err = document.getElementById('ind-del-error');
+  if(err) err.textContent = '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try{
+    var r = await fetch('/api/admin/induction/'+encodeURIComponent(id)+'/delete', {method:'POST'});
+    var d = await r.json();
+    // 409 in-use: crew have completed it. Block the delete, keep the modal open,
+    // and offer the reversible Unpublish + off-Checker action instead.
+    if(r.status === 409){
+      var n = (d.count != null ? d.count : 'Some');
+      if(err) err.textContent = n+' crew have completed this — deleting would drop their history. Set it Unpublished and off the Checker instead?';
+      if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+      var acts = document.getElementById('ind-del-actions');
+      if(acts && !document.getElementById('ind-unpublish-instead')){
+        acts.insertAdjacentHTML('beforeend',
+          '<button id="ind-unpublish-instead" onclick="_indUnpublishInstead()" style="background:var(--surface2);border:1px solid var(--border-gold);color:var(--accent);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer">Unpublish + remove from Checker</button>');
+      }
+      return;
+    }
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._inductionFlash = 'Deleted.';
+    openInductionListModal(_inductionListPublished);   // back to the refreshed list
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+  }
+}
+
+// The safe alternative to a blocked delete: a normal edit that flips published +
+// show_in_checker off, preserving all completion history. Reuses the collect +
+// save path (no preview gate — validity is unchanged).
+async function _indUnpublishInstead(){
+  var id  = window._inductionEditId;
+  var err = document.getElementById('ind-del-error');
+  var btn = document.getElementById('ind-unpublish-instead');
+  if(btn){ btn.disabled = true; btn.textContent = 'Updating…'; }
+  try{
+    var payload = Object.assign({}, _indCollectPayload(), { published: '0', show_in_checker: '0' });
+    var r = await fetch('/api/admin/induction/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._inductionFlash = 'Unpublished and removed from the Checker.';
+    openInductionListModal(_inductionListPublished);
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Unpublish + remove from Checker'; }
   }
 }
 
