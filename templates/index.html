@@ -8224,6 +8224,11 @@ async function doDeleteVenue(){
 let _inductionListData      = [];    // rows currently loaded from the server
 let _inductionListPublished = true;  // true = Published set, false = Unpublished set
 
+// The catalogue endpoint emits published / show_in_checker as real JSON
+// booleans (get-induction-catalogue.php casts them). Older callers and form
+// posts use 1 / '1', so accept every shape rather than String()-comparing.
+function _indFlag(x){ return x === true || x === 1 || x === '1'; }
+
 function adminInductionList(){ openInductionListModal(true); }
 
 async function openInductionListModal(published){
@@ -8283,7 +8288,7 @@ function _renderInductionList(){
   var needle = q.toLowerCase().trim();
 
   var rows = _inductionListData.filter(function(v){
-    return String(v.published) === (_inductionListPublished ? '1' : '0');
+    return _indFlag(v.published) === _inductionListPublished;
   });
   if(needle){
     rows = rows.filter(function(v){
@@ -8297,7 +8302,7 @@ function _renderInductionList(){
   });
 
   var total = _inductionListData.filter(function(v){
-    return String(v.published) === (_inductionListPublished ? '1' : '0');
+    return _indFlag(v.published) === _inductionListPublished;
   }).length;
   var cnt = document.getElementById('ind-list-count');
   if(cnt) cnt.textContent = rows.length + ' of ' + total + ' shown';
@@ -8321,8 +8326,8 @@ function _renderInductionList(){
     ? rows.map(function(v){
         var covered = (v.covered_count != null ? v.covered_count : (v.venue_ids||[]).length);
         var meta = covered + ' venue' + (covered===1?'':'s') + ' · ' + (v.validity_months||0) + ' mo';
-        var chips = (String(v.published)==='1' ? chip('Published') : '')
-                  + (String(v.show_in_checker)==='1' ? chip('In Checker') : '');
+        var chips = (_indFlag(v.published) ? chip('Published') : '')
+                  + (_indFlag(v.show_in_checker) ? chip('In Checker') : '');
         return '<div onclick="openInductionEdit(\''+String(v.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
           + '<div style="flex:1;min-width:0">'
             + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(v.title||'')+chips+'</div>'
@@ -8445,8 +8450,8 @@ async function openInductionEdit(id){
     + efRow('Ops note',       opsPanel)
     + efRow('Links',          '<div id="ind-links-rows"></div>'
         + '<button type="button" onclick="_indAddLinkRow()" class="btn-logout" style="margin-top:6px;font-size:11px">+ Add link</button>')
-    + efRow('',               checkbox('ind-show-checker', 'Show on Induction Checker', String(v.show_in_checker)==='1'))
-    + efRow('',               checkbox('ind-published', 'Publish to Crew Hub', String(v.published)==='1'))
+    + efRow('',               checkbox('ind-show-checker', 'Show on Induction Checker', _indFlag(v.show_in_checker)))
+    + efRow('',               checkbox('ind-published', 'Publish to Crew Hub', _indFlag(v.published)))
     + efRow('Sort order',     efInput('ind-sort', (v.sort_order != null ? v.sort_order : ''), 'number'))
     + efRow('',               matching)
     + '<div id="ind-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>'
