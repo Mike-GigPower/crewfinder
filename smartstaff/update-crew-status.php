@@ -158,7 +158,7 @@
 		$updFields['responded_src'] = $db->sc('ops');
 	}
 
-	$db->update('call_crew_map', $updFields, 'callID=' . $callID . ' AND userID=' . $userID);w_map', array('status' => $db->sc($status)), 'callID=' . $callID . ' AND userID=' . $userID);
+	$db->update('call_crew_map', $updFields, 'callID=' . $callID . ' AND userID=' . $userID);
 
 	$err         = mysql_error();
 	$updAffected = mysql_affected_rows();   /* capture NOW; the calendar call below runs its own queries */
