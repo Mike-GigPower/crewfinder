@@ -142,6 +142,20 @@
 			die('{"error":"ack clear failed: ' . addslashes(mysql_error()) . '"}');
 		}
 
+		/*
+		/* Subsume any pending promotion acknowledgement: answering the timing
+		/* change answers the promotion. Accepting the new time is agreement to
+		/* be on the call; declining flips 5 -> 6 and makes it moot either way.
+		/* Harmless no-op when there is no promo row. Placed AFTER the change
+		/* answer's own error gate and NOT gated itself: the change answer has
+		/* already succeeded and must never 500 over a subsumption.
+		*/
+		mysql_query(
+			'UPDATE call_promo_ack SET acked_at=' . time() . ", acked_src='crew'" .
+			' WHERE callID=' . intval($callID) . ' AND userID=' . intval($userID) .
+			' AND acked_at IS NULL'
+		);
+
 		echo json_encode(array(
 			'ok'            => true,
 			'action'        => 'accept',
@@ -185,6 +199,20 @@
 		http_response_code(500);
 		die('{"error":"ack clear failed: ' . addslashes(mysql_error()) . '"}');
 	}
+
+	/*
+	/* Subsume any pending promotion acknowledgement: answering the timing
+	/* change answers the promotion. Accepting the new time is agreement to
+	/* be on the call; declining flips 5 -> 6 and makes it moot either way.
+	/* Harmless no-op when there is no promo row. Placed AFTER the change
+	/* answer's own error gate and NOT gated itself: the change answer has
+	/* already succeeded and must never 500 over a subsumption.
+	*/
+	mysql_query(
+		'UPDATE call_promo_ack SET acked_at=' . time() . ", acked_src='crew'" .
+		' WHERE callID=' . intval($callID) . ' AND userID=' . intval($userID) .
+		' AND acked_at IS NULL'
+	);
 
 	echo json_encode(array(
 		'ok'            => true,

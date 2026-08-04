@@ -185,6 +185,38 @@
 		$calendarSynced = 1;
 	}
 
+	/* ---- promotion acknowledgement flag ----
+	/*
+	/* A 7 -> 5 promotion is an ops decision the crew member has not answered.
+	/* Flag it so they can Accept/Decline in the Crew Hub, and so ops can see
+	/* who has not responded (the pill in the call dialog).
+	/*
+	/* DELETE-then-INSERT, deliberately NOT the INSERT IGNORE that
+	/* call_change_ack uses. That table preserves the original "was" timing on
+	/* re-edit; here there is nothing to preserve, and a stale ACKNOWLEDGED row
+	/* from an earlier promotion would silently suppress the new flag. Someone
+	/* promoted, declined, re-added and promoted again must be asked again.
+	/*
+	/* Placed AFTER the status write and addToCalendar so a failed promotion
+	/* never leaves an orphan flag. Not gated on affected_rows: re-saving the
+	/* same status changes 0 rows but is not a failure. */
+
+	$promoFlagged = 0;
+
+	if ($prevStatus === 7 && $status === 5)
+	{
+		mysql_query('DELETE FROM call_promo_ack WHERE callID=' . intval($callID) .
+		            ' AND userID=' . intval($userID));
+
+		$db->insert('call_promo_ack', array(
+			'callID'      => $db->sc($callID),
+			'userID'      => $db->sc($userID),
+			'promoted_at' => $db->sc(time())
+		));
+
+		$promoFlagged = (mysql_error() === '') ? 1 : 0;
+	}
+
 	echo json_encode(array(
 		'ok'              => true,
 		'call_id'         => $callID,
@@ -192,6 +224,7 @@
 		'user_id'         => $userID,
 		'status'          => $status,
 		'promoted'        => ($prevStatus === 7 && $status === 5) ? true : false,
+		'promo_flagged'   => $promoFlagged,
 		'calendar_synced' => $calendarSynced,
 		'affected_rows'   => $updAffected,
 	));

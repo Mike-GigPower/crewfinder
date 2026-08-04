@@ -99,7 +99,9 @@
 			cca.prev_start_date AS prev_start_date,
 			cca.prev_start_time AS prev_start_time,
 			cca.prev_est_length AS prev_est_length,
-			cca.changed_at      AS changed_at
+			cca.changed_at      AS changed_at,
+			cpa.promoted_at     AS promoted_at,
+			cpa.acked_at        AS promo_acked_at
 		FROM calendars cal
 		LEFT JOIN calls    c ON c.id  = cal.call
 		LEFT JOIN bookings b ON b.id  = c.bookingID
@@ -107,6 +109,9 @@
 		LEFT JOIN call_change_ack cca
 		       ON cca.callID = cal.call
 		      AND cca.userID = cal.user
+		LEFT JOIN call_promo_ack cpa
+		       ON cpa.callID = cal.call
+		      AND cpa.userID = cal.user
 		WHERE cal.user = $userID
 		  AND cal.start < $end_sql
 		  AND cal.end   > $start_sql
@@ -190,6 +195,17 @@
 				$entry['prev_start']     = date('Y-m-d\TH:i:s', $prevStartTs);
 				$entry['prev_end']       = date('Y-m-d\TH:i:s', $prevEndTs);
 				$entry['changed_at']     = (int) $row->changed_at;
+			}
+
+			/*
+			/* A call_promo_ack row with no acked_at means ops promoted this crew
+			/* member off standby and they have not answered. The portal renders
+			/* Accept/Decline. No match, or already answered -> omit entirely.
+			*/
+			if ($row->promoted_at !== null && $row->promo_acked_at === null)
+			{
+				$entry['promo_pending'] = true;
+				$entry['promoted_at']   = (int) $row->promoted_at;
 			}
 
 			$shifts[] = $entry;

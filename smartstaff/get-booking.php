@@ -174,12 +174,17 @@
 			$crres = mysql_query("SELECT users.id, users.firstname, users.lastname, users.mobile, users.phone,
 			                             users.ein, users.email,
 			                             call_crew_map.status, call_crew_map.is_call_boss,
-			                             cca.id AS change_ack_id
+			                             cca.id AS change_ack_id,
+			                             cpa.promoted_at AS promo_at,
+			                             cpa.acked_at    AS promo_acked_at
 			                      FROM call_crew_map
 			                      LEFT JOIN users ON call_crew_map.userID = users.id
 			                      LEFT JOIN call_change_ack cca
 			                             ON cca.callID = call_crew_map.callID
 			                            AND cca.userID = call_crew_map.userID
+			                      LEFT JOIN call_promo_ack cpa
+			                             ON cpa.callID = call_crew_map.callID
+			                            AND cpa.userID = call_crew_map.userID
 			                      WHERE call_crew_map.callID = " . $callID . "
 			                      ORDER BY users.lastname ASC, users.firstname ASC");
 
@@ -202,6 +207,15 @@
 					*/
 					$changePending = (($st === 5 || $st === 7) && $cr->change_ack_id !== null) ? true : false;
 
+					/*
+					/* Ops promotion badge: an unanswered call_promo_ack row means
+					/* this crew member was promoted off standby and has not
+					/* confirmed. GUARDED to status 5 — a promotion only ever lands
+					/* on 5, and a stale row on someone since declined must not
+					/* render a badge.
+					*/
+					$promoPending = ($st === 5 && $cr->promo_at !== null && $cr->promo_acked_at === null) ? true : false;
+
 					$crew[] = array(
 						'id'             => (int) $cr->id,
 						'name'           => trim($cr->firstname . ' ' . $cr->lastname),
@@ -214,6 +228,7 @@
 						'status'         => $statusStr,
 						'is_call_boss'   => (int) $cr->is_call_boss,
 						'change_pending' => $changePending,
+						'promo_pending'  => $promoPending,
 					);
 				}
 			}
