@@ -1,6 +1,6 @@
 {
-  "version": "4.20.0",
-  "release_date": "2026-08-05",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.20.0/TheGOAT.dmg",
-  "release_notes": "Candidate inductions are now visible in the Recruitment panel, and confirmations show as colour-coded pills so anything outstanding stands out."
+  "version": "4.21.0",
+  "release_date": "2026-08-06",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.21.0/TheGOAT.dmg",
+  "release_notes": "Recruitment now has search and sortable columns, clearer button wording, and status colours that show what needs attention."
 }
