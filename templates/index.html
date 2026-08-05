@@ -9674,7 +9674,9 @@ async function removeCrewFromCall(bookingId, callId, userId, btn){
 // Admin-only "Promote" button. Shown ONLY next to a backup (status 7) crew
 // member. One click confirms them (status 5) via the same status endpoint the
 // dropdown uses -- which also fires addToCalendar -- then reloads the dialog so
-// they show as Confirmed and the button drops away.
+// they show as Confirmed and the button drops away. It also raises a promotion
+// acknowledgement flag (get-booking.php promo_pending) the crew member must
+// answer in Crew Hub, surfaced to ops as the amber pill below.
 function crewPromoteControl(c, bookingId, callId){
   if(window._cohort !== 'admin' || !c.id) return '';
   if(crewStatusInt(c.status) !== 7) return '';
@@ -9684,8 +9686,46 @@ function crewPromoteControl(c, bookingId, callId){
     + 'background:rgba(34,197,94,0.12);border:1px solid #22c55e;border-radius:3px;padding:2px 6px;'
     + 'font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&uarr; Promote</button>';
 }
+// An unanswered promotion: ops moved this crew member off standby into a
+// confirmed slot, and they have not confirmed they can still do it. get-booking.php
+// sets promo_pending, guarded to status 5. Amber because it is a chase-them
+// signal, not a failure — the crew member may simply have no push subscription.
+//
+// SUPPRESSED when change_pending is also set. Both can be true at once (a
+// promoted crew member whose call was then re-timed), but answering the timing
+// change answers the promotion too — respond-to-change.php stamps the promo ack
+// in both branches. Showing two amber pills would imply two outstanding
+// questions when there is only one.
+function crewPromoAckPill(c, bookingId, callId){
+  if(!c.promo_pending || c.change_pending) return '';
+  if(window._cohort !== 'admin' || !c.id) return '';
+  return '<span title="Promoted off standby — has not confirmed they can still work this call. Click to dismiss if you have spoken to them."'
+    + ' onclick="dismissPromoAck(\'' + bookingId + '\',\'' + callId + '\',' + c.id + ',this)"'
+    + ' style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;'
+    + 'padding:2px 6px;white-space:nowrap;margin-left:6px;cursor:pointer">&uarr; promoted — not confirmed</span>';
+}
+// Ops dismissing the promotion pill. CONFIRMED because this is an assertion,
+// not a cosmetic clear: it records acked_src='ops', meaning ops spoke to this
+// crew member and they agreed. A stray click silently removes someone from the
+// chase list, which defeats the entire point of the flag — the person nobody
+// spoke to is exactly the one it exists to surface.
+async function dismissPromoAck(bookingId, callId, userId, el){
+  if(!confirm('Dismiss the promotion flag for this crew member?\n\nOnly do this if you have SPOKEN to them and they confirmed they can still work this call.\n\nThis is recorded as an ops confirmation.')) return;
+  if(el) el.style.opacity = '0.4';
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/promo-ack', {
+      method:'DELETE'
+    });
+    var j = await r.json();
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    openCallDialog(bookingId, callId);
+  }catch(e){
+    if(el) el.style.opacity = '1';
+    alert('Could not dismiss: '+(e.message||e));
+  }
+}
 async function promoteBackup(bookingId, callId, userId, btn){
-  if(!confirm('Promote this backup to Confirmed?\n\nThey will be booked onto the call and added to the calendar.')) return;
+  if(!confirm('Promote this backup to Confirmed?\n\nThey\'ll be booked onto the call, added to the calendar, and asked to confirm.')) return;
   if(btn) btn.disabled = true;
   try{
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {
@@ -9810,7 +9850,8 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // re-confirmed yet — the filling risk ops watch for (get-booking.php sets
         // change_pending, guarded to status 5/7).
         var chg = c.change_pending ? ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>' : '';
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+chg+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId)+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
+        var promo = crewPromoAckPill(c, bookingId, callId);
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId)+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       entityRow('Date',  escapeHtml(d.date_str||'—'))
