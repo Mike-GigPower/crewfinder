@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.19.1"
+APP_VERSION    = "4.20.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4064,7 +4064,7 @@ def api_recruitment_candidate_detail(cand_id):
         print(f"[recruitment] candidate-detail edge function returned {r.status_code}")
         return jsonify({"error": "Recruitment service error"}), 502
     try:
-        return jsonify(r.json())
+        return jsonify(_label_inductions(r.json()))
     except Exception:
         return jsonify({"error": "Bad response from recruitment service"}), 502
 
@@ -4577,6 +4577,31 @@ INDUCTION_CODE_LABELS = {
     "Royal Botanic":     "Royal Botanic Gardens",
     "Forum":             "Forum Melbourne",
 }
+
+
+def _label_inductions(payload):
+    """Add an operator-facing `label` to each induction entry in a candidate-detail
+    payload, resolved from INDUCTION_CODE_LABELS — the same map the convert-to-crew
+    modal renders from, so the detail panel and the convert result always name a
+    venue identically. Purely ADDITIVE: nothing is removed, renamed or reordered.
+    Defensive by design. This sits in the middle of a read-only proxy, so an
+    unexpected shape is returned untouched rather than raising — a display nicety
+    must never be able to break the panel.
+    An entry whose venue_code is missing deliberately gets NO label. That is a real
+    defect, not a cosmetic gap: the same missing code makes convert-to-crew fail to
+    resolve the venue, so the UI flags it rather than papering over it."""
+    if not isinstance(payload, dict):
+        return payload
+    entries = payload.get("inductions")
+    if not isinstance(entries, list):
+        return payload
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        code = str(e.get("venue_code") or "").strip()
+        if code:
+            e["label"] = INDUCTION_CODE_LABELS.get(code, code)
+    return payload
 
 
 def _induction_venue_id_for_code(code, venues):
