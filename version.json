@@ -1,6 +1,6 @@
 {
-  "version": "4.18.0",
-  "release_date": "2026-08-03",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.18.0/TheGOAT.dmg",
-  "release_notes": "Adds a Crew Notes button to the booking dialog, opening that booking in the Crew Hub where notes for crew are posted. The existing Notes field is unchanged and stays operations-only."
+  "version": "4.19.0",
+  "release_date": "2026-08-05",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.19.0/TheGOAT.dmg",
+  "release_notes": "Promoting a backup now asks them to confirm rather than just booking them. Anyone promoted but not yet confirmed shows an amber pill in the call dialog."
 }
