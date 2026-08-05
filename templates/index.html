@@ -819,6 +819,17 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-filter{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;padding:6px 13px;border-radius:20px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
 .recruit-filter:hover{border-color:var(--accent);color:var(--accent)}
 .recruit-filter.active{background:var(--accent);border-color:var(--accent);color:#000}
+/* Search box — narrows the CURRENT pile in the browser (no refetch). Sits between
+   the filter chips and the table. */
+.recruit-search-wrap{position:relative;display:inline-block;margin:0 0 14px}
+.recruit-search{font-family:'Rajdhani',sans-serif;font-size:13px;padding:7px 30px 7px 12px;width:320px;max-width:100%;border-radius:20px;border:1px solid var(--border);background:var(--surface2);color:var(--text)}
+.recruit-search:focus{outline:none;border-color:var(--accent)}
+.recruit-search-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);font-size:16px;line-height:1;cursor:pointer;padding:0 4px}
+.recruit-search-clear:hover{color:var(--accent)}
+/* Cross-pile hint — quiet by design: a signpost when the person being searched
+   for is sitting in a different pile, not an automatic jump. */
+.recruit-crosspile{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);margin:0 0 12px}
+.recruit-crosspile-btn{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;background:none;border:none;color:var(--accent);cursor:pointer;padding:0 0 0 4px;text-decoration:underline}
 /* Current-status pill on each card */
 .recruit-pill{display:inline-block;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 /* Pipeline stages (New → Invited → Booked → Attended → Details in → With EH →
@@ -1701,6 +1712,14 @@ a.recruit-action{text-decoration:none;display:inline-block}
         <button class="recruit-import-btn" onclick="openBookingImport()">📥 Import bookings</button>
       </div>
       <div id="recruit-filters" class="recruit-filters"></div>
+      <div class="recruit-search-wrap">
+        <input type="text" id="recruit-search" class="recruit-search"
+               placeholder="Search name, reference, email or phone…"
+               oninput="setRecruitSearch(this.value)" autocomplete="off">
+        <button class="recruit-search-clear" id="recruit-search-clear"
+                onclick="clearRecruitSearch()" title="Clear search">×</button>
+      </div>
+      <div id="recruit-crosspile" class="recruit-crosspile" style="display:none"></div>
       <div id="recruit-batch" class="recruit-batch" style="display:none"></div>
       <div id="recruit-status" class="recruit-status">Loading applicants…</div>
       <div id="recruit-list" class="recruit-list"></div>
@@ -3761,6 +3780,114 @@ let _recruitRows = [];              // the full fetched list (kept for filtering
 let _recruitFilter = 'applied';     // which pile to show; default = New
 let _recruitSelected = new Set();   // ids ticked for a batch action (by candidate id)
 let _recruitVisibleIds = [];        // ids currently shown (for the header "select all")
+let _recruitSearch = '';            // current search text, lowercased; '' = no search
+let _recruitSortBy  = '';           // '' = natural feed order (newest first)
+let _recruitSortDir = 'asc';
+
+// Re-filter on every keystroke. Everything is already in memory, so no fetch and
+// no debounce — at season volumes (hundreds of rows) this is imperceptible.
+function setRecruitSearch(v){
+  _recruitSearch = String(v || '').trim().toLowerCase();
+  renderRecruit();
+}
+function clearRecruitSearch(){
+  const el = document.getElementById('recruit-search');
+  if(el) el.value = '';
+  _recruitSearch = '';
+  renderRecruit();
+}
+
+// Does this candidate match the current search? Matches on the four fields an
+// operator actually has to hand: name, reference, email, phone.
+//
+// Phone is compared DIGITS-ONLY on both sides, so "0419 123 333", "0419123333"
+// and "+61 419 123 333" all match a search for "419123". Every other field is a
+// plain lowercase substring test.
+//
+// Deliberately does NOT search pitch / work history / referees: free text
+// produces noisy hits that bury the name match you were looking for.
+function recruitMatches(c, q){
+  if(!q) return true;
+  const hay = [c.name, c.reference, c.email]
+    .map(v => String(v || '').toLowerCase());
+  if(hay.some(v => v.includes(q))) return true;
+  const qDigits = q.replace(/\D/g, '');
+  if(qDigits.length >= 3){
+    const pDigits = String(c.phone || '').replace(/\D/g, '');
+    if(pDigits && pDigits.includes(qDigits)) return true;
+  }
+  return false;
+}
+
+// When a search is active and we are NOT on the All pile, count matches sitting
+// in OTHER piles and offer one click to widen. Search stays pile-scoped (piles
+// are the primary filter and selection is per-pile), so this is a signpost, not
+// an automatic jump.
+function recruitRenderCrossPileHint(){
+  const el = document.getElementById('recruit-crosspile');
+  if(!el) return;
+  if(!_recruitSearch || _recruitFilter === 'all'){
+    el.style.display = 'none'; el.innerHTML = ''; return;
+  }
+  const others = _recruitRows.filter(c => {
+    const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
+    return s !== _recruitFilter && recruitMatches(c, _recruitSearch);
+  }).length;
+  if(others === 0){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = '';
+  el.innerHTML = `${others} match${others === 1 ? '' : 'es'} in other piles`
+    + ` <button class="recruit-crosspile-btn" onclick="setRecruitFilter('all')">Show all</button>`;
+}
+
+// Sort key per column. Returns a comparable primitive.
+//   name      — alphabetical
+//   status    — PIPELINE POSITION, tie-broken by longest time in stage.
+//               Inside a single pile every row shares a status, so the tiebreak
+//               dominates and this becomes "who has been waiting longest" — the
+//               actual question ops asks. On the All pile it groups by stage and
+//               orders each group by age. One key, both jobs.
+//   reference — application order. GPX-YYMMDD-NNN is date-encoded, so sorting
+//               by reference IS sorting by date applied, without adding a column.
+function recruitSortValue(c, key){
+  if(key === 'name') return String(c.name || '').toLowerCase();
+  if(key === 'reference') return String(c.reference || '');
+  if(key === 'status'){
+    const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
+    const idx = RECRUIT_STATUS_ORDER.indexOf(s);
+    // Days in stage, descending within the stage — hence the negation.
+    const ms = c.status_changed_at ? Date.parse(c.status_changed_at) : NaN;
+    const days = isNaN(ms) ? -1 : (Date.now() - ms) / 86400000;
+    return [idx, -days];
+  }
+  return '';
+}
+// Sort a copy; '' leaves natural feed order untouched.
+function recruitSortRows(rows){
+  if(!_recruitSortBy) return rows;
+  const dir = (_recruitSortDir === 'asc') ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = recruitSortValue(a, _recruitSortBy);
+    const bv = recruitSortValue(b, _recruitSortBy);
+    // Composite keys (status) compare element by element.
+    if(Array.isArray(av)){
+      for(let i = 0; i < av.length; i++){
+        if(av[i] < bv[i]) return -1 * dir;
+        if(av[i] > bv[i]) return  1 * dir;
+      }
+      return 0;
+    }
+    if(av < bv) return -1 * dir;
+    if(av > bv) return  1 * dir;
+    return 0;
+  });
+}
+// Cycle asc → desc → off, matching Crew Finder's headers.
+function recruitSortByHeader(key){
+  if(_recruitSortBy !== key){ _recruitSortBy = key; _recruitSortDir = 'asc'; }
+  else if(_recruitSortDir === 'asc'){ _recruitSortDir = 'desc'; }
+  else { _recruitSortBy = ''; _recruitSortDir = 'asc'; }
+  renderRecruit();
+}
 
 async function loadRecruitment(){
   const statusEl = document.getElementById('recruit-status');
@@ -3817,39 +3944,58 @@ function renderRecruit(){
     return;
   }
 
-  // Filter to the chosen pile (treat missing/unknown status as "applied"/New).
-  const visible = _recruitRows.filter(c => {
+  // Candidates in the chosen pile, BEFORE search. Selection is scoped to this
+  // (see recruitToggleAll / the prune below), so typing in the search box never
+  // silently unticks a row.
+  const inPile = _recruitRows.filter(c => {
     if(_recruitFilter === 'all') return true;
     const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
     return s === _recruitFilter;
   });
+  // What actually renders: the pile, narrowed by search, then sorted.
+  const visible = recruitSortRows(inPile.filter(c => recruitMatches(c, _recruitSearch)));
 
   if(visible.length === 0){
     statusEl.style.display = '';
-    statusEl.textContent = 'No applicants in this pile.';
+    statusEl.textContent = _recruitSearch
+      ? 'No applicants match your search in this pile.'
+      : 'No applicants in this pile.';
     listEl.innerHTML = '';
+    // Still show the cross-pile hint — the person you are looking for is very
+    // often in a DIFFERENT pile, and that is exactly when this matters most.
+    recruitRenderCrossPileHint();
     return;
   }
   statusEl.style.display = 'none';
-  // Remember which applicants are on screen so "select all" only ticks these,
-  // and drop any earlier selection that is no longer visible.
+  // Rows on screen right now (pile + search + sort) — drives "select all", which
+  // should only tick what the operator can actually see.
   _recruitVisibleIds = visible.map(c => String(c.id));
-  _recruitSelected.forEach(id => { if(!_recruitVisibleIds.includes(id)) _recruitSelected.delete(id); });
+  // Selection is scoped to the PILE, not the search. Pruning against `inPile`
+  // means typing in the search box narrows the view without unticking anything;
+  // only switching piles clears selection (setRecruitFilter does that outright).
+  const pileIds = new Set(inPile.map(c => String(c.id)));
+  _recruitSelected.forEach(id => { if(!pileIds.has(id)) _recruitSelected.delete(id); });
   // Compact table: header labels + one summary row per applicant, each followed
   // by a hidden detail row that expands inline on click (see recruitToggleRow).
   const rows = visible.map((c, i) => renderRecruitRow(c, i)).join('');
+  const rcTh = (label, key) => {
+    const active = (_recruitSortBy === key);
+    const arrow = active ? `<span class="th-arrow">${_recruitSortDir === 'asc' ? '▲' : '▼'}</span>` : '';
+    return `<th class="sortable${active ? ' sorted' : ''}" onclick="recruitSortByHeader('${key}')">${label}${arrow}</th>`;
+  };
   listEl.innerHTML =
     '<div class="recruit-table-wrap"><table class="recruit-table">'
     + '<thead><tr>'
     +   '<th class="rc-check"><input type="checkbox" id="recruit-check-all" title="Select all"'
     +     ' onclick="recruitToggleAll(this)"></th>'
-    +   '<th>Name</th><th>Status</th><th>Availability</th>'
-    +   '<th>Tickets</th><th>Reference</th>'
+    +   rcTh('Name','name') + rcTh('Status','status') + '<th>Availability</th>'
+    +   '<th>Tickets</th>' + rcTh('Reference','reference')
     + '</tr></thead>'
     + '<tbody>' + rows + '</tbody>'
     + '</table></div>';
   recruitSyncHeaderCheck();   // reflect current selection in the header tick
   recruitUpdateBatchBar();    // show/hide the batch action bar
+  recruitRenderCrossPileHint();
 }
 
 // Expand one applicant's detail row and collapse any other that was open.
@@ -3922,7 +4068,7 @@ function recruitClearSelection(){
 // stage guards) so the batch bar and detail panel agree on what's valid per stage:
 //   invite      → Invite to induction (New only)
 //   reinvite    → Re-invite to induction (Invited only)
-//   sent_to_eh  → Mark Sent to EH (Attended / Details Submitted)
+//   sent_to_eh  → Send to EH (Attended / Details Submitted)
 //   hold/not_suitable → the general park/reject actions, on the pre-crew triage
 //                       stages only.
 // Late stages (sent_to_eh, all_docs_received, active_crew, withdrawn) return an
@@ -3999,12 +4145,12 @@ async function recruitBatchSetStatus(status){
   _recruitSelected.clear();
   await loadRecruitment();  // refetch so cards land in their new piles
 }
-// Batch "Mark Sent to EH" — Gig Power runs MONTHLY casual intakes, and casuals
+// Batch "Send to EH" — Gig Power runs MONTHLY casual intakes, and casuals
 // aren't paid unless they work, so the whole cohort commences on ONE shared date.
 // So we prompt ONCE for that date and apply it to every selected candidate (same
 // validation as the per-candidate flow), then send each to EH — which stamps
 // commencement_date and fires their contract-signing email. The per-candidate
-// detail-panel "Mark Sent to EH" stays for one-off sends between intakes.
+// detail-panel "Send to EH" stays for one-off sends between intakes.
 async function recruitBatchSentToEh(){
   const ids = Array.from(_recruitSelected);
   if(ids.length === 0) return;
@@ -4110,7 +4256,7 @@ function recruitIsoToDmy(iso){
   return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
 }
 
-// "Mark Sent to EH" — like recruitSetStatus, but first collects the ops-entered
+// "Send to EH" — like recruitSetStatus, but first collects the ops-entered
 // commencement (start) date, which is merged into the candidate's employment
 // contract and, once set, triggers the contract-signing email (server-side). We
 // prompt for the date (day-first) and pass ISO through to set-status as
@@ -5253,7 +5399,7 @@ function renderRecruitRow(c, i){
     // active_crew above so the generic button below never renders an "undefined".
     if(s === 'all_docs_received') return '';
     // A withdrawn applicant is read-only (they've opted out): don't offer the
-    // normal triage buttons. Allow only a single "Back to New", in case someone
+    // normal triage buttons. Allow only a single "Return to New", in case someone
     // withdrew by mistake and needs putting back in the pipeline.
     if(cur === 'withdrawn') return (s === 'applied')
       ? `<button class="recruit-action" onclick="recruitSetStatus('${id}','applied',this)">Return to New</button>`
@@ -5277,21 +5423,21 @@ function renderRecruitRow(c, i){
     // "Mark attended" is offered once they're Invited OR Booked (they turned up
     // to the induction; booked -> attended is a normal step). Hidden otherwise.
     if(s === 'attended' && cur !== 'invited_to_induction' && cur !== 'booked') return '';
-    // "Mark Sent to EH" is offered once they're Attended OR Details Submitted —
+    // "Send to EH" is offered once they're Attended OR Details Submitted —
     // the normal path is attended → details_submitted (auto, on form submit) →
     // sent_to_eh, but we keep it available straight from Attended too so an
     // operator can send someone to EH even if their form isn't in yet. Hidden for
     // every other pile. Reuses set-status (which stamps eh_invited_at). A candidate
-    // who is ALREADY sent_to_eh still gets "Back to New" below (s='applied'), so a
+    // who is ALREADY sent_to_eh still gets "Return to New" below (s='applied'), so a
     // mis-click is reversible.
     if(s === 'sent_to_eh'){
       if(cur !== 'attended' && cur !== 'details_submitted') return '';
-      // Mark Sent to EH prompts for the commencement date (merged into the
+      // Send to EH prompts for the commencement date (merged into the
       // contract) and, once set, the edge function emails the contract-signing
       // link — so it needs its own handler, not the generic relabel button below.
       return `<button class="recruit-action" onclick="recruitSentToEh('${id}',this)">${RECRUIT_MOVE_LABELS[s]}</button>`;
     }
-    // Back to New / Attended / Hold / Not suitable — relabel via set-status.
+    // Return to New / Mark attended / Put on hold / Mark not suitable — relabel via set-status.
     if(s === cur) return '';
     return `<button class="recruit-action" onclick="recruitSetStatus('${id}','${s}',this)">`
       + `${RECRUIT_MOVE_LABELS[s]}</button>`;
