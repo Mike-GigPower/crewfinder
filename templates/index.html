@@ -819,6 +819,16 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-filter{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;padding:6px 13px;border-radius:20px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
 .recruit-filter:hover{border-color:var(--accent);color:var(--accent)}
 .recruit-filter.active{background:var(--accent);border-color:var(--accent);color:#000}
+/* "Needs attention" is a CROSS-CUTTING filter, not a status pile — it sits beside
+   All rather than in the pipeline order. Amber only when it actually has items, so
+   an empty queue reads as calm rather than as a permanent warning. */
+.recruit-filter-attn.has-items{border-color:var(--warn);color:var(--warn)}
+.recruit-filter-attn.has-items:hover{border-color:var(--warn);color:var(--warn)}
+.recruit-filter-attn.active,
+.recruit-filter-attn.has-items.active{background:var(--warn);border-color:var(--warn);color:#000}
+/* Reason chip — why a candidate is in Needs attention. Amber, matching the ageing
+   labels and every other "wants chasing" signal in this tab. */
+.recruit-flagreason{display:inline-block;margin-left:6px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--warn);border:1px solid var(--warn);background:rgba(245,158,11,0.10);padding:1px 8px;border-radius:20px;white-space:nowrap}
 /* Search box — narrows the CURRENT pile in the browser (no refetch). Sits between
    the filter chips and the table. */
 .recruit-search-wrap{position:relative;display:inline-block;margin:0 0 14px}
@@ -3774,6 +3784,12 @@ const RECRUIT_AGING_THRESHOLDS = {
   booked:               14,  // booked but not yet attended
   attended:              7,  // attended but details not completing
   details_submitted:     3,  // form done + ready — waiting on you to send to EH
+  // Added with the Needs-attention view. Conversion is phone-paced (every
+  // candidate is rung before their first shift), so people SITTING in With EH and
+  // Ready to convert is normal — three weeks is not. 14 days flags genuinely
+  // stale ones without flooding the view with the normal state of the pipeline.
+  sent_to_eh:           14,
+  all_docs_received:    14,
 };
 
 let _recruitRows = [];              // the full fetched list (kept for filtering)
@@ -3826,7 +3842,7 @@ function recruitMatches(c, q){
 function recruitRenderCrossPileHint(){
   const el = document.getElementById('recruit-crosspile');
   if(!el) return;
-  if(!_recruitSearch || _recruitFilter === 'all'){
+  if(!_recruitSearch || _recruitFilter === 'all' || _recruitFilter === 'attention'){
     el.style.display = 'none'; el.innerHTML = ''; return;
   }
   const others = _recruitRows.filter(c => {
@@ -3914,6 +3930,53 @@ async function loadRecruitment(){
   }
 }
 
+// Which candidates need a human to do something, and why. Returns an array of
+// short reason strings — empty means nothing outstanding.
+//
+// Deliberately EXCLUDES withdrawn, not_suitable and on_hold. The first two are out
+// of the funnel; on_hold was parked ON PURPOSE, and flagging a deliberate decision
+// as an exception is how a signal becomes noise people learn to ignore.
+//
+// Everything here is derived from timestamps and status only. Licences,
+// confirmations and VEVO state are NOT in the list feed (privacy allowlist) and
+// cannot be checked from the browser — see the brief.
+function recruitExceptions(c){
+  const out = [];
+  const st = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
+  if(st === 'withdrawn' || st === 'not_suitable' || st === 'on_hold') return out;
+  // Days in the CURRENT stage. -1 when unknown, which never trips a threshold.
+  const ms = c.status_changed_at ? Date.parse(c.status_changed_at) : NaN;
+  const days = isNaN(ms) ? -1 : Math.floor((Date.now() - ms) / 86400000);
+  const limit = RECRUIT_AGING_THRESHOLDS[st];
+  // Uncontactable, therefore unchaseable — the one rule that applies at any stage.
+  if(!c.email && !c.phone) out.push('No contact details');
+  // The no-show. The session has been and gone and nobody marked them attended.
+  // This is the ~50% who fall away around induction, and the reason session_date
+  // was added to the feed. NOTE: no candidate has a session_date yet, so this
+  // cannot fire until a real TryBooking import has run.
+  if(c.session_date && (st === 'booked' || st === 'invited_to_induction')){
+    if(Date.parse(c.session_date) < Date.now()) out.push('Session passed, not attended');
+  }
+  // Turned up, never filled in the details form.
+  if(st === 'attended' && !c.details_submitted_at && days >= 7)
+    out.push('No details form');
+  // Sent to EH but one of the two gate signals is still missing. Both are
+  // candidate-side actions, so both mean "chase the person".
+  if(st === 'sent_to_eh' && days >= 14){
+    if(!c.eh_complete_at)      out.push('EH setup not complete');
+    if(!c.contract_signed_at)  out.push('Contract not signed');
+  }
+  // Docs all in, still not converted. This one measures US, not them — conversion
+  // waits on the phone call.
+  if(st === 'all_docs_received' && days >= 14)
+    out.push('Awaiting conversion call');
+  // Catch-all: past the stage threshold with no more specific reason already
+  // given. Ordered last so a specific reason always wins over a generic one.
+  if(out.length === 0 && limit && days > limit)
+    out.push(`Waiting ${days} days`);
+  return out;
+}
+
 // Render the filter row + the visible pile from _recruitRows (no re-fetch).
 function renderRecruit(){
   const statusEl = document.getElementById('recruit-status');
@@ -3935,6 +3998,11 @@ function renderRecruit(){
   );
   chips.push(`<button class="recruit-filter ${_recruitFilter==='all'?'active':''}" onclick="setRecruitFilter('all')">`
     + `All (${_recruitRows.length})</button>`);
+  // Cross-cutting count: how many candidates ANYWHERE need something doing.
+  const attentionCount = _recruitRows.filter(c => recruitExceptions(c).length > 0).length;
+  chips.push(`<button class="recruit-filter recruit-filter-attn ${_recruitFilter==='attention'?'active':''}`
+    + `${attentionCount > 0 ? ' has-items' : ''}" onclick="setRecruitFilter('attention')">`
+    + `Needs attention (${attentionCount})</button>`);
   filtersEl.innerHTML = chips.join('');
 
   if(_recruitRows.length === 0){
@@ -3948,6 +4016,7 @@ function renderRecruit(){
   // (see recruitToggleAll / the prune below), so typing in the search box never
   // silently unticks a row.
   const inPile = _recruitRows.filter(c => {
+    if(_recruitFilter === 'attention') return recruitExceptions(c).length > 0;
     if(_recruitFilter === 'all') return true;
     const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
     return s === _recruitFilter;
@@ -3959,7 +4028,9 @@ function renderRecruit(){
     statusEl.style.display = '';
     statusEl.textContent = _recruitSearch
       ? 'No applicants match your search in this pile.'
-      : 'No applicants in this pile.';
+      : (_recruitFilter === 'attention'
+          ? 'Nothing needs attention right now.'
+          : 'No applicants in this pile.');
     listEl.innerHTML = '';
     // Still show the cross-pile hint — the person you are looking for is very
     // often in a DIFFERENT pile, and that is exactly when this matters most.
@@ -5338,6 +5409,11 @@ function renderRecruitRow(c, i){
   // "Time in current stage" label (display only). '' when status_changed_at is
   // missing, so nothing shows rather than a broken value.
   const age = recruitStageAge(c);
+  // Why this candidate is flagged. Shown in every pile, not just the Needs
+  // attention view — the reason is just as useful when you are looking at With EH
+  // and wondering which of the six needs chasing.
+  const flags = recruitExceptions(c).map(r =>
+    `<span class="recruit-flagreason">${recruitEsc(r)}</span>`).join('');
   // "Details submitted: <date>" grid item — only when the candidate has submitted
   // their details form. Omitted entirely otherwise. Shows the date only, not the form.
   const submittedDetail = c.details_submitted_at
@@ -5490,7 +5566,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
-      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}</td>
+      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}${flags}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
