@@ -9868,6 +9868,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
     + entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')")
+    + entityBtn('💬 Crew Notes', "openCrewNotes('"+bookingId+"','"+callId+"')", {title:'Post notes for crew on this call'})
     + entityBtn('Close', 'closeEntityModal()');
 }
 
@@ -13094,10 +13095,16 @@ function toggleSchedBooking(bid){
 // alongside it: crew notes are posted by operations and viewed by leadership,
 // so it uses isReadOnlyCohort (the existing leadership-class helper) rather
 // than the _cohort !== 'admin' test the neighbours use. Not an oversight.
-function openCrewNotes(bookingId){
+function openCrewNotes(bookingId, callId){
   if(!bookingId) return;
   if(window._cohort !== 'admin' && !window.isReadOnlyCohort()) return;
-  window.open(hubUrl('/leadership/schedule?booking=' + encodeURIComponent(bookingId)), '_blank');
+  // A callId targets that call's notes panel: the portal auto-expands it,
+  // marks it, and scrolls to it. Without one you land on the booking with
+  // every call collapsed — which is how a note meant for ONE call ends up
+  // posted at booking level, reaching everyone on the job.
+  var path = '/leadership/schedule?booking=' + encodeURIComponent(bookingId);
+  if(callId) path += '&call=' + encodeURIComponent(callId) + '#call-' + encodeURIComponent(callId);
+  window.open(hubUrl(path), '_blank');
 }
 
 function openSmartStaffBooking(bookingId){
