@@ -821,26 +821,24 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-filter.active{background:var(--accent);border-color:var(--accent);color:#000}
 /* Current-status pill on each card */
 .recruit-pill{display:inline-block;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
-.recruit-pill.st-applied{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
-.recruit-pill.st-invited_to_induction{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.08)}
-.recruit-pill.st-booked{color:#a371f7;border-color:#a371f7;background:rgba(163,113,247,0.08)}
-.recruit-pill.st-attended{color:#58a6ff;border-color:#58a6ff;background:rgba(88,166,255,0.08)}
-/* Details Submitted: form done + ready to send to EH — set automatically on
-   /details submit. Distinct pink so it stands out as "waiting on you", clearly
-   apart from Attended (blue) and Sent to EH (teal) on either side of it. */
-.recruit-pill.st-details_submitted{color:#f778ba;border-color:#f778ba;background:rgba(247,120,186,0.10)}
-/* Sent to EH: an Employment Hero entry has been created for them (a late,
-   near-final stage). Distinct teal so it doesn't read as Invited (green) or
-   Attended (blue). */
-.recruit-pill.st-sent_to_eh{color:#2dd4bf;border-color:#2dd4bf;background:rgba(45,212,191,0.10)}
-/* Active crew: converted to a real SmartStaff crew member — the pipeline's end
-   state. Gold, matching the app's "live crew" accent, so it reads as "done". */
-.recruit-pill.st-all_docs_received{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.12)}
-.recruit-pill.st-active_crew{color:var(--accent);border-color:var(--border-gold);background:rgba(212,175,55,0.10)}
-.recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.08)}
-.recruit-pill.st-not_suitable{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
-/* Withdrawn: candidate opted out via /withdraw. Deliberately muted grey so it
-   reads as "inactive / out", visually distinct from every active pile above. */
+/* Pipeline stages (New → Invited → Booked → Attended → Details in → With EH →
+   Ready to convert) deliberately have NO colour override — they inherit the
+   neutral base .recruit-pill above.
+   Colour in this tab means CONDITION, never stage identity: green = good/done,
+   amber = needs attention, grey = inactive. Stage identity is carried by the
+   pill's TEXT and by its position in the ordered filter strip, which is why
+   seven separate hues were removed rather than rebalanced.
+   Do not add per-stage colours back. */
+/* Crew — the successful end state, and the only genuinely GOOD outcome in the
+   list. Green, matching the "Submitted ✓" badge, so "good" reads the same
+   everywhere. (Previously gold, which collided with the gold active filter chip.) */
+.recruit-pill.st-active_crew{color:#3fb950;border-color:#3fb950;background:rgba(63,185,80,0.10)}
+/* On hold — parked, and the one state that wants chasing. Amber, matching the
+   aging labels and the working-visa chip. */
+.recruit-pill.st-on_hold{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,0.10)}
+/* Not suitable / Withdrawn — out of the funnel, for opposite reasons but with the
+   same operational meaning: no further action. Muted grey. */
+.recruit-pill.st-not_suitable,
 .recruit-pill.st-withdrawn{color:#8b949e;border-color:#8b949e;background:rgba(139,148,158,0.10)}
 /* Withdrawn detail: the reason + date, set off with a grey rule so the feedback
    (why they dropped off) stands out when the row is expanded. */
@@ -3731,8 +3729,8 @@ function popOutCurrentTab(){
 // Status value -> short pill label shown on the card and in the filter row.
 const RECRUIT_STATUS_LABELS = {
   applied:'New', invited_to_induction:'Invited', booked:'Booked', attended:'Attended',
-  details_submitted:'Details Submitted',
-  sent_to_eh:'Sent to EH', all_docs_received:'All Docs Received', active_crew:'Active crew', on_hold:'Hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
+  details_submitted:'Details in',
+  sent_to_eh:'With EH', all_docs_received:'Ready to convert', active_crew:'Crew', on_hold:'On hold', not_suitable:'Not suitable', withdrawn:'Withdrawn'
 };
 // Order the filter chips appear in (plus "All" added at the end in code).
 // "details_submitted" sits between Attended and Sent to EH: it's set AUTOMATICALLY
@@ -3743,9 +3741,9 @@ const RECRUIT_STATUS_LABELS = {
 const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attended','details_submitted','sent_to_eh','all_docs_received','active_crew','on_hold','not_suitable','withdrawn'];
 // Label for the BUTTON that moves an applicant INTO each status.
 const RECRUIT_MOVE_LABELS = {
-  applied:'Back to New', invited_to_induction:'Invite to induction',
-  booked:'Mark booked', attended:'Mark attended', sent_to_eh:'Mark Sent to EH',
-  on_hold:'Hold', not_suitable:'Not suitable'
+  applied:'Return to New', invited_to_induction:'Invite to induction',
+  booked:'Mark booked', attended:'Mark attended', sent_to_eh:'Send to EH',
+  on_hold:'Put on hold', not_suitable:'Mark not suitable'
 };
 // Amber-tint thresholds, in DAYS, for the "waiting" stages only. A candidate who
 // has sat in one of these stages LONGER than its number gets a gentle amber
@@ -3969,9 +3967,9 @@ function recruitUpdateBatchBar(){
   const btns = [];
   if(actions.has('invite'))       btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchInvite()">Invite to induction</button>`);
   if(actions.has('reinvite'))     btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchInvite()">Re-invite to induction</button>`);
-  if(actions.has('sent_to_eh'))   btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSentToEh()">Mark Sent to EH</button>`);
-  if(actions.has('hold'))         btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('on_hold')">Hold</button>`);
-  if(actions.has('not_suitable')) btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('not_suitable')">Not suitable</button>`);
+  if(actions.has('sent_to_eh'))   btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSentToEh()">Send to EH</button>`);
+  if(actions.has('hold'))         btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('on_hold')">Put on hold</button>`);
+  if(actions.has('not_suitable')) btns.push(`<button class="recruit-batch-btn" onclick="recruitBatchSetStatus('not_suitable')">Mark not suitable</button>`);
 
   bar.innerHTML =
     `<span class="recruit-batch-count">${n} selected</span>`
@@ -5258,7 +5256,7 @@ function renderRecruitRow(c, i){
     // normal triage buttons. Allow only a single "Back to New", in case someone
     // withdrew by mistake and needs putting back in the pipeline.
     if(cur === 'withdrawn') return (s === 'applied')
-      ? `<button class="recruit-action" onclick="recruitSetStatus('${id}','applied',this)">Back to New</button>`
+      ? `<button class="recruit-action" onclick="recruitSetStatus('${id}','applied',this)">Return to New</button>`
       : '';
     // A converted candidate is READ-ONLY, same idea as withdrawn: they're a real
     // SmartStaff crew member now, so recruitment status shouldn't be changed.
@@ -5755,7 +5753,15 @@ function recruitConfirmations(cf){
                 : v === false ? pill('Not confirmed', 'warn')
                 : '—';
   const rows = [];
-  rows.push(['Eligibility to work', yn(cf.eligibility_confirmed)]);
+  // NOTE: `eligibility_confirmed` means DIFFERENT THINGS depending on record age.
+  // On records predating the /details redesign it was the work-entitlement tick;
+  // from the redesign onward it is the "I am at least 18" declaration. The key was
+  // reused rather than replaced. Nothing to fix here — but an audit of "who
+  // confirmed they are over 18" would get a false yes from the older records, so
+  // do not treat this field as a single consistent attestation across all time.
+  // Work ENTITLEMENT now lives in work_eligibility.status and is displayed
+  // separately in the Work Eligibility section below.
+  rows.push(['Over 18', yn(cf.eligibility_confirmed)]);
   // WWCC is a small object, not a single tick. Its acknowledgement is only
   // REQUIRED when the candidate does not hold a check — so a missing
   // acknowledgement from someone who HOLDS one is muted, not amber. There is
