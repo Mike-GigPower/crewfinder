@@ -1,6 +1,6 @@
 {
-  "version": "4.19.1",
+  "version": "4.20.0",
   "release_date": "2026-08-05",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.19.1/TheGOAT.dmg",
-  "release_notes": "Crew Notes is now on the call dialog too. Opening it from a call takes you straight to that call's notes panel in the Crew Hub, rather than the booking with every call collapsed."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.20.0/TheGOAT.dmg",
+  "release_notes": "Candidate inductions are now visible in the Recruitment panel, and confirmations show as colour-coded pills so anything outstanding stands out."
 }
