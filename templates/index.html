@@ -871,6 +871,17 @@ body.cohort-readonly #unavail-add-section{display:none}
    visa (so ops knows work rights need a VEVO check before convert). Amber/warn,
    distinct from the status pills and the ✓ badges. Non-PII: just the category. */
 .recruit-visa{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:var(--warn);border:1px solid var(--warn);background:rgba(245,158,11,0.10);white-space:nowrap}
+/* Confirmation pills — the tick-group answers in a candidate's Confirmations
+   block. Same shape/typography as the "Submitted ✓" / "EH ✓" row badges, so the
+   detail panel reads in one visual language. Three tones only:
+     ok     green  — answered positively
+     warn   amber  — a real gap for ops to chase
+     muted  grey   — an answer that is absent but NOT required (see WWCC)
+   Display only; nothing here changes what is stored, sent, or gated. */
+.recruit-conf{display:inline-block;margin-right:5px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;white-space:nowrap}
+.recruit-conf-ok{color:#3fb950;border:1px solid #3fb950;background:rgba(63,185,80,0.08)}
+.recruit-conf-warn{color:var(--warn);border:1px solid var(--warn);background:rgba(245,158,11,0.10)}
+.recruit-conf-muted{color:#8b949e;border:1px solid #8b949e;background:rgba(139,148,158,0.10)}
 /* ADMIN-ONLY work-eligibility reveal — immigration PII (passport + visa), same
    posture as the health reveal below. Button only renders for admins; the
    sensitive detail stays hidden (and un-fetched) until clicked. */
@@ -5432,7 +5443,9 @@ function recruitRenderDetail(d, i){
     <div class="recruit-xsection">Confirmations</div>
     ${recruitConfirmations(d.confirmations)}
     <div class="recruit-xsection">Licences</div>
-    ${recruitLicences(d.licences)}${recruitWorkEligibilitySection(d, i)}${recruitHealthSection(d, i)}`;
+    ${recruitLicences(d.licences)}
+    <div class="recruit-xsection">Inductions</div>
+    ${recruitInductions(d.inductions)}${recruitWorkEligibilitySection(d, i)}${recruitHealthSection(d, i)}`;
 }
 
 // Work Eligibility section. The STATUS line (Citizen/PR vs Working visa) and the
@@ -5710,34 +5723,79 @@ function recruitHeadshot(d){
 }
 
 // Turn the confirmations object into readable lines (never raw JSON). Unknown /
-// missing shapes degrade to a clear placeholder. yn() maps a boolean tick-group
-// to "confirmed" / "not confirmed".
+// missing shapes degrade to a clear placeholder.
+//
+// Tick-group answers render as small PILLS matching the row badges above:
+//   green  "Confirmed"      — answered positively
+//   amber  "Not confirmed"  — a real gap for ops to chase
+//   grey                    — absent but NOT required (see the WWCC branch)
+//   plain  "—"              — never answered (older records / partial forms)
+// Free-text answers (criminal history) stay plain text: a declared history is not
+// a failure and must not be coloured as one.
+//
+// ESCAPING: unlike the previous version, the row renderer below does NOT escape
+// values — it can't, because pills are markup. Every value is therefore escaped
+// or pill-wrapped at the point it is pushed into `rows`. pill() escapes its own
+// label, so pill() callers are safe by construction.
 function recruitConfirmations(cf){
   if(!cf || typeof cf !== 'object')
     return '<div class="recruit-empty">No confirmations recorded</div>';
-  const yn = v => v === true ? 'confirmed' : (v === false ? 'not confirmed' : '—');
+  // One pill. tone is 'ok' | 'warn' | 'muted'.
+  const pill = (label, tone) =>
+    `<span class="recruit-conf recruit-conf-${tone}">${recruitEsc(label)}</span>`;
+  // A boolean tick-group -> pill. Anything that isn't a real true/false (null,
+  // undefined, key absent) means "never answered" — NOT "no".
+  const yn = v => v === true  ? pill('Confirmed', 'ok')
+                : v === false ? pill('Not confirmed', 'warn')
+                : '—';
   const rows = [];
   rows.push(['Eligibility to work', yn(cf.eligibility_confirmed)]);
-  // WWCC (Working With Children Check) is a small object, not a single tick.
+  // WWCC is a small object, not a single tick. Its acknowledgement is only
+  // REQUIRED when the candidate does not hold a check — so a missing
+  // acknowledgement from someone who HOLDS one is muted, not amber. There is
+  // nothing for an operator to chase in that case.
   const w = (cf.wwcc && typeof cf.wwcc === 'object') ? cf.wwcc : null;
   if(w){
-    const bits = [w.holds ? 'holds a check' : 'does not hold'];
-    if(!w.holds) bits.push(w.willing_to_obtain ? 'willing to obtain' : 'not willing to obtain');
-    bits.push(w.acknowledged ? 'acknowledged' : 'not acknowledged');
-    rows.push(['WWCC', bits.join(', ')]);
+    const bits = [];
+    if(w.holds){
+      bits.push(pill('Holds a check', 'ok'));
+      bits.push(w.acknowledged ? pill('Acknowledged', 'ok')
+                               : pill('Not acknowledged', 'muted'));
+    }else{
+      bits.push(pill('Does not hold', 'warn'));
+      bits.push(w.willing_to_obtain ? pill('Willing to obtain', 'ok')
+                                    : pill('Not willing to obtain', 'warn'));
+      bits.push(w.acknowledged ? pill('Acknowledged', 'ok')
+                               : pill('Not acknowledged', 'warn'));
+    }
+    rows.push(['WWCC', bits.join('')]);
   } else {
     rows.push(['WWCC', '—']);
   }
-  // criminal_history is a string ("none", or a short description) — not a tick.
+  // criminal_history is a two-value enum from the /details form — "none" or
+  // "has" — NOT free text, and there is no detail column anywhere on the
+  // candidates table for the "has" case (verified against the live schema). The
+  // raw token is all we hold, so render it in words: "has" on screen means
+  // nothing to an operator.
+  //
+  // Deliberately UNCOLOURED. Amber here means "a gap for ops to chase"; a
+  // declared history is a judgement call for a human, not a compliance gap.
+  //
+  // The last branch keeps an escaped fallback, in case the form ever starts
+  // sending a free-text description.
   const crim = cf.criminal_history;
   rows.push(['Criminal history',
-    (crim == null || crim === '') ? '—' : (crim === 'none' ? 'none declared' : String(crim))]);
-  rows.push(['PPE', yn(cf.ppe_confirmed)]);
-  rows.push(['Workplace', yn(cf.workplace_confirmed)]);
-  rows.push(['Declarations', yn(cf.declarations_confirmed)]);
+    (crim == null || crim === '') ? '—'
+      : crim === 'none' ? 'None declared'
+      : crim === 'has'  ? 'Declared'
+      : recruitEsc(String(crim))]);
+  rows.push(['PPE',              yn(cf.ppe_confirmed)]);
+  rows.push(['Workplace',        yn(cf.workplace_confirmed)]);
+  rows.push(['Declarations',     yn(cf.declarations_confirmed)]);
   rows.push(['Tier / probation', yn(cf.tier_probation_confirmed)]);
   return '<div class="recruit-detail-grid">'
-    + rows.map(([k, v]) => `<div><span class="recruit-label">${recruitEsc(k)}</span>${recruitEsc(v)}</div>`).join('')
+    + rows.map(([k, v]) =>
+        `<div><span class="recruit-label">${recruitEsc(k)}</span>${v}</div>`).join('')
     + '</div>';
 }
 
@@ -5755,6 +5813,33 @@ function recruitLicences(list){
       ? `<a class="recruit-action" href="${recruitEsc(l.url)}" target="_blank" rel="noopener">Open PDF ↗</a>`
       : '<span class="recruit-empty">file unavailable</span>';
     return `<div class="recruit-licence"><span class="recruit-licence-type">${type}</span>`
+      + `<span class="recruit-licence-date">${date}</span>${link}</div>`;
+  }).join('');
+}
+
+// List each induction with its venue, completion date (flagged when blank) and an
+// "Open PDF" link using its short-lived signed URL. Deliberately mirrors
+// recruitLicences — same row shape, same classes, so the two sections read alike.
+//
+// `label` is added by the Flask proxy from INDUCTION_CODE_LABELS, so this panel
+// and the convert-to-crew modal always name a venue the same way. An entry with no
+// venue_code gets no label and is FLAGGED in amber rather than quietly shown as
+// "Induction": that entry is the one convert cannot resolve to a SmartStaff venue,
+// so making it visible here is the point.
+function recruitInductions(list){
+  if(!Array.isArray(list) || list.length === 0)
+    return '<div class="recruit-empty">No inductions uploaded</div>';
+  return list.map(x => {
+    x = x || {};
+    const venue = x.venue_code
+      ? recruitEsc(x.label || x.venue_code)
+      : '<span class="recruit-flag">venue not recorded</span>';
+    const date = x.date ? ('Completed: ' + recruitDate(x.date))
+      : '<span class="recruit-flag">date missing</span>';
+    const link = x.url
+      ? `<a class="recruit-action" href="${recruitEsc(x.url)}" target="_blank" rel="noopener">Open PDF ↗</a>`
+      : '<span class="recruit-empty">file unavailable</span>';
+    return `<div class="recruit-licence"><span class="recruit-licence-type">${venue}</span>`
       + `<span class="recruit-licence-date">${date}</span>${link}</div>`;
   }).join('');
 }
