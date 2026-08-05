@@ -25,10 +25,19 @@
 	/* already agreed. It also covers the crew member with no push subscription,
 	/* who will never clear it themselves.
 	/*
-	/* Contract: POST callID, userID. Status is NEVER touched.
+	/* Contract: POST ?id=<callID> with JSON body {userID}. Status is NEVER touched.
 	/*
 	/* PHP 5.x — mysql_*, no null-coalescing (??), no short array syntax.
 	*/
+
+	/*
+	/* Safe property read off a json_decode()'d object — same helper as
+	/* update-crew-status.php. */
+
+	function P($obj, $key, $default)
+	{
+		return (isset($obj->$key) && $obj->$key !== null) ? $obj->$key : $default;
+	}
 
 	function send_status($code, $msg)
 	{
@@ -42,13 +51,38 @@
 		die('{"error":"Admin only"}');
 	}
 
-	$callID = isset($_POST['callID']) ? (int) $_POST['callID'] : 0;
-	$userID = isset($_POST['userID']) ? (int) $_POST['userID'] : 0;
+	/* ---- target call id ---- */
 
-	if ($callID <= 0 || $userID <= 0)
+	$callID = isset($_GET['id']) ? intval($_GET['id']) : 0;
+
+	if ($callID <= 0)
 	{
 		send_status(400, 'Bad Request');
-		die('{"error":"callID and userID required"}');
+		die('{"error":"Missing or invalid ?id"}');
+	}
+
+	/* ---- parse body ----
+	/*
+	/* JSON via php://input, matching update-crew-status.php exactly rather than
+	/* reading $_POST. These endpoints are rewritten together when the GOAT moves
+	/* to its own database; one parsing convention across the family is the whole
+	/* point. Do NOT "simplify" this back to $_POST. */
+
+	$raw     = file_get_contents('php://input');
+	$payload = json_decode($raw);
+
+	if (!$payload)
+	{
+		send_status(400, 'Bad Request');
+		die('{"error":"Invalid or missing JSON body (expected {userID})"}');
+	}
+
+	$userID = intval(P($payload, 'userID', 0));
+
+	if ($userID <= 0)
+	{
+		send_status(400, 'Bad Request');
+		die('{"error":"userID is required"}');
 	}
 
 	mysql_query(
