@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.18.0"
+APP_VERSION    = "4.19.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -3427,6 +3427,40 @@ def ss_update_crew_status(ss, call_id, user_id, status):
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
     return data, None
+
+def ss_dismiss_promo_ack(ss, call_id, user_id):
+    """Clear a pending promotion acknowledgement as OPS via
+    dismiss-promo-ack.php (admin-only).
+
+    Ops click the "promoted — not confirmed" pill when they have already spoken
+    to the crew member by phone. This asserts consent was obtained; it is
+    recorded as acked_src='ops' so the audit trail distinguishes it from the
+    crew member answering in Crew Hub. call_crew_map.status is NEVER touched.
+
+    An already-answered or absent row returns ok:true with cleared:false — a
+    business no-op, not an error, so two admins clicking the same pill is safe.
+
+    Returns (result, error):
+        result : {ok, call_id, user_id, cleared}
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/dismiss-promo-ack.php"
+    try:
+        resp = ss.post(url, params={"id": call_id},
+                       json={"userID": user_id}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            pass
+        return None, f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+    try:
+        return resp.json(), None
+    except Exception:
+        return None, "bad JSON from dismiss-promo-ack.php"
 
 def _build_import_payload(booking_data, lines, non_labour, resolved_call_names, earliest_date):
     """Map the import's booking_data + labour lines + non-labour items into the
@@ -8861,6 +8895,24 @@ def api_call_crew_status(booking_id, call_id, user_id):
             pass
         gp_notify_promotion(user_id, call)
 
+    return jsonify(result)
+
+@app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/promo-ack",
+           methods=["DELETE"])
+@require_cohort("admin")
+def api_call_dismiss_promo_ack(booking_id, call_id, user_id):
+    """Dismiss the promotion-acknowledgement flag for one crew member on a call.
+
+    Fired by the amber "promoted — not confirmed" pill in the call dialog, after
+    an ops confirm dialog. Records acked_src='ops' — ops asserting they spoke to
+    the crew member — and leaves call_crew_map.status untouched. booking_id is
+    taken for URL symmetry with the other call routes."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    result, err = ss_dismiss_promo_ack(ss, call_id, user_id)
+    if err:
+        return jsonify({"error": err}), 502
     return jsonify(result)
 
 def ss_remove_crew_from_call(ss, call_id, user_id):
