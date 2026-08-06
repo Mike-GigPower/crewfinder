@@ -2,7 +2,14 @@
     include('../../global.php');
     include('cohort.php');
     header('Content-Type: application/json');
-
+if (!function_exists('send_status'))
+    {
+        function send_status($code, $msg)
+        {
+            $proto = isset($_SERVER['SERVER_PROTOCOL']) ? $_SERVER['SERVER_PROTOCOL'] : 'HTTP/1.1';
+            header($proto . ' ' . $code . ' ' . $msg);
+        }
+    }
     if (goat_user_cohort() !== 'admin')
     {
         send_status(403, 'Forbidden');
@@ -120,15 +127,12 @@
         }
 
         /* days is a strict server-side whitelist: 14, 30, 90 or 0 (0 = permanent). */
-        /* Compared as strings BEFORE casting: (int)"abc" is 0, which would        */
-        /* otherwise be accepted as a permanent grant.                             */
-        $daysRaw = isset($_POST['days']) ? trim($_POST['days']) : '';
-        if ($daysRaw !== '14' && $daysRaw !== '30' && $daysRaw !== '90' && $daysRaw !== '0')
+        $days = isset($_POST['days']) ? (int) $_POST['days'] : -1;
+        if ($days !== 14 && $days !== 30 && $days !== 90 && $days !== 0)
         {
             send_status(400, 'Bad request');
             die('{"error":"days must be 14, 30, 90 or 0"}');
         }
-        $days = (int) $daysRaw;
 
         /* note is optional; truncate to 255 chars BEFORE escaping. */
         $note = isset($_POST['note']) ? mysql_real_escape_string(substr($_POST['note'], 0, 255)) : '';
