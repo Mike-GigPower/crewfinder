@@ -736,7 +736,7 @@ tr.skipped{opacity:.6}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
 @keyframes clashPulseRed{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(227,30,36,0.55)}}
 .crew-clash{color:#ef4444!important;font-weight:700}
-.crew-clash::before{content:'⚠ '}
+.crew-clash::before{content:'⚡ '}
 .crew-warn{color:#f97316!important;font-weight:700}
 .crew-warn::before{content:'⚠ '}
 .crew-ack{color:var(--muted)!important;font-weight:400;text-decoration:none}
@@ -1261,7 +1261,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
 
       <div class="schedule-toolbar">
         <span class="section-label">NEXT</span>
-        <input type="number" id="sched-days" value="14" min="1" max="28"
+        <input type="number" id="sched-days" value="14" min="1" max="90"
                style="width:44px;background:var(--surface2);border:1px solid var(--border);
                       border-radius:4px;padding:4px 8px;color:var(--text);
                       font-family:'Share Tech Mono',monospace;font-size:11px;
@@ -13560,9 +13560,16 @@ function renderClashCrewList(crewEl, clashes){
   });
   const people  = [...byPerson.values()];
   const anyHard = people.some(p => p.isClash);
-  const label   = anyHard
-    ? '<span style="font-size:9px;color:var(--accent2);font-weight:700;margin-right:6px;white-space:nowrap">Clashing:</span>'
-    : '<span style="font-size:9px;color:#f97316;font-weight:700;margin-right:6px;white-space:nowrap">Warnings:</span>';
+  // A person is outstanding if they are a clash, or have any unacknowledged
+  // warning. When nothing is outstanding the label mutes to match its chips.
+  // p.ackedCount < p.total (not a stored allAcked) so a Rule 4 entry — which
+  // can never be acknowledged — keeps the label live.
+  const anyPending = people.some(p => p.isClash || p.ackedCount < p.total);
+  const labelCol   = anyHard ? 'var(--accent2)' : (anyPending ? '#f97316' : 'var(--muted)');
+  const labelText  = anyHard ? 'Clashing:' : 'Warnings:';
+  const label = '<span style="font-size:9px;color:' + labelCol
+    + ';font-weight:' + (anyPending ? '700' : '400')
+    + ';margin-right:6px;white-space:nowrap">' + labelText + '</span>';
   crewEl.innerHTML = label + people.map(p => {
     // Chip class precedence: clash > unacked warning > acknowledged.
     const allAcked = p.total > 0 && p.ackedCount === p.total && !p.isClash;
