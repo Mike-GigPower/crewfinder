@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.22.0"
+APP_VERSION    = "4.23.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2612,7 +2612,8 @@ LONG_GAP_HRS    = 6
 VENUE_GAP_HRS   = 2
 MAX_24H_HRS     = 16
 
-def check_conflict(shifts, target_start, target_end, target_venue):
+def check_conflict(shifts, target_start, target_end, target_venue,
+                   rules=(1, 2, 3, 4)):
     for s in shifts:
         shift_start = datetime.fromisoformat(s["start"])
         shift_end   = datetime.fromisoformat(s["end"])
@@ -2620,8 +2621,8 @@ def check_conflict(shifts, target_start, target_end, target_venue):
         shift_dur   = (shift_end - shift_start).total_seconds() / 3600
 
         # Rule 1: overlap
-        if shift_start < target_end and shift_end > target_start:
-            return True, f"Rule 1 - Overlap: {shift_start.strftime('%d %b %H:%M')}-{shift_end.strftime('%H:%M')} @ {shift_venue or '?'}"
+        if 1 in rules and shift_start < target_end and shift_end > target_start:
+            return True, f"Rule 1 - Overlap: {shift_start.strftime('%d %b %H:%M')}-{shift_end.strftime('%H:%M')} @ {shift_venue or '?'}", 1
 
         # Gap
         if target_start >= shift_end:
@@ -2632,33 +2633,34 @@ def check_conflict(shifts, target_start, target_end, target_venue):
             continue
 
         # Rule 2: long shift gap
-        if shift_dur >= LONG_SHIFT_HRS and gap < LONG_GAP_HRS:
-            return True, f"Rule 2 - {shift_dur:.0f}hr shift needs {LONG_GAP_HRS}hr gap (only {gap:.1f}hrs): {shift_start.strftime('%d %b %H:%M')} @ {shift_venue or '?'}"
+        if 2 in rules and shift_dur >= LONG_SHIFT_HRS and gap < LONG_GAP_HRS:
+            return True, f"Rule 2 - {shift_dur:.0f}hr shift needs {LONG_GAP_HRS}hr gap (only {gap:.1f}hrs): {shift_start.strftime('%d %b %H:%M')} @ {shift_venue or '?'}", 2
 
         # Rule 3: venue change
-        if shift_venue and target_venue and shift_venue != target_venue and gap < VENUE_GAP_HRS:
-            return True, f"Rule 3 - Venue change {shift_venue}→{target_venue} needs {VENUE_GAP_HRS}hr gap (only {gap:.1f}hrs)"
+        if 3 in rules and shift_venue and target_venue and shift_venue != target_venue and gap < VENUE_GAP_HRS:
+            return True, f"Rule 3 - Venue change {shift_venue}→{target_venue} needs {VENUE_GAP_HRS}hr gap (only {gap:.1f}hrs)", 3
 
     # Rule 4: rolling 24hr window
-    for win_start, win_end in [
-        (target_end - timedelta(hours=24), target_end),
-        (target_start, target_start + timedelta(hours=24)),
-    ]:
-        total = 0.0
-        for s in shifts:
-            ss = datetime.fromisoformat(s["start"])
-            se = datetime.fromisoformat(s["end"])
-            if se <= win_start or ss >= win_end:
-                continue
-            total += (min(se, win_end) - max(ss, win_start)).total_seconds() / 3600
-        t_start = max(target_start, win_start)
-        t_end   = min(target_end,   win_end)
-        if t_end > t_start:
-            total += (t_end - t_start).total_seconds() / 3600
-        if total > MAX_24H_HRS:
-            return True, f"Rule 4 - Would work {total:.1f}hrs in 24hr window (max {MAX_24H_HRS}hrs)"
+    if 4 in rules:
+        for win_start, win_end in [
+            (target_end - timedelta(hours=24), target_end),
+            (target_start, target_start + timedelta(hours=24)),
+        ]:
+            total = 0.0
+            for s in shifts:
+                ss = datetime.fromisoformat(s["start"])
+                se = datetime.fromisoformat(s["end"])
+                if se <= win_start or ss >= win_end:
+                    continue
+                total += (min(se, win_end) - max(ss, win_start)).total_seconds() / 3600
+            t_start = max(target_start, win_start)
+            t_end   = min(target_end,   win_end)
+            if t_end > t_start:
+                total += (t_end - t_start).total_seconds() / 3600
+            if total > MAX_24H_HRS:
+                return True, f"Rule 4 - Would work {total:.1f}hrs in 24hr window (max {MAX_24H_HRS}hrs)", 4
 
-    return False, ""
+    return False, "", 0
 
 
 def _tag_shift_for_timeline(shift, targets):
@@ -2691,7 +2693,7 @@ def _tag_shift_for_timeline(shift, targets):
         for t in targets:
             if s_call_id == str(t["call_id"]):
                 continue
-            c_flag, _ = check_conflict([shift], t["start"], t["end"], t.get("venue", ""))
+            c_flag, _, _ = check_conflict([shift], t["start"], t["end"], t.get("venue", ""))
             if c_flag:
                 conflicts_target = True
             if s_start < t["end"] and s_end > t["start"]:
@@ -5684,7 +5686,7 @@ def api_availability():
             # booked on this call doesn't trigger a self-conflict (they're
             # already surfaced in the "Already Booked" section at the top).
             shifts_for_target = [s for s in shifts if str(s.get("call_id")) != str(t["call_id"])]
-            conflict, reason = check_conflict(shifts_for_target, t["start"], t["end"], t["venue"])
+            conflict, reason, _ = check_conflict(shifts_for_target, t["start"], t["end"], t["venue"])
             if not conflict:
                 for u in unavails:
                     if datetime.fromisoformat(u["start"]) <= t["end"] and datetime.fromisoformat(u["end"]) >= t["start"]:
@@ -6373,11 +6375,12 @@ def api_schedule():
     """Return all calls for the next 14 days grouped by booking, with
     server-side clash detection per call (3.4.6).
 
-    A call is "clashed" if any of its confirmed crew has another confirmed
-    assignment in the same window that triggers check_conflict — i.e. an
-    overlap (Rule 1), a long-shift gap violation (Rule 2), or a venue
-    change without enough buffer (Rule 3). Single source of truth with
-    Crew Finder; the front-end just renders what we deliver.
+    A call is flagged if any of its confirmed crew has another confirmed
+    assignment in the same window that triggers check_conflict — an overlap
+    (Rule 1, severity "clash"), a long-shift gap violation (Rule 2), a venue
+    change without enough buffer (Rule 3), or over-16h in a rolling 24hr
+    window (Rule 4); Rules 2-4 are severity "warning". Single source of truth
+    with Crew Finder; the front-end just renders what we deliver.
     """
     ss = get_ss_session()
     if not ss:
@@ -6427,7 +6430,7 @@ def api_schedule():
     #
     # Feature-flagged: if the endpoint isn't deployed yet, schedule still
     # works, just without clash detection.
-    clashes_by_call = {}  # {call_id_str: [{name, against_call, reason}]}
+    clashes_by_call = {}  # {call_id_str: [{user_id, name, rule, severity, reason, against_call_id}]}
     crew_by_call    = {}  # {call_id_str: [{user_id, name}]}
     if USE_BULK_BOOKED_CREW_ENDPOINT:
         assignments, err = fetch_booked_crew_bulk(ss, today, end_dt)
@@ -6471,26 +6474,50 @@ def api_schedule():
                 # "target". If conflict, record on call A (and symmetrically
                 # the same will be detected when A is the "other" for B).
                 for i, a_call in enumerate(parsed):
+                    cid = str(a_call["call_id"])
+                    # Pass A — pairwise, rules 1-3, so the counterpart call is
+                    # known and every violating pair is reported (not just the
+                    # first). n is 2-5 assignments per person, so O(n^2) is free.
+                    for j, other in enumerate(parsed):
+                        if j == i:
+                            continue
+                        conflict, reason, rule_no = check_conflict(
+                            [{"start": other["raw"]["start"],
+                              "end":   other["raw"]["end"],
+                              "venue": other["venue"]}],
+                            a_call["start"], a_call["end"], a_call["venue"],
+                            rules=(1, 2, 3),
+                        )
+                        if conflict:
+                            clashes_by_call.setdefault(cid, []).append({
+                                "user_id":         uid,
+                                "name":            a_call["name"],
+                                "rule":            rule_no,
+                                "severity":        "clash" if rule_no == 1 else "warning",
+                                "reason":          reason,
+                                "against_call_id": other["call_id"],
+                            })
+                    # Pass B — rule 4 only, whole set. It sums hours across the
+                    # 24hr window, so it cannot be evaluated pairwise.
                     other_shifts = [
                         {"start": p["raw"]["start"], "end": p["raw"]["end"],
                          "venue": p["venue"]}
                         for j, p in enumerate(parsed) if j != i
                     ]
-                    if not other_shifts:
-                        continue
-                    conflict, reason = check_conflict(
-                        other_shifts,
-                        a_call["start"],
-                        a_call["end"],
-                        a_call["venue"],
-                    )
-                    if conflict:
-                        cid = str(a_call["call_id"])
-                        clashes_by_call.setdefault(cid, []).append({
-                            "user_id": uid,
-                            "name":    a_call["name"],
-                            "reason":  reason,
-                        })
+                    if other_shifts:
+                        conflict, reason, rule_no = check_conflict(
+                            other_shifts, a_call["start"], a_call["end"],
+                            a_call["venue"], rules=(4,),
+                        )
+                        if conflict:
+                            clashes_by_call.setdefault(cid, []).append({
+                                "user_id":         uid,
+                                "name":            a_call["name"],
+                                "rule":            4,
+                                "severity":        "warning",
+                                "reason":          reason,
+                                "against_call_id": None,
+                            })
         # else: endpoint failed — proceed with no clash detection (silent fallback)
 
     # Attach crew + clashes to each call in the payload
@@ -7292,7 +7319,7 @@ def execute_goat_tool(tool_name, tool_input, ss):
                     # Exclude this target call's own shifts so a crew member already
                     # booked on this call doesn't trigger a self-conflict.
                     shifts_for_target = [s for s in shifts if str(s.get("call_id")) != str(t.get("call_id"))]
-                    c_flag, reason = check_conflict(shifts_for_target, t["start"], t["end"], t.get("venue",""))
+                    c_flag, reason, _ = check_conflict(shifts_for_target, t["start"], t["end"], t.get("venue",""))
                     if c_flag:
                         results["conflicts"].append({"name": crew["name"], "reason": reason})
                         conflict = True
