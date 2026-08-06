@@ -77,6 +77,18 @@
 	/* The EXISTS(...) guard is the fix: a type-2 (shift) row is only returned
 	/* when this same user has a CONFIRMED (status 5) call_crew_map row for that
 	/* call. Type-1 (unavailability) rows are unaffected.
+	/*
+	/* is_call_boss is read by a CORRELATED SUBQUERY, not by widening the EXISTS
+	/* into a join. A join to call_crew_map would multiply calendar rows if a
+	/* (callID, userID) pair ever had more than one row — which should not
+	/* happen, but MyISAM enforces nothing, and silently doubling a crew
+	/* member's shifts is a far worse failure than one extra indexed lookup.
+	/* The subquery leads on (userID, callID), the existing index, and returns
+	/* NULL for type-1 rows (cal.call is NULL) — read only in the type-2 branch.
+	/*
+	/* It drives the "Crew list" link on the shift card: a call boss can see who
+	/* else is on their call and ring them. my-shift-history.php already emits
+	/* this field; this brings upcoming shifts into line with past ones.
 	*/
 
 	$sql = "
@@ -101,7 +113,15 @@
 			cca.prev_est_length AS prev_est_length,
 			cca.changed_at      AS changed_at,
 			cpa.promoted_at     AS promoted_at,
-			cpa.acked_at        AS promo_acked_at
+			cpa.acked_at        AS promo_acked_at,
+			(
+			  SELECT ccb.is_call_boss
+			  FROM call_crew_map ccb
+			  WHERE ccb.callID = cal.call
+			    AND ccb.userID = cal.user
+			    AND ccb.status = 5
+			  LIMIT 1
+			)                   AS is_call_boss
 		FROM calendars cal
 		LEFT JOIN calls    c ON c.id  = cal.call
 		LEFT JOIN bookings b ON b.id  = c.bookingID
@@ -164,6 +184,15 @@
 			$entry['venue_suburb']   = (string) $row->venue_suburb;
 			$entry['venue_state']    = (string) $row->venue_state;
 			$entry['venue_postcode'] = (string) $row->venue_postcode;
+
+			/*
+			/* Is this crew member the CALL BOSS on this call? Drives the "Crew
+			/* list" link on the shift card, which reads my-call-crew.php. Always
+			/* emitted (1 or 0) rather than omitted when false, so the portal can
+			/* tell "not the boss" from "old PHP that never sent the field".
+			*/
+
+			$entry['is_call_boss'] = ((int) $row->is_call_boss === 1) ? 1 : 0;
 
 			/*
 			/* Contact hierarchy — who does this crew member call? Resolved at READ
