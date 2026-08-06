@@ -2,7 +2,15 @@
     include('../../global.php');
     include('cohort.php');
     header('Content-Type: application/json');
-if (!function_exists('send_status'))
+
+    /* Local status helper. Every other endpoint in this directory defines its
+    /* own copy (see call-feeds.php:30); this file called send_status() without
+    /* ever defining it, so EVERY error path here fataled instead of returning
+    /* JSON. Only get/set-as-admin were ever exercised, which is why it went
+    /* unnoticed. function_exists guard in case global.php or cohort.php ever
+    /* grows one. PHP 5.x -- no null-coalescing, no short array syntax.
+    */
+    if (!function_exists('send_status'))
     {
         function send_status($code, $msg)
         {
@@ -10,6 +18,7 @@ if (!function_exists('send_status'))
             header($proto . ' ' . $code . ' ' . $msg);
         }
     }
+
     if (goat_user_cohort() !== 'admin')
     {
         send_status(403, 'Forbidden');
@@ -127,12 +136,15 @@ if (!function_exists('send_status'))
         }
 
         /* days is a strict server-side whitelist: 14, 30, 90 or 0 (0 = permanent). */
-        $days = isset($_POST['days']) ? (int) $_POST['days'] : -1;
-        if ($days !== 14 && $days !== 30 && $days !== 90 && $days !== 0)
+        /* Compared as strings BEFORE casting: (int)"abc" is 0, which would        */
+        /* otherwise be accepted as a permanent grant.                             */
+        $daysRaw = isset($_POST['days']) ? trim($_POST['days']) : '';
+        if ($daysRaw !== '14' && $daysRaw !== '30' && $daysRaw !== '90' && $daysRaw !== '0')
         {
             send_status(400, 'Bad request');
             die('{"error":"days must be 14, 30, 90 or 0"}');
         }
+        $days = (int) $daysRaw;
 
         /* note is optional; truncate to 255 chars BEFORE escaping. */
         $note = isset($_POST['note']) ? mysql_real_escape_string(substr($_POST['note'], 0, 255)) : '';
