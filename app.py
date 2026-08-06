@@ -251,6 +251,11 @@ RECRUITMENT_CANDIDATE_WORK_ELIGIBILITY_URL = "https://ihyvwhquycsxhmhulzmu.supab
 # candidate. ADMIN-ONLY proxy route (verifying work rights requires the visa data
 # that only admins can see). Writes the separate vevo_check column.
 RECRUITMENT_VEVO_VERIFY_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-vevo-verify"
+# Same base URL: the whole recruitment dashboard as one JSON object (gauges, funnel,
+# age bucket, target). Takes optional year/age_band query params. ADMIN-ONLY proxy
+# route (decision 18) — the edge function only proves the caller is THE GOAT and has
+# no cohort check of its own, so the Flask gate IS the access control.
+RECRUITMENT_METRICS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-metrics"
 # Same base URL: the KeyPay "complete setup" edge function. Invoked in two modes —
 # "preview" (read-only: GET the EH employee, run the identity guard, return the
 # before-state + computed after-state) and "commit" (re-GET, re-verify, rebuild
@@ -4022,6 +4027,64 @@ def api_recruitment_candidates():
         return jsonify({"error": "Recruitment service unavailable"}), 502
     if r.status_code != 200:
         print(f"[recruitment] edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/metrics", methods=["GET"])
+@require_cohort("admin")
+def api_recruitment_metrics():
+    """ADMIN-ONLY: the whole recruitment dashboard as one JSON object.
+
+    NOTE THE GATE: @require_cohort("admin") — NOT "admin","operations" like the
+    list/detail routes. Same posture as health and work-eligibility: the decorator
+    IS the real access control (decision 18). The recruitment-metrics edge function
+    has no cohort check of its own — it only proves the caller is THE GOAT via the
+    X-Goat-Service-Key header — so a logged-in operations user must be refused HERE
+    with the standard 403 BEFORE this body runs, or nowhere.
+
+    Same key discipline as the other recruitment routes: GOAT_RECRUITMENT_KEY stays
+    in Python, sent in the X-Goat-Service-Key header, never seen by the browser.
+
+    Forwards only the year/age_band query params, and only when present — absent
+    means "unfiltered", and the SQL decides the default year in Melbourne time. A
+    Python-side default would be computed in UTC and could disagree by a day either
+    side of new year. Validation of those params lives in the edge function; two
+    implementations of the same rule drift, so it is not duplicated here."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    params = {}
+    year = str(request.args.get("year") or "").strip()
+    band = str(request.args.get("age_band") or "").strip()
+    if year:
+        params["year"] = year
+    if band:
+        params["age_band"] = band
+    try:
+        r = http.get(
+            RECRUITMENT_METRICS_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            params=params,
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] metrics request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    # The edge function 400s on an invalid year or age_band, with a message naming
+    # the offending value and the valid set. Forward it rather than flattening it
+    # to a generic 502 — that message is the difference between "the filter is
+    # spelled wrong" and an apparent outage. Everything else keeps the sibling
+    # routes' generic handling, so no Postgres or edge internals leak.
+    if r.status_code == 400:
+        try:
+            return jsonify(r.json()), 400
+        except Exception:
+            return jsonify({"error": "Invalid metrics parameters"}), 400
+    if r.status_code != 200:
+        print(f"[recruitment] metrics edge function returned {r.status_code}")
         return jsonify({"error": "Recruitment service error"}), 502
     try:
         return jsonify(r.json())
