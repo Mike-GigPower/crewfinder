@@ -1,6 +1,6 @@
 {
-  "version": "4.21.0",
+  "version": "4.22.0",
   "release_date": "2026-08-06",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.21.0/TheGOAT.dmg",
-  "release_notes": "Recruitment now has search and sortable columns, clearer button wording, and status colours that show what needs attention."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.22.0/TheGOAT.dmg",
+  "release_notes": "Recruitment gains a Dashboard view with funnel and target tracking, filtering by induction session, and a Needs attention list of everyone who needs chasing."
 }
