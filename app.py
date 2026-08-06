@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.23.0"
+APP_VERSION    = "4.24.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2415,6 +2415,54 @@ def fetch_booked_crew_bulk(ss, start_dt, end_dt):
     return assignments, None
 
 
+def fetch_clash_acks_bulk(ss, start_dt, end_dt):
+    """Bulk fetch of acknowledged clash warnings in the window via
+    list-clash-acks.php. Returns (acks_by_key, error).
+
+    acks_by_key : {(user_id, call_a, call_b, rule): {fingerprint, acked_at,
+                   acked_by, acked_by_name, note}}
+                  keyed on ints throughout so lookup can't miss on a
+                  string/int mismatch.
+
+    On any failure returns ({}, err) — the schedule renders every warning as
+    unacknowledged rather than failing, mirroring how a failed
+    fetch_booked_crew_bulk degrades to no clash detection at all.
+    """
+    start_s = start_dt.strftime("%Y-%m-%d")
+    end_s   = end_dt.strftime("%Y-%m-%d")
+    url = f"{BASE_URL}/ajax/crew/list-clash-acks.php?start={start_s}&end={end_s}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return {}, f"request failed: {e}"
+    if resp.status_code != 200:
+        return {}, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return {}, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return {}, data["error"]
+
+    from html import unescape
+    acks_by_key = {}
+    for a in data.get("acks", []):
+        try:
+            key = (int(a["user_id"]), int(a["call_a"]),
+                   int(a["call_b"]), int(a["rule"]))
+        except (KeyError, ValueError, TypeError):
+            continue
+        acks_by_key[key] = {
+            "fingerprint":   a.get("fingerprint", ""),
+            "acked_at":      a.get("acked_at"),
+            "acked_by":      a.get("acked_by"),
+            "acked_by_name": unescape(a.get("acked_by_name", "") or ""),
+            "note":          unescape(a["note"]) if a.get("note") else None,
+        }
+
+    return acks_by_key, None
+
+
 def _get_unavails_for_window(ss, start_dt, end_dt):
     """Unified unavailability fetcher: tries the bulk endpoint when enabled,
     falls back to per-crew HTML scrape on failure. Returns
@@ -2611,6 +2659,20 @@ LONG_SHIFT_HRS  = 8
 LONG_GAP_HRS    = 6
 VENUE_GAP_HRS   = 2
 MAX_24H_HRS     = 16
+
+def _clash_fingerprint(user_id, call_a, start_a, end_a, call_b, start_b, end_b, rule_no):
+    """Canonical identity of one acknowledgeable warning — see ack-clash.php,
+    which rebuilds this string from the same `calendars` rows. Times are the raw
+    ISO strings from get-booked-crew-bulk.php; do NOT reformat them."""
+    lo, hi = (call_a, call_b) if int(call_a) < int(call_b) else (call_b, call_a)
+    if int(call_a) < int(call_b):
+        s_lo, e_lo, s_hi, e_hi = start_a, end_a, start_b, end_b
+    else:
+        s_lo, e_lo, s_hi, e_hi = start_b, end_b, start_a, end_a
+    canon = "%s|%s|%s|%s|%s|%s|%s|%s" % (
+        int(user_id), int(lo), s_lo, e_lo, int(hi), s_hi, e_hi, int(rule_no))
+    return hashlib.sha1(canon.encode("utf-8")).hexdigest()
+
 
 def check_conflict(shifts, target_start, target_end, target_venue,
                    rules=(1, 2, 3, 4)):
@@ -3468,6 +3530,33 @@ def ss_dismiss_promo_ack(ss, call_id, user_id):
         return resp.json(), None
     except Exception:
         return None, "bad JSON from dismiss-promo-ack.php"
+
+def ss_ack_clash(ss, payload):
+    """Acknowledge (or undo) a clash warning via ack-clash.php (admin-only).
+
+    payload: {userID, callA, callB, rule, fingerprint, note, action}
+             action is "ack" (default) or "undo".
+
+    POSTs the JSON body straight through — ack-clash.php deliberately takes NO
+    query params (it acts on a pair of calls, not a single call id). Returns
+    (result, error).
+    """
+    url = f"{BASE_URL}/ajax/crew/ack-clash.php"
+    try:
+        resp = ss.post(url, json=payload, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            pass
+        return None, f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+    try:
+        return resp.json(), None
+    except Exception:
+        return None, "bad JSON from ack-clash.php"
 
 def _build_import_payload(booking_data, lines, non_labour, resolved_call_names, earliest_date):
     """Map the import's booking_data + labour lines + non-labour items into the
@@ -6489,6 +6578,16 @@ def api_schedule():
                             rules=(1, 2, 3),
                         )
                         if conflict:
+                            # Both calls' raw times are in hand here, which is
+                            # exactly where the ack fingerprint is computed.
+                            # Rule 1 is never acknowledgeable -> no fingerprint.
+                            fp = None
+                            if rule_no in (2, 3):
+                                fp = _clash_fingerprint(
+                                    uid,
+                                    a_call["call_id"], a_call["raw"]["start"], a_call["raw"]["end"],
+                                    other["call_id"],  other["raw"]["start"],  other["raw"]["end"],
+                                    rule_no)
                             clashes_by_call.setdefault(cid, []).append({
                                 "user_id":         uid,
                                 "name":            a_call["name"],
@@ -6496,6 +6595,8 @@ def api_schedule():
                                 "severity":        "clash" if rule_no == 1 else "warning",
                                 "reason":          reason,
                                 "against_call_id": other["call_id"],
+                                "fingerprint":     fp,
+                                "acked":           None,
                             })
                     # Pass B — rule 4 only, whole set. It sums hours across the
                     # 24hr window, so it cannot be evaluated pairwise.
@@ -6517,8 +6618,37 @@ def api_schedule():
                                 "severity":        "warning",
                                 "reason":          reason,
                                 "against_call_id": None,
+                                "fingerprint":     None,  # Rule 4 not acknowledgeable
+                                "acked":           None,
                             })
         # else: endpoint failed — proceed with no clash detection (silent fallback)
+
+    # Stamp acknowledgements onto acknowledgeable (Rule 2/3) clash entries.
+    # Fetched once; _ack_err is deliberately ignored — a failed fetch degrades
+    # to everything unacknowledged, matching the clash-detection fallback above.
+    acks_by_key, _ack_err = fetch_clash_acks_bulk(ss, today, end_dt)
+    if acks_by_key:
+        for cid, entries in clashes_by_call.items():
+            for e in entries:
+                if not e.get("fingerprint"):
+                    continue
+                # e's own call is the dict key (cid); the counterpart is
+                # against_call_id. Normalise the pair to (lo, hi) so the key
+                # matches the row ack-clash.php wrote, regardless of direction.
+                key = (int(e["user_id"]),
+                       min(int(cid), int(e["against_call_id"])),
+                       max(int(cid), int(e["against_call_id"])),
+                       int(e["rule"]))
+                ack = acks_by_key.get(key)
+                # Stamp ONLY when the stored fingerprint equals the freshly
+                # computed one. A mismatch means a call was retimed since it was
+                # signed off — the warning must return at full weight.
+                if ack and ack.get("fingerprint") == e["fingerprint"]:
+                    e["acked"] = {
+                        "by":   ack.get("acked_by_name", ""),
+                        "at":   ack.get("acked_at"),
+                        "note": ack.get("note"),
+                    }
 
     # Attach crew + clashes to each call in the payload
     bookings_list = list(bookings.values())
@@ -9028,6 +9158,27 @@ def api_call_dismiss_promo_ack(booking_id, call_id, user_id):
     result, err = ss_dismiss_promo_ack(ss, call_id, user_id)
     if err:
         return jsonify({"error": err}), 502
+    return jsonify(result)
+
+@app.route("/api/schedule/clash-ack", methods=["POST"])
+@require_cohort("admin")
+def api_schedule_clash_ack():
+    """Acknowledge or undo a clash warning. Forwards the JSON body to
+    ack-clash.php, which enforces the rule allow-list (2/3 only) and the
+    fingerprint check — we deliberately do NOT re-validate the rule here, so
+    there is one enforcement point, not two.
+
+    On success the schedule cache is cleared so the acknowledged chip changes
+    immediately instead of after the 120s TTL — without this the feature looks
+    broken."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    payload = request.get_json(silent=True) or {}
+    result, err = ss_ack_clash(ss, payload)
+    if err:
+        return jsonify({"error": err}), 502
+    _schedule_cache.clear()
     return jsonify(result)
 
 def ss_remove_crew_from_call(ss, call_id, user_id):
