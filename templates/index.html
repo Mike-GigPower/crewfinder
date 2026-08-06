@@ -13553,8 +13553,10 @@ function renderClashCrewList(crewEl, clashes){
     if(c.rule === 1 || c.severity === 'clash') p.isClash = true;
     if(c.reason) p.reasons.push(c.reason);
     if(c.acked){ p.ackedCount++; if(!p.ackInfo) p.ackInfo = c.acked; }
-    // first acknowledgeable (Rule 2/3, has fingerprint) entry drives the click
-    if(!p.ackEntry && c.fingerprint) p.ackEntry = c;
+    // Acknowledgeable (Rule 2/3, has fingerprint) entry drives the click.
+    // Prefer an UNACKNOWLEDGED entry so a second warning on the same call is
+    // reachable; a person on three calls can carry two acknowledgeable pairs.
+    if(c.fingerprint && (!p.ackEntry || (p.ackEntry.acked && !c.acked))) p.ackEntry = c;
   });
   const people  = [...byPerson.values()];
   const anyHard = people.some(p => p.isClash);
