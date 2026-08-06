@@ -129,23 +129,45 @@
 
 	/* ---- action: ack ---- */
 
-	/* 4. read both calendars rows (type=2). Either missing -> business no-op. */
+	/* 4. read both calendars rows (type=2). Either missing -> business no-op.
+	/*
+	/* Columns are ALIAS-QUALIFIED (cal.call, cal.start, cal.end) exactly as
+	/* get-booked-crew-bulk.php / get-shifts-bulk.php do. `call` is a MySQL
+	/* reserved word (CALL) and is only exempt from quoting when it follows a
+	/* period in a qualified name — unqualified `call` is a syntax error.
+	/*
+	/* A query that returns false is a HARD FAILURE (500), NOT a missing row.
+	/* Folding false into $rowLo === null would report a SQL error as the
+	/* business no-op "assignment not found", sending anyone debugging to the
+	/* data instead of the query. */
 
 	$rowLo = null;
 	$rowHi = null;
 
 	$resLo = mysql_query(
-		'SELECT start, end FROM calendars' .
-		' WHERE type = 2 AND user = ' . $userID . ' AND call = ' . $lo . ' LIMIT 1'
+		'SELECT cal.start AS start_dt, cal.end AS end_dt FROM calendars cal' .
+		' WHERE cal.type = 2 AND cal.user = ' . $userID .
+		' AND cal.call = ' . $lo . ' LIMIT 1'
 	);
-	if ($resLo !== false && mysql_num_rows($resLo) > 0)
+	if ($resLo === false)
+	{
+		send_status(500, 'Internal Server Error');
+		die('{"error":"calendar lookup failed: ' . addslashes(mysql_error()) . '"}');
+	}
+	if (mysql_num_rows($resLo) > 0)
 		$rowLo = mysql_fetch_object($resLo);
 
 	$resHi = mysql_query(
-		'SELECT start, end FROM calendars' .
-		' WHERE type = 2 AND user = ' . $userID . ' AND call = ' . $hi . ' LIMIT 1'
+		'SELECT cal.start AS start_dt, cal.end AS end_dt FROM calendars cal' .
+		' WHERE cal.type = 2 AND cal.user = ' . $userID .
+		' AND cal.call = ' . $hi . ' LIMIT 1'
 	);
-	if ($resHi !== false && mysql_num_rows($resHi) > 0)
+	if ($resHi === false)
+	{
+		send_status(500, 'Internal Server Error');
+		die('{"error":"calendar lookup failed: ' . addslashes(mysql_error()) . '"}');
+	}
+	if (mysql_num_rows($resHi) > 0)
 		$rowHi = mysql_fetch_object($resHi);
 
 	if (!$rowLo || !$rowHi)
@@ -160,10 +182,10 @@
 	/*    Timestamps via date('Y-m-d\TH:i:s', strtotime(...)) — IDENTICAL to
 	/*    get-booked-crew-bulk.php's emit and to Python's isoformat(). */
 
-	$startLo = date('Y-m-d\TH:i:s', strtotime($rowLo->start));
-	$endLo   = date('Y-m-d\TH:i:s', strtotime($rowLo->end));
-	$startHi = date('Y-m-d\TH:i:s', strtotime($rowHi->start));
-	$endHi   = date('Y-m-d\TH:i:s', strtotime($rowHi->end));
+	$startLo = date('Y-m-d\TH:i:s', strtotime($rowLo->start_dt));
+	$endLo   = date('Y-m-d\TH:i:s', strtotime($rowLo->end_dt));
+	$startHi = date('Y-m-d\TH:i:s', strtotime($rowHi->start_dt));
+	$endHi   = date('Y-m-d\TH:i:s', strtotime($rowHi->end_dt));
 
 	$canon = $userID . '|' . $lo . '|' . $startLo . '|' . $endLo .
 	         '|' . $hi . '|' . $startHi . '|' . $endHi . '|' . $rule;
@@ -189,6 +211,10 @@
 
 	$ackedBy = (int) $_SESSION[SITE_KEY]['userID'];
 
+	/* Pin one timestamp: the row stored and the value reported must agree, so
+	/* the client is never told an acked_at a second off what actually landed. */
+	$now = time();
+
 	mysql_query(
 		'DELETE FROM call_clash_ack' .
 		' WHERE userID='   . $userID .
@@ -206,7 +232,7 @@
 			$hi . ', ' .
 			$rule . ', ' .
 			$db->sc($computed) . ', ' .
-			time() . ', ' .
+			$now . ', ' .
 			$ackedBy . ', ' .
 			$noteSql .
 		')'
@@ -224,7 +250,7 @@
 		'call_a'   => $lo,
 		'call_b'   => $hi,
 		'rule'     => $rule,
-		'acked_at' => time(),
+		'acked_at' => $now,
 		'acked_by' => $ackedBy
 	));
 
