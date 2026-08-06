@@ -992,6 +992,41 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .recruit-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .recruit-import-btn{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;padding:8px 15px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-bg);color:var(--accent);cursor:pointer;transition:all .12s;white-space:nowrap;flex-shrink:0}
 .recruit-import-btn:hover{background:var(--accent);color:#000}
+/* Recruitment view switch — Operations is the working surface, Dashboard the
+   reading surface. A segmented pair rather than a tab, because these are two
+   views of one tab, not two tabs. */
+.recruit-viewswitch{display:inline-flex;border:1px solid var(--border-gold);border-radius:20px;overflow:hidden;margin:0 0 16px}
+.recruit-viewbtn{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:6px 18px;border:none;background:none;color:var(--muted);cursor:pointer;transition:all .12s}
+.recruit-viewbtn:hover{color:var(--accent)}
+.recruit-viewbtn.active{background:var(--accent);color:#000}
+/* ── Recruitment DASHBOARD (item 7b): gauges, funnel, bucket, medians ── */
+.recruit-dash-filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 16px}
+.recruit-dash-filters select{margin:0}
+.recruit-dash-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 14px}
+.recruit-dash-bottom{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr 1fr;gap:10px;margin:14px 0 0}
+.recruit-dash-card{background:var(--surface2);border-radius:10px;padding:12px;display:flex;flex-direction:column;align-items:center;text-align:center}
+.recruit-dash-card-warn{border:1px solid var(--warn)}
+.recruit-gauge{width:100%;max-width:120px}
+.recruit-gauge.sm{max-width:62px}
+.recruit-gauge-val{fill:var(--text);font-family:'Share Tech Mono',monospace;font-weight:700}
+.recruit-dash-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-top:6px}
+.recruit-dash-sub{font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-top:2px}
+.recruit-funnel-wrap{display:flex;justify-content:center;margin:6px 0}
+.recruit-funnel{width:100%;max-width:460px}
+.recruit-fn-num{fill:var(--text);font-family:'Share Tech Mono',monospace;font-size:12px}
+.recruit-fn-name{fill:var(--muted);font-size:10px}
+.recruit-bucket-count{fill:var(--text);font-family:'Share Tech Mono',monospace;font-size:26px}
+.recruit-bucket-crew{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;letter-spacing:.04em}
+.recruit-bucket-target{fill:#f778ba;font-family:'Share Tech Mono',monospace;font-size:12px}
+.recruit-dash-note{text-align:center;font-size:12px;color:var(--muted);margin:4px 0 0}
+.recruit-median-card{align-items:flex-start;text-align:left}
+.recruit-median-big{font-family:'Share Tech Mono',monospace;font-size:26px;color:var(--text);line-height:1.1}
+.recruit-median-unit{font-size:12px;color:var(--muted);margin-left:5px}
+.recruit-split-toggle{background:none;border:none;color:var(--accent);font-family:'Rajdhani',sans-serif;font-size:12px;cursor:pointer;padding:6px 0 0}
+.recruit-median-split{margin-top:6px;width:100%}
+.recruit-split-row{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--text);padding:3px 0}
+.recruit-age-chart{width:100%;max-width:110px}
+.recruit-age-lbl{fill:var(--muted);font-family:'Share Tech Mono',monospace;font-size:9px}
 /* Import-bookings preview: three grouped lists (mark booked / skip / unmatched) */
 .bi-group{margin-top:14px;border:1px solid var(--border);border-radius:7px;overflow:hidden}
 .bi-group-head{display:flex;align-items:center;gap:8px;padding:9px 13px;background:var(--surface2);font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;letter-spacing:.03em;border-bottom:1px solid var(--border)}
@@ -1724,8 +1759,13 @@ a.recruit-action{text-decoration:none;display:inline-block}
           <div class="recruit-title">Recruitment</div>
           <div class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
         </div>
-        <button class="recruit-import-btn" onclick="openBookingImport()">📥 Import bookings</button>
+        <button id="recruit-import-btn" class="recruit-import-btn" onclick="openBookingImport()">📥 Import bookings</button>
       </div>
+      <div class="recruit-viewswitch">
+        <button id="recruit-view-ops"  class="recruit-viewbtn active" onclick="setRecruitView('operations')">Operations</button>
+        <button id="recruit-view-dash" class="recruit-viewbtn"        onclick="setRecruitView('dashboard')">Dashboard</button>
+      </div>
+      <div id="recruit-ops-view">
       <div id="recruit-filters" class="recruit-filters"></div>
       <div class="recruit-search-wrap">
         <input type="text" id="recruit-search" class="recruit-search"
@@ -1741,6 +1781,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <div id="recruit-batch" class="recruit-batch" style="display:none"></div>
       <div id="recruit-status" class="recruit-status">Loading applicants…</div>
       <div id="recruit-list" class="recruit-list"></div>
+      </div>
+      <div id="recruit-dash-view" style="display:none"></div>
     </div>
   </div>
 
@@ -3962,6 +4004,385 @@ function recruitSortByHeader(key){
   renderRecruit();
 }
 
+// ── Operations / Dashboard view switch ──────────────────────────────────────
+// 'operations' | 'dashboard'. Operations is the DEFAULT for a first-time user —
+// Rich and Monty live there. The choice is then remembered per person, so anyone
+// who wants the numbers (Joe) flips once and stays flipped.
+let _recruitView = 'operations';
+function setRecruitView(view){
+  _recruitView = (view === 'dashboard') ? 'dashboard' : 'operations';
+  goatPrefs.set('recruitment', 'view', _recruitView);
+  applyRecruitView();
+}
+// Show one container, hide the other, and reflect the choice on the buttons.
+// Separate from setRecruitView so the remembered value can be applied on load
+// WITHOUT re-saving it.
+function applyRecruitView(){
+  const ops  = document.getElementById('recruit-ops-view');
+  const dash = document.getElementById('recruit-dash-view');
+  const bOps = document.getElementById('recruit-view-ops');
+  const bDash= document.getElementById('recruit-view-dash');
+  const onDash = (_recruitView === 'dashboard');
+  if(ops)  ops.style.display  = onDash ? 'none' : '';
+  if(dash) dash.style.display = onDash ? '' : 'none';
+  if(bOps)  bOps.classList.toggle('active', !onDash);
+  if(bDash) bDash.classList.toggle('active', onDash);
+  // Import bookings lives in the header (outside both views) so it keeps its
+  // top-right spot untouched — but it's an Operations action, so hide it on
+  // Dashboard explicitly rather than by moving it into a container.
+  const imp = document.getElementById('recruit-import-btn');
+  if(imp) imp.style.display = onDash ? 'none' : '';
+  if(onDash) loadRecruitMetrics();
+}
+
+let _recruitMetrics = null;      // last successful payload
+let _recruitMetricsLoading = false;
+let _recruitDashYear = '';       // '' = current Melbourne year (SQL decides)
+let _recruitDashBand = '';       // '' = all ages
+let _recruitDashYearNow = null;  // current Melbourne year, captured from the first
+                                 // UNFILTERED payload so the year dropdown is
+                                 // Melbourne-correct and stable when a past year
+                                 // is later selected (m.year would then shift).
+// Fetched separately from the candidate list, and ONLY when the Dashboard is
+// shown — computing metrics for people who never open it is wasted work. Cached
+// in memory for the session; Refresh (or a filter change) re-fetches via force.
+async function loadRecruitMetrics(force){
+  if(_recruitMetricsLoading) return;
+  if(_recruitMetrics && !force){ renderRecruitDash(); return; }
+  const el = document.getElementById('recruit-dash-view');
+  if(!el) return;
+  _recruitMetricsLoading = true;
+  el.innerHTML = '<div class="recruit-status">Loading metrics…</div>';
+  try{
+    // Build the query string from the filters, OMITTING empty values — an empty
+    // age_band would 400 at the edge function, and an absent year lets the SQL
+    // pick the current Melbourne year (a Python/JS default could be a day off).
+    const qs = [];
+    if(_recruitDashYear) qs.push('year=' + encodeURIComponent(_recruitDashYear));
+    if(_recruitDashBand) qs.push('age_band=' + encodeURIComponent(_recruitDashBand));
+    const r = await fetch('/api/recruitment/metrics' + (qs.length ? '?' + qs.join('&') : ''));
+    const data = await r.json();
+    if(!r.ok){
+      // 403 = wrong cohort, 400 = bad filter (message worth showing), 502 = upstream.
+      el.innerHTML = '<div class="recruit-status">'
+        + recruitEsc((data && data.error) || ('Could not load metrics (' + r.status + ')'))
+        + '</div>';
+      return;
+    }
+    _recruitMetrics = data;
+    renderRecruitDash();
+  }catch(e){
+    el.innerHTML = '<div class="recruit-status">Could not load metrics.</div>';
+  }finally{
+    _recruitMetricsLoading = false;
+  }
+}
+
+// Semicircular arc gauge. The arc is a fixed path; the VALUE is drawn by
+// stroke-dasharray on a second copy of it — dash length = pct of the arc's
+// total length (pi * r).
+//
+// pct null means "no data" (the SQL returns null whenever a denominator is 0).
+// That renders as an EMPTY arc and an em dash, never as 0% — a dashboard showing
+// "0%" for "nothing has happened yet" is actively misleading, and that
+// distinction was deliberate all the way down in the Postgres function.
+//
+// Track colour: the brief's --surface3 token does not exist in this file, so the
+// unfilled arc reuses --border, the same token the unfilled recruit-pill borders
+// use.
+function recruitGauge(pct, colour, opts){
+  opts = opts || {};
+  const small = !!opts.small;
+  const r = small ? 24 : 42;
+  const len = Math.PI * r;
+  const has = (pct !== null && pct !== undefined && !isNaN(pct));
+  const shown = has ? Math.max(0, Math.min(100, pct)) : 0;
+  const dash = (shown / 100 * len).toFixed(1) + ' ' + len.toFixed(1);
+  const vb   = small ? '0 0 60 38' : '0 0 100 58';
+  const path = small ? 'M6 32 A 24 24 0 0 1 54 32' : 'M8 50 A 42 42 0 0 1 92 50';
+  const sw   = small ? 6 : 9;
+  const fs   = small ? 13 : 21;
+  const tx   = small ? 30 : 50, ty = small ? 30 : 46;
+  const label = has ? Math.round(shown) + '%' : '—';
+  return `<svg viewBox="${vb}" class="recruit-gauge${small ? ' sm' : ''}" role="img" aria-label="${recruitEsc(opts.aria || label)}">`
+    + `<path d="${path}" fill="none" stroke="var(--border)" stroke-width="${sw}" stroke-linecap="round"/>`
+    + `<path d="${path}" fill="none" stroke="${colour}" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${dash}"/>`
+    + `<text x="${tx}" y="${ty}" text-anchor="middle" class="recruit-gauge-val" font-size="${fs}">${label}</text>`
+    + `</svg>`;
+}
+
+// No-show has no all-time figure in the payload — booked_to_attended is per
+// session. Sum the RAW numerators and denominators across cohorts rather than
+// averaging their percentages, so a 150-person session outweighs a 12-person one.
+// Candidates who never booked a session are correctly absent: they cannot no-show.
+// With no sessions at all the denominator is 0 and this shows an em dash.
+function recruitNoShowPct(m){
+  const s = (m && m.sessions) || [];
+  let num = 0, den = 0;
+  s.forEach(x => {
+    const r = (x.ratios || {}).booked_to_attended || {};
+    num += (r.numerator || 0);
+    den += (r.denominator || 0);
+  });
+  return den > 0 ? (100 - (100 * num / den)) : null;
+}
+
+// Funnel segments: seven stages from counts.reached in pipeline order. active_crew
+// is NOT a segment — it is the bucket.
+const RECRUIT_FUNNEL_STAGES = [
+  ['applied',              'NEW'],
+  ['invited_to_induction', 'INVITED'],
+  ['booked',               'BOOKED'],
+  ['attended',             'ATTENDED'],
+  ['details_submitted',    'DETAILS IN'],
+  ['sent_to_eh',           'WITH EH'],
+  ['all_docs_received',    'READY']
+];
+// Width is the data: each segment's half-width is proportional to how many
+// candidates got at least that far, so the taper IS the attrition and can be read
+// without reading a number.
+//
+// MINW exists because a stage with 1 candidate would otherwise render as a
+// hairline and look broken rather than small. It costs strict proportionality at
+// the bottom of the range, which is the right trade — the numbers are printed
+// alongside.
+const FN_MAXW = 300, FN_MINW = 44, FN_CX = 170, FN_TOP = 10, FN_H = 30;
+function fnW(n, max){
+  if(!max || max <= 0) return FN_MINW;
+  return FN_MINW + (FN_MAXW - FN_MINW) * (Math.max(0, n) / max);
+}
+// One gold ramp, intensifying as it narrows. Colour encodes depth, not category.
+const FN_FILLS = ['#8b6f1f','#997a1f','#a5851f','#b3901f','#bd9a24','#c8a42e','#d4af37'];
+
+const RECRUIT_AGE_BANDS = [
+  ['',       'All ages'],
+  ['18-24',  '18-24'],
+  ['25-29',  '25-29'],
+  ['30-39',  '30-39'],
+  ['40+',    '40+'],
+  ['unknown','Unknown']
+];
+
+function setRecruitDashYear(v){ _recruitDashYear = v || ''; loadRecruitMetrics(true); }
+function setRecruitDashBand(v){ _recruitDashBand = v || ''; loadRecruitMetrics(true); }
+
+// Toggle the median split open/closed. Plain JS on style + caret — no fetch.
+function recruitDashToggleSplit(btn){
+  const box = document.getElementById('recruit-median-split');
+  if(!box) return;
+  const hidden = (box.style.display === 'none' || box.style.display === '');
+  box.style.display = hidden ? 'block' : 'none';
+  btn.textContent = hidden ? '▴ hide split' : '▾ show split';
+}
+
+// "numerator / denominator" in mono, em dash for a null side — a percentage
+// without its fraction cannot be sanity-checked, and at these volumes it is often
+// 2 out of 3.
+function recruitFrac(num, den){
+  return (num == null ? '—' : num) + ' / ' + (den == null ? '—' : den);
+}
+
+function recruitGaugeCard(pct, colour, label, sub, tip, opts){
+  opts = opts || {};
+  const has = (pct !== null && pct !== undefined && !isNaN(pct));
+  const cls = 'recruit-dash-card' + (opts.warn ? ' recruit-dash-card-warn' : '');
+  return `<div class="${cls}" title="${recruitEsc(tip)}">`
+    + recruitGauge(pct, colour, {small: !!opts.small, aria: label + ' ' + (has ? Math.round(pct) + '%' : 'no data')})
+    + `<div class="recruit-dash-label">${recruitEsc(label)}</div>`
+    + `<div class="recruit-dash-sub">${recruitEsc(sub)}</div>`
+    + `</div>`;
+}
+
+// The filter row: year (current + two prior), age band, Refresh. Both selects
+// re-fetch with force=true so a filter change always bypasses the session cache.
+function recruitDashFilters(){
+  const now = _recruitDashYearNow || (new Date()).getFullYear();
+  const curY = _recruitDashYear ? parseInt(_recruitDashYear, 10) : now;
+  let yearOpts = '';
+  for(let y = now; y >= now - 2; y--){
+    yearOpts += `<option value="${y}"${y === curY ? ' selected' : ''}>${y}</option>`;
+  }
+  let bandOpts = '';
+  RECRUIT_AGE_BANDS.forEach(b => {
+    bandOpts += `<option value="${recruitEsc(b[0])}"${b[0] === _recruitDashBand ? ' selected' : ''}>${recruitEsc(b[1])}</option>`;
+  });
+  return '<div class="recruit-dash-filters">'
+    + `<select class="recruit-session" onchange="setRecruitDashYear(this.value)">${yearOpts}</select>`
+    + `<select class="recruit-session" onchange="setRecruitDashBand(this.value)">${bandOpts}</select>`
+    + '<button class="recruit-action" onclick="loadRecruitMetrics(true)">Refresh</button>'
+    + '</div>';
+}
+
+// The funnel + target bucket, one SVG. Widths come from counts.reached (cumulative
+// furthest-stage-reached — never widening downward), NOT counts.by_stage.
+function recruitFunnelSvg(m){
+  const reached = (m.counts && m.counts.reached) || {};
+  const counts = RECRUIT_FUNNEL_STAGES.map(s => reached[s[0]] || 0);
+  const neck = reached.active_crew || 0;
+  const widths = counts.concat([neck]);          // 8 widths: 7 stages + neck
+  const maxN = reached.applied || 0;
+  const target = (m.target && m.target.target != null) ? m.target.target : null;
+  const onboarded = (m.target && m.target.onboarded) || 0;
+  const tpct = (m.target && m.target.pct != null) ? m.target.pct : null;
+  const year = (m.year != null) ? m.year : '';
+
+  let body = '';
+  for(let i = 0; i < RECRUIT_FUNNEL_STAGES.length; i++){
+    const yTop = FN_TOP + i * FN_H, yBot = yTop + FN_H;
+    const wT = fnW(widths[i], maxN), wB = fnW(widths[i + 1], maxN);
+    const x1 = FN_CX - wT / 2, x2 = FN_CX + wT / 2, x3 = FN_CX + wB / 2, x4 = FN_CX - wB / 2;
+    const nm = RECRUIT_FUNNEL_STAGES[i][1];
+    const tip = counts[i] + ' candidates got at least as far as ' + nm.toLowerCase()
+      + '. Cumulative, so someone now in Crew is counted at every earlier stage.';
+    body += `<g><title>${recruitEsc(tip)}</title>`
+      + `<polygon points="${x1.toFixed(1)},${yTop} ${x2.toFixed(1)},${yTop} ${x3.toFixed(1)},${yBot} ${x4.toFixed(1)},${yBot}" fill="${FN_FILLS[i]}"/></g>`;
+    const midY = yTop + FN_H / 2 + 4;
+    body += `<text x="330" y="${midY}" text-anchor="end" class="recruit-fn-num">${counts[i]}</text>`;
+    body += `<text x="372" y="${midY}" class="recruit-fn-name">${recruitEsc(nm)}</text>`;
+  }
+
+  // Bucket. Height IS the target, so the green fill level literally reads as
+  // progress. Explicit cases: no target (no line/pct), onboarded>target (cap the
+  // DRAWING at the rim, not the number), onboarded 0 (no green rect at all).
+  const bx = 70, by = 236, bw = 200, bh = 94, pad = 2;
+  let bucket = `<rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="6" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>`;
+  const fillH = (target != null && onboarded > 0) ? Math.min(1, onboarded / target) * (bh - pad * 2) : 0;
+  if(fillH > 0){
+    const fy = by + bh - pad - fillH;
+    bucket += `<rect x="${bx + pad}" y="${fy.toFixed(1)}" width="${bw - pad * 2}" height="${fillH.toFixed(1)}" fill="#3fb950"/>`;
+  }
+  if(target != null){
+    bucket += `<line x1="${bx - 10}" y1="${by}" x2="${bx + bw + 10}" y2="${by}" stroke="#f778ba" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+    bucket += `<text x="${bx + bw + 14}" y="${by + 4}" class="recruit-bucket-target">${target}</text>`;
+  }
+  bucket += `<text x="${bx + bw / 2}" y="${by + 44}" text-anchor="middle" class="recruit-bucket-count">${onboarded}</text>`;
+  const crewLabel = (target == null) ? 'CREW'
+    : ('CREW · ' + (tpct != null ? Math.round(tpct) : 0) + '%');
+  // Dark surface text reads on green only when the fill is tall enough to sit
+  // behind it; with a sliver (e.g. 1%) the same text over the dark bucket would
+  // vanish, so fall back to green-on-dark.
+  const crewFill = (target != null && fillH >= 18) ? 'var(--surface)' : '#3fb950';
+  bucket += `<text x="${bx + bw / 2}" y="${by + bh - 9}" text-anchor="middle" class="recruit-bucket-crew" fill="${crewFill}">${recruitEsc(crewLabel)}</text>`;
+  const btip = (target != null)
+    ? ('Crew added during ' + year + ', against the annual intake target of ' + target + '.')
+    : ('Crew added during ' + year + '. No annual intake target set.');
+
+  return `<svg viewBox="0 0 460 340" class="recruit-funnel" role="img" aria-label="Recruitment funnel">`
+    + body
+    + `<g><title>${recruitEsc(btip)}</title>${bucket}</g>`
+    + `</svg>`;
+}
+
+// Age mini-chart: four bars scaled to the largest band, gold. unknown is a fifth
+// muted bar only when non-zero (five values including unknown have no single
+// percentage, so bars, not a gauge).
+function recruitAgeCard(bands){
+  bands = bands || {};
+  const order = [['18-24', '18'], ['25-29', '25'], ['30-39', '30'], ['40+', '40+']];
+  const vals = order.map(o => bands[o[0]] || 0);
+  const labels = order.map(o => o[1]);
+  const unknown = bands['unknown'] || 0;
+  if(unknown > 0){ vals.push(unknown); labels.push('?'); }
+  const max = Math.max.apply(null, vals.concat([0]));
+  const n = vals.length;
+  const W = 110, H = 44, barW = 14, baseY = 30, maxBar = 26;
+  const gap = (W - n * barW) / (n + 1);
+  let bars = '';
+  for(let i = 0; i < n; i++){
+    const x = gap + i * (barW + gap);
+    const h = max > 0 ? (vals[i] / max) * maxBar : 0;
+    const fill = (unknown > 0 && i === n - 1) ? 'var(--muted)' : '#d4af37';
+    bars += `<rect x="${x.toFixed(1)}" y="${(baseY - h).toFixed(1)}" width="${barW}" height="${h.toFixed(1)}" fill="${fill}" rx="1"/>`;
+    bars += `<text x="${(x + barW / 2).toFixed(1)}" y="40" text-anchor="middle" class="recruit-age-lbl">${recruitEsc(labels[i])}</text>`;
+  }
+  return '<div class="recruit-dash-card" title="Age bands, computed from date of birth at the time of viewing.">'
+    + `<svg viewBox="0 0 ${W} ${H}" class="recruit-age-chart" role="img" aria-label="Age bands">${bars}</svg>`
+    + '<div class="recruit-dash-label">Age</div>'
+    + '</div>';
+}
+
+// The real Dashboard (item 7b): three headline gauges, the funnel + bucket, a
+// median card and four reference gauges. Every graphic carries a native tooltip.
+function renderRecruitDash(){
+  const el = document.getElementById('recruit-dash-view');
+  if(!el || !_recruitMetrics) return;
+  const m = _recruitMetrics;
+  // Capture the current Melbourne year once, from the first UNFILTERED payload.
+  if(_recruitDashYear === '' && _recruitDashYearNow === null && typeof m.year === 'number'){
+    _recruitDashYearNow = m.year;
+  }
+  const filters = recruitDashFilters();
+  const counts = m.counts || {};
+  const total = counts.total || 0;
+  const filtered = (_recruitDashBand !== '' || _recruitDashYear !== '');
+
+  // Genuinely empty system (no filter, nothing in it): one friendly line, no
+  // empty funnel. A filter that HAPPENS to select zero still draws — at minimum
+  // width, with em-dash gauges — so the null path stays visible rather than
+  // masquerading as "nothing exists".
+  if(total === 0 && !filtered){
+    el.innerHTML = filters + '<div class="recruit-status">No applicants yet.</div>';
+    return;
+  }
+
+  const rr = m.ratios || {};
+  const reg = rr.registration_rate || {};
+  const ntc = rr.new_to_crew || {};
+  const scr = rr.screening_rate || {};
+  // No-show fraction: (booked − attended) / booked, summed across cohorts.
+  let nsNum = 0, nsDen = 0;
+  (m.sessions || []).forEach(x => {
+    const r = (x.ratios || {}).booked_to_attended || {};
+    nsNum += (r.numerator || 0);
+    nsDen += (r.denominator || 0);
+  });
+  const headline = '<div class="recruit-dash-grid">'
+    + recruitGaugeCard(reg.pct, '#3fb950', 'Registration', recruitFrac(reg.numerator, reg.denominator),
+        'Candidates who booked an induction session, as a share of those invited. Measures whether the invite email is landing.')
+    + recruitGaugeCard(recruitNoShowPct(m), 'var(--warn)', 'No-show',
+        recruitFrac(nsDen > 0 ? nsDen - nsNum : null, nsDen > 0 ? nsDen : null),
+        'Booked a session and did not attend, across all cohorts. Weighted by cohort size.', {warn: true})
+    + recruitGaugeCard(ntc.pct, '#3fb950', 'New → crew', recruitFrac(ntc.numerator, ntc.denominator),
+        'Applicants who became active crew, all time. Recent applicants have not had time to convert, so this understates the current rate.')
+    + '</div>';
+
+  let out = filters + headline
+    + '<div class="recruit-funnel-wrap">' + recruitFunnelSvg(m) + '</div>';
+  if(total > 0 && total < 10){
+    out += '<div class="recruit-dash-note">Small sample — percentages move sharply at this size.</div>';
+  }
+
+  const iv = m.intervals || {};
+  const a2c = iv.attended_to_crew || {}, a2r = iv.attended_to_ready || {}, r2c = iv.ready_to_crew || {};
+  const ci = counts.ci_cards || {};
+  const wv = counts.working_visa || 0;
+  const ciPct = (ci.denominator > 0) ? 100 * ci.holders / ci.denominator : null;
+  const wvPct = (total > 0) ? 100 * wv / total : null;
+
+  const medBig = (a2c.median_days != null) ? a2c.median_days : '—';
+  const medianCard = '<div class="recruit-dash-card recruit-median-card" title="Median days from attending an induction to becoming active crew. Median, not average, so one stalled candidate does not distort it.">'
+    + `<div class="recruit-median-big">${recruitEsc(medBig)}<span class="recruit-median-unit">days</span></div>`
+    + `<div class="recruit-dash-sub">median · n=${a2c.n || 0}</div>`
+    + '<button class="recruit-split-toggle" onclick="recruitDashToggleSplit(this)">▾ show split</button>'
+    + '<div id="recruit-median-split" class="recruit-median-split" style="display:none">'
+    +   `<div class="recruit-split-row" title="${recruitEsc("The candidate's own speed: details form, EH self-setup and contract signing.")}"><span>Attended → ready</span><span class="recruit-dash-sub">${a2r.median_days != null ? recruitEsc(a2r.median_days + ' d') : '—'} · n=${a2r.n || 0}</span></div>`
+    +   `<div class="recruit-split-row" title="${recruitEsc("Gig Power's speed: every candidate is phoned before conversion, so this measures calling throughput, not the candidate.")}"><span>Ready → crew</span><span class="recruit-dash-sub">${r2c.median_days != null ? recruitEsc(r2c.median_days + ' d') : '—'} · n=${r2c.n || 0}</span></div>`
+    + '</div>'
+    + '</div>';
+
+  const bottom = '<div class="recruit-dash-bottom">'
+    + medianCard
+    + recruitGaugeCard(ciPct, '#2dd4bf', 'CI cards', recruitFrac(ci.holders, ci.denominator),
+        'Holders of a Construction Induction card, as a share of candidates who have submitted their details form. Earlier-stage candidates have no verified licence data yet.', {small: true})
+    + recruitGaugeCard(wvPct, '#a371f7', 'Working visa', recruitFrac(wv, total),
+        'Candidates on a working visa, as a share of all candidates in view.', {small: true})
+    + recruitGaugeCard(scr.pct, '#8b949e', 'Screened out', recruitFrac(scr.numerator, scr.denominator),
+        'Marked not suitable, as a share of all candidates. Excluded from every other ratio here, so screening more selectively does not make the funnel look worse.', {small: true})
+    + recruitAgeCard(counts.age_bands || {});
+  out += bottom + '</div>';
+  el.innerHTML = out;
+}
+
 async function loadRecruitment(){
   const statusEl = document.getElementById('recruit-status');
   const listEl   = document.getElementById('recruit-list');
@@ -3981,6 +4402,13 @@ async function loadRecruitment(){
     const rows = await r.json();
     _recruitRows = Array.isArray(rows) ? rows : [];
     renderRecruit();
+    // Restore the remembered Operations/Dashboard choice AFTER the list has
+    // rendered, so switching to Dashboard doesn't race the list render. Validate
+    // the stored value — storage is hand-editable and a bad value would hide both
+    // views (applyRecruitView shows exactly one).
+    const saved = goatPrefs.get('recruitment', 'view', 'operations');
+    _recruitView = (saved === 'dashboard') ? 'dashboard' : 'operations';
+    applyRecruitView();
   }catch(e){
     filtersEl.innerHTML = '';
     statusEl.textContent = 'Could not load applicants. Please try again.';
