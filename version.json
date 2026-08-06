@@ -1,6 +1,6 @@
 {
-  "version": "4.24.0",
+  "version": "4.25.0",
   "release_date": "2026-08-06",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.24.0/TheGOAT.dmg",
-  "release_notes": "Fatigue and travel warnings on the Schedule can now be acknowledged, with a note and an audit trail. Retiming a call lapses the acknowledgement."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.25.0/TheGOAT.dmg",
+  "release_notes": "The Schedule range now goes up to 90 days. The warnings label mutes once everything under it is acknowledged, and clash chips carry their own icon."
 }
