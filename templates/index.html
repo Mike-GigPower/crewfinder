@@ -836,6 +836,11 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-search:focus{outline:none;border-color:var(--accent)}
 .recruit-search-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);font-size:16px;line-height:1;cursor:pointer;padding:0 4px}
 .recruit-search-clear:hover{color:var(--accent)}
+/* Session selector — composes WITH the pile chips rather than replacing them, so
+   it sits beside the search box rather than in the chip row. A select rather than
+   chips because sessions accumulate across a season with no fixed set. */
+.recruit-session{font-family:'Rajdhani',sans-serif;font-size:13px;padding:7px 12px;margin:0 0 14px 10px;max-width:340px;border-radius:20px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer}
+.recruit-session:focus{outline:none;border-color:var(--accent)}
 /* Cross-pile hint — quiet by design: a signpost when the person being searched
    for is sitting in a different pile, not an automatic jump. */
 .recruit-crosspile{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);margin:0 0 12px}
@@ -1729,6 +1734,9 @@ a.recruit-action{text-decoration:none;display:inline-block}
         <button class="recruit-search-clear" id="recruit-search-clear"
                 onclick="clearRecruitSearch()" title="Clear search">×</button>
       </div>
+      <select id="recruit-session" class="recruit-session" onchange="setRecruitSession(this.value)">
+        <option value="">All sessions</option>
+      </select>
       <div id="recruit-crosspile" class="recruit-crosspile" style="display:none"></div>
       <div id="recruit-batch" class="recruit-batch" style="display:none"></div>
       <div id="recruit-status" class="recruit-status">Loading applicants…</div>
@@ -3799,6 +3807,55 @@ let _recruitVisibleIds = [];        // ids currently shown (for the header "sele
 let _recruitSearch = '';            // current search text, lowercased; '' = no search
 let _recruitSortBy  = '';           // '' = natural feed order (newest first)
 let _recruitSortDir = 'asc';
+// '' = every candidate; 'none' = candidates with no session booked; otherwise the
+// session's epoch-milliseconds as a string.
+let _recruitSession = '';
+// Format a session instant for display, in Melbourne. Only used as a FALLBACK —
+// session_date_text carries TryBooking's own wording and is preferred, so the
+// label an operator reads matches the label on the booking page.
+function recruitSessionLabel(ms){
+  try{
+    return new Intl.DateTimeFormat('en-AU', {
+      timeZone: 'Australia/Melbourne', weekday: 'long', day: 'numeric',
+      month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+    }).format(new Date(ms));
+  }catch(e){ return new Date(ms).toISOString(); }
+}
+// Distinct sessions across ALL candidates, newest first, plus a count each.
+// Keyed on epoch milliseconds rather than the raw string: two rows from the same
+// session must collapse to one entry even if their timestamp strings differ in
+// formatting. This is the cohort key from the design doc — the session TIMESTAMP,
+// so a morning and an afternoon session on the same day stay separate.
+function recruitSessions(){
+  const map = new Map();   // ms -> {label, count}
+  let none = 0;
+  _recruitRows.forEach(c => {
+    const ms = c.session_date ? Date.parse(c.session_date) : NaN;
+    if(isNaN(ms)){ none++; return; }
+    if(!map.has(ms)) map.set(ms, { label: c.session_date_text || recruitSessionLabel(ms), count: 0 });
+    map.get(ms).count++;
+  });
+  const list = Array.from(map.entries())
+    .map(([ms, v]) => ({ ms, label: v.label, count: v.count }))
+    .sort((a, b) => b.ms - a.ms);   // newest first
+  return { list, none };
+}
+// True if this candidate is in the currently-selected session ('' = any).
+function recruitInSession(c){
+  if(_recruitSession === '') return true;
+  const ms = c.session_date ? Date.parse(c.session_date) : NaN;
+  if(_recruitSession === 'none') return isNaN(ms);
+  return String(ms) === _recruitSession;
+}
+function setRecruitSession(v){
+  _recruitSession = String(v || '');
+  // Changing session redefines WHICH candidates are on the table, exactly like
+  // switching piles — so clear the selection for the same reason: you don't want a
+  // Hold action landing on someone from a different cohort. (Search deliberately
+  // does NOT clear it; search narrows the view, it doesn't redefine the group.)
+  _recruitSelected.clear();
+  renderRecruit();
+}
 
 // Re-filter on every keystroke. Everything is already in memory, so no fetch and
 // no debounce — at season volumes (hundreds of rows) this is imperceptible.
@@ -3847,7 +3904,7 @@ function recruitRenderCrossPileHint(){
   }
   const others = _recruitRows.filter(c => {
     const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
-    return s !== _recruitFilter && recruitMatches(c, _recruitSearch);
+    return recruitInSession(c) && s !== _recruitFilter && recruitMatches(c, _recruitSearch);
   }).length;
   if(others === 0){ el.style.display = 'none'; el.innerHTML = ''; return; }
   el.style.display = '';
@@ -3983,10 +4040,32 @@ function renderRecruit(){
   const listEl   = document.getElementById('recruit-list');
   const filtersEl= document.getElementById('recruit-filters');
 
+  // Rebuild the session options (they depend on the data). Preserve the current
+  // choice across the rebuild, and fall back to "All sessions" if the selected
+  // session no longer exists in the data.
+  const sessEl = document.getElementById('recruit-session');
+  if(sessEl){
+    const { list, none } = recruitSessions();
+    const opts = ['<option value="">All sessions</option>'];
+    list.forEach(s => opts.push(
+      `<option value="${s.ms}">${recruitEsc(s.label)} (${s.count})</option>`));
+    if(none > 0) opts.push(`<option value="none">No session booked (${none})</option>`);
+    sessEl.innerHTML = opts.join('');
+    const stillValid = (_recruitSession === '' || _recruitSession === 'none'
+      || list.some(s => String(s.ms) === _recruitSession));
+    if(!stillValid) _recruitSession = '';
+    sessEl.value = _recruitSession;
+  }
+
+  // Candidates in the chosen session (or all, when no session is selected). This
+  // sits ABOVE the pile filter so the chip COUNTS reflect the session too —
+  // picking a session turns the chip row into that cohort's funnel.
+  const inSession = _recruitRows.filter(recruitInSession);
+
   // Count applicants per status so we can show "New (3)" etc.
   const counts = {};
   RECRUIT_STATUS_ORDER.forEach(s => counts[s] = 0);
-  _recruitRows.forEach(c => {
+  inSession.forEach(c => {
     const s = (c.status && counts.hasOwnProperty(c.status)) ? c.status : 'applied';
     counts[s]++;
   });
@@ -3997,9 +4076,9 @@ function renderRecruit(){
     + `${RECRUIT_STATUS_LABELS[s]} (${counts[s]})</button>`
   );
   chips.push(`<button class="recruit-filter ${_recruitFilter==='all'?'active':''}" onclick="setRecruitFilter('all')">`
-    + `All (${_recruitRows.length})</button>`);
+    + `All (${inSession.length})</button>`);
   // Cross-cutting count: how many candidates ANYWHERE need something doing.
-  const attentionCount = _recruitRows.filter(c => recruitExceptions(c).length > 0).length;
+  const attentionCount = inSession.filter(c => recruitExceptions(c).length > 0).length;
   chips.push(`<button class="recruit-filter recruit-filter-attn ${_recruitFilter==='attention'?'active':''}`
     + `${attentionCount > 0 ? ' has-items' : ''}" onclick="setRecruitFilter('attention')">`
     + `Needs attention (${attentionCount})</button>`);
@@ -4015,7 +4094,7 @@ function renderRecruit(){
   // Candidates in the chosen pile, BEFORE search. Selection is scoped to this
   // (see recruitToggleAll / the prune below), so typing in the search box never
   // silently unticks a row.
-  const inPile = _recruitRows.filter(c => {
+  const inPile = inSession.filter(c => {
     if(_recruitFilter === 'attention') return recruitExceptions(c).length > 0;
     if(_recruitFilter === 'all') return true;
     const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
@@ -4029,8 +4108,10 @@ function renderRecruit(){
     statusEl.textContent = _recruitSearch
       ? 'No applicants match your search in this pile.'
       : (_recruitFilter === 'attention'
-          ? 'Nothing needs attention right now.'
-          : 'No applicants in this pile.');
+          ? (_recruitSession ? 'Nothing needs attention in this session.'
+                             : 'Nothing needs attention right now.')
+          : (_recruitSession ? 'No applicants in this pile for this session.'
+                             : 'No applicants in this pile.'));
     listEl.innerHTML = '';
     // Still show the cross-pile hint — the person you are looking for is very
     // often in a DIFFERENT pile, and that is exactly when this matters most.
