@@ -1,6 +1,6 @@
 {
-  "version": "4.25.0",
-  "release_date": "2026-08-06",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.25.0/TheGOAT.dmg",
-  "release_notes": "The Schedule range now goes up to 90 days. The warnings label mutes once everything under it is acknowledged, and clash chips carry their own icon."
+  "version": "4.26.0",
+  "release_date": "2026-08-07",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.26.0/TheGOAT.dmg",
+  "release_notes": "Needs attention is now a toggle inside each pile, and every pile chip shows how many candidates need chasing. New flag for working-visa applicants whose VEVO check hasn't been recorded."
 }
