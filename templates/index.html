@@ -827,13 +827,19 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-filter{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;padding:6px 13px;border-radius:20px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
 .recruit-filter:hover{border-color:var(--accent);color:var(--accent)}
 .recruit-filter.active{background:var(--accent);border-color:var(--accent);color:#000}
-/* "Needs attention" is a CROSS-CUTTING filter, not a status pile — it sits beside
-   All rather than in the pipeline order. Amber only when it actually has items, so
-   an empty queue reads as calm rather than as a permanent warning. */
+/* "Needs attention" is a within-pile TOGGLE, not a status pile — it sits at the end
+   of the chip row and narrows whichever pile is showing to the rows that need
+   chasing. Amber only when this pile actually has some, so a clean pile reads as
+   calm rather than as a permanent warning; solid amber while the toggle is active. */
 .recruit-filter-attn.has-items{border-color:var(--warn);color:var(--warn)}
 .recruit-filter-attn.has-items:hover{border-color:var(--warn);color:var(--warn)}
 .recruit-filter-attn.active,
 .recruit-filter-attn.has-items.active{background:var(--warn);border-color:var(--warn);color:#000}
+/* The "· N ⚠" exception segment inside a pile chip's count, e.g. "Attended (23 · 6 ⚠)".
+   Amber to match every other "wants chasing" signal; flips to black on the gold
+   active chip so it stays legible. */
+.recruit-chip-warn{color:var(--warn);font-weight:700}
+.recruit-filter.active .recruit-chip-warn{color:#000}
 /* Reason chip — why a candidate is in Needs attention. Amber, matching the ageing
    labels and every other "wants chasing" signal in this tab. */
 .recruit-flagreason{display:inline-block;margin-left:6px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--warn);border:1px solid var(--warn);background:rgba(245,158,11,0.10);padding:1px 8px;border-radius:20px;white-space:nowrap}
@@ -3857,6 +3863,9 @@ let _recruitFilter = 'applied';     // which pile to show; default = New
 let _recruitSelected = new Set();   // ids ticked for a batch action (by candidate id)
 let _recruitVisibleIds = [];        // ids currently shown (for the header "select all")
 let _recruitSearch = '';            // current search text, lowercased; '' = no search
+let _recruitAttentionOnly = false;  // within-pile "needs attention" narrowing. A VIEW
+                                    // layer on top of the pile filter — it never
+                                    // touches _recruitSelected (see recruitToggleAttention).
 let _recruitSortBy  = '';           // '' = natural feed order (newest first)
 let _recruitSortDir = 'asc';
 // '' = every candidate; 'none' = candidates with no session booked; otherwise the
@@ -3951,7 +3960,7 @@ function recruitMatches(c, q){
 function recruitRenderCrossPileHint(){
   const el = document.getElementById('recruit-crosspile');
   if(!el) return;
-  if(!_recruitSearch || _recruitFilter === 'all' || _recruitFilter === 'attention'){
+  if(!_recruitSearch || _recruitFilter === 'all'){
     el.style.display = 'none'; el.innerHTML = ''; return;
   }
   const others = _recruitRows.filter(c => {
@@ -4425,50 +4434,83 @@ async function loadRecruitment(){
   }
 }
 
+// The stable KEY → human label for every exception this view can raise. The key
+// is the contract: item 6's SQL exceptions block and the Recruitment ask bar
+// consume these keys verbatim (DESIGN-goat-recruitment-analysis §5, decision 7),
+// so rename a key only by amending both downstream consumers. The label is only
+// the words an operator reads on the row.
+//
+// The first four are the brief's scoped predicates (session_passed, aged,
+// details_overdue, visa_unverified); the rest are operational reasons this view
+// already surfaced before the rework and must keep surfacing.
+const RECRUIT_EXCEPTION_LABELS = {
+  no_contact:          'No contact details',
+  session_passed:      'Session passed, not attended',
+  details_overdue:     'No details form',
+  visa_unverified:     'Work rights not verified',
+  eh_incomplete:       'EH setup not complete',
+  contract_unsigned:   'Contract not signed',
+  awaiting_conversion: 'Awaiting conversion call',
+  aged:                'Ageing in stage',
+};
+
 // Which candidates need a human to do something, and why. Returns an array of
-// short reason strings — empty means nothing outstanding.
+// {key, label} — empty means nothing outstanding. The key set is enumerated in
+// RECRUIT_EXCEPTION_LABELS above; each `if` below is the reference implementation
+// item 6's SQL is written from, so keep every one short and literal.
 //
 // Deliberately EXCLUDES withdrawn, not_suitable and on_hold. The first two are out
 // of the funnel; on_hold was parked ON PURPOSE, and flagging a deliberate decision
 // as an exception is how a signal becomes noise people learn to ignore.
-//
-// Everything here is derived from timestamps and status only. Licences,
-// confirmations and VEVO state are NOT in the list feed (privacy allowlist) and
-// cannot be checked from the browser — see the brief.
 function recruitExceptions(c){
   const out = [];
+  const flag = key => out.push({ key, label: RECRUIT_EXCEPTION_LABELS[key] });
   const st = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
   if(st === 'withdrawn' || st === 'not_suitable' || st === 'on_hold') return out;
-  // Days in the CURRENT stage. -1 when unknown, which never trips a threshold.
-  const ms = c.status_changed_at ? Date.parse(c.status_changed_at) : NaN;
-  const days = isNaN(ms) ? -1 : Math.floor((Date.now() - ms) / 86400000);
+  // Days in the CURRENT stage, via the SAME whole-day function the amber
+  // "N days in stage" label uses (recruitStageAge → recruitDaysSince). Sharing one
+  // computation is what stops the `aged` predicate and that label from ever
+  // disagreeing (brief E4). null when status_changed_at is missing/unparseable.
+  const days = recruitDaysSince(c.status_changed_at);
   const limit = RECRUIT_AGING_THRESHOLDS[st];
   // Uncontactable, therefore unchaseable — the one rule that applies at any stage.
-  if(!c.email && !c.phone) out.push('No contact details');
+  if(!c.email && !c.phone) flag('no_contact');
   // The no-show. The session has been and gone and nobody marked them attended.
-  // This is the ~50% who fall away around induction, and the reason session_date
-  // was added to the feed. NOTE: no candidate has a session_date yet, so this
-  // cannot fire until a real TryBooking import has run.
-  if(c.session_date && (st === 'booked' || st === 'invited_to_induction')){
-    if(Date.parse(c.session_date) < Date.now()) out.push('Session passed, not attended');
-  }
-  // Turned up, never filled in the details form.
-  if(st === 'attended' && !c.details_submitted_at && days >= 7)
-    out.push('No details form');
+  // Melbourne-safe: both sides are absolute instants, so no calendar-date maths.
+  // NOTE: no candidate has a session_date yet, so this cannot fire until a real
+  // TryBooking import has run.
+  if(c.session_date && (st === 'booked' || st === 'invited_to_induction')
+     && Date.parse(c.session_date) < Date.now())
+    flag('session_passed');
+  // Turned up, never filled in the details form. Threshold is 7 days here; the
+  // brief scoped 3, deliberately NOT changed in this pass (design rework only) —
+  // reconcile the number against item 6's SQL before porting it either way.
+  if(st === 'attended' && !c.details_submitted_at && days !== null && days >= 7)
+    flag('details_overdue');
+  // Working visa with no VEVO check recorded — the same rule the Convert preflight
+  // enforces (app.py api_recruitment_convert_preflight) and item 6's SQL will.
+  // vevo_verified is the non-PII boolean the feed derives (v25+, r.vevo_check != null).
+  // GUARD ON PRESENCE, not truthiness: === false so an ABSENT vevo_verified (a feed
+  // older than v25) reads as "unknown", never "unverified" (brief §3.4 / E6).
+  if(c.working_visa === true && c.vevo_verified === false)
+    flag('visa_unverified');
   // Sent to EH but one of the two gate signals is still missing. Both are
   // candidate-side actions, so both mean "chase the person".
-  if(st === 'sent_to_eh' && days >= 14){
-    if(!c.eh_complete_at)      out.push('EH setup not complete');
-    if(!c.contract_signed_at)  out.push('Contract not signed');
+  if(st === 'sent_to_eh' && days !== null && days >= 14){
+    if(!c.eh_complete_at)      flag('eh_incomplete');
+    if(!c.contract_signed_at)  flag('contract_unsigned');
   }
   // Docs all in, still not converted. This one measures US, not them — conversion
   // waits on the phone call.
-  if(st === 'all_docs_received' && days >= 14)
-    out.push('Awaiting conversion call');
-  // Catch-all: past the stage threshold with no more specific reason already
-  // given. Ordered last so a specific reason always wins over a generic one.
-  if(out.length === 0 && limit && days > limit)
-    out.push(`Waiting ${days} days`);
+  if(st === 'all_docs_received' && days !== null && days >= 14)
+    flag('awaiting_conversion');
+  // Ageing: past this stage's amber threshold. Fires on EXACTLY the rows that
+  // render the amber "N days in stage" label — recruitStageAge ambers on the same
+  // `days >= limit` off the same recruitDaysSince, which is the point of sharing it
+  // above (brief E4). Independent of the reasons above (a row can be both overdue
+  // AND ageing); the chip is suppressed at render time to avoid doubling the label.
+  if(days !== null && limit !== undefined && days >= limit)
+    flag('aged');
   return out;
 }
 
@@ -4500,26 +4542,39 @@ function renderRecruit(){
   // picking a session turns the chip row into that cohort's funnel.
   const inSession = _recruitRows.filter(recruitInSession);
 
-  // Count applicants per status so we can show "New (3)" etc.
-  const counts = {};
-  RECRUIT_STATUS_ORDER.forEach(s => counts[s] = 0);
+  // Count applicants per status so we can show "New (3)" etc, AND how many in each
+  // pile have >=1 exception so each chip can show "Attended (23 · 6 ⚠)". Both are
+  // computed over the SAME inSession set, so per-pile counts always sum to All
+  // (brief E5), and recruitExceptions() returns [] for withdrawn/not_suitable/
+  // on_hold, so those piles never grow a ⚠ segment (E3).
+  const counts = {}, exCount = {};
+  RECRUIT_STATUS_ORDER.forEach(s => { counts[s] = 0; exCount[s] = 0; });
+  let exAll = 0;
   inSession.forEach(c => {
     const s = (c.status && counts.hasOwnProperty(c.status)) ? c.status : 'applied';
     counts[s]++;
+    if(recruitExceptions(c).length > 0){ exCount[s]++; exAll++; }
   });
+  // A ⚠ count segment for a chip, or '' when the pile is clean (a clean pile reads
+  // clean — no permanent warning). The count sits inside the chip's parens.
+  const warnSeg = n => n > 0 ? ` · <span class="recruit-chip-warn">${n} ⚠</span>` : '';
 
   // Build the filter chips: one per status, plus "All".
   const chips = RECRUIT_STATUS_ORDER.map(s =>
     `<button class="recruit-filter ${_recruitFilter===s?'active':''}" onclick="setRecruitFilter('${s}')">`
-    + `${RECRUIT_STATUS_LABELS[s]} (${counts[s]})</button>`
+    + `${RECRUIT_STATUS_LABELS[s]} (${counts[s]}${warnSeg(exCount[s])})</button>`
   );
   chips.push(`<button class="recruit-filter ${_recruitFilter==='all'?'active':''}" onclick="setRecruitFilter('all')">`
-    + `All (${inSession.length})</button>`);
-  // Cross-cutting count: how many candidates ANYWHERE need something doing.
-  const attentionCount = inSession.filter(c => recruitExceptions(c).length > 0).length;
-  chips.push(`<button class="recruit-filter recruit-filter-attn ${_recruitFilter==='attention'?'active':''}`
-    + `${attentionCount > 0 ? ' has-items' : ''}" onclick="setRecruitFilter('attention')">`
-    + `Needs attention (${attentionCount})</button>`);
+    + `All (${inSession.length}${warnSeg(exAll)})</button>`);
+  // The within-pile "Needs attention" TOGGLE (not a pile of its own): it narrows
+  // whatever pile is showing to the rows that need chasing. Its count is that
+  // pile's exception count, so the operator can see how many the toggle will keep
+  // before pressing it. Amber only when this pile actually has some.
+  const pileEx = (_recruitFilter === 'all') ? exAll : (exCount[_recruitFilter] || 0);
+  chips.push(`<button class="recruit-filter recruit-filter-attn ${_recruitAttentionOnly ? 'active' : ''}`
+    + `${pileEx > 0 ? ' has-items' : ''}" onclick="recruitToggleAttention()"`
+    + ` title="Show only the candidates in this pile that need chasing">`
+    + `⚠ Needs attention (${pileEx})</button>`);
   filtersEl.innerHTML = chips.join('');
 
   if(_recruitRows.length === 0){
@@ -4533,21 +4588,25 @@ function renderRecruit(){
   // (see recruitToggleAll / the prune below), so typing in the search box never
   // silently unticks a row.
   const inPile = inSession.filter(c => {
-    if(_recruitFilter === 'attention') return recruitExceptions(c).length > 0;
     if(_recruitFilter === 'all') return true;
     const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
     return s === _recruitFilter;
   });
-  // What actually renders: the pile, narrowed by search, then sorted.
-  const visible = recruitSortRows(inPile.filter(c => recruitMatches(c, _recruitSearch)));
+  // What actually renders: the pile, narrowed by search AND (when the toggle is on)
+  // by the needs-attention filter, then sorted. Both narrowings are pure VIEW —
+  // selection is pruned against `inPile` below, NOT against `visible`, so neither
+  // typing a search nor flipping the toggle ever unticks a row (brief §3.5 / B1).
+  const visible = recruitSortRows(inPile.filter(c =>
+    recruitMatches(c, _recruitSearch)
+    && (!_recruitAttentionOnly || recruitExceptions(c).length > 0)));
 
   if(visible.length === 0){
     statusEl.style.display = '';
     statusEl.textContent = _recruitSearch
       ? 'No applicants match your search in this pile.'
-      : (_recruitFilter === 'attention'
-          ? (_recruitSession ? 'Nothing needs attention in this session.'
-                             : 'Nothing needs attention right now.')
+      : (_recruitAttentionOnly
+          ? (_recruitSession ? 'Nothing needs attention in this pile for this session.'
+                             : 'Nothing needs attention in this pile.')
           : (_recruitSession ? 'No applicants in this pile for this session.'
                              : 'No applicants in this pile.'));
     listEl.innerHTML = '';
@@ -4609,6 +4668,17 @@ function recruitToggleRow(i){
 function setRecruitFilter(status){
   _recruitFilter = status;
   _recruitSelected.clear();
+  renderRecruit();
+}
+
+// Flip the within-pile "Needs attention" narrowing. Unlike setRecruitFilter this
+// does NOT clear _recruitSelected: the toggle is a view layer, and the selection
+// prune in renderRecruit() runs against the full pile (`inPile`), not the narrowed
+// `visible` set. So tick ten rows, toggle attention on then off, and the same ten
+// stay ticked (brief B1); with the toggle on the batch bar can legitimately act on
+// more rows than are visible (B3). Only a pile change clears selection.
+function recruitToggleAttention(){
+  _recruitAttentionOnly = !_recruitAttentionOnly;
   renderRecruit();
 }
 
@@ -5928,11 +5998,14 @@ function renderRecruitRow(c, i){
   // "Time in current stage" label (display only). '' when status_changed_at is
   // missing, so nothing shows rather than a broken value.
   const age = recruitStageAge(c);
-  // Why this candidate is flagged. Shown in every pile, not just the Needs
-  // attention view — the reason is just as useful when you are looking at With EH
-  // and wondering which of the six needs chasing.
-  const flags = recruitExceptions(c).map(r =>
-    `<span class="recruit-flagreason">${recruitEsc(r)}</span>`).join('');
+  // Why this candidate is flagged. Shown in every pile, not just when the Needs
+  // attention toggle is on — the reason is just as useful when you are looking at
+  // With EH and wondering which of the six needs chasing. `aged` is dropped here:
+  // the amber "N days in stage" label (${age}, rendered just before these chips)
+  // already says it, so a separate "Ageing in stage" chip would only double it.
+  const flags = recruitExceptions(c)
+    .filter(f => f.key !== 'aged')
+    .map(f => `<span class="recruit-flagreason">${recruitEsc(f.label)}</span>`).join('');
   // "Details submitted: <date>" grid item — only when the candidate has submitted
   // their details form. Omitted entirely otherwise. Shows the date only, not the form.
   const submittedDetail = c.details_submitted_at
