@@ -731,14 +731,19 @@ tr.skipped{opacity:.6}
    separate class so the two can be told apart in code and in the booking
    summary line, and so the colour can be split later without touching logic. */
 .sched-call-block.over{background:rgba(227,30,36,0.1);border-left:2px solid var(--accent2);color:var(--accent2)}
-.sched-call-block.clash{background:rgba(249,115,22,0.2);border-left:2px solid #f97316;color:#f97316;animation:clashPulse 2s ease-in-out infinite}
+.sched-call-block.warn{background:rgba(249,115,22,0.2);border-left:2px solid #f97316;color:#f97316;animation:clashPulse 2s ease-in-out infinite}
+.sched-call-block.clash{background:rgba(227,30,36,0.2);border-left:2px solid var(--accent2);color:var(--accent2);animation:clashPulseRed 2s ease-in-out infinite}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
+@keyframes clashPulseRed{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(227,30,36,0.55)}}
 .crew-clash{color:#ef4444!important;font-weight:700}
 .crew-clash::before{content:'⚠ '}
+.crew-warn{color:#f97316!important;font-weight:700}
+.crew-warn::before{content:'⚠ '}
 /* Leadership & Operations see the Schedule read-only — hide the per-call admin
    actions (Find Crew / SMS / open-in-SmartStaff). Admin keeps them. */
 body.cohort-readonly .sched-action-btn{display:none!important}
-.sched-clash-badge{background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.4);color:#f97316;font-size:8px;font-family:'Share Tech Mono',monospace;padding:1px 5px;border-radius:3px;white-space:nowrap}
+.sched-clash-badge{background:rgba(227,30,36,0.15);border:1px solid rgba(227,30,36,0.45);color:var(--accent2);font-size:8px;font-family:'Share Tech Mono',monospace;padding:1px 5px;border-radius:3px;white-space:nowrap}
+.sched-warn-badge{background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.4);color:#f97316;font-size:8px;font-family:'Share Tech Mono',monospace;padding:1px 5px;border-radius:3px;white-space:nowrap}
 .sched-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:10px;color:var(--muted);text-align:center;padding:60px}
 
 /* ── COHORT: crew "My Status" self view ── */
@@ -1278,8 +1283,10 @@ a.recruit-action{text-decoration:none;display:inline-block}
           <span style="font-size:9px;color:var(--muted)">Partial</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(227,30,36,0.15);border-left:2px solid var(--accent2);display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Unfilled</span>
-          <span style="width:10px;height:10px;border-radius:2px;background:rgba(249,115,22,0.2);border-left:2px solid #f97316;display:inline-block"></span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(227,30,36,0.2);border-left:2px solid var(--accent2);display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Clash</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(249,115,22,0.2);border-left:2px solid #f97316;display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Warning</span>
         </div>
         <button class="btn" onclick="loadSchedule(true)" style="margin-left:auto">⟳ Refresh</button>
         <span id="sched-summary" style="font-size:10px;color:var(--muted)"></span>
@@ -13503,6 +13510,48 @@ function _schedFillClass(c){
   return 'empty';
 }
 
+// Severity of a call's clash entries. 'clash' if any Rule 1 is present,
+// 'warn' if there are entries but none is a clash, null if clean.
+function _schedCallSeverity(call){
+  const cl = (call && call.clashes) || [];
+  if(!cl.length) return null;
+  return cl.some(c => c.rule === 1 || c.severity === 'clash') ? 'clash' : 'warn';
+}
+
+// Single place that decides how clashing/warned crew chips look. Used by BOTH
+// the expand path and the lazy-status path — previously each rendered its own
+// version and the second silently overwrote the first, taking the reason
+// tooltip with it.
+function renderClashCrewList(crewEl, clashes){
+  if(!crewEl) return;
+  if(!clashes || !clashes.length){
+    crewEl.innerHTML = '';
+    crewEl.style.display = 'none';
+    return;
+  }
+  // Group by person — one chip per crew member, all their reasons in the tip.
+  const byPerson = new Map();
+  clashes.forEach(c => {
+    const key = (c.user_id !== undefined && c.user_id !== null) ? String(c.user_id) : c.name;
+    if(!byPerson.has(key)) byPerson.set(key, {name: c.name, isClash: false, reasons: []});
+    const p = byPerson.get(key);
+    if(c.rule === 1 || c.severity === 'clash') p.isClash = true;
+    if(c.reason) p.reasons.push(c.reason);
+  });
+  const people  = [...byPerson.values()];
+  const anyHard = people.some(p => p.isClash);
+  const label   = anyHard
+    ? '<span style="font-size:9px;color:var(--accent2);font-weight:700;margin-right:6px;white-space:nowrap">Clashing:</span>'
+    : '<span style="font-size:9px;color:#f97316;font-weight:700;margin-right:6px;white-space:nowrap">Warnings:</span>';
+  crewEl.innerHTML = label + people.map(p =>
+    '<span class="' + (p.isClash ? 'crew-clash' : 'crew-warn') + '"'
+    + ' style="font-size:9px;margin-right:6px"'
+    + ' title="' + escapeHtml(p.reasons.join('\n')) + '">'
+    + escapeHtml(p.name) + '</span>'
+  ).join('');
+  crewEl.style.display = '';
+}
+
 function renderSchedule(){
   if(!_schedData) return;
 
@@ -13585,15 +13634,16 @@ function renderSchedule(){
         // Clash (3.4.6) — server-detected confirmed-crew double-booking.
         // Takes precedence over staffing colour: even a 4/4 booked call
         // gets the orange clash marker if any of its crew clashes elsewhere.
-        const hasClash = (c.clashes && c.clashes.length > 0);
-        const cls    = hasClash ? 'clash' : _schedFillClass(c);
+        const sev      = _schedCallSeverity(c);
+        const hasClash = sev !== null;
+        const cls      = sev ? sev : _schedFillClass(c);
         const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
         let clashLabel = '';
         if(hasClash){
-          const names = c.clashes.map(x => x.name);
+          const names = [...new Set(c.clashes.map(x => x.name))];
           const shown = names.slice(0, 3).join(', ');
           const more  = names.length > 3 ? ` +${names.length - 3} more` : '';
-          clashLabel  = ` · ⚡ Clash: ${shown}${more}`;
+          clashLabel  = ` · ${sev === 'clash' ? '⚡ Clash' : '⚠ Warning'}: ${shown}${more}`;
         }
         const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h${clashLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         return `<div class="sched-call-block ${cls}" title="${safeTitle}"
@@ -13668,8 +13718,9 @@ function renderSchedule(){
     html += `<div id="${bid}-calls" style="display:none">`;
 
     for(const call of booking.calls){
-      const hasClash = (call.clashes && call.clashes.length > 0);
-      const cls    = hasClash ? 'clash' : _schedFillClass(call);
+      const sev      = _schedCallSeverity(call);
+      const hasClash = sev !== null;
+      const cls      = sev ? sev : _schedFillClass(call);
       const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)', over:'var(--accent2)'};
       const statusColor = colors[cls];
 
@@ -13686,7 +13737,7 @@ function renderSchedule(){
                  ${colIsToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
                  data-call-id-block="${call.call_id}"
                  onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
-                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?' · ⚡ '+call.clashes.length+' clash'+(call.clashes.length>1?'es':'')+': '+call.clashes.slice(0,3).map(x=>x.name).join(', ')+(call.clashes.length>3?' +'+(call.clashes.length-3)+' more':''):''}">
+                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?(()=>{const nm=[...new Set(call.clashes.map(x=>x.name))];return ' · '+(sev==='clash'?'⚡ ':'⚠ ')+nm.length+(sev==='clash'?' clash'+(nm.length>1?'es':''):' warning'+(nm.length>1?'s':''))+': '+nm.slice(0,3).join(', ')+(nm.length>3?' +'+(nm.length-3)+' more':'');})():''}">
               <div style="font-size:7px;opacity:.7">${call.time}</div>
               ${call.booked}/${call.required}
             </div>
@@ -13807,7 +13858,7 @@ function schedMarkCallClash(callId, hasClash){
   // Update all rendered blocks for this call in the schedule grid
   document.querySelectorAll(`[data-call-id-block="${callId}"]`).forEach(el => {
     if(hasClash){
-      el.classList.remove('full','partial','empty','over');
+      el.classList.remove('full','partial','empty','over','warn');
       el.classList.add('clash');
     }
   });
@@ -13820,18 +13871,20 @@ function renderCallStatusBadge(el, data, callMeta){
 
   // Clash detection now happens server-side (3.4.6) — see /api/schedule's
   // clashes_by_call. The expanded call detail still shows the per-crew
-  // breakdown of which crew clash, which we read from callMeta.clashes if
-  // present (an array of {user_id, name, reason}). Falls back to the
-  // legacy client-side detection if the server didn't supply clashes —
-  // ensures the schedule still works when talking to an older app.
-  let clashing = new Set();
+  // breakdown, which we read from callMeta.clashes if present (an array of
+  // {user_id, name, rule, severity, reason}). Falls back to the legacy
+  // client-side detection if the server didn't supply clashes — ensures the
+  // schedule still works when talking to an older app.
+  let clashes = [];
   if(callMeta && Array.isArray(callMeta.clashes) && callMeta.clashes.length > 0){
-    callMeta.clashes.forEach(c => clashing.add(c.name));
+    clashes = callMeta.clashes;
   } else if(crew && callMeta){
-    // Fallback path
+    // Fallback path — schedFindClashes tests overlap only, so its results are
+    // genuine clashes (Rule 1), not warnings. Convert to synthetic entries.
     schedIndexCrew(callMeta, crew);
-    clashing = schedFindClashes(callMeta, crew);
-    if(clashing.size > 0) schedMarkCallClash(callMeta.call_id, true);
+    const names = schedFindClashes(callMeta, crew);
+    clashes = [...names].map(name => ({name, rule: 1, severity: 'clash', reason: ''}));
+    if(clashes.length > 0) schedMarkCallClash(callMeta.call_id, true);
   }
 
   if(confirmed > 0)
@@ -13842,23 +13895,23 @@ function renderCallStatusBadge(el, data, callMeta){
     html += `<span style="color:var(--accent2);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">✗${declined}</span>`;
   if(unfilled > 0 && required > 0)
     html += `<span style="color:var(--muted);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">○${unfilled}</span>`;
-  if(clashing.size > 0)
-    html += ` <span class="sched-clash-badge">⚡ ${clashing.size} clash${clashing.size>1?'es':''}</span>`;
+  // Two badges, counting distinct people per severity. A person with both a
+  // clash and a warning counts once, under clash — the clash needs acting on.
+  const hardNames = new Set(clashes.filter(c => c.rule === 1 || c.severity === 'clash').map(c => c.name));
+  const warnNames = new Set(clashes.filter(c => !(c.rule === 1 || c.severity === 'clash')).map(c => c.name));
+  warnNames.forEach(n => { if(hardNames.has(n)) warnNames.delete(n); });
+  if(hardNames.size > 0)
+    html += ` <span class="sched-clash-badge">⚡ ${hardNames.size} clash${hardNames.size>1?'es':''}</span>`;
+  if(warnNames.size > 0)
+    html += ` <span class="sched-warn-badge">⚠ ${warnNames.size} warning${warnNames.size>1?'s':''}</span>`;
 
   el.innerHTML = html || '—';
 
-  // Render clashing crew names only — hidden when no clashes
+  // Render clashing/warned crew names only — hidden when clean. One shared
+  // renderer so the reason tooltip survives the lazy-status overwrite.
   const crewEl = el.nextElementSibling;
   if(crewEl && crewEl.dataset.crewList !== undefined){
-    if(clashing.size > 0){
-      crewEl.innerHTML = [...clashing].map(name =>
-        `<span class="crew-clash" style="font-size:9px;margin-right:6px">${name}</span>`
-      ).join('');
-      crewEl.style.display = '';
-    } else {
-      crewEl.innerHTML = '';
-      crewEl.style.display = 'none';
-    }
+    renderClashCrewList(crewEl, clashes);
   }
 }
 
@@ -13876,16 +13929,7 @@ function toggleSchedBooking(bid){
   // right away when expanding a booking.
   if(open){
     calls.querySelectorAll('[data-crew-list]').forEach(crewEl => {
-      const callId = crewEl.dataset.crewList;
-      const clashes = _schedClashesByCall[String(callId)] || [];
-      if(clashes.length > 0){
-        crewEl.innerHTML = '<span style="font-size:9px;color:#f97316;font-weight:700;margin-right:6px">⚡ Clashing:</span>'
-          + clashes.map(c => '<span class="crew-clash" style="font-size:9px;margin-right:6px" title="'+(c.reason||'')+'">' + c.name + '</span>').join('');
-        crewEl.style.display = '';
-      } else {
-        crewEl.innerHTML = '';
-        crewEl.style.display = 'none';
-      }
+      renderClashCrewList(crewEl, _schedClashesByCall[String(crewEl.dataset.crewList)] || []);
     });
   }
 
