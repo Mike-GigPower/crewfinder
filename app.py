@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.24.0"
+APP_VERSION    = "4.25.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6475,7 +6475,7 @@ def api_schedule():
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
 
-    days  = min(28, max(1, int(request.args.get("days", 14))))
+    days  = min(90, max(1, int(request.args.get("days", 14))))
     force = request.args.get("force") == "1"
     sid   = session.get("sid", "anon")
     key   = f"{sid}_{days}"
