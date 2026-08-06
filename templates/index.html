@@ -739,6 +739,9 @@ tr.skipped{opacity:.6}
 .crew-clash::before{content:'⚠ '}
 .crew-warn{color:#f97316!important;font-weight:700}
 .crew-warn::before{content:'⚠ '}
+.crew-ack{color:var(--muted)!important;font-weight:400;text-decoration:none}
+.crew-ack::before{content:'✓ '}
+.sched-warn-badge.acked{background:rgba(255,255,255,0.05);border-color:var(--border);color:var(--muted)}
 /* Leadership & Operations see the Schedule read-only — hide the per-call admin
    actions (Find Crew / SMS / open-in-SmartStaff). Admin keeps them. */
 body.cohort-readonly .sched-action-btn{display:none!important}
@@ -13515,7 +13518,11 @@ function _schedFillClass(c){
 function _schedCallSeverity(call){
   const cl = (call && call.clashes) || [];
   if(!cl.length) return null;
-  return cl.some(c => c.rule === 1 || c.severity === 'clash') ? 'clash' : 'warn';
+  // A Rule 1 clash always wins. Otherwise the cell is amber only while at
+  // least one warning is unacknowledged — once every warning is signed off it
+  // returns null and the cell reverts to its staffing colour.
+  if(cl.some(c => c.rule === 1 || c.severity === 'clash')) return 'clash';
+  return cl.some(c => !c.acked) ? 'warn' : null;
 }
 
 // Single place that decides how clashing/warned crew chips look. Used by BOTH
@@ -13529,27 +13536,163 @@ function renderClashCrewList(crewEl, clashes){
     crewEl.style.display = 'none';
     return;
   }
-  // Group by person — one chip per crew member, all their reasons in the tip.
+  const cid = crewEl.dataset.crewList;   // this cell's own call id
+  // Group by person — one chip per crew member. A person may carry several
+  // entries on one call (different counterpart calls / rules); the chip
+  // aggregates them. isAcked is true only when EVERY entry is acknowledged.
   const byPerson = new Map();
   clashes.forEach(c => {
     const key = (c.user_id !== undefined && c.user_id !== null) ? String(c.user_id) : c.name;
-    if(!byPerson.has(key)) byPerson.set(key, {name: c.name, isClash: false, reasons: []});
+    if(!byPerson.has(key)) byPerson.set(key, {
+      name: c.name, userId: (c.user_id !== undefined && c.user_id !== null) ? c.user_id : '',
+      isClash: false, reasons: [], total: 0, ackedCount: 0,
+      ackEntry: null, ackInfo: null
+    });
     const p = byPerson.get(key);
+    p.total++;
     if(c.rule === 1 || c.severity === 'clash') p.isClash = true;
     if(c.reason) p.reasons.push(c.reason);
+    if(c.acked){ p.ackedCount++; if(!p.ackInfo) p.ackInfo = c.acked; }
+    // first acknowledgeable (Rule 2/3, has fingerprint) entry drives the click
+    if(!p.ackEntry && c.fingerprint) p.ackEntry = c;
   });
   const people  = [...byPerson.values()];
   const anyHard = people.some(p => p.isClash);
   const label   = anyHard
     ? '<span style="font-size:9px;color:var(--accent2);font-weight:700;margin-right:6px;white-space:nowrap">Clashing:</span>'
     : '<span style="font-size:9px;color:#f97316;font-weight:700;margin-right:6px;white-space:nowrap">Warnings:</span>';
-  crewEl.innerHTML = label + people.map(p =>
-    '<span class="' + (p.isClash ? 'crew-clash' : 'crew-warn') + '"'
-    + ' style="font-size:9px;margin-right:6px"'
-    + ' title="' + escapeHtml(p.reasons.join('\n')) + '">'
-    + escapeHtml(p.name) + '</span>'
-  ).join('');
+  crewEl.innerHTML = label + people.map(p => {
+    // Chip class precedence: clash > unacked warning > acknowledged.
+    const allAcked = p.total > 0 && p.ackedCount === p.total && !p.isClash;
+    const cls = p.isClash ? 'crew-clash' : (allAcked ? 'crew-ack' : 'crew-warn');
+    let tip = p.reasons.join('\n');
+    if(allAcked && p.ackInfo){
+      tip += (tip ? '\n\n' : '') + 'Acknowledged by ' + (p.ackInfo.by || '?')
+           + ' — ' + _schedFmtAckAt(p.ackInfo.at)
+           + (p.ackInfo.note ? '\n“' + p.ackInfo.note + '”' : '');
+    }
+    const clickable = !!p.ackEntry;   // Rule 1 / Rule 4 chips are NOT clickable
+    let attrs = '';
+    if(clickable){
+      const e = p.ackEntry;
+      attrs = ' data-ack-user="'    + escapeHtml(String(p.userId)) + '"'
+            + ' data-ack-call="'    + escapeHtml(String(cid)) + '"'
+            + ' data-ack-against="' + escapeHtml(String(e.against_call_id)) + '"'
+            + ' data-ack-rule="'    + escapeHtml(String(e.rule)) + '"'
+            + ' data-ack-fp="'      + escapeHtml(String(e.fingerprint)) + '"'
+            + ' data-ack-acked="'   + (allAcked ? '1' : '0') + '"'
+            + ' data-ack-name="'    + escapeHtml(p.name) + '"';
+      if(allAcked && p.ackInfo){
+        attrs += ' data-ack-by="'   + escapeHtml(p.ackInfo.by || '') + '"'
+               + ' data-ack-at="'   + escapeHtml(String(p.ackInfo.at || '')) + '"'
+               + ' data-ack-note="' + escapeHtml(p.ackInfo.note || '') + '"';
+      }
+      attrs += ' onclick="schedClashChipClick(this)"';
+    }
+    return '<span class="' + cls + '"' + attrs
+      + ' style="font-size:9px;margin-right:6px' + (clickable ? ';cursor:pointer' : '') + '"'
+      + ' title="' + escapeHtml(tip) + '">'
+      + escapeHtml(p.name) + '</span>';
+  }).join('');
   crewEl.style.display = '';
+}
+
+// Find a call by id in the loaded schedule, for dialog context (booking + call
+// names, time). Returns null if not currently loaded.
+function _schedFindCall(callId){
+  if(!_schedData || !_schedData.bookings) return null;
+  const target = String(callId);
+  for(const b of _schedData.bookings){
+    for(const c of (b.calls || [])){
+      if(String(c.call_id) === target){
+        return {call_name: c.call_name || '', booking_name: b.booking_name || '',
+                time: c.time || '', date_iso: c.date_iso || ''};
+      }
+    }
+  }
+  return null;
+}
+
+// Unix seconds -> "6 Aug 14:12" for the acknowledgement audit line.
+function _schedFmtAckAt(ts){
+  const n = parseInt(ts, 10);
+  if(!n) return '';
+  const dt  = new Date(n * 1000);
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dt.getMonth()];
+  const pad = x => (x < 10 ? '0' + x : '' + x);
+  return dt.getDate() + ' ' + mon + ' ' + pad(dt.getHours()) + ':' + pad(dt.getMinutes());
+}
+
+// Click on a warning chip. Uses the native confirm()/prompt() pattern the rest
+// of the app uses for the promote and delete confirms (there is no custom modal
+// helper in this file) — prompt() gives the optional note field for an ack;
+// confirm() gates the undo. Only Rule 2/3 chips reach here (they carry a
+// fingerprint); Rule 1 and Rule 4 chips are not clickable.
+function schedClashChipClick(el){
+  const d = el.dataset;
+  if(!d.ackFp) return;
+  const isAcked = d.ackAcked === '1';
+  const userID  = parseInt(d.ackUser, 10);
+  const callA   = parseInt(d.ackCall, 10);
+  const callB   = parseInt(d.ackAgainst, 10);
+  const rule    = parseInt(d.ackRule, 10);
+  const fp      = d.ackFp;
+  const name    = d.ackName || 'this crew member';
+  const ca = _schedFindCall(callA);
+  const cb = _schedFindCall(callB);
+  const ruleText = (rule === 2) ? 'Rule 2 — long shift needs a rest gap'
+                 : (rule === 3) ? 'Rule 3 — venue change needs a travel buffer'
+                 : ('Rule ' + rule);
+  const line = c => c
+    ? (c.booking_name + ' · ' + c.call_name + ' · ' + c.time + (c.date_iso ? ' (' + c.date_iso + ')' : ''))
+    : 'call not currently loaded';
+  if(isAcked){
+    let msg = 'This warning is acknowledged.\n\n'
+      + name + '\n' + ruleText + '\n' + line(ca) + '\n' + line(cb) + '\n\n'
+      + 'Signed off by ' + (d.ackBy || '?') + ' — ' + _schedFmtAckAt(parseInt(d.ackAt, 10));
+    if(d.ackNote) msg += '\nNote: “' + d.ackNote + '”';
+    msg += '\n\nRemove this acknowledgement and restore the warning?';
+    if(!confirm(msg)) return;
+    schedPostClashAck({userID: userID, callA: callA, callB: callB, rule: rule,
+                       fingerprint: fp, action: 'undo'});
+  } else {
+    const msg = 'Acknowledge this fatigue/travel warning?\n\n'
+      + name + '\n' + ruleText + '\n' + line(ca) + '\n' + line(cb) + '\n\n'
+      + 'This mutes the warning (it stays visible) and records who signed it off.\n\n'
+      + 'Optional note — why is this arrangement OK? (leave blank to skip):';
+    const note = prompt(msg, '');
+    if(note === null) return;   // Cancel
+    schedPostClashAck({userID: userID, callA: callA, callB: callB, rule: rule,
+                       fingerprint: fp, note: note, action: 'ack'});
+  }
+}
+
+// POST an ack/undo, then reload the schedule so the SERVER state is what
+// renders — never mutate _schedClashesByCall locally and hope it matches. A
+// {ok:false,reason:"stale …"} means a call was retimed since the page loaded;
+// surface it and refresh rather than failing silently.
+async function schedPostClashAck(body){
+  try{
+    const r = await fetch('/api/schedule/clash-ack', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert('Could not update the acknowledgement:\n\n' + (data.error || ('HTTP ' + r.status)));
+      return;
+    }
+    if(data.ok === false){
+      alert('Could not update:\n\n' + (data.reason || 'unknown reason')
+            + '\n\nRefreshing the schedule.');
+      loadSchedule(true);
+      return;
+    }
+    loadSchedule(true);
+  } catch(e){
+    alert('Could not update the acknowledgement:\n\n' + e);
+  }
 }
 
 function renderSchedule(){
@@ -13895,15 +14038,31 @@ function renderCallStatusBadge(el, data, callMeta){
     html += `<span style="color:var(--accent2);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">✗${declined}</span>`;
   if(unfilled > 0 && required > 0)
     html += `<span style="color:var(--muted);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">○${unfilled}</span>`;
-  // Two badges, counting distinct people per severity. A person with both a
-  // clash and a warning counts once, under clash — the clash needs acting on.
-  const hardNames = new Set(clashes.filter(c => c.rule === 1 || c.severity === 'clash').map(c => c.name));
-  const warnNames = new Set(clashes.filter(c => !(c.rule === 1 || c.severity === 'clash')).map(c => c.name));
-  warnNames.forEach(n => { if(hardNames.has(n)) warnNames.delete(n); });
+  // Badges count DISTINCT people per severity. A person with a clash counts
+  // once under clash. Of the rest, someone with at least one unacknowledged
+  // warning counts under warning; someone whose warnings are ALL acknowledged
+  // counts under the muted "ack'd" pill.
+  const byName = new Map();
+  clashes.forEach(c => {
+    const isClash = (c.rule === 1 || c.severity === 'clash');
+    if(!byName.has(c.name)) byName.set(c.name, {isClash: false, warnTotal: 0, warnAcked: 0});
+    const p = byName.get(c.name);
+    if(isClash) p.isClash = true;
+    else { p.warnTotal++; if(c.acked) p.warnAcked++; }
+  });
+  const hardNames = new Set(), warnNames = new Set(), ackedNames = new Set();
+  byName.forEach((p, name) => {
+    if(p.isClash){ hardNames.add(name); return; }   // clash wins, count once
+    if(p.warnTotal === 0) return;
+    if(p.warnAcked < p.warnTotal) warnNames.add(name);   // ≥1 unacknowledged
+    else ackedNames.add(name);                            // all acknowledged
+  });
   if(hardNames.size > 0)
     html += ` <span class="sched-clash-badge">⚡ ${hardNames.size} clash${hardNames.size>1?'es':''}</span>`;
   if(warnNames.size > 0)
     html += ` <span class="sched-warn-badge">⚠ ${warnNames.size} warning${warnNames.size>1?'s':''}</span>`;
+  if(ackedNames.size > 0)
+    html += ` <span class="sched-warn-badge acked">✓ ${ackedNames.size} ack'd</span>`;
 
   el.innerHTML = html || '—';
 
