@@ -58,6 +58,164 @@
         exit;
     }
 
+    if ($action === 'list-exempt')
+    {
+        /* Returns every row, including expired ones. Expired rows are retained  */
+        /* deliberately: they are the audit trail of who was let through and     */
+        /* when, and re-granting is then one click. Single query, no per-row     */
+        /* lookups. On query failure we return an empty list with HTTP 200 — an  */
+        /* empty manager UI beats a broken modal, and this endpoint grants       */
+        /* nothing. The name subquery is pinned to usergroupID = 3 so it         */
+        /* resolves the crew record, not a same-EIN admin row.                   */
+        $out = array('exempt' => array());
+        $sql = "SELECT e.ein, "
+             . "e.note, "
+             . "e.expires_at, "
+             . "e.added_at, "
+             . "(e.expires_at IS NOT NULL AND e.expires_at <= NOW()) AS expired, "
+             . "(SELECT TRIM(CONCAT(TRIM(u.lastname), ', ', TRIM(u.firstname))) "
+             . "   FROM users u "
+             . "  WHERE u.ein = e.ein AND u.usergroupID = 3 "
+             . "  LIMIT 1) AS name, "
+             . "(SELECT TRIM(CONCAT(TRIM(a.firstname), ' ', TRIM(a.lastname))) "
+             . "   FROM users a "
+             . "  WHERE a.id = e.added_by "
+             . "  LIMIT 1) AS added_by_name "
+             . "FROM goat_direct_login_exempt e "
+             . "ORDER BY expired ASC, name ASC, e.ein ASC";
+        $res = mysql_query($sql);
+        if ($res !== false)
+        {
+            while ($row = mysql_fetch_object($res))
+            {
+                $out['exempt'][] = array(
+                    'ein'           => (int) $row->ein,
+                    'name'          => $row->name,
+                    'note'          => $row->note,
+                    'expires_at'    => ($row->expires_at === null ? null : $row->expires_at),
+                    'expired'       => (bool) $row->expired,
+                    'added_by_name' => $row->added_by_name,
+                    'added_at'      => $row->added_at
+                );
+            }
+        }
+        echo json_encode($out);
+        exit;
+    }
+
+    if ($action === 'add-exempt')
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST')
+        {
+            send_status(405, 'POST required');
+            die('{"error":"POST required"}');
+        }
+
+        /* ein must be a positive integer. */
+        $ein = isset($_POST['ein']) ? (int) $_POST['ein'] : 0;
+        if ($ein <= 0)
+        {
+            send_status(400, 'Bad request');
+            die('{"error":"missing or invalid ein"}');
+        }
+
+        /* days is a strict server-side whitelist: 14, 30, 90 or 0 (0 = permanent). */
+        /* Compared as strings BEFORE casting: (int)"abc" is 0, which would        */
+        /* otherwise be accepted as a permanent grant.                             */
+        $daysRaw = isset($_POST['days']) ? trim($_POST['days']) : '';
+        if ($daysRaw !== '14' && $daysRaw !== '30' && $daysRaw !== '90' && $daysRaw !== '0')
+        {
+            send_status(400, 'Bad request');
+            die('{"error":"days must be 14, 30, 90 or 0"}');
+        }
+        $days = (int) $daysRaw;
+
+        /* note is optional; truncate to 255 chars BEFORE escaping. */
+        $note = isset($_POST['note']) ? mysql_real_escape_string(substr($_POST['note'], 0, 255)) : '';
+
+        /* The EIN must belong to a real crew record (usergroupID = 3). This    */
+        /* stops a typo seeding a phantom EIN, and means an admin cannot be     */
+        /* added — which is correct, admins are never blocked by the guard.     */
+        $chk = mysql_query("SELECT id FROM users WHERE ein = " . $ein . " AND usergroupID = 3 LIMIT 1");
+        if ($chk === false || mysql_num_rows($chk) === 0)
+        {
+            send_status(404, 'Not found');
+            die('{"error":"no crew record with that EIN"}');
+        }
+
+        /* Expiry is a SQL expression chosen from the whitelist, never           */
+        /* interpolated from input. MySQL computes the date so there is one      */
+        /* clock and PHP and the DB cannot disagree.                             */
+        if ($days === 0)
+        {
+            $expires = 'NULL';
+        }
+        else
+        {
+            $expires = 'DATE_ADD(NOW(), INTERVAL ' . $days . ' DAY)';
+        }
+
+        $uid = (int) $_SESSION[SITE_KEY]['userID'];
+
+        /* Repeat grants replace, they do not extend: ON DUPLICATE KEY overwrites */
+        /* note, expiry and attribution wholesale. PRIMARY KEY (ein) guarantees   */
+        /* one row per person.                                                    */
+        $sql = "INSERT INTO goat_direct_login_exempt (ein, note, expires_at, added_by, added_at) "
+             . "VALUES (" . $ein . ", '" . $note . "', " . $expires . ", " . $uid . ", NOW()) "
+             . "ON DUPLICATE KEY UPDATE note = VALUES(note), "
+             . "expires_at = VALUES(expires_at), "
+             . "added_by = VALUES(added_by), "
+             . "added_at = VALUES(added_at)";
+        $ok = mysql_query($sql);
+        if ($ok === false || mysql_error() !== '')
+        {
+            send_status(500, 'Write failed');
+            die('{"error":"write failed: ' . addslashes(mysql_error()) . '"}');
+        }
+
+        /* Re-select the stored row to report the actual expires_at rather than  */
+        /* recomputing it in PHP.                                                 */
+        $stored = null;
+        $sres = mysql_query("SELECT expires_at FROM goat_direct_login_exempt WHERE ein = " . $ein . " LIMIT 1");
+        if ($sres !== false && mysql_num_rows($sres) > 0)
+        {
+            $srow = mysql_fetch_object($sres);
+            $stored = $srow->expires_at;
+        }
+
+        echo json_encode(array('ok' => true, 'action' => 'add-exempt', 'ein' => $ein, 'expires_at' => $stored));
+        exit;
+    }
+
+    if ($action === 'remove-exempt')
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST')
+        {
+            send_status(405, 'POST required');
+            die('{"error":"POST required"}');
+        }
+
+        /* ein must be a positive integer. No users lookup — removing a row for  */
+        /* an EIN that no longer has a crew record must still work. Deleting a    */
+        /* row that isn't there is a harmless no-op.                             */
+        $ein = isset($_POST['ein']) ? (int) $_POST['ein'] : 0;
+        if ($ein <= 0)
+        {
+            send_status(400, 'Bad request');
+            die('{"error":"missing or invalid ein"}');
+        }
+
+        $ok = mysql_query("DELETE FROM goat_direct_login_exempt WHERE ein = " . $ein);
+        if ($ok === false || mysql_error() !== '')
+        {
+            send_status(500, 'Write failed');
+            die('{"error":"write failed: ' . addslashes(mysql_error()) . '"}');
+        }
+
+        echo json_encode(array('ok' => true, 'action' => 'remove-exempt', 'ein' => $ein));
+        exit;
+    }
+
     send_status(400, 'Bad action');
     die('{"error":"unknown action"}');
 ?>
