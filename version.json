@@ -1,6 +1,6 @@
 {
-  "version": "4.23.0",
+  "version": "4.24.0",
   "release_date": "2026-08-06",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.23.0/TheGOAT.dmg",
-  "release_notes": "The Schedule now separates genuine double-bookings from policy warnings, and hovering a flagged crew member shows the rule that fired."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.24.0/TheGOAT.dmg",
+  "release_notes": "Fatigue and travel warnings on the Schedule can now be acknowledged, with a note and an audit trail. Retiming a call lapses the acknowledgement."
 }
