@@ -1,6 +1,6 @@
 {
-  "version": "4.22.0",
+  "version": "4.23.0",
   "release_date": "2026-08-06",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.22.0/TheGOAT.dmg",
-  "release_notes": "Recruitment gains a Dashboard view with funnel and target tracking, filtering by induction session, and a Needs attention list of everyone who needs chasing."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.23.0/TheGOAT.dmg",
+  "release_notes": "The Schedule now separates genuine double-bookings from policy warnings, and hovering a flagged crew member shows the rule that fired."
 }
