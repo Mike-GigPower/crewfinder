@@ -15,7 +15,9 @@
 /* global.php uses (usergroupID / id) -- NOT $user->checkSession(), which does not
 /* gate page requests in this build.
 /*
-/* Fails OPEN at every uncertainty (missing resolver, missing table, failed query).
+/* Steps 1-9 fail OPEN at every uncertainty (missing resolver, missing table, failed
+/* query). Step 9.5 (the runtime exempt list) is the deliberate exception and fails
+/* CLOSED -- see the comment there for why.
 /* PHP 5.x -- no ??, no short array syntax, mysql_* only.
 */
 
@@ -124,6 +126,28 @@ if (!function_exists('goat_direct_login_guard'))
         }
         if (!$blocked)
             return;
+
+        /* 9.5 Runtime exempt list (goat_direct_login_exempt), managed from THE GOAT.
+        /*     Reached ONLY when the block is confirmed ON and this is plain crew, so
+        /*     the query costs nothing on a normal page view.
+        /*
+        /*     FAILS CLOSED, unlike every step above it. We return only on a confirmed
+        /*     live row. A failed query, a missing table, or an unresolvable EIN all
+        /*     fall through to the block. Rationale: step 9 already fails OPEN, so a
+        /*     general database fault disables the block before we ever get here; the
+        /*     only fault that reaches this line is one specific to this table. Failing
+        /*     open here would silently defeat the block for everyone and nobody would
+        /*     report it. Failing closed affects only the handful of exempted people,
+        /*     who report it immediately -- and $ALLOW_EINS above is database-independent,
+        /*     so recovery access always survives. */
+        if ($ein > 0)
+        {
+            $ex = mysql_query("SELECT ein FROM goat_direct_login_exempt "
+                            . "WHERE ein = " . $ein . " "
+                            . "AND (expires_at IS NULL OR expires_at > NOW()) LIMIT 1");
+            if ($ex !== false && mysql_num_rows($ex) > 0)
+                return;
+        }
 
         /* 10. Block: end the session and show the "moved" page. */
         $_SESSION = array();
