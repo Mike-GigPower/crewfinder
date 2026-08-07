@@ -731,6 +731,12 @@ tr.skipped{opacity:.6}
    separate class so the two can be told apart in code and in the booking
    summary line, and so the colour can be split later without touching logic. */
 .sched-call-block.over{background:rgba(227,30,36,0.1);border-left:2px solid var(--accent2);color:var(--accent2)}
+/* Awaiting re-confirm: numerically full, but some confirmed crew carry an
+   unanswered timing change or promotion. Keeps the green tint of a full call —
+   the count is genuinely met — but switches border and text to amber to say
+   "still needs chasing". Shares Full's fill logic via a sibling class, exactly
+   as .over does, so the two stay separable in code. */
+.sched-call-block.awaiting{background:rgba(34,197,94,0.12);border-left:2px solid var(--warn);color:var(--warn)}
 .sched-call-block.warn{background:rgba(249,115,22,0.2);border-left:2px solid #f97316;color:#f97316;animation:clashPulse 2s ease-in-out infinite}
 .sched-call-block.clash{background:rgba(227,30,36,0.2);border-left:2px solid var(--accent2);color:var(--accent2);animation:clashPulseRed 2s ease-in-out infinite}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
@@ -1293,6 +1299,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
         <div style="display:flex;gap:6px;align-items:center">
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.3);border-left:2px solid #22c55e;display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Full</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.12);border-left:2px solid var(--warn);display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Awaiting re-confirm</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(245,158,11,0.2);border-left:2px solid var(--warn);display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Partial</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(227,30,36,0.15);border-left:2px solid var(--accent2);display:inline-block"></span>
@@ -13733,21 +13741,31 @@ async function loadSchedule(force=false){
    Single source of truth — both the collapsed booking header row and the
    expanded per-call rows call this, so the two can't drift apart.
 
-     over    booked exceeds required (e.g. required cut 10 -> 8 after the crew
-             were already booked). Red, same as empty: an operator has to act.
-     full    booked meets required exactly.
-     partial some booked, short of required.
-     empty   nobody booked.
+     over     booked exceeds required (e.g. required cut 10 -> 8 after the crew
+              were already booked). Red, same as empty: an operator has to act.
+     awaiting booked meets required, but at least one confirmed crew member has
+              an unanswered re-confirm (a timing change or a promotion off
+              standby). Numerically full, operationally not — amber, not green.
+     full     booked meets required exactly, nothing outstanding.
+     partial  some booked, short of required.
+     empty    nobody booked.
 
    'over' is deliberately tested BEFORE 'full', because an over-booked call also
    satisfies booked >= required and would otherwise come out green.
+   'awaiting' displaces 'full' only. Partial/over/empty are already amber or red
+   — already saying "act on this" — so stacking a second meaning on them would
+   make the colour ambiguous while telling ops nothing the count doesn't. Green
+   is the only state that currently lies, so it is the only one awaiting touches.
    required === 0 is left out of the over test: a call with no requirement set
-   isn't over-booked, it just hasn't been specified yet. */
+   isn't over-booked, it just hasn't been specified yet.
+   `|| 0` on awaiting is load-bearing: the admin scrape_schedule fallback path
+   produces calls with no `awaiting` key and must degrade to plain green. */
 function _schedFillClass(c){
   const req = c.required || 0;
   const bk  = c.booked   || 0;
+  const aw  = c.awaiting || 0;
   if(req > 0 && bk >  req) return 'over';
-  if(req > 0 && bk >= req) return 'full';
+  if(req > 0 && bk >= req) return aw > 0 ? 'awaiting' : 'full';
   if(bk > 0)               return 'partial';
   return 'empty';
 }
@@ -14036,7 +14054,8 @@ function renderSchedule(){
           const more  = names.length > 3 ? ` +${names.length - 3} more` : '';
           clashLabel  = ` · ${sev === 'clash' ? '⚡ Clash' : '⚠ Warning'}: ${shown}${more}`;
         }
-        const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h${clashLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        const awaitLabel = (c.awaiting || 0) > 0 ? ` · ⏳ ${c.awaiting} awaiting re-confirm` : '';
+        const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h${clashLabel}${awaitLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         return `<div class="sched-call-block ${cls}" title="${safeTitle}"
                      data-call-id-block="${c.call_id}"
                      onclick="schedJumpToCrewFinder('${c.booking_id}','${c.call_id}')"
@@ -14072,6 +14091,7 @@ function renderSchedule(){
     // disagree with the colours next to it.
     const overCalls    = booking.calls.filter(c=>_schedFillClass(c)==='over').length;
     const fullCalls    = booking.calls.filter(c=>_schedFillClass(c)==='full').length;
+    const awaitingCalls = booking.calls.filter(c=>_schedFillClass(c)==='awaiting').length;
     const partialCalls = booking.calls.filter(c=>_schedFillClass(c)==='partial').length;
     const emptyCalls   = booking.calls.filter(c=>_schedFillClass(c)==='empty').length;
 
@@ -14096,6 +14116,7 @@ function renderSchedule(){
               ${booking.venue ? ' · ' + booking.venue : ''}
               · ${totalCalls} call${totalCalls!==1?'s':''}
               ${fullCalls ? `<span style="color:#22c55e"> · ${fullCalls} full</span>` : ''}
+              ${awaitingCalls ? `<span style="color:var(--warn)"> · ${awaitingCalls} awaiting re-confirm</span>` : ''}
               ${partialCalls ? `<span style="color:var(--warn)"> · ${partialCalls} partial</span>` : ''}
               ${emptyCalls ? `<span style="color:var(--accent2)"> · ${emptyCalls} empty</span>` : ''}
               ${overCalls ? `<span style="color:var(--accent2)"> · ${overCalls} over-booked</span>` : ''}
@@ -14112,7 +14133,7 @@ function renderSchedule(){
       const sev      = _schedCallSeverity(call);
       const hasClash = sev !== null;
       const cls      = sev ? sev : _schedFillClass(call);
-      const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)', over:'var(--accent2)'};
+      const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)', over:'var(--accent2)', awaiting:'var(--warn)'};
       const statusColor = colors[cls];
 
       const isToday = call.date_iso === today;
@@ -14128,7 +14149,7 @@ function renderSchedule(){
                  ${colIsToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
                  data-call-id-block="${call.call_id}"
                  onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
-                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?(()=>{const nm=[...new Set(call.clashes.map(x=>x.name))];return ' · '+(sev==='clash'?'⚡ ':'⚠ ')+nm.length+(sev==='clash'?' clash'+(nm.length>1?'es':''):' warning'+(nm.length>1?'s':''))+': '+nm.slice(0,3).join(', ')+(nm.length>3?' +'+(nm.length-3)+' more':'');})():''}">
+                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?(()=>{const nm=[...new Set(call.clashes.map(x=>x.name))];return ' · '+(sev==='clash'?'⚡ ':'⚠ ')+nm.length+(sev==='clash'?' clash'+(nm.length>1?'es':''):' warning'+(nm.length>1?'s':''))+': '+nm.slice(0,3).join(', ')+(nm.length>3?' +'+(nm.length-3)+' more':'');})():''}${(call.awaiting||0)>0?' · ⏳ '+call.awaiting+' awaiting re-confirm':''}">
               <div style="font-size:7px;opacity:.7">${call.time}</div>
               ${call.booked}/${call.required}
             </div>
@@ -14249,7 +14270,7 @@ function schedMarkCallClash(callId, hasClash){
   // Update all rendered blocks for this call in the schedule grid
   document.querySelectorAll(`[data-call-id-block="${callId}"]`).forEach(el => {
     if(hasClash){
-      el.classList.remove('full','partial','empty','over','warn');
+      el.classList.remove('full','partial','empty','over','warn','awaiting');
       el.classList.add('clash');
     }
   });

@@ -99,6 +99,14 @@
 			/* correlated per-row subquery here timed the endpoint out (read>20s). */
 			COUNT(CASE WHEN ccm.status = 5 THEN 1 END) AS booked,
 			COUNT(CASE WHEN ccm.status IN (0,1,2,5) THEN 1 END) AS committed,
+			/* Crew who have answered nothing since a timing change or a
+			/* promotion. change_ack rows are DELETED on answer, so existence is
+			/* the test; promo_ack rows are KEPT for the audit trail, so the test
+			/* is acked_at IS NULL. Guards mirror get-booking.php exactly:
+			/* change is 5/7, promotion is 5 only. */
+			COUNT(CASE WHEN (ccm.status IN (5,7) AND cca.id IS NOT NULL)
+			             OR (ccm.status = 5 AND cpa.id IS NOT NULL AND cpa.acked_at IS NULL)
+			           THEN 1 END) AS awaiting,
 			c.notes       AS notes,
 			b.name        AS booking_name,
 			v.venue       AS venue_name,
@@ -109,6 +117,10 @@
 		LEFT JOIN venues        v   ON v.id       = b.venueID
 		LEFT JOIN users         ou  ON ou.id      = b.onsiteUserID
 		LEFT JOIN call_crew_map ccm ON ccm.callID = c.id
+		LEFT JOIN call_change_ack cca ON cca.callID = ccm.callID
+		                            AND cca.userID = ccm.userID
+		LEFT JOIN call_promo_ack  cpa ON cpa.callID = ccm.callID
+		                            AND cpa.userID = ccm.userID
 		WHERE c.start_date >= $start_i
 		  AND c.start_date <  $end_i
 		  AND (b.hidden IS NULL OR b.hidden = 0)
@@ -159,6 +171,7 @@
 			'booked'       => $booked,
 			'required'     => $required,
 			'committed'    => (int) $row->committed,
+			'awaiting'     => (int) $row->awaiting,
 			'link_group'   => ($row->link_group === null ? null : (int) $row->link_group),
 			'full'         => ($booked >= $required && $required > 0),
 			'notes'        => $row->notes,
