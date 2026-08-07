@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.26.0"
+APP_VERSION    = "4.27.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4032,6 +4032,42 @@ def api_direct_login_block():
         return (resp.text, resp.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return jsonify({"error": f"direct-login-block request failed: {e}"}), 502
+
+@app.route("/api/direct-login-exempt", methods=["GET", "POST"])
+@require_cohort("admin")
+def api_direct_login_exempt():
+    """Admin-only proxy to manage-direct-login.php's exempt-list actions. GET lists
+    every exemption (including lapsed ones, flagged `expired`); POST adds or removes
+    one. Exemptions are consulted by direct-login-guard.php only while the block is
+    ON. The PHP independently re-gates on admin and validates the EIN belongs to a
+    usergroupID 3 record."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    url = f"{BASE_URL}/ajax/crew/manage-direct-login.php"
+    try:
+        if request.method == "POST":
+            body   = request.get_json(silent=True) or {}
+            action = body.get("action")
+            ein    = str(body.get("ein") or "").strip()
+            if not ein.isdigit():
+                return jsonify({"error": "a numeric ein is required"}), 400
+            if action == "remove":
+                data = {"action": "remove-exempt", "ein": ein}
+            elif action == "add":
+                days = str(body.get("days") or "").strip()
+                if days not in ("14", "30", "90", "0"):
+                    return jsonify({"error": "days must be 14, 30, 90 or 0"}), 400
+                data = {"action": "add-exempt", "ein": ein, "days": days,
+                        "note": str(body.get("note") or "")[:255]}
+            else:
+                return jsonify({"error": "action must be add or remove"}), 400
+            resp = ss.post(url, data=data, timeout=15)
+        else:
+            resp = ss.get(url, params={"action": "list-exempt"}, timeout=15)
+        return (resp.text, resp.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return jsonify({"error": f"direct-login-exempt request failed: {e}"}), 502
 
 @app.route("/api/calls")
 @require_cohort("admin")

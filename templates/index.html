@@ -9970,6 +9970,14 @@ async function _cohortSet(ein, cohort){
 // exempt. Backed by /api/direct-login-block -> manage-direct-login.php.
 function adminDirectLoginBlock(){ openDirectLoginModal(); }
 
+// Selected add-duration (module-level, defaults to 14 days) and per-render caches
+// keyed by EIN so the interactive handlers never carry server text through an
+// onclick attribute \u2014 the row data is looked up from _dlxRows, and only the
+// integer EIN is ever interpolated into markup.
+var _dlxDays    = '14';
+var _dlxRows    = {};
+var _dlxBlockOn = false;
+
 async function openDirectLoginModal(){
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Direct SmartStaff Login';
@@ -9977,17 +9985,31 @@ async function openDirectLoginModal(){
   document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div>';
   document.getElementById('entity-modal-actions').innerHTML  = entityBtn('Close','closeEntityModal()');
 
-  let state;
+  _dlxDays = '14';
+
+  // Block state is the critical fetch; the exempt list and roster are secondary.
+  // Fetch all three in parallel, but let a block failure blank the modal (it is
+  // meaningless without the toggle) while an exempt/roster failure only degrades
+  // the exemptions section.
+  let state, rows = [], roster = [], exemptError = '';
   try{
-    const r = await fetch('/api/direct-login-block');
-    state = await r.json();
-    if(!r.ok || state.error) throw new Error(state.error || ('HTTP '+r.status));
+    const [sr, xr, rr] = await Promise.all([
+      fetch('/api/direct-login-block').then(function(r){ return r.json(); }),
+      fetch('/api/direct-login-exempt').then(function(r){ return r.json(); }),
+      fetch('/api/crew-roster').then(function(r){ return r.json(); })
+    ]);
+    if(sr && sr.error) throw new Error(sr.error);
+    state = sr;
+    if(xr && xr.error) exemptError = xr.error;
+    else               rows = (xr && xr.exempt) || [];
+    if(rr && !rr.error) roster = rr.crew || [];
   }catch(e){
     document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load: '+escapeHtml(e.message)+'</div>';
     return;
   }
 
   const on = !!state.enabled;
+  _dlxBlockOn = on;
   const pill = on
     ? '<span style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--conflict);background:var(--conf-bg);border-radius:3px;padding:3px 9px">Blocked</span>'
     : '<span style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--available);background:var(--avail-bg);border-radius:3px;padding:3px 9px">Allowed</span>';
@@ -10003,15 +10025,143 @@ async function openDirectLoginModal(){
       + 'on '+escapeHtml(String(state.updated_at))+'</div>';
   }
 
+  // \u2500\u2500 Exemptions section (collapsed by default) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  _dlxRows = {};
+  rows.forEach(function(x){ _dlxRows[x.ein] = x; });
+
+  const dl = roster.map(function(c){
+    return '<option value="'+escapeHtml(c.name)+' \u00b7 EIN '+escapeHtml(String(c.ein))+'"></option>';
+  }).join('');
+
+  const durs = [['14','14 days'],['30','30 days'],['90','90 days'],['0','No expiry']];
+  const durBtns = durs.map(function(d){
+    return '<button type="button" data-d="'+d[0]+'" class="recruit-filter'+(_dlxDays===d[0]?' active':'')+'" onclick="_dlxSetDays(\''+d[0]+'\')">'+d[1]+'</button>';
+  }).join('');
+
+  const listHtml = rows.length
+    ? rows.map(function(x){
+        const nm   = escapeHtml(x.name || ('EIN '+x.ein));
+        const note = x.note ? '<span style="color:var(--muted);font-size:11px"> \u00b7 '+escapeHtml(x.note)+'</span>' : '';
+        let expiry;
+        if(x.expired){
+          expiry = '<span style="color:var(--conflict)">Expired'+(x.expires_at ? ' '+escapeHtml(String(x.expires_at)) : '')+'</span>';
+        }else{
+          expiry = x.expires_at ? escapeHtml(String(x.expires_at)) : 'Permanent';
+        }
+        const regrant = x.expired
+          ? '<button class="btn-logout" onclick="_dlxRegrant('+x.ein+')">Re-grant</button>'
+          : '';
+        return '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)'+(x.expired?';opacity:.55':'')+'">'
+          + '<div style="flex:1;font-size:13px;color:var(--text)">'+nm+' <span style="color:var(--muted);font-size:11px">EIN '+x.ein+'</span>'+note+'</div>'
+          + '<div style="font-size:11px;color:var(--muted);min-width:96px;text-align:right">'+expiry+'</div>'
+          + regrant
+          + '<button class="btn-logout" onclick="removeDirectLoginExempt('+x.ein+')">Remove</button>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No exemptions.</div>';
+
+  let sectionInner = '';
+  if(!on){
+    sectionInner += '<div style="margin:0 0 12px;padding:9px 13px;border:1px solid var(--accent);border-radius:5px;background:rgba(212,175,55,0.08);color:var(--accent);font-size:13px">Block is currently <b>off</b> \u2014 exemptions have no effect until it is enabled.</div>';
+  }
+  sectionInner += '<div style="padding:0 0 10px;border-bottom:1px solid var(--border);margin-bottom:10px">'
+      + '<input id="dlx-name" list="dlx-roster" placeholder="Find crew by name\u2026" style="'+EF_INPUT_STYLE+'">'
+      + '<datalist id="dlx-roster">'+dl+'</datalist>'
+      + '<div id="dlx-durs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">'+durBtns+'</div>'
+      + '<div style="display:flex;gap:8px;align-items:center">'
+        + '<input id="dlx-note" placeholder="Note (optional)" style="'+EF_INPUT_STYLE+';flex:1">'
+        + '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="addDirectLoginExempt()">Add</button>'
+      + '</div>'
+    + '</div>'
+    + '<div id="dlx-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-bottom:6px"></div>';
+  if(!exemptError) sectionInner += '<div id="dlx-list">'+listHtml+'</div>';
+
+  const secHtml =
+      '<div style="padding:12px 0;border-bottom:1px solid var(--border)">'
+      + '<div onclick="_dlxToggle()" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:2px 0">'
+        + '<span id="dlx-caret" style="color:var(--muted);font-size:10px">\u25b6</span>'
+        + '<span style="font-size:13px;font-weight:600;color:var(--text)">Exemptions'+(exemptError?'':' ('+rows.length+')')+'</span>'
+      + '</div>'
+      + '<div id="dlx-body" style="display:none;padding-top:12px">'+sectionInner+'</div>'
+    + '</div>';
+
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="font-size:11px;color:var(--muted);line-height:1.5;padding:0 0 12px">Blocks <b>crew and leadership</b> from logging into the SmartStaff website directly. <b>Admin</b> and <b>Operations</b> are unaffected, and so are <b>THE GOAT</b> and <b>Crew Hub</b>. Blocked users see a page pointing them to Crew Hub.</div>'
     + '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">'
       + '<div style="flex:1;font-size:13px;color:var(--text)">Current state '+pill+'</div>'
       + toggleBtn
     + '</div>'
+    + secHtml
     + '<div id="dlb-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-top:8px"></div>'
     + meta;
   document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+
+  if(exemptError){ const de = document.getElementById('dlx-error'); if(de) de.textContent = exemptError; }
+}
+
+function _dlxToggle(){
+  const b = document.getElementById('dlx-body');
+  const c = document.getElementById('dlx-caret');
+  if(!b) return;
+  const open = b.style.display !== 'none';
+  b.style.display = open ? 'none' : 'block';
+  if(c) c.textContent = open ? '\u25b6' : '\u25bc';
+}
+
+function _dlxSetDays(d){
+  _dlxDays = d;
+  const wrap = document.getElementById('dlx-durs');
+  if(!wrap) return;
+  const btns = wrap.getElementsByTagName('button');
+  for(var i=0;i<btns.length;i++){
+    btns[i].className = (btns[i].getAttribute('data-d') === d) ? 'recruit-filter active' : 'recruit-filter';
+  }
+}
+
+// Fill the picker with an expired person and their old note, then scroll to it \u2014
+// re-granting a lapsed exemption is the common case.
+function _dlxRegrant(ein){
+  const x = _dlxRows[ein] || {};
+  const b = document.getElementById('dlx-body');
+  if(b && b.style.display === 'none') _dlxToggle();
+  const inp = document.getElementById('dlx-name');
+  if(inp) inp.value = (x.name || '') + ' \u00b7 EIN ' + ein;
+  const note = document.getElementById('dlx-note');
+  if(note) note.value = x.note || '';
+  if(inp){ inp.scrollIntoView({block:'center'}); inp.focus(); }
+}
+
+async function addDirectLoginExempt(){
+  const err = document.getElementById('dlx-error'); if(err) err.textContent = '';
+  const ein = _cohParseEin(document.getElementById('dlx-name').value);
+  if(!ein){ if(err) err.textContent = 'Pick a crew member from the list.'; return; }
+  const noteEl = document.getElementById('dlx-note');
+  const note   = noteEl ? noteEl.value : '';
+  try{
+    const r = await fetch('/api/direct-login-exempt', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'add', ein:ein, days:_dlxDays, note:note})});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openDirectLoginModal();   // re-render from server state
+  }catch(e){
+    if(err) err.textContent = e.message;
+  }
+}
+
+async function removeDirectLoginExempt(ein){
+  const err  = document.getElementById('dlx-error'); if(err) err.textContent = '';
+  const x    = _dlxRows[ein] || {};
+  const name = x.name || ('EIN '+ein);
+  let msg = 'Remove the exemption for '+name+'?';
+  if(_dlxBlockOn) msg += '\n\nThey will be logged out of SmartStaff on their next page load.';
+  if(!confirm(msg)) return;
+  try{
+    const r = await fetch('/api/direct-login-exempt', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'remove', ein:String(ein)})});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    openDirectLoginModal();   // re-render from server state
+  }catch(e){
+    if(err) err.textContent = e.message;
+  }
 }
 
 function confirmEnableDirectLogin(){
