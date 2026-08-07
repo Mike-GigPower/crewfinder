@@ -9968,7 +9968,7 @@ async function _cohortSet(ein, cohort){
 // Runtime toggle for the global.php guard. Blocks plain crew/leadership from the
 // SmartStaff website directly; admin + operations, THE GOAT and Crew Hub are all
 // exempt. Backed by /api/direct-login-block -> manage-direct-login.php.
-function adminDirectLoginBlock(){ openDirectLoginModal(); }
+function adminDirectLoginBlock(){ _dlxOpen = false; openDirectLoginModal(); }
 
 // Selected add-duration (module-level, defaults to 14 days) and per-render caches
 // keyed by EIN so the interactive handlers never carry server text through an
@@ -9977,6 +9977,11 @@ function adminDirectLoginBlock(){ openDirectLoginModal(); }
 var _dlxDays    = '14';
 var _dlxRows    = {};
 var _dlxBlockOn = false;
+// Whether the Exemptions section is expanded. Add/remove re-render the whole
+// modal from server state, so without this the section would snap shut every
+// time you added a row -- hiding the result of the action you just took.
+// Reset on a fresh open (adminDirectLoginBlock), preserved across re-renders.
+var _dlxOpen    = false;
 
 async function openDirectLoginModal(){
   openEntityModal();
@@ -9993,10 +9998,16 @@ async function openDirectLoginModal(){
   // the exemptions section.
   let state, rows = [], roster = [], exemptError = '';
   try{
+    // Each secondary fetch catches its own transport failure and returns an error
+    // object. Without this a 500 (which returns Flask's HTML page, not JSON) throws
+    // inside the promise, Promise.all rejects wholesale, and the outer catch blanks
+    // the whole modal -- taking the toggle away over a secondary failure.
     const [sr, xr, rr] = await Promise.all([
       fetch('/api/direct-login-block').then(function(r){ return r.json(); }),
-      fetch('/api/direct-login-exempt').then(function(r){ return r.json(); }),
+      fetch('/api/direct-login-exempt').then(function(r){ return r.json(); })
+        .catch(function(){ return {error:'Couldn\u2019t reach SmartStaff \u2014 exemptions unavailable'}; }),
       fetch('/api/crew-roster').then(function(r){ return r.json(); })
+        .catch(function(){ return {error:'roster unavailable'}; })
     ]);
     if(sr && sr.error) throw new Error(sr.error);
     state = sr;
@@ -10079,10 +10090,10 @@ async function openDirectLoginModal(){
   const secHtml =
       '<div style="padding:12px 0;border-bottom:1px solid var(--border)">'
       + '<div onclick="_dlxToggle()" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:2px 0">'
-        + '<span id="dlx-caret" style="color:var(--muted);font-size:10px">\u25b6</span>'
+        + '<span id="dlx-caret" style="color:var(--muted);font-size:10px">'+(_dlxOpen?'\u25bc':'\u25b6')+'</span>'
         + '<span style="font-size:13px;font-weight:600;color:var(--text)">Exemptions'+(exemptError?'':' ('+rows.length+')')+'</span>'
       + '</div>'
-      + '<div id="dlx-body" style="display:none;padding-top:12px">'+sectionInner+'</div>'
+      + '<div id="dlx-body" style="display:'+(_dlxOpen?'block':'none')+';padding-top:12px">'+sectionInner+'</div>'
     + '</div>';
 
   document.getElementById('entity-modal-body').innerHTML =
@@ -10103,9 +10114,9 @@ function _dlxToggle(){
   const b = document.getElementById('dlx-body');
   const c = document.getElementById('dlx-caret');
   if(!b) return;
-  const open = b.style.display !== 'none';
-  b.style.display = open ? 'none' : 'block';
-  if(c) c.textContent = open ? '\u25b6' : '\u25bc';
+  _dlxOpen = (b.style.display === 'none');
+  b.style.display = _dlxOpen ? 'block' : 'none';
+  if(c) c.textContent = _dlxOpen ? '\u25bc' : '\u25b6';
 }
 
 function _dlxSetDays(d){
