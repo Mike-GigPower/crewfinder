@@ -1,6 +1,6 @@
 {
-  "version": "4.26.0",
+  "version": "4.27.0",
   "release_date": "2026-08-07",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.26.0/TheGOAT.dmg",
-  "release_notes": "Needs attention is now a toggle inside each pile, and every pile chip shows how many candidates need chasing. New flag for working-visa applicants whose VEVO check hasn't been recorded."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.27.0/TheGOAT.dmg",
+  "release_notes": "Admins can grant crew members a time-limited exemption from the direct SmartStaff login block, managed from Administration → Access. Also fixes the Administration tab not scrolling."
 }
