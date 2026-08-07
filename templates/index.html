@@ -778,6 +778,11 @@ body.cohort-readonly .sched-action-btn{display:none!important}
 /* leadership & operations are read-only: hide unavailability editing in the admin manager */
 body.cohort-readonly #unavail-add-section{display:none}
 /* ── Administration tab (admin-only hub) ── */
+/* .tab-panel sets overflow:hidden and flex-direction:row for the CrewFinder
+   split-pane layout. Administration is a single centred column, so it inherits
+   a clipping rule meant for a different layout and its lower sections become
+   unreachable. Override both for this tab only. */
+#tab-administration{overflow-y:auto;flex-direction:column}
 #tab-administration .admin-hub{max-width:880px;margin:0 auto;padding:26px 22px 40px}
 .admin-hub-head{margin-bottom:8px}
 .admin-hub-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
