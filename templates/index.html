@@ -14170,9 +14170,10 @@ function renderSchedule(){
         const dt = new Date(d + 'T12:00:00');
         const isWeekend = dt.getDay()===0||dt.getDay()===6;
         const colIsToday = d === today;   // column geometry tracks the COLUMN day, NOT the call's day
+        const colIsPast  = d < today;
         if(d === call.date_iso){
-          return `<div style="flex:0 0 ${colIsToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
-                              background:${colIsToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
+          return `<div style="flex:0 0 ${colIsToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;${colIsPast?'opacity:.6;':''}
+                              background:${colIsToday?'rgba(212,175,55,0.06)':colIsPast?'rgba(255,255,255,0.02)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
             <div class="sched-call-block ${cls}" style="font-size:8px;padding:2px 3px;cursor:pointer;
                  ${colIsToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
                  data-call-id-block="${call.call_id}"
@@ -14183,9 +14184,9 @@ function renderSchedule(){
             </div>
           </div>`;
         }
-        return `<div style="flex:0 0 ${colIsToday?'70px':'52px'};border-right:1px solid var(--border);
+        return `<div style="flex:0 0 ${colIsToday?'70px':'52px'};border-right:1px solid var(--border);${colIsPast?'opacity:.6;':''}
                             ${colIsToday?'border-top:1px solid rgba(212,175,55,0.3);':''}
-                            background:${colIsToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}"></div>`;
+                            background:${colIsToday?'rgba(212,175,55,0.06)':colIsPast?'rgba(255,255,255,0.02)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}"></div>`;
       }).join('');
 
       html += `
