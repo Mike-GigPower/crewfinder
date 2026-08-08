@@ -12969,9 +12969,17 @@ async function clearGoatHistory(){
 function goatWelcome(){
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Morning' : hour < 17 ? 'Afternoon' : 'Evening';
+  // Only advertise Recruitment where the page already knows the person is admin —
+  // window._cohort is the same role signal the rest of the nav gates on (set by
+  // loadWhoami). The recruitment tools refuse everyone but admin, so a welcome that
+  // named it to a non-admin would promise a capability it then denies. No new
+  // round trip: if _cohort isn't 'admin', leave the line as it was.
+  const surfaces = (window._cohort === 'admin')
+    ? `Crew Finder, Utilization, Inductions, Estimate Import, and Recruitment`
+    : `Crew Finder, Utilization, Inductions, and Estimate Import`;
   const msgs = [
     `${greeting}, the GOAT is in the yard. 🐐`,
-    `I've got eyes on Crew Finder, Utilization, Inductions, and Estimate Import. What do you need?`,
+    `I've got eyes on ${surfaces}. What do you need?`,
   ];
   msgs.forEach((m, i) => setTimeout(() => appendGoatMessage('goat', m), i * 600));
 }
@@ -13253,6 +13261,8 @@ const TOOL_LABELS = {
   get_unavailabilities:'🗓 Checking unavailability...',
   add_unavailability:  '🗓 Preparing unavailability...',
   delete_unavailability:'🗑 Preparing removal...',
+  get_recruitment_metrics:    '📈 Pulling recruitment metrics...',
+  get_recruitment_exceptions: '🚩 Checking who needs chasing...',
 };
 
 function showGoatToolBadge(toolName){
