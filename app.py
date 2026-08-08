@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.28.0"
+APP_VERSION    = "4.29.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -256,6 +256,11 @@ RECRUITMENT_VEVO_VERIFY_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/function
 # route (decision 18) — the edge function only proves the caller is THE GOAT and has
 # no cohort check of its own, so the Flask gate IS the access control.
 RECRUITMENT_METRICS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-metrics"
+# Sibling of the metrics function: current-state "who needs chasing now" exceptions.
+# Same gate posture — the edge function only proves the caller is THE GOAT via the
+# X-Goat-Service-Key header, so the admin-cohort check lives in Python (the drawer
+# tool below), never in the edge function.
+RECRUITMENT_EXCEPTIONS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-exceptions"
 # Same base URL: the KeyPay "complete setup" edge function. Invoked in two modes —
 # "preview" (read-only: GET the EH employee, run the identity guard, return the
 # before-state + computed after-state) and "commit" (re-GET, re-verify, rebuild
@@ -7336,6 +7341,39 @@ GOAT_TOOLS = [
             },
             "required": ["crew_id", "name", "event_id"]
         }
+    },
+    {
+        "name": "get_recruitment_metrics",
+        "description": "Aggregate recruitment funnel metrics for the intake dashboard — counts by stage, conversion ratios, the intake target (onboarded of 450), age bands, and per-session breakdowns. Returns numbers only, never candidate names or rows. Call it whenever asked about recruitment figures — access is enforced server-side, so don't ask the user whether they're allowed; just call it and relay whatever comes back (a short refusal string means they aren't admin). Use for questions like 'how are we tracking to target', 'how many attended'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "year": {
+                    "type": "integer",
+                    "description": "Optional intake year to scope the figures to. Omit to let the server pick the current intake year (decided in Melbourne time)."
+                },
+                "age_band": {
+                    "type": "string",
+                    "description": "Optional age-band filter.",
+                    "enum": ["18-24", "25-29", "30-39", "40+", "unknown"]
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_recruitment_exceptions",
+        "description": "The current-state 'who needs chasing now' summary — how many candidates are flagged, broken down by stage and by reason (the eight exception keys). Aggregate counts only, no names. Call it whenever asked what needs attention — access is enforced server-side, so don't ask the user whether they're allowed; just call it and relay whatever comes back (a short refusal string means they aren't admin). Use for 'what needs attention', 'anyone stuck', 'what's overdue'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session": {
+                    "type": "string",
+                    "description": "Optional induction session as an ISO 8601 timestamp, to scope the exceptions to that session's cohort. OMIT for the overall picture — that is the default and the safer answer."
+                }
+            },
+            "required": []
+        }
     }
 ]
 
@@ -7355,6 +7393,15 @@ CRITICAL — WRITE ACTION RULES:
 - Example: after calling add_crew_to_call, say something like "I've set that up — confirm it using the card above and I'll get them added."
 - Unavailability supports partial days. "Free in the afternoon" means unavailable in the morning — e.g. a uni student with morning lectures is unavailable 09:00–13:00, available after. Translate natural language to explicit start/end times.
 
+RECRUITMENT (get_recruitment_metrics, get_recruitment_exceptions — aggregate intake figures):
+- Access is enforced SERVER-SIDE. When asked about recruitment, just CALL the tool — never ask the person whether they're an admin or tell them it's above their level off your own bat. If they lack access the tool returns a short refusal string; only then do you relay it.
+- These tools return AGGREGATES ONLY — counts and ratios, no names, no references, no rows. If someone asks "who exactly?" — who's flagged, who no-showed, who's stuck — you cannot answer it and must not guess. Point them at the Recruitment tab, which has the actual candidates. Don't apologise for it; it's by design.
+- The rule on numbers is absolute: you may state any number the payload contains, and must NOT produce one it does not — however qualified, hedged, "rough", or flagged as unofficial. No deriving a percentage or rate from counts, not even a trivial division, not even as an explicitly-unofficial aside. Numbers travel and their caveats don't: someone screenshots "roughly 14%" into a message to Joe and the "roughly" doesn't survive the trip. Worked example — asked "what percentage are over 40?": do NOT answer "8.3%" or "roughly 14% of known ages"; the payload computes no over-40 percentage. Answer with the counts and why a ratio would mislead: "2 of 24 are 40+, but 10 have no date of birth recorded, so age ratios aren't reliable yet." That reads as MORE useful than the number it replaces — which is the tell that not deriving was the right call. The classic trap is a no-show rate worked out from booked and attended counts; same rule, refuse it.
+- When you report a COUNT, state when the figure is from — and use the payload's generated_at_melbourne field verbatim (it is already Melbourne local, e.g. "2026-08-08 13:59 AEST (Melbourne)"). NEVER quote the raw generated_at UTC time and never convert it yourself: 03:59 UTC reads as the dead of night when it is actually lunchtime here. One consistent Melbourne-local representation every time — no "this morning", no UTC. The drawer is live; the Recruitment tab's rows are as at whenever it was last loaded, so the two can legitimately disagree — saying when your number is from stops that looking like a bug.
+- When you report a RATIO, state the definitions_version. The definitions were signed off with the right to revise them once there's more data.
+- Relay any note field on a figure, don't strip it. registration_rate and ci_cards carry coverage caveats — e.g. the registration rate currently reads low purely because the Booked status isn't in use yet, which is an artefact, not a failure. Quoting the bare number without its note is misleading.
+- The pile names ops use, in order: New (applied), Invited (invited to induction), Booked, Attended, Details in (details submitted), With EH (sent to EH), Ready to convert (all docs received), Crew (active crew). The eight exception keys, with the meaning you must use — do NOT infer any other meaning from the key's name: aged (has sat in its current stage past that stage's age-in-stage threshold — this is about time waiting, NOT the candidate's age; never gloss it as an age, birthday or over-18 issue), no_contact (no email AND no phone on file — not merely one of the two missing), session_passed (their booked induction date has passed and they never attended), awaiting_conversion (every document is in; nobody has pressed Convert yet). The other four say what they mean: details_overdue, visa_unverified, eh_incomplete, contract_unsigned.
+
 Keep responses concise but warm. Occasional GOAT pun or dry humour is encouraged — never at the expense of being useful."""
 
 def goat_system():
@@ -7363,8 +7410,36 @@ def goat_system():
         "\"video\" crew are the right fit):\n") + _glossary_text()
 
 
-def execute_goat_tool(tool_name, tool_input, ss):
-    """Execute a GOAT tool call and return the result as a string."""
+def _melbourne_ts(iso):
+    """Format a UTC/ISO timestamp as Melbourne local for display, e.g.
+    '2026-08-08 13:59 AEST (Melbourne)'. Returns '' on any parse failure so callers
+    fall back to the raw field. The conversion is done HERE, not by the model: it is
+    DST-aware (AEST/AEDT) via zoneinfo, whereas asking Haiku to convert would be
+    exactly the kind of error-prone arithmetic the recruitment rules forbid — and a
+    wrong clock time reads worse than none."""
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone(ZoneInfo("Australia/Melbourne"))
+        return local.strftime("%Y-%m-%d %H:%M %Z") + " (Melbourne)"
+    except Exception:
+        return ""
+
+
+def execute_goat_tool(tool_name, tool_input, ss, cohort):
+    """Execute a GOAT tool call and return the result as a string.
+
+    `cohort` is captured by the caller (api_goat) WHILE THE REQUEST CONTEXT IS STILL
+    LIVE and passed down. Do NOT call current_cohort()/current_identity()/session
+    from here: this runs inside generate(), the streaming response body, by which
+    point Flask has torn the request context down (there is no stream_with_context),
+    so any session access would raise "Working outside of request context." The
+    recruitment tools gate on this passed-in value instead."""
     import json as _json
 
     if tool_name == "lookup_crew_id":
@@ -7681,6 +7756,100 @@ def execute_goat_tool(tool_name, tool_input, ss):
         payload.update(tool_input)
         return _json.dumps(payload)
 
+    elif tool_name == "get_recruitment_metrics":
+        # ADMIN-ONLY. /api/goat admits admin, leadership AND operations
+        # (READ_ALL_COHORTS); recruitment figures must reach none but admin. Refuse
+        # with a PLAIN STRING, not an error/exception: the assistant relays a string
+        # as a boundary, but an HTTP-shaped error would have it apologise for a fault
+        # or retry. Check BEFORE the network call, never after.
+        if cohort != "admin":
+            return "That's above your access level — recruitment figures are admin-only."
+        if not GOAT_RECRUITMENT_KEY:
+            # A string, not a raised exception: an uncaught error inside generate()
+            # kills the SSE stream mid-flight and the drawer just stops with nothing
+            # shown. Every existing tool returns "Error ...": match it.
+            return "Error: recruitment key not configured."
+        try:
+            params = {}
+            year = str(tool_input.get("year") or "").strip()
+            band = str(tool_input.get("age_band") or "").strip()
+            if year:
+                params["year"] = year
+            if band:
+                params["age_band"] = band
+            r = http.get(RECRUITMENT_METRICS_URL,
+                         headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                         params=params, timeout=15)
+            if r.status_code == 400:
+                # Invalid year/age_band — the edge function names the offending value
+                # and the valid set. Relay that; it is the difference between "the
+                # filter is spelled wrong" and an apparent outage.
+                try:
+                    return f"Error: {r.json().get('error', 'invalid metrics parameters')}"
+                except Exception:
+                    return "Error: invalid metrics parameters."
+            if r.status_code != 200:
+                return f"Error: recruitment metrics service returned {r.status_code}."
+            data = r.json()
+            # Pre-format generated_at in Melbourne local so the model quotes a field
+            # rather than doing (DST-sensitive) timezone maths of its own.
+            _mel = _melbourne_ts(data.get("generated_at"))
+            if _mel:
+                data["generated_at_melbourne"] = _mel
+            # Token budget: sessions[] grows one object (~130 tokens) per induction
+            # session across an intake, and this result then rides in msgs for the
+            # rest of the agentic loop AND in _goat_histories[sid] for the session.
+            # The top-level aggregates answer almost every question; per-session
+            # detail is the long tail. Keep the most recent SESS_CAP and flag the
+            # remainder — same precedent as get_calls' calls[:20].
+            SESS_CAP = 12
+            sess = data.get("sessions")
+            if isinstance(sess, list) and len(sess) > SESS_CAP:
+                kept = sorted(sess,
+                              key=lambda s: (s or {}).get("session_date") or "",
+                              reverse=True)[:SESS_CAP]
+                data["sessions"] = kept
+                data["sessions_truncated"] = {
+                    "shown": SESS_CAP,
+                    "total": len(sess),
+                    "note": (f"Showing the {SESS_CAP} most recent sessions of "
+                             f"{len(sess)}. For older sessions, point them at the "
+                             f"Recruitment tab."),
+                }
+            return _json.dumps(data)
+        except Exception as e:
+            return f"Error fetching recruitment metrics: {e}"
+
+    elif tool_name == "get_recruitment_exceptions":
+        # ADMIN-ONLY, same reasoning as get_recruitment_metrics above. Gate first.
+        if cohort != "admin":
+            return "That's above your access level — recruitment figures are admin-only."
+        if not GOAT_RECRUITMENT_KEY:
+            return "Error: recruitment key not configured."
+        try:
+            params = {}
+            sess = str(tool_input.get("session") or "").strip()
+            if sess:  # omit for overall — the default and the safer answer
+                params["session"] = sess
+            r = http.get(RECRUITMENT_EXCEPTIONS_URL,
+                         headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                         params=params, timeout=15)
+            if r.status_code == 400:
+                try:
+                    return f"Error: {r.json().get('error', 'invalid session parameter')}"
+                except Exception:
+                    return "Error: invalid session parameter."
+            if r.status_code != 200:
+                return f"Error: recruitment exceptions service returned {r.status_code}."
+            # Fixed-size payload (eight reason keys, aggregates only) — no cap needed.
+            data = r.json()
+            _mel = _melbourne_ts(data.get("generated_at") if isinstance(data, dict) else None)
+            if _mel:
+                data["generated_at_melbourne"] = _mel
+            return _json.dumps(data)
+        except Exception as e:
+            return f"Error fetching recruitment exceptions: {e}"
+
     return f"Unknown tool: {tool_name}"
 
 
@@ -7726,6 +7895,11 @@ def api_goat():
         return jsonify({"error": "No messages"}), 400
 
     sid = session.get("sid", "anon")
+    # Capture the cohort HERE, while the request context is still live. It is read
+    # again inside generate() (the streaming body), where session is already gone —
+    # see execute_goat_tool's docstring. Passing one string is a far smaller blast
+    # radius than wrapping the whole streaming path in stream_with_context.
+    cohort = current_cohort()
 
     # Merge incoming messages into server-side history
     # The frontend sends the full history each time — use it as the source of truth
@@ -7768,7 +7942,7 @@ def api_goat():
                 tool_results = []
                 for tc in tool_calls:
                     yield f"data: {_json.dumps({'type':'tool_start','tool':tc.name})}\n\n"
-                    result = execute_goat_tool(tc.name, tc.input, ss)
+                    result = execute_goat_tool(tc.name, tc.input, ss, cohort)
 
                     try:
                         parsed = _json.loads(result)
