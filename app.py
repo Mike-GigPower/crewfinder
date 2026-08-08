@@ -6422,8 +6422,12 @@ def fetch_calls_bulk(ss, days=14, back=0):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     start = (today - timedelta(days=back)).strftime("%Y-%m-%d")
     end   = (today + timedelta(days=days)).strftime("%Y-%m-%d")
+    # Completed bookings are only wanted when we're actually looking backwards.
+    # Sent as a URL param rather than always-on because get-calls-bulk.php also
+    # serves /api/calls (Crew Finder), which must never see them.
+    inc   = "&include_completed=1" if back > 0 else ""
     try:
-        resp = ss.get(f"{BASE_URL}/ajax/crew/get-calls-bulk.php?start={start}&end={end}",
+        resp = ss.get(f"{BASE_URL}/ajax/crew/get-calls-bulk.php?start={start}&end={end}{inc}",
                       allow_redirects=True, timeout=30)
         if resp.status_code != 200:
             app.logger.warning(f"get-calls-bulk HTTP {resp.status_code}")
