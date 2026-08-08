@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.29.0"
+APP_VERSION    = "4.30.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6262,13 +6262,14 @@ def api_forecast_preload():
     return jsonify({"status":"Live mode — no preload required"})
 
 
-def scrape_schedule(ss, days=14):
+def scrape_schedule(ss, days=14, back=0):
     """Scrape all bookings from /bookings, return calls for the next `days` days.
     Handles pagination. Returns calls grouped by booking_id, filtered to date window.
     Also scrapes venue and contact from each booking header.
     """
-    today    = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    end_date = today + timedelta(days=days)
+    today      = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_date = today - timedelta(days=back)
+    end_date   = today + timedelta(days=days)
     all_calls = []
     seen_calls = set()
     page = 0
@@ -6313,7 +6314,7 @@ def scrape_schedule(ss, days=14):
                 earliest_date = call_date
 
             # Skip if outside our window
-            if call_date < today or call_date >= end_date:
+            if call_date < start_date or call_date >= end_date:
                 continue
 
             # Time, length, call name, booked/required, notes
@@ -6413,13 +6414,13 @@ def scrape_schedule(ss, days=14):
 
 _schedule_cache = {}  # {sid: {data, at}}
 
-def fetch_calls_bulk(ss, days=14):
+def fetch_calls_bulk(ss, days=14, back=0):
     """All-crew call list for the Schedule via the DB-backed get-calls-bulk.php
     (cohort-gated admin+leadership). Returns the same per-call shape as
     scrape_schedule, so api_schedule's grouping is unchanged. Used for
     leadership sessions, which can't scrape the admin /bookings pages."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    start = today.strftime("%Y-%m-%d")
+    start = (today - timedelta(days=back)).strftime("%Y-%m-%d")
     end   = (today + timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         resp = ss.get(f"{BASE_URL}/ajax/crew/get-calls-bulk.php?start={start}&end={end}",
@@ -6517,9 +6518,14 @@ def api_schedule():
         return jsonify({"error": "Not logged in"}), 401
 
     days  = min(90, max(1, int(request.args.get("days", 14))))
+    # Optional backward extension of the window. Clamped to 10 because
+    # days(90) + back(10) = 100 must stay under the 120-day cap enforced by
+    # get-calls-bulk.php and get-shifts-bulk.php.
+    try:    back = min(10, max(0, int(request.args.get("back", 0))))
+    except: back = 0
     force = request.args.get("force") == "1"
     sid   = session.get("sid", "anon")
-    key   = f"{sid}_{days}"
+    key   = f"{sid}_{days}_{back}"
 
     cached = _schedule_cache.get(key)
     if not force and cached and (datetime.now() - cached["at"]).total_seconds() < 120:
@@ -6529,9 +6535,9 @@ def api_schedule():
     # leadership can't scrape the admin /bookings pages, and admin no longer needs
     # to. Admin keeps the scrape only as a fallback if the bulk endpoint returns
     # nothing (graceful degradation, same pattern as the other bulk migrations).
-    calls = fetch_calls_bulk(ss, days=days)
+    calls = fetch_calls_bulk(ss, days=days, back=back)
     if not calls and current_cohort() not in LEADERSHIP_COHORTS:
-        calls = scrape_schedule(ss, days=days)
+        calls = scrape_schedule(ss, days=days, back=back)
 
     # Group by booking_id
     bookings = {}
@@ -6548,9 +6554,11 @@ def api_schedule():
         bookings[bid]["calls"].append(c)
 
     # Build date axis
-    today  = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    dates  = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
-    end_dt = today + timedelta(days=days)
+    today    = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_dt = today - timedelta(days=back)
+    dates    = [(start_dt + timedelta(days=i)).strftime("%Y-%m-%d")
+                for i in range(back + days)]
+    end_dt   = today + timedelta(days=days)
 
     # ── Server-side clash detection (3.4.6) ────────────────────────────────
     # Fetch every confirmed crew-call assignment in the window via the bulk
@@ -6563,7 +6571,7 @@ def api_schedule():
     clashes_by_call = {}  # {call_id_str: [{user_id, name, rule, severity, reason, against_call_id}]}
     crew_by_call    = {}  # {call_id_str: [{user_id, name}]}
     if USE_BULK_BOOKED_CREW_ENDPOINT:
-        assignments, err = fetch_booked_crew_bulk(ss, today, end_dt)
+        assignments, err = fetch_booked_crew_bulk(ss, start_dt, end_dt)
         if err is None:
             # Group assignments by user_id so each crew's calls are together
             by_user = {}
@@ -6701,6 +6709,9 @@ def api_schedule():
 
     payload = {
         "days":        days,
+        "back":        back,
+        # Explicit, because the client can no longer assume dates[0] is today.
+        "today":       today.strftime("%Y-%m-%d"),
         "dates":       dates,
         "bookings":    bookings_list,
         "total_calls": len(calls),
