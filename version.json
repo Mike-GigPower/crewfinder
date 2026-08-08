@@ -1,6 +1,6 @@
 {
-  "version": "4.28.0",
+  "version": "4.29.0",
   "release_date": "2026-08-08",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.28.0/TheGOAT.dmg",
-  "release_notes": "Schedule now flags calls that are numerically full but still have crew who haven't answered a re-confirm after a timing change or promotion. These render amber-bordered instead of green, with a count in the booking summary and on hover."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.29.0/TheGOAT.dmg",
+  "release_notes": "Ask the GOAT can now answer questions about recruitment — how we're tracking against the intake target, the funnel from applied through to crew, and how many candidates need chasing. Counts and figures only; for names, use the Recruitment tab."
 }
