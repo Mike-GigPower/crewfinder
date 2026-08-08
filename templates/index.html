@@ -1285,6 +1285,9 @@ a.recruit-action{text-decoration:none;display:inline-block}
                       outline:none;text-align:center"
                oninput="this.value=Math.min(90,Math.max(1,this.value||1))">
         <span style="font-size:10px;color:var(--muted)">days</span>
+        <span class="fc-group-chip" id="sched-back-toggle"
+              title="Also show the previous 10 days"
+              onclick="toggleSchedBack()">+ Prev 10 days</span>
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
         <input type="text" id="sched-search" placeholder="Search bookings..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')"
                style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
@@ -13682,6 +13685,16 @@ let _schedData = null;   // declared up-front: switchTab('schedule') reads it
                          // a ReferenceError that loadWhoami swallowed -> crew.
 let _schedFilter   = 'all'; // 'all' | 'full' | 'partial' | 'empty'
 let _schedFirstLoad = true;  // seed the starburst baseline once, on first load only
+let _schedBack = 0;   // 0 = forward window only; 10 = also show the previous 10 days
+// Unlike setSchedFilter, this cannot be a re-render: past calls are not in
+// _schedData at all, so the window has to be re-fetched. The server caches per
+// (sid, days, back), so flipping back and forth is cheap after the first load.
+function toggleSchedBack(){
+  _schedBack = _schedBack ? 0 : 10;
+  const el = document.getElementById('sched-back-toggle');
+  if(el) el.classList.toggle('active', _schedBack > 0);
+  loadSchedule();
+}
 function setSchedFilter(f){
   _schedFilter = f;
   ['all','open'].forEach(s => {
@@ -13713,7 +13726,7 @@ async function loadSchedule(force=false){
   showOverlay('Loading Schedule...', 'Fetching bookings from SmartStaff');
 
   try{
-    const url  = `/api/schedule?days=${days}` + (force ? '&force=1' : '');
+    const url  = `/api/schedule?days=${days}&back=${_schedBack}` + (force ? '&force=1' : '');
     const resp = await fetch(url);
     const data = await resp.json();
     if(data.error){ alert('Schedule error: ' + data.error); return; }
@@ -13733,8 +13746,9 @@ async function loadSchedule(force=false){
     // leave _schedAllFull untouched, so checkSchedAllBooked() can see a real
     // "was not full -> now full" transition and fire the starburst.
     if(_schedFirstLoad){
+      const _today = _schedData.today || (_schedData.dates || [])[0];
       const _calls = (_schedData.bookings || []).reduce((a,b)=>a.concat(b.calls||[]),[]);
-      const _staffable = _calls.filter(c => (c.required||0) > 0);
+      const _staffable = _calls.filter(c => (c.required||0) > 0 && c.date_iso >= _today);
       _schedAllFull = _staffable.length > 0 && _staffable.every(c => c.full);
       _schedFirstLoad = false;
     }
@@ -13976,7 +13990,9 @@ function renderSchedule(){
 
   const search   = document.getElementById('sched-search').value.toLowerCase().trim();
   const dates    = _schedData.dates;
-  const today    = dates[0];
+  // Explicit from the server. dates[0] is no longer today whenever the
+  // back-window is on; the `|| dates[0]` is a defensive fallback only.
+  const today    = _schedData.today || dates[0];
 
   // Filter bookings by search and status
   let bookings = _schedData.bookings.filter(b => {
@@ -14012,10 +14028,11 @@ function renderSchedule(){
     const day = dt.getDate();
     const mon = dt.toLocaleDateString('en-AU',{month:'short'});
     const isToday   = d === today;
+    const isPast    = d < today;
     const isWeekend = dt.getDay()===0 || dt.getDay()===6;
     const cls = isToday ? 'today' : isWeekend ? 'weekend' : '';
     const colWidth = isToday ? '70px' : '52px';
-    return `<div class="sched-day-col ${cls}" style="flex:0 0 ${colWidth};${isToday?'background:rgba(212,175,55,0.08);border-top:2px solid var(--accent)':''}">
+    return `<div class="sched-day-col ${cls}" style="flex:0 0 ${colWidth};${isPast?'opacity:.55;':''}${isToday?'background:rgba(212,175,55,0.08);border-top:2px solid var(--accent)':''}">
       <div style="font-weight:${isToday?'700':'400'}">${dow}</div>
       <div style="font-size:11px;color:${isToday?'var(--accent)':'var(--text)'}">${day}</div>
       <div style="font-size:8px">${mon}</div>
@@ -14049,6 +14066,7 @@ function renderSchedule(){
     const dayCells = dates.map(d => {
       const dayCalls  = callsByDay[d];
       const isToday   = d === today;
+      const isPast    = d < today;
       const blocks = dayCalls.map(c => {
         // Clash (3.4.6) — server-detected confirmed-crew double-booking.
         // Takes precedence over staffing colour: even a 4/4 booked call
@@ -14079,8 +14097,8 @@ function renderSchedule(){
       const isWeekend = dt.getDay()===0||dt.getDay()===6;
       return `<div style="flex:0 0 ${isToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;
                           min-height:${booking.calls.length>0?'36':'28'}px;
-                          overflow:hidden;min-width:0;
-                          background:${isToday?'rgba(212,175,55,0.06)':isWeekend?'rgba(255,255,255,0.015)':'transparent'};
+                          overflow:hidden;min-width:0;${isPast?'opacity:.6;':''}
+                          background:${isToday?'rgba(212,175,55,0.06)':isPast?'rgba(255,255,255,0.02)':isWeekend?'rgba(255,255,255,0.015)':'transparent'};
                           ${isToday?'border-top:1px solid rgba(212,175,55,0.3)':''}
                           display:flex;flex-direction:column;gap:1px">${blocks}</div>`;
     }).join('');
@@ -14640,10 +14658,12 @@ function triggerConfetti(){
 let _schedAllFull = false;
 function checkSchedAllBooked(){
   if(!_schedData || !Array.isArray(_schedData.bookings)) return;
+  const today = _schedData.today || (_schedData.dates || [])[0];
   // Gather every call across all bookings (unfiltered — this is about the real schedule state)
   const calls = _schedData.bookings.reduce((arr, b) => arr.concat(b.calls || []), []);
-  // Only meaningful when there are calls that actually require crew
-  const staffable = calls.filter(c => (c.required || 0) > 0);
+  // Today-and-forward only: past calls that were never filled never will be,
+  // and would otherwise pin allFull to false for good once the back-window is on.
+  const staffable = calls.filter(c => (c.required || 0) > 0 && c.date_iso >= today);
   const allFull = staffable.length > 0 && staffable.every(c => c.full);
   if(allFull && !_schedAllFull) triggerStarburst();  // false → true edge only
   _schedAllFull = allFull;
