@@ -1,6 +1,6 @@
 {
-  "version": "4.29.0",
+  "version": "4.30.0",
   "release_date": "2026-08-08",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.29.0/TheGOAT.dmg",
-  "release_notes": "Ask the GOAT can now answer questions about recruitment — how we're tracking against the intake target, the funnel from applied through to crew, and how many candidates need chasing. Counts and figures only; for names, use the Recruitment tab."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.30.0/TheGOAT.dmg",
+  "release_notes": "The Schedule can now show the previous 10 days. Toggle \"+ Prev 10 days\" beside the day count to see what's already happened, including completed bookings. Past days render in grey so they read as history rather than work outstanding."
 }
