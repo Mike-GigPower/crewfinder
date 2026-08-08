@@ -66,6 +66,37 @@
 	$end_i   = (int) $end_ts;
 
 	/*
+	/* include_completed — optional, default 0.
+	/*
+	/* The Schedule's backward window (?back=N) needs completed bookings: they
+	/* are most of what happened. Every other caller must NOT see them —
+	/* /api/calls feeds Crew Finder, and a completed booking is not staffable.
+	/* Hence opt-in rather than removing the filter.
+	/*
+	/* Scoped to PAST calls only. A completed booking with a future-dated call
+	/* is a data anomaly; surfacing it in the forward view — the one everyone
+	/* reads daily — would be a behaviour change nobody asked for. With this
+	/* scoping the forward half of the window is byte-identical to before.
+	/*
+	/* The boundary is computed HERE, from the box's own clock, not passed in
+	/* by the caller: it must agree with the DB's local-midnight start_date
+	/* convention.
+	/*
+	/* The relaxation is scoped to b.status = 1, NOT written as a bare
+	/* "OR c.start_date < today". bookings is LEFT JOINed, so an orphaned call
+	/* (booking deleted, call left behind) has b.status = NULL. A bare OR would
+	/* evaluate NULL OR TRUE = TRUE for any past orphan and start surfacing them
+	/* as blank-named rows — a behaviour change nobody asked for. Requiring
+	/* b.status = 1 leaves NULL failing both disjuncts, exactly as today.
+	*/
+	$include_completed = (isset($_GET['include_completed']) && $_GET['include_completed'] === '1') ? 1 : 0;
+	$today_ts = strtotime(date('Y-m-d') . ' 00:00:00');
+	if ($include_completed && $today_ts !== false)
+		$status_clause = 'AND (b.status <> 1 OR (b.status = 1 AND c.start_date < ' . ((int) $today_ts) . '))';
+	else
+		$status_clause = 'AND b.status <> 1';
+
+	/*
 	/* process the request
 	/*
 	/* One query: every call whose date falls in the window, joined to its
@@ -124,7 +155,7 @@
 		WHERE c.start_date >= $start_i
 		  AND c.start_date <  $end_i
 		  AND (b.hidden IS NULL OR b.hidden = 0)
-		  AND b.status <> 1   /* exclude Completed bookings — match the admin /bookings view */
+		  $status_clause
 		GROUP BY c.id
 		ORDER BY c.start_date ASC, c.start_time ASC
 	";
