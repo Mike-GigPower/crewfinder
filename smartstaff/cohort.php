@@ -171,4 +171,45 @@
 		}
 	}
 
+	if (!function_exists('goat_json_error'))
+	{
+		/*
+		/* Emit a JSON error body and exit. Use this instead of hand-building a
+		/* JSON string around mysql_error().
+		/*
+		/* The idiom this replaces —
+		/*     die('{"error":"write failed: ' . addslashes(mysql_error()) . '"}');
+		/* — produces INVALID JSON whenever the message contains an apostrophe,
+		/* because addslashes() emits \' and that is not a JSON escape sequence.
+		/* Nearly every informative MySQL error quotes an identifier ("Duplicate
+		/* entry '5925' for key 'PRIMARY'"), so the client's JSON.parse throws
+		/* and the operator sees a parser complaint instead of the cause.
+		/* Connection-level errors carry no apostrophe and pass through intact,
+		/* so the failure is selective in the worst direction: the useless
+		/* errors survive and the useful ones do not.
+		/*
+		/* json_encode() also escapes control characters and backslashes, which
+		/* addslashes() leaves raw.
+		/*
+		/* Fails to a static valid body if json_encode() itself returns false
+		/* (invalid UTF-8 in the message; PHP 5.5+). The client must ALWAYS be
+		/* able to parse a failure — an unparseable error is worse than a vague
+		/* one.
+		/*
+		/* http_response_code() rather than a local send_status(): it is the
+		/* idiom in 71 of 91 endpoints, and this file already relies on it in
+		/* goat_acting_user_id().
+		/*
+		/* PHP 5.x: array() syntax, no null-coalescing.
+		*/
+		function goat_json_error($code, $message)
+		{
+			http_response_code((int) $code);
+			$body = json_encode(array('error' => $message));
+			if ($body === false)
+				$body = '{"error":"request failed"}';
+			die($body);
+		}
+	}
+
 ?>
