@@ -1,6 +1,6 @@
 {
-  "version": "4.27.0",
-  "release_date": "2026-08-07",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.27.0/TheGOAT.dmg",
-  "release_notes": "Admins can grant crew members a time-limited exemption from the direct SmartStaff login block, managed from Administration → Access. Also fixes the Administration tab not scrolling."
+  "version": "4.28.0",
+  "release_date": "2026-08-08",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.28.0/TheGOAT.dmg",
+  "release_notes": "Schedule now flags calls that are numerically full but still have crew who haven't answered a re-confirm after a timing change or promotion. These render amber-bordered instead of green, with a count in the booking summary and on hover."
 }
