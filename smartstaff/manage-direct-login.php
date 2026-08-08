@@ -67,8 +67,7 @@
         $ok = mysql_query($sql);
         if ($ok === false || mysql_error() !== '')
         {
-            send_status(500, 'Write failed');
-            die('{"error":"write failed: ' . addslashes(mysql_error()) . '"}');
+            goat_json_error(500, 'write failed: ' . mysql_error());
         }
         echo json_encode(array('enabled' => ($val === '1')));
         exit;
@@ -185,8 +184,7 @@
         $ok = mysql_query($sql);
         if ($ok === false || mysql_error() !== '')
         {
-            send_status(500, 'Write failed');
-            die('{"error":"write failed: ' . addslashes(mysql_error()) . '"}');
+            goat_json_error(500, 'write failed: ' . mysql_error());
         }
 
         /* Re-select the stored row to report the actual expires_at rather than  */
@@ -224,8 +222,7 @@
         $ok = mysql_query("DELETE FROM goat_direct_login_exempt WHERE ein = " . $ein);
         if ($ok === false || mysql_error() !== '')
         {
-            send_status(500, 'Write failed');
-            die('{"error":"write failed: ' . addslashes(mysql_error()) . '"}');
+            goat_json_error(500, 'write failed: ' . mysql_error());
         }
 
         echo json_encode(array('ok' => true, 'action' => 'remove-exempt', 'ein' => $ein));
