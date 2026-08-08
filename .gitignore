@@ -29,3 +29,10 @@ Timesheet_GENERATED_sample_*.xlsx
 timesheet_links.json
 google_token*
 supabase/.temp/
+
+# TEST/PROD get-calls-bulk verification dumps — never commit (may contain live booking data)
+test_plain.json
+test_inc.json
+before_plain.json
+after_plain.json
+after_inc.json
