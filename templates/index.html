@@ -739,6 +739,17 @@ tr.skipped{opacity:.6}
 .sched-call-block.awaiting{background:rgba(34,197,94,0.12);border-left:2px solid var(--warn);color:var(--warn)}
 .sched-call-block.warn{background:rgba(249,115,22,0.2);border-left:2px solid #f97316;color:#f97316;animation:clashPulse 2s ease-in-out infinite}
 .sched-call-block.clash{background:rgba(227,30,36,0.2);border-left:2px solid var(--accent2);color:var(--accent2);animation:clashPulseRed 2s ease-in-out infinite}
+/* Past calls carry no staffing signal — nothing is outstanding on a day that
+   has already happened. One neutral grey for every past block regardless of
+   fill or clash, so the back-window reads as history rather than as a work
+   queue. Deliberately no animation: .clash and .warn pulse, and a past clash
+   pulsing red forever is noise, not information. Detail survives in the
+   title tooltip and the expanded crew chips. */
+.sched-call-block.past{
+  background: rgba(148,163,184,0.10);
+  border-left: 2px solid var(--muted);
+  color: var(--muted);
+}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
 @keyframes clashPulseRed{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(227,30,36,0.55)}}
 .crew-clash{color:#ef4444!important;font-weight:700}
@@ -1312,6 +1323,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
           <span style="font-size:9px;color:var(--muted)">Clash</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(249,115,22,0.2);border-left:2px solid #f97316;display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Warning</span>
+          <span style="width:10px;height:10px;border-radius:2px;background:rgba(148,163,184,0.10);border-left:2px solid var(--muted);display:inline-block"></span>
+          <span style="font-size:9px;color:var(--muted)">Past</span>
         </div>
         <button class="btn" onclick="loadSchedule(true)" style="margin-left:auto">⟳ Refresh</button>
         <span id="sched-summary" style="font-size:10px;color:var(--muted)"></span>
@@ -14073,7 +14086,9 @@ function renderSchedule(){
         // gets the orange clash marker if any of its crew clashes elsewhere.
         const sev      = _schedCallSeverity(c);
         const hasClash = sev !== null;
-        const cls      = sev ? sev : _schedFillClass(c);
+        // Past columns are neutral: see the .sched-call-block.past comment.
+        // hasClash stays live so the tooltip still names the clashing crew.
+        const cls      = isPast ? 'past' : (sev ? sev : _schedFillClass(c));
         const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
         let clashLabel = '';
         if(hasClash){
@@ -14160,9 +14175,16 @@ function renderSchedule(){
     for(const call of booking.calls){
       const sev      = _schedCallSeverity(call);
       const hasClash = sev !== null;
-      const cls      = sev ? sev : _schedFillClass(call);
+      const fillCls  = sev ? sev : _schedFillClass(call);
+      // The call's OWN date, not the column's — cls is computed once per call,
+      // outside the dates.map, so colIsPast is not in scope here and would be
+      // the wrong test anyway.
+      const cls      = (call.date_iso < today) ? 'past' : fillCls;
       const colors = {full:'#22c55e', partial:'var(--warn)', empty:'var(--accent2)', over:'var(--accent2)', awaiting:'var(--warn)'};
-      const statusColor = colors[cls];
+      // statusColor tints the booked/required number in the 300px label column,
+      // which §9 keeps untouched — colour it by the real fill state (fillCls),
+      // never by 'past', or past rows' counts would lose their colour coding.
+      const statusColor = colors[fillCls];
 
       const isToday = call.date_iso === today;
 
