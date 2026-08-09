@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.32.0"
+APP_VERSION    = "4.33.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6725,6 +6725,77 @@ def api_ops_calls():
     })
 
 
+def fetch_pending_acks_bulk(ss, start, end):
+    """Ops landing — the 'Acknowledgements outstanding' lane source, via the
+    DB-backed get-pending-acks-bulk.php endpoint (dual-gated). Returns the
+    endpoint's own dict — including its server-computed `counts` and the per-row
+    `kind` / `lead_bucket` tags — passed through untouched, so THE GOAT never
+    re-derives a boundary the server already decided (mirrors the offers lane).
+
+    ONE request only: get-pending-acks-bulk.php holds the same per-session PHP
+    file lock the other bulk reads do, so a concurrent /ajax/crew/ call on this
+    session would hang. No thread pool, no parallel fetch, ever.
+
+    Returns (data, error). On any failure data is None and error is a short
+    message; the caller soft-fails to an 'unavailable' lane."""
+    from html import unescape
+    url = f"{BASE_URL}/ajax/crew/get-pending-acks-bulk.php?start={start}&end={end}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    # SmartStaff stores these HTML-encoded and the endpoint passes them raw.
+    # Decode the free-text display fields only; counts, kind and lead_bucket are
+    # numeric / enum and pass through untouched (must not be recomputed here).
+    for a in data.get("acks", []):
+        for k in ("name", "booking_name", "venue", "call_name"):
+            if a.get(k) is not None:
+                a[k] = unescape(a[k])
+    return data, None
+
+
+@app.route("/api/ops/acks", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_acks():
+    """Ops landing — the 'Acknowledgements outstanding' lane. A thin proxy over
+    get-pending-acks-bulk.php: the endpoint lifts the awaiting predicate verbatim
+    from get-calls-bulk.php, applies the change/promo subsumption, and computes
+    the kind / lead buckets and the counts; we pass them straight through so the
+    donuts and the drill-down list can never disagree with each other or with the
+    Schedule's amber count.
+
+    Dual-gated exactly like the other two lanes: @require_cohort(*READ_ALL_COHORTS)
+    mirrors goat_can_read_all() (the lane is READABLE by all three read-all
+    cohorts; only the dismiss action is admin-only). Soft-fails with HTTP 200
+    {"unavailable": true} so the lane renders 'unavailable' and never takes the
+    page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Same window default as the other two lanes — today through today + 28 days,
+    # Melbourne (the box tz) — so all three lanes describe the same period.
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = request.args.get("start") or today.strftime("%Y-%m-%d")
+    end   = request.args.get("end")   or (today + timedelta(days=28)).strftime("%Y-%m-%d")
+
+    data, err = fetch_pending_acks_bulk(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-acks] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
+
 @app.route("/api/schedule")
 @require_cohort(*READ_ALL_COHORTS)
 def api_schedule():
@@ -9602,6 +9673,61 @@ def api_call_dismiss_promo_ack(booking_id, call_id, user_id):
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
     result, err = ss_dismiss_promo_ack(ss, call_id, user_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+def ss_dismiss_change_ack(ss, call_id, user_id):
+    """Clear a pending timing-change re-confirm as OPS via dismiss-change-ack.php
+    (admin-only).
+
+    Ops click Dismiss on the Ops landing page when they have already re-confirmed
+    the crew member by phone. Unlike the promo ack, this DELETEs the
+    call_change_ack row (the row's presence IS the pending flag everywhere it is
+    read); call_crew_map.status is NEVER touched — the crew member stays confirmed
+    / backup, only the outstanding question is cleared.
+
+    An already-cleared or absent row returns HTTP 200 with ok:false — a business
+    no-op, not an error, so a stale double-click is safe.
+
+    Returns (result, error):
+        result : {ok, call_id, user_id, cleared}
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/dismiss-change-ack.php"
+    try:
+        resp = ss.post(url, params={"id": call_id},
+                       json={"userID": user_id}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            pass
+        return None, f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+    try:
+        return resp.json(), None
+    except Exception:
+        return None, "bad JSON from dismiss-change-ack.php"
+
+@app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/change-ack",
+           methods=["DELETE"])
+@require_cohort("admin")
+def api_call_dismiss_change_ack(booking_id, call_id, user_id):
+    """Dismiss the timing-change re-confirm flag for one crew member on a call.
+
+    Fired by the Dismiss control on the Ops landing 'Acknowledgements
+    outstanding' lane, after an ops confirm dialog. DELETEs the call_change_ack
+    row and leaves call_crew_map.status untouched. @require_cohort("admin")
+    mirrors the PHP gate exactly — the lane is readable by three cohorts but
+    dismissible by one, so the Python gate must not be wider than the PHP.
+    booking_id is taken for URL symmetry with the other call routes."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    result, err = ss_dismiss_change_ack(ss, call_id, user_id)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
