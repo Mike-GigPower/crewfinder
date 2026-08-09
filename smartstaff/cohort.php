@@ -92,8 +92,26 @@
 		*/
 		function goat_can_read_all()
 		{
+			/* 1. logged-in SmartStaff session with a read-all cohort
+			/*    (admin / leadership / operations) — THE GOAT desktop path. */
 			$c = goat_user_cohort();
-			return ($c === 'admin' || $c === 'leadership' || $c === 'operations');
+			if ($c === 'admin' || $c === 'leadership' || $c === 'operations')
+				return true;
+
+			/* 2. service path: the trusted Gig Power crew portal backend presents
+			/*    the Crew API service secret. The portal has already verified the
+			/*    signed-in user is admin/leadership/operations server-side (via
+			/*    requireCohort) BEFORE calling, and the key is a backend-only
+			/*    secret that never reaches a browser — so the secret grants
+			/*    read-all here, mirroring goat_acting_user_id()'s service path.
+			/*    READ-only endpoints only; write endpoints keep their own strict
+			/*    usergroupID == 1 check. */
+			$key = isset($_SERVER['HTTP_X_GOAT_SERVICE_KEY'])
+			     ? $_SERVER['HTTP_X_GOAT_SERVICE_KEY'] : '';
+			if (goat_service_key_ok($key))
+				return true;
+
+			return false;
 		}
 
 		/*
