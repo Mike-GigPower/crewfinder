@@ -1,6 +1,6 @@
 {
-  "version": "4.31.0",
+  "version": "4.32.0",
   "release_date": "2026-08-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.31.0/TheGOAT.dmg",
-  "release_notes": "First Slice of the Operations Dashboard" 
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.32.0/TheGOAT.dmg",
+  "release_notes": "Ops tab: new Calls to fill lane — calls short of crew, how soon they run, and which already have someone offered"
 }
