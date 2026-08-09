@@ -1,6 +1,6 @@
 {
-  "version": "4.30.0",
-  "release_date": "2026-08-08",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.30.0/TheGOAT.dmg",
-  "release_notes": "The Schedule can now show the previous 10 days. Toggle \"+ Prev 10 days\" beside the day count to see what's already happened, including completed bookings. Past days render in grey so they read as history rather than work outstanding."
+  "version": "4.31.0",
+  "release_date": "2026-08-09",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.31.0/TheGOAT.dmg",
+  "release_notes": "First Slice of the Operations Dashboard" 
 }
