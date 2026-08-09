@@ -1087,12 +1087,12 @@ a.recruit-action{text-decoration:none;display:inline-block}
    they track the (single, dark) theme; the age/status segment palette lives in
    JS (OPS_AGE_COLORS / OPS_STATUS_COLORS) so donut, legend, pill and chip all
    read one value per segment. */
-.ops-panel{display:flex;flex-direction:column;height:100%;overflow:hidden}
+.ops-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .ops-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
 .ops-asat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
-.ops-lanes{padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
-.ops-page-note{font-size:13px;color:var(--text);padding:8px 2px}
-.ops-lane{border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
+.ops-lanes{flex:1;min-height:0;padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:12px}
+.ops-page-note{font-size:13px;color:var(--text);padding:8px 2px;width:100%;max-width:1100px}
+.ops-lane{flex-shrink:0;width:100%;max-width:1100px;border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
 .ops-lane-head{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none}
 .ops-lane-head:hover{background:var(--surface2)}
 .ops-lane-caret{color:var(--muted);font-size:11px;width:12px;flex-shrink:0}
@@ -1129,6 +1129,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-row:hover{border-color:var(--accent)}
 .ops-row-main{display:flex;flex-direction:column;gap:2px;min-width:0}
 .ops-row-name{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;color:var(--text)}
+.ops-row-title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}
 .ops-row-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ops-row-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;white-space:nowrap}
 .ops-row-when{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
@@ -1142,6 +1143,11 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-subhead{font-size:12px;color:var(--muted);padding:2px 2px 10px}
 .ops-row-fill{grid-column:1 / -1;display:flex;align-items:center;gap:8px;margin-top:2px}
 .ops-offered{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.ops-ack-action{grid-column:1 / -1;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:2px}
+.ops-was{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.ops-dismiss{font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--accent2);background:var(--accent2-bg);border:1px solid var(--accent2);border-radius:5px;padding:2px 12px;cursor:pointer;transition:filter .12s}
+.ops-dismiss:hover{filter:brightness(1.25)}
+.ops-ack-err{font-size:11px;color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -13802,7 +13808,9 @@ const OPS_LANES = [
   { key:'confirmations', label:'Confirmations to chase',
     load: loadOpsOffers, render: renderOpsOffers, dims:['status','age'] },
   { key:'calls_to_fill', label:'Calls to fill',
-    load: loadOpsCalls, render: renderOpsCalls, dims:['fill','lead'] }
+    load: loadOpsCalls, render: renderOpsCalls, dims:['fill','lead'] },
+  { key:'acks', label:'Acknowledgements outstanding',
+    load: loadOpsAcks, render: renderOpsAcks, dims:['kind','lead'] }
 ];
 
 // Per-lane runtime state, keyed by lane.key:
@@ -13839,11 +13847,20 @@ const OPS_FILL_LABELS = { empty:'Nobody booked', partial:'Partly filled' };
 const OPS_LEAD_COLORS = { under48:'var(--accent2)', from48to168:'var(--warn)', over168:'#22c55e' };
 const OPS_LEAD_LABELS = { under48:'< 48h', from48to168:'2–7 days', over168:'> 7 days' };
 
+// Lane 3 (acks) kind palette + labels. §4.1 vocabulary — this lane must NOT say
+// "awaiting" (already an unanswered offer on lane 2 and an unanswered re-confirm
+// on the Schedule): the segments are "Timing changed" and "Promoted off
+// standby". Lead time reuses lane 1's colours/labels exactly, so the same bucket
+// looks the same in both lanes.
+const OPS_KIND_COLORS = { change:'var(--accent)', promo:'var(--suggest)' };
+const OPS_KIND_LABELS = { change:'Timing changed', promo:'Promoted off standby' };
+
 // Chip labels by dimension — lets opsChipsBar render any lane's active filters
 // without naming lanes. Defined after the per-dim label maps above exist.
 const OPS_DIM_LABELS = {
   status: OPS_STATUS_LABELS, age: OPS_AGE_LABELS,
-  fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS
+  fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS,
+  kind:   OPS_KIND_LABELS
 };
 
 // Serial by design: one SmartStaff request at a time. Awaiting each lane in
@@ -14171,11 +14188,13 @@ function opsRowCard(o, laneKey){
   const labels = opsRowLabels(o);
   return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(o.crewmap_id||0)+')">'
     +   '<div class="ops-row-main">'
-    +     '<span class="ops-row-name">'+(nm || '—')+'</span>'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+(nm || '—')+'</span>'
+    +       '<span class="ops-row-when">'+when+'</span>'
+    +     '</div>'
     +     '<span class="ops-row-meta">'+meta+'</span>'
     +   '</div>'
     +   '<div class="ops-row-side">'
-    +     '<span class="ops-row-when">'+when+'</span>'
     +     '<span class="ops-pill" style="color:'+pill.color+';border-color:'+pill.color+'">'+escapeHtml(pill.text)+'</span>'
     +   '</div>'
     +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
@@ -14334,11 +14353,11 @@ function opsCallCard(o, laneKey, offered){
   const labels = opsCallLabels(o);
   return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(o.call_id||0)+')">'
     +   '<div class="ops-row-main">'
-    +     '<span class="ops-row-name">'+(booking || '—')+'</span>'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+(booking || '—')+'</span>'
+    +       '<span class="ops-row-when">'+when+'</span>'
+    +     '</div>'
     +     '<span class="ops-row-meta">'+meta+'</span>'
-    +   '</div>'
-    +   '<div class="ops-row-side">'
-    +     '<span class="ops-row-when">'+when+'</span>'
     +   '</div>'
     +   '<div class="ops-row-fill">'
     +     '<span class="ops-pill" style="color:'+pcol+';border-color:'+pcol+'">'+short+' short</span>'
@@ -14346,6 +14365,183 @@ function opsCallCard(o, laneKey, offered){
     +   '</div>'
     +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
     + '</div>';
+}
+
+// ── Lane 3: Acknowledgements outstanding ────────────────────────────────────
+// The row-level detail behind the Schedule's amber "awaiting" count: crew who
+// have answered nothing since a timing change or a promotion off standby. Two
+// tables, opposite lifecycles, merged into one lane server-side (subsumption in
+// get-pending-acks-bulk.php). /api/ops/acks owns the predicate, the kind /
+// lead_bucket tags and the counts; nothing here re-derives a boundary.
+async function loadOpsAcks(lane, force){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/acks');
+    const d = await r.json();
+    if(d && d.unavailable){
+      st.status = 'unavailable'; st.error = d.error || '';
+      renderOpsUnavailable(lane); return;
+    }
+    st.status = 'ready'; st.data = d;
+    if(d && d.generated_at) setOpsAsAt(d.generated_at);
+    renderOpsAcks(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = e.message || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+function renderOpsAcks(lane){
+  const st     = _opsLaneState[lane.key];
+  const data   = st && st.data;
+  const counts = (data && data.counts) || {};
+  const total  = counts.total || 0;
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  // Empty is the SUCCESS state here — calm, normal text, not an error. (Prod
+  // currently holds ~0 pending promos and few/no pending changes, so an empty
+  // lane is the expected result, not a broken join.)
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    return;
+  }
+  const kindSegs = ['change','promo'].map(function(k){
+    return { key:k, value:(counts.kind && counts.kind[k]) || 0,
+             color:OPS_KIND_COLORS[k], label:OPS_KIND_LABELS[k] };
+  });
+  const leadSegs = ['under48','from48to168','over168'].map(function(k){
+    return { key:k, value:(counts.lead && counts.lead[k]) || 0,
+             color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
+  });
+  body.innerHTML = ''
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Kind',      'kind', kindSegs)
+    +   opsDonutBlock(lane, 'Lead time', 'lead', leadSegs)
+    + '</div>'
+    + opsChipsBar(lane)
+    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
+  renderOpsAcksList(lane);
+}
+
+// Filter on the server's kind / lead_bucket tags — never a recomputed boundary.
+function opsFilteredAcks(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st.data && st.data.acks) ? st.data.acks.slice() : [];
+  if(st.chips.kind) rows = rows.filter(function(o){ return o.kind === st.chips.kind; });
+  if(st.chips.lead) rows = rows.filter(function(o){ return o.lead_bucket === st.chips.lead; });
+  return rows;
+}
+
+// Soonest call first, matching lane 1; ties broken change-before-promo so the
+// re-confirm (which has a "was" delta to talk to) sits above a bare promotion.
+function opsSortAcks(rows){
+  return rows.slice().sort(function(a, b){
+    const as = a.start || '', bs = b.start || '';
+    if(as < bs) return -1;
+    if(as > bs) return 1;
+    const ak = (a.kind === 'change') ? 0 : 1, bk = (b.kind === 'change') ? 0 : 1;
+    return ak - bk;
+  });
+}
+
+function renderOpsAcksList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const rows = opsSortAcks(opsFilteredAcks(lane));
+  // Keyed by call_id:user_id — a call carries one row per outstanding crew
+  // member, so call_id alone is not unique here (it is on the calls lane).
+  const idx = {};
+  rows.forEach(function(o){ idx[o.call_id + ':' + o.user_id] = o; });
+  _opsRowIndex[lane.key] = idx;
+  if(!rows.length){
+    el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No acknowledgements match the current filter.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(function(o){ return opsAckCard(o, lane.key); }).join('');
+}
+
+// Non-exclusive labels: the kind (always) and "< 48h" (imminent). No "awaiting".
+function opsAckLabels(o){
+  const L = [];
+  if(o.kind === 'change')      L.push('<span class="ops-lbl lbl-aw">Timing changed</span>');
+  else if(o.kind === 'promo')  L.push('<span class="ops-lbl lbl-cb">Promoted off standby</span>');
+  if(o.lead_bucket === 'under48') L.push('<span class="ops-lbl lbl-nm">&lt; 48h</span>');
+  return L.join('');
+}
+
+// "was Tue 11 Aug 22:00" from a prev_start ISO — the single most useful thing on
+// a change card: it says what the conversation is about before ops ring.
+function opsFmtWas(iso){
+  if(!iso) return '';
+  const dt = new Date(iso);
+  if(isNaN(dt.getTime())) return '';
+  const ds = dt.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short' });
+  const t  = String(dt.getHours()).padStart(2,'0') + ':' + String(dt.getMinutes()).padStart(2,'0');
+  return 'was ' + ds + ' ' + t;
+}
+
+// decodeEntities BEFORE escapeHtml on every displayed string. The Dismiss button
+// renders only for admin AND change rows (both PHP gates are admin-only; promo
+// rows already have a dismiss path via the call-dialog pill — not duplicated
+// here). The "was" delta and an inline error slot share the action row.
+function opsAckCard(o, laneKey){
+  const key  = o.call_id + ':' + o.user_id;
+  const nm   = escapeHtml(decodeEntities(o.name || ''));
+  const meta = [o.booking_name, o.venue, o.call_name]
+                 .map(function(x){ return escapeHtml(decodeEntities(x || '')); })
+                 .filter(Boolean).join(' · ');
+  const when = escapeHtml(opsCallWhen(o));
+  const labels = opsAckLabels(o);
+  const was = (o.kind === 'change') ? escapeHtml(opsFmtWas(o.prev_start)) : '';
+  const canDismiss = (window._cohort === 'admin' && o.kind === 'change');
+  const action = (was || canDismiss)
+    ? '<div class="ops-ack-action">'
+        + (was ? '<span class="ops-was">'+was+'</span>' : '')
+        + (canDismiss ? '<button class="ops-dismiss" onclick="opsDismissAck(event,'
+            + (o.booking_id||0) + ',' + (o.call_id||0) + ',' + (o.user_id||0) + ')">Dismiss</button>' : '')
+        + '<span class="ops-ack-err" id="ack-err-' + (o.call_id||0) + '-' + (o.user_id||0) + '"></span>'
+      + '</div>'
+    : '';
+  return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\',\''+key+'\')">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+(nm || '—')+'</span>'
+    +       '<span class="ops-row-when">'+when+'</span>'
+    +     '</div>'
+    +     '<span class="ops-row-meta">'+meta+'</span>'
+    +   '</div>'
+    +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
+    +   action
+    + '</div>';
+}
+
+// The frame's first in-place WRITE. stopPropagation so it never also opens the
+// call dialog behind it; confirm because this clears someone's outstanding
+// question permanently with no undo; refetch (not optimistic removal) on success
+// — the row count is small and a refetch keeps the lane honest; leave the row and
+// surface the error inline on failure — never a silent no-op.
+async function opsDismissAck(ev, bookingId, callId, userId){
+  if(ev && ev.stopPropagation) ev.stopPropagation();
+  if(!confirm('Dismiss this outstanding re-confirm? This clears the crew member’s question permanently and cannot be undone.')) return;
+  const errEl = document.getElementById('ack-err-'+callId+'-'+userId);
+  if(errEl) errEl.textContent = '';
+  try{
+    const r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/change-ack', { method:'DELETE' });
+    let d = {};
+    try{ d = await r.json(); }catch(e){}
+    // A business no-op returns HTTP 200 ok:false with no error key — treat any
+    // 200 without an error as success and refetch; only a real error banner-s.
+    if(!r.ok || (d && d.error)){
+      if(errEl) errEl.textContent = 'Dismiss failed' + ((d && d.error) ? (': ' + d.error) : '');
+      return;
+    }
+    const lane = OPS_LANES.find(function(l){ return l.key === 'acks'; });
+    if(lane) await loadOpsAcks(lane, true);
+  }catch(e){
+    if(errEl) errEl.textContent = 'Dismiss failed: ' + (e.message || 'network error');
+  }
 }
 
 function setSchedFilter(f){
