@@ -195,6 +195,18 @@
 
 	$offers = array();
 
+	/* One instant for the whole response. Computed once, outside the loop, so two
+	/* rows either side of a bucket boundary can never be classified against
+	/* different "now" values. */
+	$now_unix = time();
+
+	/* Tallies accumulated from the SAME variables each row uses, so a row and its
+	/* count can never disagree. Age buckets are mutually exclusive and sum to the
+	/* row total; flags are non-exclusive labels and deliberately do not. */
+	$c_age    = array('under24' => 0, 'from24to72' => 0, 'over72' => 0, 'unknown' => 0);
+	$c_status = array('not_messaged' => 0, 'awaiting' => 0);
+	$c_flags  = array('sms_failed' => 0, 'call_boss' => 0);
+
 	while ($row = mysql_fetch_object($result))
 	{
 		/* start/end built exactly as get-calls-bulk.php builds them, so the two
@@ -224,6 +236,42 @@
 		{
 			$created_iso = str_replace(' ', 'T', $created);
 		}
+
+		/* Age bucket, assigned ONCE, server-side. The donut counts and the
+		/* drill-down list both read this tag rather than re-deriving the
+		/* boundary, so they cannot disagree. global.php has already set the
+		/* Melbourne timezone, so strtotime() and time() are in the same frame and
+		/* no offset arithmetic is needed. Buckets are mutually exclusive and sum
+		/* to the row total. */
+		if ($created_iso === null)
+		{
+			$age_bucket = 'unknown';
+		}
+		else
+		{
+			$age_secs = $now_unix - strtotime($created);
+			if ($age_secs > 259200)         /* > 72h */
+				$age_bucket = 'over72';
+			else if ($age_secs > 86400)     /* > 24h */
+				$age_bucket = 'from24to72';
+			else
+				$age_bucket = 'under24';
+		}
+
+		/* Derived once, read by BOTH the row and its tally below — never a second
+		/* evaluation of the same condition. */
+		$status_i = (int) $row->status;
+		$is_boss  = ((int) $row->is_call_boss === 1) ? 1 : 0;
+
+		$c_age[$age_bucket]++;
+		if ($status_i === 0)
+			$c_status['not_messaged']++;
+		else
+			$c_status['awaiting']++;
+		if ($row->sms_fail !== null)
+			$c_flags['sms_failed']++;
+		if ($is_boss === 1)
+			$c_flags['call_boss']++;
 
 		/* "Lastname, Firstname" — same construction as list-crew-bulk.php, so
 		/* the portal gets the identical display string it already receives from
@@ -258,19 +306,31 @@
 			/* 0 = Unconfirmed (never messaged), 1 = SMS Sent (messaged, no
 			/* reply). Passed through raw — the dashboard reports them
 			/* separately; they call for different operational actions. */
-			'status'       => (int) $row->status,
+			'status'       => $status_i,
 			'created_at'   => $created_iso,
+			/* Age tag assigned above; read directly by the counts and the
+			/* drill-down list so neither re-derives the boundary. */
+			'age_bucket'   => $age_bucket,
 			/* NULL preserved, never cast to 0 — "no SMS failure recorded" must
 			/* not blend into "SMS failed". */
 			'sms_fail'     => ($row->sms_fail === null ? null : (int) $row->sms_fail),
 			/* binary(50) in the schema, so cast rather than compare as string */
-			'is_call_boss' => ((int) $row->is_call_boss === 1 ? 1 : 0),
+			'is_call_boss' => $is_boss,
 		);
 	}
 
+	/* Both identities hold by construction: every row increments exactly one age
+	/* bucket and exactly one status, so total = sum(age) = sum(status). flags do
+	/* NOT sum to total — they are non-exclusive labels. */
 	echo json_encode(array(
 		'generated_at' => date('Y-m-d\TH:i:s'),
 		'window'       => array('start' => $start_raw, 'end' => $end_raw),
+		'counts'       => array(
+			'total'  => count($offers),
+			'age'    => $c_age,
+			'status' => $c_status,
+			'flags'  => $c_flags,
+		),
 		'offers'       => $offers,
 	));
 
