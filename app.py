@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.30.0"
+APP_VERSION    = "4.31.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6502,6 +6502,76 @@ def fetch_unfilled_calls(ss, horizon_days=90):
         except Exception as e:
             app.logger.warning(f"[bulk-calls] failed ({e}); falling back to scrape")
     return scrape_calls(ss, f"{BASE_URL}/dash")
+
+
+def fetch_open_offers_bulk(ss, start, end):
+    """All-crew open (unanswered) offers in a date window, via the DB-backed
+    get-open-offers-bulk.php endpoint (goat_can_read_all()-gated). Returns the
+    endpoint's own dict — including its server-computed `counts` and per-row
+    `age_bucket` — passed through untouched, so THE GOAT never re-derives a
+    boundary the server already decided.
+
+    ONE request only: get-open-offers-bulk.php holds a per-session PHP file lock,
+    so a second concurrent /ajax/crew/ call on the same session would hang. No
+    thread pool, no parallel fetch, ever.
+
+    Returns (data, error). On any failure data is None and error is a short
+    message; the caller soft-fails to an 'unavailable' tab."""
+    from html import unescape
+    url = f"{BASE_URL}/ajax/crew/get-open-offers-bulk.php?start={start}&end={end}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    # SmartStaff stores these HTML-encoded and the endpoint passes them through
+    # raw. Decode the free-text display fields only; counts and age_bucket are
+    # numeric / enum and pass through untouched (the brief forbids recomputing
+    # either here).
+    for o in data.get("offers", []):
+        for k in ("name", "booking_name", "venue", "call_name"):
+            if o.get(k) is not None:
+                o[k] = unescape(o[k])
+    return data, None
+
+
+@app.route("/api/ops/offers", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_offers():
+    """Ops landing — the 'Confirmations to chase' lane. A thin proxy over
+    get-open-offers-bulk.php: the endpoint computes the age buckets and the
+    counts; we pass them straight through so the donuts and the drill-down list
+    can never disagree with each other or with the server.
+
+    Dual-gated exactly like the PHP: @require_cohort(*READ_ALL_COHORTS) mirrors
+    goat_can_read_all(), so the browser session alone authorises this — no
+    X-Goat-Service-Key. Soft-fails with HTTP 200 {"unavailable": true} so the tab
+    renders 'unavailable' and never takes the rest of the page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Default window: today through today + 28 days (Melbourne — the box tz, the
+    # same frame the rest of the app's date math uses). Passed through to the
+    # endpoint, which re-validates the YYYY-MM-DD format itself.
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = request.args.get("start") or today.strftime("%Y-%m-%d")
+    end   = request.args.get("end")   or (today + timedelta(days=28)).strftime("%Y-%m-%d")
+
+    data, err = fetch_open_offers_bulk(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-offers] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
 
 
 @app.route("/api/schedule")
