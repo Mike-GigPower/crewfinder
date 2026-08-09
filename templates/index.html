@@ -1139,6 +1139,9 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-lbl.lbl-aw{color:var(--accent);background:var(--accent-bg)}
 .ops-lbl.lbl-sf{color:#f97316;background:rgba(249,115,22,0.12)}
 .ops-lbl.lbl-cb{color:var(--suggest);background:var(--suggest-bg)}
+.ops-subhead{font-size:12px;color:var(--muted);padding:2px 2px 10px}
+.ops-row-fill{grid-column:1 / -1;display:flex;align-items:center;gap:8px;margin-top:2px}
+.ops-offered{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -13782,23 +13785,37 @@ function toggleSchedBack(){
   loadSchedule();
 }
 // ═══ OPS LANDING (v4.31.0, slice 1) ══════════════════════════════════════════
-// Data-driven lane frame. One lane today; slice 2 adds an entry to OPS_LANES
-// rather than editing markup. The frame draws immediately and each lane fills as
-// its fetch resolves — the page never blocks on a fetch.
+// Data-driven lane frame. Each lane is a descriptor: its load()/render() pair
+// and the two donut dimensions it filters on. Adding a lane is adding an entry
+// here — the frame, chips, empty state and "as at" iterate this array, they
+// never name individual lanes. The frame draws immediately and each lane fills
+// as its fetch resolves; the page never blocks on a fetch.
+//
+// Order is load-bearing: loadOps() awaits lanes in THIS order (one SmartStaff
+// request at a time — a per-session PHP file lock hangs on concurrent
+// /ajax/crew/ calls). 'confirmations' must load before 'calls_to_fill' so the
+// offers feed is already in _opsLaneState.confirmations.data when the calls lane
+// draws its "already offered" overlap disclosure. loadOps*/renderOps* are
+// hoisted function declarations, so naming them above their definitions is fine;
+// dims carry only strings, so no const is referenced before it exists.
 const OPS_LANES = [
   { key:'confirmations', label:'Confirmations to chase',
-    load: loadOpsOffers, render: renderOpsOffers }
+    load: loadOpsOffers, render: renderOpsOffers, dims:['status','age'] },
+  { key:'calls_to_fill', label:'Calls to fill',
+    load: loadOpsCalls, render: renderOpsCalls, dims:['fill','lead'] }
 ];
 
 // Per-lane runtime state, keyed by lane.key:
-//   { status, data, error, chips:{status, age} }
+//   { status, data, error, chips:{<dim>:seg|null, ...} }
 const _opsLaneState = {};
-// crewmap_id -> offer, rebuilt on each list render, so a card's click always
-// hands opsRowTarget the full offer object it was drawn from.
+// laneKey -> (rowId -> row), rebuilt on each list render. Keyed per-lane because
+// both lanes can be expanded at once; a single flat index would have them
+// clobber each other. A card's click hands opsRowTarget the full row it was
+// drawn from.
 let _opsRowIndex = {};
 
 // Segment palette (dark theme — THE GOAT ships one). One value per segment so
-// the donut arc, the legend swatch, the age pill and the chip never disagree.
+// the donut arc, the legend swatch, the pill and the chip never disagree.
 const OPS_AGE_COLORS = {
   under24:    '#22c55e',        // freshest — the "full/good" green used elsewhere
   from24to72: 'var(--warn)',    // amber
@@ -13812,15 +13829,50 @@ const OPS_STATUS_COLORS = {
 };
 const OPS_STATUS_LABELS = { not_messaged:'Not messaged', awaiting:'Awaiting reply' };
 
-function loadOps(force){
+// Lane 1 (calls_to_fill) palette + labels. "Nobody booked" is the urgent case
+// (red), "partly filled" amber. Lead time mirrors age: the nearest call is the
+// urgent one (red), the furthest is calm (green). §5 vocabulary — this lane
+// never says "awaiting": that word already means an unanswered offer on lane 2
+// and an unanswered re-confirm on the Schedule, and must not gain a third sense.
+const OPS_FILL_COLORS = { empty:'var(--accent2)', partial:'var(--warn)' };
+const OPS_FILL_LABELS = { empty:'Nobody booked', partial:'Partly filled' };
+const OPS_LEAD_COLORS = { under48:'var(--accent2)', from48to168:'var(--warn)', over168:'#22c55e' };
+const OPS_LEAD_LABELS = { under48:'< 48h', from48to168:'2–7 days', over168:'> 7 days' };
+
+// Chip labels by dimension — lets opsChipsBar render any lane's active filters
+// without naming lanes. Defined after the per-dim label maps above exist.
+const OPS_DIM_LABELS = {
+  status: OPS_STATUS_LABELS, age: OPS_AGE_LABELS,
+  fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS
+};
+
+// Serial by design: one SmartStaff request at a time. Awaiting each lane in
+// OPS_LANES order keeps the per-session PHP file lock happy AND guarantees
+// 'confirmations' has resolved before 'calls_to_fill' reads its feed for the
+// overlap disclosure. Still progressive — the frame and every lane shell draw
+// up-front, each lane fills as it resolves — and each await is wrapped so one
+// lane failing soft-fails only that lane and never blocks the next.
+async function loadOps(force){
   renderOpsFrame();
   setOpsAsAt(null);                 // stamp the moment we asked; server time overwrites on resolve
-  OPS_LANES.forEach(function(lane){
-    if(!_opsLaneState[lane.key]) _opsLaneState[lane.key] = { chips:{status:null, age:null} };
+  for(let i = 0; i < OPS_LANES.length; i++){
+    const lane = OPS_LANES[i];
+    if(!_opsLaneState[lane.key]){
+      const chips = {};
+      lane.dims.forEach(function(d){ chips[d] = null; });
+      _opsLaneState[lane.key] = { chips: chips };
+    }
     _opsLaneState[lane.key].status = 'loading';
     setOpsLaneLoading(lane);
-    lane.load(lane, force);         // resolves → lane.render()
-  });
+    try{
+      await lane.load(lane, force);       // resolves → lane.render()
+    }catch(e){
+      const st = _opsLaneState[lane.key];
+      st.status = 'unavailable';
+      st.error  = (e && e.message) || 'load failed';
+      renderOpsUnavailable(lane);         // isolate: this lane failed, the next still runs
+    }
+  }
 }
 
 // Build the lane shells once; refreshes reuse them and just reset each body.
@@ -14001,11 +14053,15 @@ function opsPercents(values){
   });
 }
 
+// Generic over the lane's dims — reads OPS_DIM_LABELS so it never names a lane.
+// Output is identical to the hand-written lane-2 version it replaced.
 function opsChipsBar(lane){
   const st = _opsLaneState[lane.key];
   const chips = [];
-  if(st.chips.status) chips.push({ dim:'status', label:OPS_STATUS_LABELS[st.chips.status] });
-  if(st.chips.age)    chips.push({ dim:'age',    label:OPS_AGE_LABELS[st.chips.age] });
+  lane.dims.forEach(function(dim){
+    const seg = st.chips[dim];
+    if(seg) chips.push({ dim:dim, label:((OPS_DIM_LABELS[dim] || {})[seg]) || seg });
+  });
   const inner = chips.map(function(c){
     return '<span class="ops-chip">'+escapeHtml(c.label)
       + '<button title="Clear filter" onclick="opsClearChip(\''+lane.key+'\',\''+c.dim+'\')">×</button></span>';
@@ -14019,13 +14075,13 @@ function opsToggleChip(laneKey, dim, seg){
   const st = _opsLaneState[laneKey]; if(!st) return;
   st.chips[dim] = (st.chips[dim] === seg) ? null : seg;
   const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
-  if(lane) renderOpsOffers(lane);
+  if(lane) lane.render(lane);            // re-render THIS lane, whichever it is
 }
 function opsClearChip(laneKey, dim){
   const st = _opsLaneState[laneKey]; if(!st) return;
   st.chips[dim] = null;
   const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
-  if(lane) renderOpsOffers(lane);
+  if(lane) lane.render(lane);
 }
 
 function opsStatusKey(o){ return (o.status === 0) ? 'not_messaged' : 'awaiting'; }
@@ -14060,13 +14116,14 @@ function renderOpsList(lane){
   const el = document.getElementById('ops-list-'+lane.key);
   if(!el) return;
   const rows = opsSortRows(opsFilteredRows(lane));
-  _opsRowIndex = {};
-  rows.forEach(function(o){ _opsRowIndex[o.crewmap_id] = o; });
+  const idx = {};
+  rows.forEach(function(o){ idx[o.crewmap_id] = o; });
+  _opsRowIndex[lane.key] = idx;
   if(!rows.length){
     el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No offers match the current filter.</div>';
     return;
   }
-  el.innerHTML = rows.map(opsRowCard).join('');
+  el.innerHTML = rows.map(function(o){ return opsRowCard(o, lane.key); }).join('');
 }
 
 function opsAgePill(o){
@@ -14104,7 +14161,7 @@ function opsRowLabels(o){
 
 // decodeEntities BEFORE escapeHtml on every displayed string (reversed, the
 // O'Briens render as literal entity text).
-function opsRowCard(o){
+function opsRowCard(o, laneKey){
   const nm   = escapeHtml(decodeEntities(o.name || ''));
   const meta = [o.booking_name, o.venue, o.call_name]
                  .map(function(x){ return escapeHtml(decodeEntities(x || '')); })
@@ -14112,7 +14169,7 @@ function opsRowCard(o){
   const when = escapeHtml(opsCallWhen(o));
   const pill = opsAgePill(o);
   const labels = opsRowLabels(o);
-  return '<div class="ops-row" onclick="opsRowClick('+(o.crewmap_id||0)+')">'
+  return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(o.crewmap_id||0)+')">'
     +   '<div class="ops-row-main">'
     +     '<span class="ops-row-name">'+(nm || '—')+'</span>'
     +     '<span class="ops-row-meta">'+meta+'</span>'
@@ -14125,8 +14182,9 @@ function opsRowCard(o){
     + '</div>';
 }
 
-function opsRowClick(cm){
-  const o = _opsRowIndex[cm];
+function opsRowClick(laneKey, id){
+  const idx = _opsRowIndex[laneKey];
+  const o = idx && idx[id];
   if(o) opsRowTarget(o);
 }
 
@@ -14134,6 +14192,161 @@ function opsRowClick(cm){
 // confirmed this yet; changing it is this one line. Default: open the existing
 // call dialog (where chase and reassign both happen) for this offer's call.
 function opsRowTarget(offer){ openCallDialog(offer.booking_id, offer.call_id); }
+
+// ── Lane 1: Calls to fill ───────────────────────────────────────────────────
+// The mirror of the confirmations lane, forward-looking: age → lead time,
+// status → fill state. /api/ops/calls owns the predicate, the fill_state /
+// lead_bucket tags and the counts; nothing here re-derives a boundary, exactly
+// as the confirmations lane doesn't.
+async function loadOpsCalls(lane, force){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/calls');
+    const d = await r.json();
+    if(d && d.unavailable){
+      st.status = 'unavailable'; st.error = d.error || '';
+      renderOpsUnavailable(lane); return;
+    }
+    st.status = 'ready'; st.data = d;
+    if(d && d.generated_at) setOpsAsAt(d.generated_at);
+    renderOpsCalls(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = e.message || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+function renderOpsCalls(lane){
+  const st        = _opsLaneState[lane.key];
+  const data      = st && st.data;
+  const counts    = (data && data.counts) || {};
+  const total     = counts.total || 0;
+  const positions = counts.positions || 0;
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  // Badge counts CALLS, never positions — a badge of 34 over a list of 12 cards
+  // reads as a bug (§3.2). Positions live in the subhead as secondary text.
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  // Empty is the SUCCESS state here — calm, normal text, not an error.
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    return;
+  }
+  const fillSegs = ['empty','partial'].map(function(k){
+    return { key:k, value:(counts.fill && counts.fill[k]) || 0,
+             color:OPS_FILL_COLORS[k], label:OPS_FILL_LABELS[k] };
+  });
+  const leadSegs = ['under48','from48to168','over168'].map(function(k){
+    return { key:k, value:(counts.lead && counts.lead[k]) || 0,
+             color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
+  });
+  body.innerHTML = ''
+    + '<div class="ops-subhead">'+total+' call'+(total===1?'':'s')+' · '
+    +   positions+' position'+(positions===1?'':'s')+'</div>'
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Fill state', 'fill', fillSegs)
+    +   opsDonutBlock(lane, 'Lead time',  'lead', leadSegs)
+    + '</div>'
+    + opsChipsBar(lane)
+    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
+  renderOpsCallsList(lane);
+}
+
+// Filter on the server's fill_state / lead_bucket tags — never a recomputed
+// lead-time boundary. If a list length ever disagrees with a donut segment, this
+// rule was broken.
+function opsFilteredCalls(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st.data && st.data.calls) ? st.data.calls.slice() : [];
+  if(st.chips.fill) rows = rows.filter(function(o){ return o.fill_state === st.chips.fill; });
+  if(st.chips.lead) rows = rows.filter(function(o){ return o.lead_bucket === st.chips.lead; });
+  return rows;
+}
+
+// Soonest call first (the mirror of lane 2's oldest-first); ties broken by the
+// larger shortfall, so the emptier call sits above one that's only a seat short.
+function opsSortCalls(rows){
+  return rows.slice().sort(function(a, b){
+    const as = a.start || '', bs = b.start || '';
+    if(as < bs) return -1;
+    if(as > bs) return 1;
+    return (b.shortfall || 0) - (a.shortfall || 0);
+  });
+}
+
+// The overlap disclosure feed: outstanding offers per call, counted from the
+// confirmations lane's ALREADY-LOADED data — no extra fetch (§4.1). Returns null
+// when confirmations isn't ready, which the card renders as a bare "N short":
+// the decoration degrades quietly and its absence never makes a working lane
+// look broken (§4.3). This is why load order is fixed in loadOps().
+function opsOfferedByCall(){
+  const cst = _opsLaneState['confirmations'];
+  if(!cst || cst.status !== 'ready' || !cst.data || !cst.data.offers) return null;
+  const m = {};
+  cst.data.offers.forEach(function(o){
+    if(o.call_id != null) m[o.call_id] = (m[o.call_id] || 0) + 1;
+  });
+  return m;
+}
+
+function renderOpsCallsList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const rows = opsSortCalls(opsFilteredCalls(lane));
+  const offered = opsOfferedByCall();           // null → confirmations unavailable
+  const idx = {};
+  rows.forEach(function(o){ idx[o.call_id] = o; });
+  _opsRowIndex[lane.key] = idx;
+  if(!rows.length){
+    el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No calls match the current filter.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(function(o){ return opsCallCard(o, lane.key, offered); }).join('');
+}
+
+// Non-exclusive labels. "Nobody booked" (empty) and "< 48h" (imminent) are the
+// two that change the next action; both can appear on one card. No "awaiting" —
+// that word is spoken for (§5).
+function opsCallLabels(o){
+  const L = [];
+  if(o.fill_state === 'empty')    L.push('<span class="ops-lbl lbl-nm">Nobody booked</span>');
+  if(o.lead_bucket === 'under48') L.push('<span class="ops-lbl lbl-cb">&lt; 48h</span>');
+  return L.join('');
+}
+
+// decodeEntities BEFORE escapeHtml on every displayed string. The overlap suffix
+// is fixed text: "· M already offered" or "· nobody asked yet", and NOTHING when
+// confirmations is unavailable — so a missing bonus never looks like a fault.
+function opsCallCard(o, laneKey, offered){
+  const booking = escapeHtml(decodeEntities(o.booking_name || ''));
+  const meta = [o.venue, o.call_name]
+                 .map(function(x){ return escapeHtml(decodeEntities(x || '')); })
+                 .filter(Boolean).join(' · ');
+  const when  = escapeHtml(opsCallWhen(o));
+  const short = (o.shortfall || 0);
+  const pcol  = OPS_FILL_COLORS[o.fill_state] || 'var(--muted)';
+  let suffix = '';
+  if(offered !== null){
+    const m = offered[o.call_id] || 0;
+    suffix = (m > 0) ? (' · ' + m + ' already offered') : ' · nobody asked yet';
+  }
+  const labels = opsCallLabels(o);
+  return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(o.call_id||0)+')">'
+    +   '<div class="ops-row-main">'
+    +     '<span class="ops-row-name">'+(booking || '—')+'</span>'
+    +     '<span class="ops-row-meta">'+meta+'</span>'
+    +   '</div>'
+    +   '<div class="ops-row-side">'
+    +     '<span class="ops-row-when">'+when+'</span>'
+    +   '</div>'
+    +   '<div class="ops-row-fill">'
+    +     '<span class="ops-pill" style="color:'+pcol+';border-color:'+pcol+'">'+short+' short</span>'
+    +     '<span class="ops-offered">'+escapeHtml(suffix)+'</span>'
+    +   '</div>'
+    +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
+    + '</div>';
+}
 
 function setSchedFilter(f){
   _schedFilter = f;
