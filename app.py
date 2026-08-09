@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.31.0"
+APP_VERSION    = "4.32.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6572,6 +6572,157 @@ def api_ops_offers():
         app.logger.warning(f"[ops-offers] unavailable: {err}")
         return jsonify({"unavailable": True, "error": err})
     return jsonify(data)
+
+
+def fetch_calls_for_ops(ss, start, end):
+    """Ops landing — the 'Calls to fill' lane source. One request to
+    get-calls-bulk.php over the given window, returning its raw `calls` rows.
+
+    Deliberately NOT routed through _bulk_call_to_scrape_shape(): that mapper
+    drops `awaiting` and exists to keep Crew Finder's legacy scrape shape stable
+    — the ops lane wants the endpoint's own rows (booked/required/start_iso).
+    And NO include_completed: this window is forward-looking, so completed
+    bookings must never surface.
+
+    ONE request only: get-calls-bulk.php holds the same per-session PHP file lock
+    the offers endpoint does, so a concurrent /ajax/crew/ call on this session
+    would hang. No thread pool, no parallel fetch, ever.
+
+    Returns (rows, error). On any failure rows is None and error is a short
+    message; the caller soft-fails to an 'unavailable' lane."""
+    from html import unescape
+    url = f"{BASE_URL}/ajax/crew/get-calls-bulk.php?start={start}&end={end}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    rows = data.get("calls", [])
+    # SmartStaff stores these HTML-encoded and the endpoint passes them raw.
+    for r in rows:
+        for k in ("booking_name", "venue", "call_name", "notes"):
+            if r.get(k) is not None:
+                r[k] = unescape(r[k])
+    return rows, None
+
+
+@app.route("/api/ops/calls", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_calls():
+    """Ops landing — the 'Calls to fill' lane. One request to get-calls-bulk.php;
+    the lane predicate, the per-row fill/lead tags and the counts are all computed
+    HERE (this route owns them, mirroring how the PHP owns the offers lane's
+    counts) so the donuts and the drill-down list can never disagree with each
+    other. No PHP change this slice — the bulk endpoint already returns
+    booked/required/start_iso.
+
+    Dual-gated exactly like the offers lane: @require_cohort(*READ_ALL_COHORTS)
+    mirrors goat_can_read_all(). Soft-fails with HTTP 200 {"unavailable": true}
+    so the lane renders 'unavailable' and never takes the page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Same window default as the offers lane — today through today + 28 days,
+    # Melbourne (the box tz) — so the two lanes never describe different periods
+    # on one screen.
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = request.args.get("start") or today.strftime("%Y-%m-%d")
+    end   = request.args.get("end")   or (today + timedelta(days=28)).strftime("%Y-%m-%d")
+
+    rows, err = fetch_calls_for_ops(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-calls] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+
+    # One 'now', Melbourne wall-clock (the box tz — the same frame start_iso is
+    # emitted in), computed once above the loop so two calls either side of a
+    # lead-time boundary can't be judged against different nows. This is the
+    # mirror of the offers lane's single $now_unix.
+    now = datetime.now()
+
+    out       = []
+    c_fill    = {"empty": 0, "partial": 0}
+    c_lead    = {"under48": 0, "from48to168": 0, "over168": 0}
+    positions = 0
+    for r in rows:
+        required = int(r.get("required") or 0)
+        booked   = int(r.get("booked") or 0)
+        # Lane predicate: a future call with seats still to fill. This is the same
+        # booked < required comparison _bulk_call_to_scrape_shape exposes as
+        # `unfilled`; the duplication is noted for a later opportunistic tidy, not
+        # refactored in this slice.
+        if not (required > 0 and booked < required):
+            continue
+        shortfall  = required - booked
+        fill_state = "empty" if booked == 0 else "partial"
+
+        # Lead bucket: now -> the call's start, both Melbourne wall-clock. The
+        # mirror of the offers lane's age_bucket — that measures how long we have
+        # waited, this measures how long we have left. Assigned once here; the
+        # client reads the tag and never recomputes the boundary. start_iso is a
+        # computed column and always present; a parse failure falls to the least-
+        # urgent bucket so the row still counts (identities below stay exact).
+        lead_bucket = "over168"
+        start_iso   = r.get("start_iso")
+        if start_iso:
+            try:
+                start_dt = datetime.strptime(start_iso, "%Y-%m-%dT%H:%M:%S")
+                lead     = (start_dt - now).total_seconds()
+                if lead < 172800:        # < 48h
+                    lead_bucket = "under48"
+                elif lead < 604800:      # 48h–168h (2–7 days)
+                    lead_bucket = "from48to168"
+                else:                    # > 168h
+                    lead_bucket = "over168"
+            except Exception:
+                lead_bucket = "over168"
+
+        c_fill[fill_state] += 1
+        c_lead[lead_bucket] += 1
+        positions += shortfall
+
+        out.append({
+            "booking_id":   r.get("booking_id"),
+            "call_id":      r.get("call_id"),
+            "booking_name": r.get("booking_name"),
+            "venue":        r.get("venue"),
+            "call_name":    r.get("call_name"),
+            "start":        start_iso,
+            "date_iso":     r.get("date_iso"),
+            "time":         r.get("time"),
+            "length":       r.get("length"),
+            "required":     required,
+            "booked":       booked,
+            "shortfall":    shortfall,
+            "fill_state":   fill_state,
+            "lead_bucket":  lead_bucket,
+        })
+
+    # Identities (asserted by smoke test C2):
+    #   total = sum(fill) = sum(lead)      — each row lands in exactly one of each
+    #   positions = Σ shortfall            — a different number; does NOT sum here
+    counts = {
+        "total":     len(out),
+        "fill":      c_fill,
+        "lead":      c_lead,
+        "positions": positions,
+    }
+    return jsonify({
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "window":       {"start": start, "end": end},
+        "calls":        out,
+        "counts":       counts,
+    })
 
 
 @app.route("/api/schedule")
