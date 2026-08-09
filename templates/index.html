@@ -1082,6 +1082,63 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .bi-session{font-family:'Rajdhani',sans-serif;font-size:13px;margin:4px 0 12px;padding:9px 13px;border:1px solid var(--accent);border-radius:7px;background:var(--accent-bg);color:var(--text)}
 .bi-session.bi-session-none{border-color:var(--border);background:var(--surface2);color:var(--muted)}
 .bi-session .bi-note{color:var(--warn);margin-left:6px}
+/* ── OPS LANDING (v4.31.0, slice 1) ─────────────────────────────────────────
+   Lane frame + donuts + drill-down. Colours come from the shared theme vars so
+   they track the (single, dark) theme; the age/status segment palette lives in
+   JS (OPS_AGE_COLORS / OPS_STATUS_COLORS) so donut, legend, pill and chip all
+   read one value per segment. */
+.ops-panel{display:flex;flex-direction:column;height:100%;overflow:hidden}
+.ops-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.ops-asat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.ops-lanes{padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.ops-page-note{font-size:13px;color:var(--text);padding:8px 2px}
+.ops-lane{border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
+.ops-lane-head{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none}
+.ops-lane-head:hover{background:var(--surface2)}
+.ops-lane-caret{color:var(--muted);font-size:11px;width:12px;flex-shrink:0}
+.ops-lane-label{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:600;color:var(--text)}
+.ops-lane-badge{margin-left:auto;min-width:26px;text-align:center;font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--accent);background:var(--accent-bg);border:1px solid var(--border);border-radius:12px;padding:2px 9px}
+.ops-lane-body{padding:4px 14px 14px}
+.ops-lane.collapsed .ops-lane-body{display:none}
+.ops-lane-status{color:var(--muted);font-size:12px;padding:10px 2px}
+.ops-empty{font-size:13px;color:var(--text);padding:12px 2px}
+.ops-unavail{font-size:13px;color:var(--warn);padding:12px 2px}
+.ops-donuts{display:flex;flex-wrap:wrap;gap:26px;padding:8px 0 14px}
+.ops-donut-block{display:flex;flex-direction:column;align-items:center;gap:8px}
+.ops-donut-title{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.ops-donut-wrap{display:flex;align-items:center;gap:16px}
+.ops-donut{display:block}
+.ops-donut circle[data-seg]{cursor:pointer;transition:opacity .12s}
+.ops-donut circle[data-seg]:hover{opacity:.8}
+.ops-donut-total{fill:var(--text);font-family:'Share Tech Mono',monospace;font-size:22px}
+.ops-legend{display:flex;flex-direction:column;gap:3px;min-width:150px}
+.ops-leg{display:flex;align-items:center;gap:7px;padding:3px 5px;border-radius:5px;cursor:pointer;font-size:12px;color:var(--text)}
+.ops-leg:hover{background:var(--surface2)}
+.ops-leg.on{background:var(--accent-bg);outline:1px solid var(--border)}
+.ops-leg.zero{opacity:.42;cursor:default}
+.ops-leg.zero:hover{background:none}
+.ops-leg-sw{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.ops-leg-lb{flex:1;white-space:nowrap}
+.ops-leg-pc{font-family:'Share Tech Mono',monospace;color:var(--muted);font-size:11px}
+.ops-leg-ct{font-family:'Share Tech Mono',monospace;color:var(--text);min-width:20px;text-align:right}
+.ops-chips{display:flex;flex-wrap:wrap;gap:7px;align-items:center;padding:0 0 10px}
+.ops-chip{display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--accent);border-radius:14px;font-size:12px;color:var(--accent);padding:3px 6px 3px 11px}
+.ops-chip button{background:var(--border);border:none;color:#ddd;cursor:pointer;font-size:11px;line-height:1;width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;padding:0}
+.ops-list{display:flex;flex-direction:column;gap:6px}
+.ops-row{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:10px 12px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);cursor:pointer;transition:border-color .12s}
+.ops-row:hover{border-color:var(--accent)}
+.ops-row-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ops-row-name{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;color:var(--text)}
+.ops-row-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ops-row-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;white-space:nowrap}
+.ops-row-when{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.ops-pill{font-family:'Share Tech Mono',monospace;font-size:10px;border:1px solid;border-radius:10px;padding:1px 8px}
+.ops-row-labels{grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
+.ops-lbl{font-size:10px;font-weight:600;padding:2px 7px;border-radius:4px}
+.ops-lbl.lbl-nm{color:var(--accent2);background:var(--accent2-bg)}
+.ops-lbl.lbl-aw{color:var(--accent);background:var(--accent-bg)}
+.ops-lbl.lbl-sf{color:#f97316;background:rgba(249,115,22,0.12)}
+.ops-lbl.lbl-cb{color:var(--suggest);background:var(--suggest-bg)}
 </style>
 </head>
 <body>
@@ -1121,6 +1178,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <button class="tab-scroll-arrow" id="tab-arrow-left" type="button"
           aria-label="Scroll tabs left" onclick="scrollTabs(-1)">&lsaquo;</button>
   <div class="tab-bar-scroll" id="tab-bar-scroll">
+  <button class="tab-btn" id="tab-btn-ops" onclick="switchTab('ops')">⚡ Ops</button>
   <button class="tab-btn active" id="tab-btn-schedule" onclick="switchTab('schedule')">📅 Schedule</button>
   <button class="tab-btn" id="tab-btn-all-bookings" onclick="switchTab('all-bookings')">📚 All Bookings</button>
   <button class="tab-btn" id="tab-btn-crew-finder" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
@@ -1282,6 +1340,20 @@ a.recruit-action{text-decoration:none;display:inline-block}
     </div>
   </div>
   </div><!-- end tab-crew-finder -->
+
+  <!-- ── OPS TAB (v4.31.0, slice 1) ── -->
+  <div class="tab-panel" id="tab-ops">
+    <div class="ops-panel">
+      <div class="ops-toolbar">
+        <span class="section-label" style="margin:0">OPS</span>
+        <span class="ops-asat" id="ops-asat">as at —:—</span>
+        <button class="btn" onclick="loadOps(true)" style="margin-left:auto">⟳ Refresh</button>
+      </div>
+      <div class="ops-lanes" id="ops-lanes">
+        <div class="ops-lane-status">Loading…</div>
+      </div>
+    </div>
+  </div>
 
   <!-- ── SCHEDULE TAB ── -->
   <div class="tab-panel active" id="tab-schedule">
@@ -3790,6 +3862,7 @@ function switchTab(tab){
   document.querySelectorAll('.tab-panel').forEach(p=>{
     p.classList.toggle('active', p.id==='tab-'+tab);
   });
+  if(tab==='ops') loadOps();
   if(tab==='induction-checker' && !_indData) loadInductions();
   if(tab==='import'){ loadImportHistory(); initManualBooking(); }
   if(tab==='forecast') initForecast();
@@ -13708,6 +13781,360 @@ function toggleSchedBack(){
   if(el) el.classList.toggle('active', _schedBack > 0);
   loadSchedule();
 }
+// ═══ OPS LANDING (v4.31.0, slice 1) ══════════════════════════════════════════
+// Data-driven lane frame. One lane today; slice 2 adds an entry to OPS_LANES
+// rather than editing markup. The frame draws immediately and each lane fills as
+// its fetch resolves — the page never blocks on a fetch.
+const OPS_LANES = [
+  { key:'confirmations', label:'Confirmations to chase',
+    load: loadOpsOffers, render: renderOpsOffers }
+];
+
+// Per-lane runtime state, keyed by lane.key:
+//   { status, data, error, chips:{status, age} }
+const _opsLaneState = {};
+// crewmap_id -> offer, rebuilt on each list render, so a card's click always
+// hands opsRowTarget the full offer object it was drawn from.
+let _opsRowIndex = {};
+
+// Segment palette (dark theme — THE GOAT ships one). One value per segment so
+// the donut arc, the legend swatch, the age pill and the chip never disagree.
+const OPS_AGE_COLORS = {
+  under24:    '#22c55e',        // freshest — the "full/good" green used elsewhere
+  from24to72: 'var(--warn)',    // amber
+  over72:     'var(--accent2)', // red — oldest, most urgent
+  unknown:    'var(--muted)'
+};
+const OPS_AGE_LABELS = { under24:'< 24h', from24to72:'24–72h', over72:'> 72h', unknown:'age unknown' };
+const OPS_STATUS_COLORS = {
+  not_messaged:'var(--accent2)', // status 0 — ball is with us, needs action
+  awaiting:    'var(--accent)'   // status 1 — ball is with them
+};
+const OPS_STATUS_LABELS = { not_messaged:'Not messaged', awaiting:'Awaiting reply' };
+
+function loadOps(force){
+  renderOpsFrame();
+  setOpsAsAt(null);                 // stamp the moment we asked; server time overwrites on resolve
+  OPS_LANES.forEach(function(lane){
+    if(!_opsLaneState[lane.key]) _opsLaneState[lane.key] = { chips:{status:null, age:null} };
+    _opsLaneState[lane.key].status = 'loading';
+    setOpsLaneLoading(lane);
+    lane.load(lane, force);         // resolves → lane.render()
+  });
+}
+
+// Build the lane shells once; refreshes reuse them and just reset each body.
+function renderOpsFrame(){
+  const wrap = document.getElementById('ops-lanes');
+  if(!wrap) return;
+  if(wrap.dataset.built === '1') return;
+  wrap.innerHTML = OPS_LANES.map(function(lane){
+    return ''
+      + '<div class="ops-lane" id="ops-lane-'+lane.key+'">'
+      +   '<div class="ops-lane-head" onclick="toggleOpsLane(\''+lane.key+'\')">'
+      +     '<span class="ops-lane-caret" id="ops-caret-'+lane.key+'">▾</span>'
+      +     '<span class="ops-lane-label">'+escapeHtml(lane.label)+'</span>'
+      +     '<span class="ops-lane-badge" id="ops-badge-'+lane.key+'">…</span>'
+      +   '</div>'
+      +   '<div class="ops-lane-body" id="ops-body-'+lane.key+'">'
+      +     '<div class="ops-lane-status">Loading…</div>'
+      +   '</div>'
+      + '</div>';
+  }).join('');
+  wrap.dataset.built = '1';
+}
+
+function setOpsLaneLoading(lane){
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge){ badge.textContent = '…'; }
+  if(body)  body.innerHTML = '<div class="ops-lane-status">Loading…</div>';
+}
+
+function setOpsAsAt(iso){
+  const el = document.getElementById('ops-asat');
+  if(!el) return;
+  let hhmm;
+  if(iso && typeof iso === 'string' && iso.indexOf('T') > 0 && iso.length >= 16){
+    hhmm = iso.slice(11, 16);            // server snapshot (Melbourne) — the truthful "as at"
+  } else {
+    const n = new Date();
+    hhmm = String(n.getHours()).padStart(2,'0') + ':' + String(n.getMinutes()).padStart(2,'0');
+  }
+  el.textContent = 'as at ' + hhmm;
+}
+
+function toggleOpsLane(key){
+  const lane  = document.getElementById('ops-lane-'+key);
+  const caret = document.getElementById('ops-caret-'+key);
+  if(!lane) return;
+  const collapsed = lane.classList.toggle('collapsed');
+  if(caret) caret.textContent = collapsed ? '▸' : '▾';
+}
+
+// ── Lane 1: Confirmations to chase ──────────────────────────────────────────
+async function loadOpsOffers(lane, force){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/offers');
+    const d = await r.json();
+    if(d && d.unavailable){
+      st.status = 'unavailable'; st.error = d.error || '';
+      renderOpsUnavailable(lane); return;
+    }
+    st.status = 'ready'; st.data = d;
+    if(d && d.generated_at) setOpsAsAt(d.generated_at);
+    renderOpsOffers(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = e.message || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+function renderOpsUnavailable(lane){
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  const st    = _opsLaneState[lane.key];
+  if(badge) badge.textContent = '—';
+  if(body) body.innerHTML = '<div class="ops-unavail">Unavailable'
+    + (st && st.error ? ' <span style="color:var(--muted);font-size:11px">('+escapeHtml(st.error)+')</span>' : '')
+    + '</div>';
+}
+
+function renderOpsOffers(lane){
+  const st    = _opsLaneState[lane.key];
+  const data  = st && st.data;
+  const counts= (data && data.counts) || {};
+  const total = counts.total || 0;
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  // Empty is the SUCCESS state here — calm, normal text, not an error.
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    return;
+  }
+  const statusSegs = ['not_messaged','awaiting'].map(function(k){
+    return { key:k, value:(counts.status && counts.status[k]) || 0,
+             color:OPS_STATUS_COLORS[k], label:OPS_STATUS_LABELS[k] };
+  });
+  const ageSegs = ['under24','from24to72','over72','unknown'].map(function(k){
+    return { key:k, value:(counts.age && counts.age[k]) || 0,
+             color:OPS_AGE_COLORS[k], label:OPS_AGE_LABELS[k] };
+  });
+  body.innerHTML = ''
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Status', 'status', statusSegs)
+    +   opsDonutBlock(lane, 'Age',    'age',    ageSegs)
+    + '</div>'
+    + opsChipsBar(lane)
+    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
+  renderOpsList(lane);
+}
+
+// Hand-rolled donut: one <circle> per segment, offset with stroke-dashoffset.
+// No charting library. dim + laneKey ride along so an arc click filters.
+function opsDonut(segs, dim, laneKey){
+  const size = 108, stroke = 16;
+  const r = (size - stroke) / 2, cx = size/2, cy = size/2;
+  const circ = 2 * Math.PI * r;
+  const total = segs.reduce(function(s,x){ return s + x.value; }, 0);
+  let arcs = '', offset = 0;
+  if(total <= 0){
+    arcs = '<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="none" stroke="var(--border)" stroke-width="'+stroke+'"/>';
+  } else {
+    segs.forEach(function(seg){
+      if(seg.value <= 0) return;
+      const len = (seg.value / total) * circ;
+      arcs += '<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="none" stroke-width="'+stroke+'"'
+        + ' style="stroke:'+seg.color+'"'
+        + ' stroke-dasharray="'+len+' '+(circ - len)+'"'
+        + ' stroke-dashoffset="'+(-offset)+'"'
+        + ' transform="rotate(-90 '+cx+' '+cy+')"'
+        + ' data-seg="'+seg.key+'"'
+        + ' onclick="opsToggleChip(\''+laneKey+'\',\''+dim+'\',\''+seg.key+'\')"/>';
+      offset += len;
+    });
+  }
+  return '<svg class="ops-donut" viewBox="0 0 '+size+' '+size+'" width="'+size+'" height="'+size+'">'
+    + arcs
+    + '<text x="'+cx+'" y="'+cy+'" text-anchor="middle" dominant-baseline="central" class="ops-donut-total">'+total+'</text>'
+    + '</svg>';
+}
+
+function opsDonutBlock(lane, title, dim, segs){
+  const pct = opsPercents(segs.map(function(s){ return s.value; }));
+  const active = _opsLaneState[lane.key].chips[dim];
+  const legend = segs.map(function(s, i){
+    const on   = (active === s.key);
+    const zero = (s.value === 0);
+    return '<div class="ops-leg'+(on?' on':'')+(zero?' zero':'')+'"'
+      + (zero ? '' : ' onclick="opsToggleChip(\''+lane.key+'\',\''+dim+'\',\''+s.key+'\')"') + '>'
+      +   '<span class="ops-leg-sw" style="background:'+s.color+'"></span>'
+      +   '<span class="ops-leg-lb">'+escapeHtml(s.label)+'</span>'
+      +   '<span class="ops-leg-pc">'+pct[i]+'%</span>'
+      +   '<span class="ops-leg-ct">'+s.value+'</span>'
+      + '</div>';
+  }).join('');
+  return '<div class="ops-donut-block">'
+    +   '<div class="ops-donut-title">'+escapeHtml(title)+'</div>'
+    +   '<div class="ops-donut-wrap">'+opsDonut(segs, dim, lane.key)+'<div class="ops-legend">'+legend+'</div></div>'
+    + '</div>';
+}
+
+// Round every segment except the last non-zero one, which takes the remainder,
+// so the legend always totals exactly 100% (naive per-segment rounding overshot
+// to 101% on real data). Zero-value segments stay 0%.
+function opsPercents(values){
+  const total = values.reduce(function(s,v){ return s + v; }, 0);
+  if(total <= 0) return values.map(function(){ return 0; });
+  let lastNonZero = -1;
+  values.forEach(function(v, i){ if(v > 0) lastNonZero = i; });
+  let acc = 0;
+  return values.map(function(v, i){
+    if(i === lastNonZero) return 100 - acc;
+    if(v === 0) return 0;
+    const p = Math.round(v / total * 100);
+    acc += p;
+    return p;
+  });
+}
+
+function opsChipsBar(lane){
+  const st = _opsLaneState[lane.key];
+  const chips = [];
+  if(st.chips.status) chips.push({ dim:'status', label:OPS_STATUS_LABELS[st.chips.status] });
+  if(st.chips.age)    chips.push({ dim:'age',    label:OPS_AGE_LABELS[st.chips.age] });
+  const inner = chips.map(function(c){
+    return '<span class="ops-chip">'+escapeHtml(c.label)
+      + '<button title="Clear filter" onclick="opsClearChip(\''+lane.key+'\',\''+c.dim+'\')">×</button></span>';
+  }).join('');
+  return '<div class="ops-chips" id="ops-chips-'+lane.key+'">'+inner+'</div>';
+}
+
+// Chips are combinable (status AND age). Toggling re-renders the lane so the
+// donuts show the active segment and the list re-filters together.
+function opsToggleChip(laneKey, dim, seg){
+  const st = _opsLaneState[laneKey]; if(!st) return;
+  st.chips[dim] = (st.chips[dim] === seg) ? null : seg;
+  const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
+  if(lane) renderOpsOffers(lane);
+}
+function opsClearChip(laneKey, dim){
+  const st = _opsLaneState[laneKey]; if(!st) return;
+  st.chips[dim] = null;
+  const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
+  if(lane) renderOpsOffers(lane);
+}
+
+function opsStatusKey(o){ return (o.status === 0) ? 'not_messaged' : 'awaiting'; }
+
+// Filter on the server's tag (age_bucket) and passed-through status enum — never
+// a recomputed age boundary. If the list length ever disagrees with a donut
+// segment, this rule was broken.
+function opsFilteredRows(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st.data && st.data.offers) ? st.data.offers.slice() : [];
+  if(st.chips.status) rows = rows.filter(function(o){ return opsStatusKey(o) === st.chips.status; });
+  if(st.chips.age)    rows = rows.filter(function(o){ return o.age_bucket === st.chips.age; });
+  return rows;
+}
+
+// Oldest first, unknown age always last, then by call start time.
+function opsSortRows(rows){
+  return rows.slice().sort(function(a, b){
+    const au = (a.age_bucket === 'unknown' || !a.created_at);
+    const bu = (b.age_bucket === 'unknown' || !b.created_at);
+    if(au !== bu) return au ? 1 : -1;                 // unknown always last
+    if(!au){
+      if(a.created_at < b.created_at) return -1;      // earlier created = older = first
+      if(a.created_at > b.created_at) return 1;
+    }
+    const as = a.start || '', bs = b.start || '';
+    return as < bs ? -1 : (as > bs ? 1 : 0);
+  });
+}
+
+function renderOpsList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const rows = opsSortRows(opsFilteredRows(lane));
+  _opsRowIndex = {};
+  rows.forEach(function(o){ _opsRowIndex[o.crewmap_id] = o; });
+  if(!rows.length){
+    el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No offers match the current filter.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(opsRowCard).join('');
+}
+
+function opsAgePill(o){
+  if(o.age_bucket === 'unknown' || !o.created_at) return { text:'age unknown', color:'var(--muted)' };
+  const created = new Date(o.created_at);
+  let text = '?';
+  if(!isNaN(created.getTime())){
+    const h = Math.floor((Date.now() - created.getTime()) / 3600000);
+    if(h < 1)       text = '<1h';
+    else if(h < 48) text = h + 'h';
+    else            text = Math.floor(h / 24) + 'd';
+  }
+  return { text: text, color: OPS_AGE_COLORS[o.age_bucket] || 'var(--muted)' };
+}
+
+function opsCallWhen(o){
+  const d = o.date_iso || (o.start ? String(o.start).slice(0, 10) : '');
+  const t = o.time    || (o.start ? String(o.start).slice(11, 16) : '');
+  if(!d) return t || '';
+  const dt = new Date(d + 'T00:00:00');
+  const ds = isNaN(dt.getTime()) ? d
+           : dt.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short' });
+  return t ? (ds + ' · ' + t) : ds;
+}
+
+// Non-exclusive labels — one offer can carry several.
+function opsRowLabels(o){
+  const L = [];
+  if(o.status === 0)      L.push('<span class="ops-lbl lbl-nm">Not messaged</span>');
+  else if(o.status === 1) L.push('<span class="ops-lbl lbl-aw">Awaiting reply</span>');
+  if(o.sms_fail !== null && o.sms_fail !== undefined) L.push('<span class="ops-lbl lbl-sf">SMS failed</span>');
+  if(o.is_call_boss === 1) L.push('<span class="ops-lbl lbl-cb">Call boss</span>');
+  return L.join('');
+}
+
+// decodeEntities BEFORE escapeHtml on every displayed string (reversed, the
+// O'Briens render as literal entity text).
+function opsRowCard(o){
+  const nm   = escapeHtml(decodeEntities(o.name || ''));
+  const meta = [o.booking_name, o.venue, o.call_name]
+                 .map(function(x){ return escapeHtml(decodeEntities(x || '')); })
+                 .filter(Boolean).join(' · ');
+  const when = escapeHtml(opsCallWhen(o));
+  const pill = opsAgePill(o);
+  const labels = opsRowLabels(o);
+  return '<div class="ops-row" onclick="opsRowClick('+(o.crewmap_id||0)+')">'
+    +   '<div class="ops-row-main">'
+    +     '<span class="ops-row-name">'+(nm || '—')+'</span>'
+    +     '<span class="ops-row-meta">'+meta+'</span>'
+    +   '</div>'
+    +   '<div class="ops-row-side">'
+    +     '<span class="ops-row-when">'+when+'</span>'
+    +     '<span class="ops-pill" style="color:'+pill.color+';border-color:'+pill.color+'">'+escapeHtml(pill.text)+'</span>'
+    +   '</div>'
+    +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
+    + '</div>';
+}
+
+function opsRowClick(cm){
+  const o = _opsRowIndex[cm];
+  if(o) opsRowTarget(o);
+}
+
+// The one place the drill-down destination is decided. Rich and Monty have not
+// confirmed this yet; changing it is this one line. Default: open the existing
+// call dialog (where chase and reassign both happen) for this offer's call.
+function opsRowTarget(offer){ openCallDialog(offer.booking_id, offer.call_id); }
+
 function setSchedFilter(f){
   _schedFilter = f;
   ['all','open'].forEach(s => {
