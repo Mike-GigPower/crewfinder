@@ -11109,12 +11109,18 @@ async function openCallTimes(bookingId, callId){
   }
 }
 
+function _ctIsConfirmed(c){ return Number(c && c.status) === 5; }
+
 function renderCallTimesGrid(){
   const s   = _ctState;
-  const dis = s.locked ? ' disabled' : '';
   const lockNote = s.locked
     ? '<div style="color:var(--conflict);font-size:11px;padding:6px 0">This call is locked — times can\'t be edited. Unlock it in SmartStaff first.</div>'
     : '';
+
+  // Only Confirmed (status 5) crew get editable fields. Anyone declined, sent,
+  // no-showed or unresponded is rendered read-only and is never included in a
+  // save — their stored times stay exactly as they are.
+  const confirmed = s.crew.filter(_ctIsConfirmed);
 
   const pgOpts = function(sel){
     return s.paygrades.map(function(p){
@@ -11123,8 +11129,8 @@ function renderCallTimesGrid(){
     }).join('');
   };
 
-  const inp = function(id, val, ph, type){
-    const ob = type ? (' onblur="ctNormalize(this,\''+type+'\')"') : '';
+  const inp = function(id, val, ph, type, dis){
+    const ob = (type && !dis) ? (' onblur="ctNormalize(this,\''+type+'\')"') : '';
     return '<input id="'+id+'" value="'+escapeHtml(val||'')+'" placeholder="'+(ph||'')+'"'+dis+ob+
            ' style="width:58px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;'+
            'color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px;text-align:center">';
@@ -11132,14 +11138,18 @@ function renderCallTimesGrid(){
 
   const rows = s.crew.length ? s.crew.map(function(c){
     const uid   = c.user_id;
+    const ok    = _ctIsConfirmed(c);
+    const dis   = (s.locked || !ok) ? ' disabled' : '';
+    const rowSt = ok ? '' : 'opacity:.45;';
+    const rowTt = ok ? '' : ' title="Only confirmed crew can have times entered."';
     const name  = escapeHtml(decodeEntities((c.lastname||'')+', '+(c.firstname||'')));
     const pgSel = (c.callpaygradeID && c.callpaygradeID > 0) ? c.callpaygradeID : c.user_paygradeID;
-    return '<tr style="border-bottom:1px solid var(--border)">'
+    return '<tr style="border-bottom:1px solid var(--border);'+rowSt+'"'+rowTt+'>'
       + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock')+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00', 'dur')+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00', 'dur')+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-off-'+uid,  hms2hm(c.off), 'HH:MM', 'clock')+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock', dis)+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00', 'dur',   dis)+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00', 'dur',   dis)+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-off-'+uid,  hms2hm(c.off), 'HH:MM', 'clock', dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center"><select id="ct-pg-'+uid+'"'+dis+' style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px">'+pgOpts(pgSel)+'</select></td>'
       + '<td style="padding:6px 4px;text-align:center"><input type="checkbox" id="ct-late-'+uid+'"'+(c.late?' checked':'')+dis+'></td>'
       + '<td style="padding:6px 4px"><input id="ct-note-'+uid+'" value="'+escapeHtml(c.note||'')+'"'+dis+' placeholder="note" style="width:140px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;padding:4px 6px"></td>'
@@ -11147,14 +11157,20 @@ function renderCallTimesGrid(){
   }).join('') : '<tr><td colspan="8" style="padding:10px;color:var(--muted);font-size:12px">No crew booked on this call.</td></tr>';
 
   const th = function(t){ return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">'+t+'</th>'; };
-  // Header with a fill-down arrow: copies the top row's value down to every crew member — for
-  // large calls where everyone shares the same times. Shown only when editable and >1 crew row.
+  // Header with a fill-down arrow: copies the topmost CONFIRMED row's value down to
+  // every other confirmed crew member — for large calls where everyone shares the
+  // same times. Shown only when editable and there are >1 confirmed rows to fill.
   const thFill = function(t, col){
-    const arrow = (!s.locked && s.crew.length > 1)
-      ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top row down to all crew" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
+    const arrow = (!s.locked && confirmed.length > 1)
+      ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top confirmed row down to all confirmed crew" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
       : '';
     return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;white-space:nowrap">'+t+arrow+'</th>';
   };
+
+  const skipped = s.crew.length - confirmed.length;
+  const skipNote = (!s.locked && skipped > 0)
+    ? '<div style="font-size:10px;color:var(--muted);padding:6px 0 0">'+skipped+' crew '+(skipped===1?'is':'are')+' not confirmed — those rows are read-only and are left untouched when you save. Change their status on the call first if they worked.</div>'
+    : '';
 
   document.getElementById('entity-modal-body').innerHTML =
       lockNote
@@ -11163,7 +11179,8 @@ function renderCallTimesGrid(){
     + '<thead><tr style="border-bottom:1px solid var(--border)">'
     + th('Crew')+thFill('On','on')+thFill('Day Break','break')+thFill('Night Break','break_night')+thFill('Off','off')+thFill('Rate','rate')+th('Late')+th('Note')
     + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
-    + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). Saving writes times, rate, late and note — it does <b>not</b> tick “Times filled” or lock the call; that stays your review step in SmartStaff.</div>';
+    + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). Saving writes times, rate, late and note — it does <b>not</b> tick “Times filled” or lock the call; that stays your review step in SmartStaff.</div>'
+    + skipNote;
 
   const actions = s.locked
     ? entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()')
@@ -11229,17 +11246,19 @@ function ctNormalize(el, type){
 
 function ctFillDown(col){
   const s = _ctState;
-  if(!s || s.locked || s.crew.length < 2) return;
+  if(!s || s.locked) return;
+  const confirmed = s.crew.filter(_ctIsConfirmed);
+  if(confirmed.length < 2) return;
   const prefix = {on:'ct-on-', break:'ct-brk-', break_night:'ct-brkn-', off:'ct-off-', rate:'ct-pg-'}[col];
   if(!prefix) return;
-  const first = document.getElementById(prefix + s.crew[0].user_id);
+  const first = document.getElementById(prefix + confirmed[0].user_id);
   if(!first) return;
   let val = first.value;
   if(col === 'on' || col === 'off'){ const p = _ctParseClock(val); if(p) val = p; }
   else if(col === 'break' || col === 'break_night'){ const p = _ctParseDuration(val); if(p) val = p; }
   if(col !== 'rate') first.value = val;   // normalise the source too, so the column reads consistently
-  for(let i=1;i<s.crew.length;i++){
-    const el = document.getElementById(prefix + s.crew[i].user_id);
+  for(let i=1;i<confirmed.length;i++){
+    const el = document.getElementById(prefix + confirmed[i].user_id);
     if(el) el.value = val;
   }
 }
@@ -11251,7 +11270,7 @@ async function saveCallTimes(){
 
   const rows = [];
   const bad  = [];
-  s.crew.forEach(function(c){
+  s.crew.filter(_ctIsConfirmed).forEach(function(c){
     const uid  = c.user_id;
     const on   = (document.getElementById('ct-on-'+uid)   || {}).value   || '';
     const brk  = (document.getElementById('ct-brk-'+uid)  || {}).value   || '';
@@ -11275,6 +11294,12 @@ async function saveCallTimes(){
   if(bad.length){
     result.style.color = 'var(--conflict)';
     result.innerHTML   = 'Couldn\'t read these — On/Off take 15:00 · 1500 · 3pm, breaks take 1:30 · 1.5: '+escapeHtml(bad.join('; '));
+    return;
+  }
+
+  if(!rows.length){
+    result.style.color = 'var(--conflict)';
+    result.innerHTML   = 'No confirmed crew on this call — nothing to save.';
     return;
   }
 
@@ -11798,7 +11823,7 @@ async function tiLoadLive(bookingId){
       return;
     }
     if(data.error){ if(status){ status.style.color='var(--conflict)'; status.textContent = data.error; } return; }
-    _tiState = {bookingId: bookingId, data: data, include: {}, source: 'gsheet'};
+    _tiState = {bookingId: bookingId, data: data, include: {}, rowOff: {}, source: 'gsheet'};
     (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
     renderTimesheetImportPreview();
   }catch(e){
@@ -11817,7 +11842,7 @@ async function tiHandleFile(input, bookingId){
     const res  = await fetch('/api/booking/'+bookingId+'/import-times/preview', {method:'POST', body: fd});
     const data = await res.json();
     if(data.error){ status.style.color='var(--conflict)'; status.textContent = data.error; return; }
-    _tiState = {bookingId: bookingId, data: data, include: {}, source: 'file'};
+    _tiState = {bookingId: bookingId, data: data, include: {}, rowOff: {}, source: 'file'};
     (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
     renderTimesheetImportPreview();
   }catch(e){
@@ -11826,10 +11851,35 @@ async function tiHandleFile(input, bookingId){
   }
 }
 
+// Status of a matched row as it stands in SmartStaff. Confirmed (5) is the only
+// status the Enter Times grid will write to; the import surfaces the others and
+// lets the operator decide, because the Crew Boss's sheet is evidence of who
+// actually worked and SmartStaff's status can be stale by showtime.
+function _tiIsConfirmed(m){ return Number(m && m.status) === 5; }
+
+function _tiStatusChip(st){
+  const map = {0:['—','var(--muted)'], 1:['SMS Sent','var(--muted)'], 5:['Confirmed','var(--ok,#10b981)'],
+               6:['Declined','var(--conflict)'], 7:['Backup','var(--muted)'], 8:['No-show','var(--conflict)']};
+  const e = map[Number(st)] || ['Status '+st,'var(--muted)'];
+  return '<span style="font-size:9px;letter-spacing:.5px;color:'+e[1]+'">'+escapeHtml(e[0])+'</span>';
+}
+
+// A flagged (non-confirmed) row is written unless the operator unticks it.
+// Confirmed rows have no per-row control and are always in.
+function _tiRowOn(s, callId, m){
+  if(_tiIsConfirmed(m)) return true;
+  return !s.rowOff[callId + ':' + m.user_id];
+}
+
+function _tiCallRows(s, c){
+  return (c.matched || []).filter(function(m){ return _tiRowOn(s, c.call_id, m); });
+}
+
 function renderTimesheetImportPreview(){
   const s = _tiState, d = s.data;
   const calls = d.calls || [];
-  const totalWrite = calls.reduce(function(n,c){ return n + (s.include[c.call_id] ? c.matched.length : 0); }, 0);
+  const totalWrite = calls.reduce(function(n,c){ return n + (s.include[c.call_id] ? _tiCallRows(s,c).length : 0); }, 0);
+  let totalFlagged = 0;
 
   const cards = calls.map(function(c){
     const inc  = !!s.include[c.call_id];
@@ -11837,15 +11887,25 @@ function renderTimesheetImportPreview(){
       ? 'matched by Call ID'
       : ('EIN overlap '+c.overlap+'/'+c.tab_ein_count+(c.delta_min?(' · '+c.delta_min+'min off'):''));
 
+    const flagged = (c.matched||[]).filter(function(m){ return !_tiIsConfirmed(m); });
+    totalFlagged += flagged.length;
+
     const matchedList = c.matched.map(function(m){
       const brk = (m.break !== '00:00' || m.break_night !== '00:00') ? (' brk '+m.break+'/'+m.break_night) : '';
-      return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;color:var(--text)">'
-        + '<span>'+escapeHtml(m.name)+(m.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')+'</span>'
+      const ok  = _tiIsConfirmed(m);
+      const on  = _tiRowOn(s, c.call_id, m);
+      const box = ok ? ''
+        : '<input type="checkbox" '+(on?'checked':'')+' onchange="tiToggleRow('+c.call_id+','+m.user_id+',this)" style="margin:0 6px 0 0;vertical-align:middle">';
+      const dim = (ok || on) ? '' : 'opacity:.45;';
+      return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;color:var(--text);'+dim+'">'
+        + '<span>'+box+escapeHtml(m.name)+(m.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')
+        +   (ok?'':' '+_tiStatusChip(m.status))+'</span>'
         + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml((m.on||'—')+'–'+(m.off||'—')+brk)+'</span>'
         + '</div>';
     }).join('');
 
     const extras = [];
+    if(flagged.length)       extras.push(flagged.length+' not confirmed in SmartStaff');
     if(c.unmatched.length)   extras.push(c.unmatched.length+' on sheet, not booked on this call');
     if(c.skipped.length)     extras.push(c.skipped.length+' with no times (no-show / blank)');
     if(c.roster_only.length) extras.push(c.roster_only.length+' booked but absent from sheet');
@@ -11855,12 +11915,16 @@ function renderTimesheetImportPreview(){
       + '<input type="checkbox" '+(inc?'checked':'')+(c.matched.length?'':' disabled')+' onchange="tiToggleCall('+c.call_id+',this)">'
       + '<div style="flex:1;min-width:0">'
       + '<div style="font-size:13px;color:var(--text)">'+escapeHtml(c.tab_name)+' <span style="color:var(--muted)">→</span> '+escapeHtml(c.call_name||('Call '+c.call_id))+'</div>'
-      + '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(mappedBy)+' · '+c.matched.length+' to write</div>'
+      + '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(mappedBy)+' · '+_tiCallRows(s,c).length+' to write</div>'
       + '</div></div>'
       + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>')
       + (extras.length ? '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'+extras.map(escapeHtml).join(' · ')+'</div>' : '')
       + '</div>';
   }).join('');
+
+  const flagNote = totalFlagged
+    ? '<div style="font-size:11px;color:var(--accent);padding:0 0 8px">'+totalFlagged+' crew on this sheet '+(totalFlagged===1?'is':'are')+' not Confirmed in SmartStaff. They\'re ticked to write — untick anyone who shouldn\'t be, or fix their status on the call first.</div>'
+    : '';
 
   document.getElementById('entity-modal-title').textContent = 'Import Times — review';
   document.getElementById('entity-modal-body').innerHTML =
@@ -11874,6 +11938,7 @@ function renderTimesheetImportPreview(){
     + (d.unmapped_tabs && d.unmapped_tabs.length
         ? '<div style="font-size:11px;color:var(--conflict);padding-bottom:8px">Tabs with no matching call: '+escapeHtml(d.unmapped_tabs.map(function(t){return t.tab_name;}).join(', '))+'</div>'
         : '')
+    + flagNote
     + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found.</div>')
     + '<div style="font-size:11px;color:var(--muted);padding-top:4px">Ignored support tabs: '+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>';
 
@@ -11887,12 +11952,20 @@ function tiToggleCall(callId, el){
   if(_tiState){ _tiState.include[callId] = el.checked; renderTimesheetImportPreview(); }
 }
 
+function tiToggleRow(callId, userId, el){
+  if(!_tiState) return;
+  const key = callId + ':' + userId;
+  if(el.checked) delete _tiState.rowOff[key];
+  else _tiState.rowOff[key] = true;
+  renderTimesheetImportPreview();
+}
+
 async function writeTimesImport(){
   const s = _tiState, d = s.data;
   const result = document.getElementById('ti-result');
   const btn = document.getElementById('ti-write-btn');
 
-  const targets = (d.calls||[]).filter(function(c){ return s.include[c.call_id] && c.matched.length; });
+  const targets = (d.calls||[]).filter(function(c){ return s.include[c.call_id] && _tiCallRows(s,c).length; });
   if(!targets.length){
     result.style.color = 'var(--conflict)';
     result.innerHTML = 'Nothing selected to write.';
@@ -11904,7 +11977,7 @@ async function writeTimesImport(){
   let done = 0, wrote = 0, failed = 0;
   for(const c of targets){
     result.textContent = 'Writing '+(done+1)+'/'+targets.length+' — '+(c.call_name||('call '+c.call_id))+'…';
-    const rows = c.matched.map(function(m){
+    const rows = _tiCallRows(s, c).map(function(m){
       const row = {user_id:m.user_id, on:m.on, off:m.off, break:m.break, break_night:m.break_night, late:m.late, note:m.note};
       if(m.callpaygradeID) row.callpaygradeID = m.callpaygradeID;
       return row;
