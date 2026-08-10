@@ -1,6 +1,6 @@
 {
-  "version": "4.36.0",
+  "version": "4.37.0",
   "release_date": "2026-08-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.36.0/TheGOAT.dmg",
-  "release_notes": "Times can now only be entered for crew who are Confirmed on the call. The timesheet import flags anyone on the sheet who isn't confirmed, so you can decide before writing."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.37.0/TheGOAT.dmg",
+  "release_notes": "Crew who hold a valid induction for the booking venue now show a green Current induction badge in Crew Finder, and the results bar names which venues need one. Induction checks now respect the Published setting in Manage Inductions."
 }
