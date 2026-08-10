@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.36.0"
+APP_VERSION    = "4.37.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1237,6 +1237,35 @@ def _invalidate_induction_catalogue():
         _induction_catalogue_cache["failed_at"]  = None
 
 
+def _induction_catalogue_row_for_label(label, cat=None):
+    """The catalogue row whose match_keywords match an induction/venue label.
+
+    Case-insensitive substring containment against pre-sorted rows, first match
+    wins — the rule _induction_validity_for_label has always applied, lifted out
+    verbatim so the validity lookup and the published gate read the SAME row
+    rather than growing a second matching path. Phase 3 Stage 3a repoints
+    induction_status_for_venue here too.
+
+    `cat` may be passed by a caller that has already loaded the catalogue, so a
+    single request doesn't take the catalogue lock twice.
+
+    Returns None both when the catalogue is unreachable and when no row matches.
+    Callers that must tell those apart check `load_induction_catalogue()`
+    themselves — see _induction_validity_for_label and
+    _induction_published_for_venue_name.
+    """
+    if cat is None:
+        cat = load_induction_catalogue()
+    if not cat:
+        return None
+    ll = (label or "").lower()
+    for row in cat["rows"]:                      # pre-sorted: first match wins
+        for kw in row["match_keywords"]:
+            if kw and kw in ll:
+                return row
+    return None
+
+
 def _induction_validity_for_label(label):
     """(validity_months, warn_days) for a SmartStaff induction label.
 
@@ -1245,15 +1274,13 @@ def _induction_validity_for_label(label):
     not the matching rule. Changing both at once would make the grid diff
     uninterpretable.
     """
-    ll = (label or "").lower()
     cat = load_induction_catalogue()
     if cat:
-        for row in cat["rows"]:                      # pre-sorted: first match wins
-            for kw in row["match_keywords"]:
-                if kw and kw in ll:
-                    return row["validity_months"], row["warn_days"]
+        row = _induction_catalogue_row_for_label(label, cat)
+        if row:
+            return row["validity_months"], row["warn_days"]
         return 12, cat["warn_days_default"]          # covered by no catalogue row
-    return (24 if ll in INDUCTION_24_MONTH else 12), 14
+    return (24 if (label or "").lower() in INDUCTION_24_MONTH else 12), 14
 
 
 def _induction_expiry(label, completed):
@@ -1303,6 +1330,28 @@ def _induction_code_for_venue_name(venue_name):
         if any(k in vl for k in kws):
             return code
     return None
+
+def _induction_published_for_venue_name(venue_name):
+    """Is the induction covering this venue NAME published? True/False.
+
+    Returns True when the catalogue is unreachable: load_induction_catalogue()
+    degrades to the hardcoded constants on failure and those carry no published
+    flag, so the only safe degradation is previous behaviour — keep gating. An
+    endpoint blip must never silently switch induction checks off; nobody
+    notices a check that stopped happening until someone is on site without one.
+
+    Also returns True when the catalogue is reachable but no row matches.
+    INDUCTION_VENUE_MAP remains the controlled-list gate at the call site, so
+    reaching here means the venue IS controlled and the catalogue simply hasn't
+    caught up. Same reasoning — fail towards checking.
+    """
+    cat = load_induction_catalogue()
+    if not cat:
+        return True
+    row = _induction_catalogue_row_for_label(venue_name, cat)
+    if row is None:
+        return True
+    return bool(row.get("published", True))
 
 def _resolve_induction_venue_query(q):
     """A venue filter ('RLA', 'rod laver', 'Rod Laver Arena', 'Marvel') ->
@@ -5801,6 +5850,16 @@ def api_availability():
     # the cache lookup. Keyed by str(user_id) to match the previous shape.
     unavail_cache = _get_unavails_for_window(ss, win_start, win_end)
 
+    # Induction gate, resolved ONCE per target. Controlled-ness belongs to the
+    # CALL; only the crew member's status varies per row. `published` gates the
+    # whole check — an unpublished induction yields neither warning nor tick.
+    ind_code_by_call = {}
+    for t in targets:
+        code = _induction_code_for_venue_name(t["venue"]) if t["venue"] else None
+        if code and not _induction_published_for_venue_name(t["venue"]):
+            code = None
+        ind_code_by_call[str(t["call_id"])] = code
+
     # Step 3: check conflicts using shifts + cached unavailabilities
     for crew in candidates:
         cid          = crew["id"]
@@ -5824,24 +5883,27 @@ def api_availability():
                         reason   = f"Unavailable: {u.get('reason','Leave/unavailable')}"
                         break
 
-            # Induction check — only for venues in the controlled induction list.
-            # The booking's venue arrives as a NAME (e.g. "Rod Laver Arena"), but
-            # INDUCTION_VENUE_MAP is keyed by CODE ("RLA"), so resolve the name to
-            # its code first — same as the compliance-tool path. Without this only
-            # venues whose name equalled their code (MCEC, Forum, Crown…) were ever
-            # assessed; named venues silently produced no warning. A venue not in
-            # the controlled list yields no code -> no warning.
+            # Induction check — controlled AND published venues only; the gate is
+            # precomputed per target above. "Complete" was already being returned
+            # by induction_status_for_venue and dropped on the floor here; it now
+            # produces the green tick, which is what makes a BLANK badge mean
+            # "no record" rather than "nothing to say".
+            #
+            # A crew member with no record at all still returns None and still
+            # produces nothing — unchanged, and deliberate. See the brief §0.
             induction_warning = ""
-            if t["venue"]:
-                ind_code = _induction_code_for_venue_name(t["venue"])
-                if ind_code:
-                    ind_status, ind_venue = induction_status_for_venue(inductions, ind_code)
-                    if ind_status == "Incomplete":
-                        induction_warning = f"No induction: {t['venue']}"
-                    elif ind_status == "Expired":
-                        induction_warning = f"Expired induction: {t['venue']}"
-                    elif ind_status == "Expiring Soon":
-                        induction_warning = f"Expiring induction: {t['venue']}"
+            induction_current = ""
+            ind_code = ind_code_by_call.get(str(t["call_id"]))
+            if ind_code:
+                ind_status, ind_venue = induction_status_for_venue(inductions, ind_code)
+                if ind_status == "Incomplete":
+                    induction_warning = f"No induction: {t['venue']}"
+                elif ind_status == "Expired":
+                    induction_warning = f"Expired induction: {t['venue']}"
+                elif ind_status == "Expiring Soon":
+                    induction_warning = f"Expiring induction: {t['venue']}"
+                elif ind_status == "Complete":
+                    induction_current = f"Current induction: {t['venue']}"
 
             call_results.append({
                 "call_id":           t["call_id"],
@@ -5850,6 +5912,7 @@ def api_availability():
                 "available":         not conflict,
                 "detail":            reason,
                 "induction_warning": induction_warning,
+                "induction_current": induction_current,
             })
             if conflict and not t.get("soft"):
                 any_conflict = True
@@ -5867,6 +5930,15 @@ def api_availability():
         # Collect all induction warnings across calls (deduplicated)
         induction_warnings = list(dict.fromkeys(
             r["induction_warning"] for r in call_results if r["induction_warning"]
+        ))
+
+        # Kept in a SEPARATE list from induction_warnings on purpose. The
+        # frontend splices induction_warnings into the detail cell alongside
+        # clash reasons; a green entry in there would fill that column with
+        # noise on every compliant crew member, which on a clean search is
+        # every row.
+        induction_currents = list(dict.fromkeys(
+            r["induction_current"] for r in call_results if r["induction_current"]
         ))
 
         # Nearby shifts for timeline — include shifts within 3 days of ANY target call,
@@ -5911,6 +5983,7 @@ def api_availability():
             "free_of":             len(targets),
             "detail":              conflict_details,
             "induction_warnings":  induction_warnings,
+            "induction_currents":  induction_currents,
         }
 
         if avail_count == total_calls:
@@ -5946,12 +6019,21 @@ def api_availability():
     hard_targets = [_ser_target(t) for t in targets if not t.get("soft")]
     soft_targets = [_ser_target(t) for t in targets if t.get("soft")]
 
+    # Which searched venues are induction-gated. Drives the legend line that
+    # makes an absent badge readable: inside "Induction required: MCG" a blank
+    # means no record; with no line at all it means the venue isn't gated.
+    induction_venues = sorted({
+        t["venue"] for t in targets
+        if t["venue"] and ind_code_by_call.get(str(t["call_id"]))
+    })
+
     return jsonify({
         "available":    available,
         "conflicts":    conflicts,
         "skipped":      skipped,
         "targets":      hard_targets,
         "soft_targets": soft_targets,
+        "induction_venues": induction_venues,
         # Legacy single-call fields for backward compat
         "call_id":    targets[0]["call_id"],
         "booking_id": targets[0]["booking_id"],
