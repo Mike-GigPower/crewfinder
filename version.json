@@ -1,6 +1,6 @@
 {
-  "version": "4.35.0",
+  "version": "4.36.0",
   "release_date": "2026-08-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.35.0/TheGOAT.dmg",
-  "release_notes": "Calls tab marks which calls a crew member was late for; booking call rows now show their start date and time."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.36.0/TheGOAT.dmg",
+  "release_notes": "Times can now only be entered for crew who are Confirmed on the call. The timesheet import flags anyone on the sheet who isn't confirmed, so you can decide before writing."
 }
