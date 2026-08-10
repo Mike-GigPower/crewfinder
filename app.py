@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.35.0"
+APP_VERSION    = "4.36.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -10151,7 +10151,8 @@ def _build_import_preview(ss, booking_id, parsed):
                     cpg = cm.get("callpaygradeID") or 0
                     upg = cm.get("user_paygradeID") or 0
                     pg = cpg if (cpg and cpg > 0) else upg
-                    ein_map[e] = {"user_id": cm.get("user_id"), "name": nm, "pg": pg}
+                    ein_map[e] = {"user_id": cm.get("user_id"), "name": nm, "pg": pg,
+                                   "status": cm.get("status")}
         rosters[cid] = ein_map
         call_index.append({
             "call_id":   cid,
@@ -10258,6 +10259,7 @@ def _build_import_preview(ss, booking_id, parsed):
                     "break_night": r.get("break_night"),
                     "late":        r.get("late"),
                     "note":        r.get("note"),
+                    "status":      m.get("status"),
                 }
                 if m.get("pg"):
                     mrow["callpaygradeID"] = m["pg"]
