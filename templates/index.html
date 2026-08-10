@@ -122,6 +122,7 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .induction-warn.red{color:var(--accent2);border-color:var(--accent2);background:var(--accent2-bg)}
 .induction-expired{font-size:10px;font-weight:600;color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
 .induction-expiring{font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
+.induction-current{font-size:10px;font-weight:600;color:var(--ok,#10b981);background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.30);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
 .crew-remove-btn{background:none;border:none;color:var(--muted);font-size:13px;line-height:1;cursor:pointer;padding:0 4px;border-radius:3px;opacity:.6}
 .crew-remove-btn:hover{color:#ef4444;background:rgba(239,68,68,0.12);opacity:1}
 .crew-remove-btn:disabled{opacity:.3;cursor:default}
@@ -1324,6 +1325,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:var(--conflict)"></span>Conflict</span>
       <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:var(--warn)"></span>Potential Conflict</span>
       <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:rgba(59,130,246,0.65)"></span>For Info</span>
+      <span class="cf-legend-item" id="cf-legend-induction" style="display:none"></span>
     </div>
     <div class="results-table-wrap" id="results-wrap">
       <div class="empty-state">
@@ -3018,6 +3020,18 @@ function renderResults(result,details,targets){
   document.getElementById('results-header').style.display='flex';
   document.getElementById('cf-legend').style.display='flex';
   cfRenderChips();
+  // Venue-level induction context. Without this a blank badge is ambiguous:
+  // "venue isn't controlled" and "this person has no record" look identical.
+  const indLeg=document.getElementById('cf-legend-induction');
+  if(indLeg){
+    const iv=result.induction_venues||[];
+    if(iv.length){
+      indLeg.innerHTML='<span class="cf-legend-swatch" style="background:var(--ok,#10b981)"></span>Induction required: '+iv.join(', ');
+      indLeg.style.display='';
+    } else {
+      indLeg.style.display='none';
+    }
+  }
   selected.clear();updateSelCount();
 
   // Build booked crew section
@@ -3280,14 +3294,22 @@ function attachCrewCardHover(td,crew){
 }
 
 function inductionWarnHtml(crew){
-  if(!crew.induction_warnings||!crew.induction_warnings.length)return '';
-  return crew.induction_warnings.map(w=>{
+  const warns=crew.induction_warnings||[];
+  const currents=crew.induction_currents||[];
+  if(!warns.length&&!currents.length)return '';
+  const warnHtml=warns.map(w=>{
     const expired=w.startsWith('Expired');
     const expiring=w.startsWith('Expiring');
     const cls=expired?'induction-expired':expiring?'induction-expiring':'induction-warn';
     const icon=expired?'⊘':expiring?'◈':'⚠';
     return '<span class="'+cls+'" title="'+w+'">'+icon+' '+w+'</span>';
   }).join('');
+  // Warnings first, always — a green tick for one venue must never push a red
+  // one for another off the visible end of the name cell on a multi-call search.
+  const okHtml=currents.map(c=>
+    '<span class="induction-current" title="'+c+'">✓ '+c+'</span>'
+  ).join('');
+  return warnHtml+okHtml;
 }
 function breakdownHtml(crew){
   if(!crew.call_results||crew.call_results.length<=1)return '';
@@ -3344,6 +3366,7 @@ function renderTable(result,targets){
     total_calls: targets.length,
     detail: '',
     induction_warnings: [],
+    induction_currents: [],
     shifts: [],
     unavails: [],
     _isGoat: true,
