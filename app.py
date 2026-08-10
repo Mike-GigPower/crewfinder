@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "4.33.0"
+APP_VERSION    = "4.34.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6792,6 +6792,87 @@ def api_ops_acks():
     data, err = fetch_pending_acks_bulk(ss, start, end)
     if err is not None:
         app.logger.warning(f"[ops-acks] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
+
+def fetch_induction_exceptions(ss, start, end):
+    """Ops landing — the induction-exceptions source feeding BOTH the 'Bookings at
+    risk' and 'Inductions expiring' lanes, via the DB-backed
+    get-induction-exceptions-bulk.php endpoint (dual-gated). Returns the
+    endpoint's own dict — the two blocks (at_risk / expiring), each with its
+    server-computed counts and per-row risk / lead / state tags — passed through
+    untouched. Python must NOT recompute induction status here: the arithmetic
+    lives once, in PHP, resolved by venue_id (sidestepping the code-mapping
+    blocker); the Crew Finder / Checker helpers stay where they are.
+
+    ONE request only: the endpoint holds the same per-session PHP file lock the
+    other bulk reads do, so a concurrent /ajax/crew/ call on this session would
+    hang. No thread pool, no parallel fetch, ever.
+
+    Returns (data, error). On any failure data is None and error is a short
+    message; the caller soft-fails to two 'unavailable' lanes."""
+    from html import unescape
+    url = f"{BASE_URL}/ajax/crew/get-induction-exceptions-bulk.php?start={start}&end={end}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    # SmartStaff stores these HTML-encoded and the endpoint passes them raw.
+    # Decode the free-text display fields only, across both blocks' rows; the
+    # counts and the risk / lead / state tags are enum / numeric and pass through
+    # untouched (must not be recomputed here).
+    # Lane A rows carry name/booking_name/venue/call_name; lane B rows (one per
+    # crew) carry name plus a `venues` LIST of grouped catalogue titles. Decode
+    # whichever scalar fields are present, and every element of `venues`.
+    for block in ("at_risk", "expiring"):
+        rows = (data.get(block) or {}).get("rows", [])
+        for r in rows:
+            for k in ("name", "booking_name", "venue", "call_name"):
+                if r.get(k) is not None:
+                    r[k] = unescape(r[k])
+            vlist = r.get("venues")
+            if isinstance(vlist, list):
+                r["venues"] = [unescape(v) if isinstance(v, str) else v for v in vlist]
+    return data, None
+
+
+@app.route("/api/ops/induction-exceptions", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_induction_exceptions():
+    """Ops landing — one fetch, two lanes: 'Bookings at risk' (crew booked on
+    upcoming calls who won't be compliant on the day) and 'Inductions expiring'
+    (the active roster expiring soon). The PHP endpoint owns the single copy of
+    the expiry arithmetic and both blocks' counts; we proxy them straight through
+    so the donuts and the drill-down lists can never disagree.
+
+    Dual-gated exactly like the other read lanes: @require_cohort(*READ_ALL_COHORTS)
+    mirrors goat_can_read_all(). Soft-fails with HTTP 200 {"unavailable": true}
+    so both lanes render 'unavailable' and never take the page down with them."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Same window default as the other lanes — today through today + 28 days,
+    # Melbourne — so every lane describes the same period. (Lane B is roster-wide
+    # and ignores the window; only lane A is bounded by it.)
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = request.args.get("start") or today.strftime("%Y-%m-%d")
+    end   = request.args.get("end")   or (today + timedelta(days=28)).strftime("%Y-%m-%d")
+
+    data, err = fetch_induction_exceptions(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-induction] unavailable: {err}")
         return jsonify({"unavailable": True, "error": err})
     return jsonify(data)
 
