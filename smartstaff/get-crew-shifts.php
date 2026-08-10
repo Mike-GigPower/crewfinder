@@ -48,6 +48,7 @@
 			ccm.crewmapID    AS map_id,
 			ccm.status       AS status,
 			ccm.is_call_boss AS is_call_boss,
+			ccm.late         AS late,
 			c.id             AS call_id,
 			c.call_name      AS call_name,
 			c.start_date     AS start_date,
@@ -77,7 +78,9 @@
 		0 => 'Unconfirmed',
 		1 => 'SMS Sent',
 		5 => 'Confirmed',
-		6 => 'Declined'
+		6 => 'Declined',
+		7 => 'Backup',
+		8 => 'No-show'
 	);
 
 	$shifts = array();
@@ -96,6 +99,13 @@
 		$st = (int) $row->status;
 		$status_label = isset($labels[$st]) ? $labels[$st] : ('Status ' . $st);
 
+		/* call_crew_map flag columns are not reliably typed — is_call_boss is
+		/* binary(50), where a `= 1` comparison does not match. Test the first
+		/* byte in PHP instead: correct for tinyint, varchar and binary alike.
+		/* Semantics deliberately mirror list-crew-bulk.php §4 (late = '1'). */
+		$late_raw = ($row->late === null) ? '' : (string) $row->late;
+		$is_late  = (substr($late_raw, 0, 1) === '1') ? 1 : 0;
+
 		$shifts[] = array(
 			'map_id'       => (int) $row->map_id,
 			'call_id'      => (int) $row->call_id,
@@ -111,7 +121,8 @@
 			'end_iso'      => date('Y-m-d\TH:i:s',  $end_unix),
 			'status'       => $st,
 			'status_label' => $status_label,
-			'is_call_boss' => (int) $row->is_call_boss
+			'is_call_boss' => (int) $row->is_call_boss,
+			'is_late'      => $is_late
 		);
 	}
 
