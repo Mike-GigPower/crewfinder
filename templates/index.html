@@ -8600,6 +8600,8 @@ async function ceLoadShifts(id){
   var counts = {};
   shifts.forEach(function(s){ counts[s.status_label] = (counts[s.status_label]||0)+1; });
   var summaryParts = Object.keys(counts).map(function(k){ return counts[k]+' '+String(k).toLowerCase(); });
+  var lateCount = shifts.filter(function(s){ return s.is_late; }).length;
+  if(lateCount) summaryParts.push(lateCount+' late');
   var rows = shifts.map(function(s){
     var title = escapeHtml(s.booking_name||s.call_name||'Call');
     var sub = [];
@@ -8607,9 +8609,10 @@ async function ceLoadShifts(id){
     if(s.call_name && s.call_name!==s.booking_name) sub.push(escapeHtml(s.call_name));
     var meta = escapeHtml(s.date||'') + (s.time? ' \u00b7 '+escapeHtml(s.time):'') + (s.length? ' \u00b7 '+s.length+'h':'');
     var boss = s.is_call_boss ? ' <span style="font-size:9px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;vertical-align:middle">CALL BOSS</span>' : '';
+    var late = s.is_late ? ' <span style="color:var(--conflict);font-size:9px;font-weight:600">LATE</span>' : '';
     return '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
       + '<div style="min-width:0">'
-      +   '<div style="font-size:13px;color:var(--text)">'+title+boss+'</div>'
+      +   '<div style="font-size:13px;color:var(--text)">'+title+boss+late+'</div>'
       +   (sub.length?'<div style="font-size:11px;color:var(--muted)">'+sub.join(' \u00b7 ')+'</div>':'')
       +   '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+meta+'</div>'
       + '</div>'
@@ -12189,6 +12192,10 @@ function bkFeedEdgeList(bookingId, c, maps){
 function bkCallRow(bookingId, c, maps){
   var chips = bkFeedChips(c, maps);
   var name  = escapeHtml(decodeEntities(c.call_name || 'Call'));
+  var when  = _abCallWhen(c.start_date, c.start_time);
+  var whenLine = when
+    ? '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(when)+'</div>'
+    : '';
 
   if(_bkFeedMode){
     var isSrc = (_bkFeedSrc !== null && String(_bkFeedSrc) === String(c.call_id));
@@ -12202,7 +12209,10 @@ function bkCallRow(bookingId, c, maps){
         + 'background:var(--surface2)" '
         + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
         + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
-        + '<span style="font-size:12px;color:var(--text)">'+name+chips+'</span>'
+        + '<div style="min-width:0">'
+        +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+        +   whenLine
+        + '</div>'
         + '<span style="font-size:10px;color:var(--accent)">crew come from here \u2192</span>'
         + '</div>' + edges;
     }
@@ -12211,7 +12221,10 @@ function bkCallRow(bookingId, c, maps){
     if(isSrc){
       return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
         + 'border:1px solid var(--accent);border-radius:4px;margin-bottom:5px;background:var(--surface2)">'
-        + '<span style="font-size:12px;color:var(--text)">'+name+chips+'</span>'
+        + '<div style="min-width:0">'
+        +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+        +   whenLine
+        + '</div>'
         + '<span onclick="bkClearSource(\''+bookingId+'\')" '
         + 'style="font-size:10px;color:var(--muted);cursor:pointer">change</span>'
         + '</div>' + edges;
@@ -12224,7 +12237,10 @@ function bkCallRow(bookingId, c, maps){
       + 'background:var(--surface2)">'
       + '<input type="checkbox" '+checked+' '
       + 'onchange="bkToggleFeedSel(\''+bookingId+'\',\''+c.call_id+'\',this.checked)">'
-      + '<span style="flex:1;font-size:12px;color:var(--text)">'+name+chips+'</span>'
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+      +   whenLine
+      + '</div>'
       + '</label>' + edges;
   }
 
@@ -12235,7 +12251,10 @@ function bkCallRow(bookingId, c, maps){
     + 'background:var(--surface2)" '
     + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
     + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
-    + '<span style="font-size:12px;color:var(--text)">'+name+chips+'</span>'
+    + '<div style="min-width:0">'
+    +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+    +   whenLine
+    + '</div>'
     + '<span style="display:flex;align-items:center">'+bkFeedCount(c)
     + '<span style="font-size:10px;color:var(--accent)">view \u2192</span></span></div>';
 }
