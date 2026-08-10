@@ -1148,6 +1148,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-dismiss{font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--accent2);background:var(--accent2-bg);border:1px solid var(--accent2);border-radius:5px;padding:2px 12px;cursor:pointer;transition:filter .12s}
 .ops-dismiss:hover{filter:brightness(1.25)}
 .ops-ack-err{font-size:11px;color:var(--accent2)}
+.ops-row.ops-row--static{cursor:default}
+.ops-row.ops-row--static:hover{border-color:var(--border)}
 </style>
 </head>
 <body>
@@ -13810,8 +13812,31 @@ const OPS_LANES = [
   { key:'calls_to_fill', label:'Calls to fill',
     load: loadOpsCalls, render: renderOpsCalls, dims:['fill','lead'] },
   { key:'acks', label:'Acknowledgements outstanding',
-    load: loadOpsAcks, render: renderOpsAcks, dims:['kind','lead'] }
+    load: loadOpsAcks, render: renderOpsAcks, dims:['kind','lead'] },
+  // Lanes A and B share ONE fetch (source:'induction'): both blocks come back in
+  // a single response, so declaring a source instead of a load lets loadOps fetch
+  // once and render both. Load order A-before-B is preserved by array order.
+  { key:'bookings_at_risk', label:'Bookings at risk', source:'induction',
+    render: renderOpsAtRisk, dims:['risk','lead'] },
+  { key:'inductions_expiring', label:'Inductions expiring', source:'induction',
+    render: renderOpsExpiring, dims:['lead'] }
 ];
+
+// Shared-source cache: name -> in-flight/resolved Promise<responseJSON>. Memoised
+// so two lanes declaring the same source trigger exactly ONE fetch. loadOps
+// clears this once per cycle when force=true, so a Refresh refetches once (the
+// first source lane triggers it, the second reuses the same promise).
+const OPS_SOURCES = { induction: { url:'/api/ops/induction-exceptions' } };
+const _opsSourceCache = {};
+function opsFetchSource(name){
+  if(!_opsSourceCache[name]){
+    const url = (OPS_SOURCES[name] || {}).url;
+    _opsSourceCache[name] = fetch(url)
+      .then(function(r){ return r.json(); })
+      .catch(function(e){ return { unavailable:true, error:(e && e.message) || 'load failed' }; });
+  }
+  return _opsSourceCache[name];
+}
 
 // Per-lane runtime state, keyed by lane.key:
 //   { status, data, error, chips:{<dim>:seg|null, ...} }
@@ -13855,12 +13880,23 @@ const OPS_LEAD_LABELS = { under48:'< 48h', from48to168:'2–7 days', over168:'> 
 const OPS_KIND_COLORS = { change:'var(--accent)', promo:'var(--suggest)' };
 const OPS_KIND_LABELS = { change:'Timing changed', promo:'Promoted off standby' };
 
+// Lane A (bookings_at_risk) risk palette. "No induction" is the hardest case
+// (never inducted — red); "expired by then" will have lapsed on the day
+// (orange); "expires before call" lapses inside the warn window (amber). Lane A
+// reuses lanes 1/3's lead colours/labels exactly. Lane B (inductions_expiring)
+// state: expired (red) vs expiring (amber).
+const OPS_RISK_COLORS  = { none:'var(--accent2)', expired_by:'#f97316', expiring_by:'var(--warn)' };
+const OPS_RISK_LABELS  = { none:'No induction', expired_by:'Expired by then', expiring_by:'Expires before call' };
+// Lane B dropped its state donut in Amendment 1 (already-expired is excluded by
+// design, leaving only one state to chart) — it now uses the shared lead-time
+// dimension, so there is no OPS_STATE_* palette.
+
 // Chip labels by dimension — lets opsChipsBar render any lane's active filters
 // without naming lanes. Defined after the per-dim label maps above exist.
 const OPS_DIM_LABELS = {
   status: OPS_STATUS_LABELS, age: OPS_AGE_LABELS,
   fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS,
-  kind:   OPS_KIND_LABELS
+  kind:   OPS_KIND_LABELS,   risk: OPS_RISK_LABELS
 };
 
 // Serial by design: one SmartStaff request at a time. Awaiting each lane in
@@ -13872,6 +13908,9 @@ const OPS_DIM_LABELS = {
 async function loadOps(force){
   renderOpsFrame();
   setOpsAsAt(null);                 // stamp the moment we asked; server time overwrites on resolve
+  // One cache clear per cycle so a forced Refresh refetches each shared source
+  // exactly once (not once per lane that reads it).
+  if(force){ for(const k in _opsSourceCache) delete _opsSourceCache[k]; }
   for(let i = 0; i < OPS_LANES.length; i++){
     const lane = OPS_LANES[i];
     if(!_opsLaneState[lane.key]){
@@ -13882,7 +13921,23 @@ async function loadOps(force){
     _opsLaneState[lane.key].status = 'loading';
     setOpsLaneLoading(lane);
     try{
-      await lane.load(lane, force);       // resolves → lane.render()
+      if(lane.load){
+        await lane.load(lane, force);     // per-lane loader (lanes 1–3) → lane.render()
+      } else if(lane.source){
+        // Shared source: fetch once (memoised), both lanes render their own block
+        // from the same response. Isolation still holds — an unavailable source
+        // marks only the source lanes, never lanes 1–3.
+        const d  = await opsFetchSource(lane.source);
+        const st = _opsLaneState[lane.key];
+        if(!d || d.unavailable){
+          st.status = 'unavailable'; st.error = (d && d.error) || '';
+          renderOpsUnavailable(lane);
+        } else {
+          st.status = 'ready'; st.data = d;
+          if(d.generated_at) setOpsAsAt(d.generated_at);
+          lane.render(lane);
+        }
+      }
     }catch(e){
       const st = _opsLaneState[lane.key];
       st.status = 'unavailable';
@@ -14542,6 +14597,204 @@ async function opsDismissAck(ev, bookingId, callId, userId){
   }catch(e){
     if(errEl) errEl.textContent = 'Dismiss failed: ' + (e.message || 'network error');
   }
+}
+
+// ── Lanes A & B: induction exceptions (one shared source) ───────────────────
+// Both render from _opsLaneState[key].data, which is the WHOLE induction
+// response (fetched once via source:'induction'); each picks its own block —
+// lane A reads data.at_risk, lane B reads data.expiring. /api/ops/induction-
+// exceptions owns the single copy of the expiry arithmetic and both blocks'
+// counts; nothing here re-derives a boundary.
+
+function opsFmtDayMon(iso){
+  if(!iso) return '';
+  const dt = new Date(iso);
+  if(isNaN(dt.getTime())) return '';
+  return dt.toLocaleDateString(undefined, { day:'numeric', month:'short' });
+}
+
+// ── Lane A: Bookings at risk ────────────────────────────────────────────────
+function renderOpsAtRisk(lane){
+  const st     = _opsLaneState[lane.key];
+  const block  = (st && st.data && st.data.at_risk) || {};
+  const counts = block.counts || {};
+  const total  = counts.total || 0;
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    return;
+  }
+  const riskSegs = ['none','expired_by','expiring_by'].map(function(k){
+    return { key:k, value:(counts.risk && counts.risk[k]) || 0,
+             color:OPS_RISK_COLORS[k], label:OPS_RISK_LABELS[k] };
+  });
+  const leadSegs = ['under48','from48to168','over168'].map(function(k){
+    return { key:k, value:(counts.lead && counts.lead[k]) || 0,
+             color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
+  });
+  body.innerHTML = ''
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Risk',      'risk', riskSegs)
+    +   opsDonutBlock(lane, 'Lead time', 'lead', leadSegs)
+    + '</div>'
+    + opsChipsBar(lane)
+    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
+  renderOpsAtRiskList(lane);
+}
+
+function opsFilteredAtRisk(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st.data && st.data.at_risk && st.data.at_risk.rows) ? st.data.at_risk.rows.slice() : [];
+  if(st.chips.risk) rows = rows.filter(function(o){ return o.risk === st.chips.risk; });
+  if(st.chips.lead) rows = rows.filter(function(o){ return o.lead_bucket === st.chips.lead; });
+  return rows;
+}
+
+// Soonest call first — the mirror of lane 1.
+function opsSortAtRisk(rows){
+  return rows.slice().sort(function(a, b){
+    const as = a.start || '', bs = b.start || '';
+    return as < bs ? -1 : (as > bs ? 1 : 0);
+  });
+}
+
+function renderOpsAtRiskList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const rows = opsSortAtRisk(opsFilteredAtRisk(lane));
+  const idx = {};
+  rows.forEach(function(o){ idx[o.call_id + ':' + o.user_id] = o; });
+  _opsRowIndex[lane.key] = idx;
+  if(!rows.length){
+    el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No bookings match the current filter.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(function(o){ return opsAtRiskCard(o, lane.key); }).join('');
+}
+
+function opsAtRiskLabels(o){
+  const lb = OPS_RISK_LABELS[o.risk];
+  if(!lb) return '';
+  const cls = (o.risk === 'none') ? 'lbl-nm' : (o.risk === 'expired_by' ? 'lbl-sf' : 'lbl-aw');
+  return '<span class="ops-lbl '+cls+'">'+escapeHtml(lb)+'</span>';
+}
+
+function opsAtRiskCard(o, laneKey){
+  const key  = o.call_id + ':' + o.user_id;
+  const nm   = escapeHtml(decodeEntities(o.name || ''));
+  const meta = [o.booking_name, o.venue, o.call_name]
+                 .map(function(x){ return escapeHtml(decodeEntities(x || '')); })
+                 .filter(Boolean).join(' · ');
+  const when = escapeHtml(opsCallWhen(o));
+  const labels = opsAtRiskLabels(o);
+  // expiry pill only where there IS an induction to expire (risk !== 'none'),
+  // coloured by the risk tag so it reads with the label.
+  const exp = o.expiry_iso ? escapeHtml('expires ' + opsFmtDayMon(o.expiry_iso)) : '';
+  const ecol = OPS_RISK_COLORS[o.risk] || 'var(--muted)';
+  // Date beside the name (.ops-row-title), matching lanes 1–3; the side keeps the
+  // expiry pill (a pill, not the date).
+  return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\',\''+key+'\')">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+(nm || '—')+'</span>'
+    +       '<span class="ops-row-when">'+when+'</span>'
+    +     '</div>'
+    +     '<span class="ops-row-meta">'+meta+'</span>'
+    +   '</div>'
+    +   (exp
+        ? '<div class="ops-row-side"><span class="ops-pill" style="color:'+ecol+';border-color:'+ecol+'">'+exp+'</span></div>'
+        : '')
+    +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
+    + '</div>';
+}
+
+// ── Lane B: Inductions expiring (roster-wide, no link) ──────────────────────
+function renderOpsExpiring(lane){
+  const st     = _opsLaneState[lane.key];
+  const block  = (st && st.data && st.data.expiring) || {};
+  const counts = block.counts || {};
+  const total  = counts.total || 0;
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    return;
+  }
+  // One donut only — lead time (now → expiry). Already-expired is excluded server-
+  // side, so there is no "state" dimension left to chart.
+  const leadSegs = ['under48','from48to168','over168'].map(function(k){
+    return { key:k, value:(counts.lead && counts.lead[k]) || 0,
+             color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
+  });
+  body.innerHTML = ''
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Lead time', 'lead', leadSegs)
+    + '</div>'
+    + opsChipsBar(lane)
+    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
+  renderOpsExpiringList(lane);
+}
+
+function opsFilteredExpiring(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st.data && st.data.expiring && st.data.expiring.rows) ? st.data.expiring.rows.slice() : [];
+  if(st.chips.lead) rows = rows.filter(function(o){ return o.lead_bucket === st.chips.lead; });
+  return rows;
+}
+
+// Soonest expiry first. days_left is >= 0 (expired excluded) and day-truncated,
+// so ascending days_left is soonest-first; the server already ordered on the
+// exact expiry ts, re-applied here so a filtered slice stays ordered.
+function opsSortExpiring(rows){
+  return rows.slice().sort(function(a, b){ return (a.days_left||0) - (b.days_left||0); });
+}
+
+function renderOpsExpiringList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const rows = opsSortExpiring(opsFilteredExpiring(lane));
+  // No row index and no click wiring — lane B has no call to open (§5.2).
+  if(!rows.length){
+    el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No inductions match the current filter.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(function(o){ return opsExpiringCard(o); }).join('');
+}
+
+function opsExpiringDaysText(o){
+  const d = (typeof o.days_left === 'number') ? o.days_left : 0;
+  if(d < 0)  return 'expired ' + Math.abs(d) + ' day' + (Math.abs(d) === 1 ? '' : 's') + ' ago';
+  if(d === 0) return 'expires today';
+  return 'expires in ' + d + ' day' + (d === 1 ? '' : 's');
+}
+
+// One card per CREW MEMBER (§AM2). No onclick, no pointer cursor (ops-row--
+// static): a card that looks clickable and does nothing is worse than one that
+// plainly does not. The "date" in the title is the SOONEST expiry ("expires in 9
+// days"), coloured by lead bucket. The meta line is that person's expiring venue
+// groups joined with ' · ', soonest first — the count is visible from the list,
+// so there is no separate count badge (four venue names read as four venues).
+function opsExpiringCard(o){
+  const nm    = escapeHtml(decodeEntities(o.name || ''));
+  const dtxt  = escapeHtml(opsExpiringDaysText(o));
+  const dcol  = OPS_LEAD_COLORS[o.lead_bucket] || 'var(--muted)';
+  const venues = (o.venues || [])
+                   .map(function(v){ return escapeHtml(decodeEntities(v || '')); })
+                   .filter(Boolean).join(' · ');
+  return '<div class="ops-row ops-row--static">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+(nm || '—')+'</span>'
+    +       '<span class="ops-row-when" style="color:'+dcol+'">'+dtxt+'</span>'
+    +     '</div>'
+    +     '<span class="ops-row-meta">'+venues+'</span>'
+    +   '</div>'
+    + '</div>';
 }
 
 function setSchedFilter(f){
