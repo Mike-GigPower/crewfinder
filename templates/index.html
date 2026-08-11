@@ -1889,11 +1889,17 @@ a.recruit-action{text-decoration:none;display:inline-block}
           <div class="recruit-title">Recruitment</div>
           <div class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
         </div>
-        <button id="recruit-import-btn" class="recruit-import-btn" onclick="openBookingImport()">📥 Import bookings</button>
+        <!-- Import bookings is HIDDEN under Option A: there is no TryBooking export to
+             import (the form is closed, no event exists). The button is kept in the
+             DOM but never shown, and openBookingImport()/the import code path is
+             retained intact as the documented rollback (design §11.2). A visible
+             button is not dead code, so the control must not be invokable in September. -->
+        <button id="recruit-import-btn" class="recruit-import-btn" style="display:none" onclick="openBookingImport()">📥 Import bookings</button>
       </div>
       <div class="recruit-viewswitch">
-        <button id="recruit-view-ops"  class="recruit-viewbtn active" onclick="setRecruitView('operations')">Operations</button>
-        <button id="recruit-view-dash" class="recruit-viewbtn"        onclick="setRecruitView('dashboard')">Dashboard</button>
+        <button id="recruit-view-ops"      class="recruit-viewbtn active" onclick="setRecruitView('operations')">Operations</button>
+        <button id="recruit-view-dash"     class="recruit-viewbtn"        onclick="setRecruitView('dashboard')">Dashboard</button>
+        <button id="recruit-view-sessions" class="recruit-viewbtn"        onclick="setRecruitView('sessions')">Sessions</button>
       </div>
       <div id="recruit-ops-view">
       <div id="recruit-filters" class="recruit-filters"></div>
@@ -1913,6 +1919,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <div id="recruit-list" class="recruit-list"></div>
       </div>
       <div id="recruit-dash-view" style="display:none"></div>
+      <div id="recruit-sessions-view" style="display:none"></div>
     </div>
   </div>
 
@@ -4164,30 +4171,599 @@ function recruitSortByHeader(key){
 // Rich and Monty live there. The choice is then remembered per person, so anyone
 // who wants the numbers (Joe) flips once and stays flipped.
 let _recruitView = 'operations';
+const _RECRUIT_VIEWS = ['operations', 'dashboard', 'sessions'];
 function setRecruitView(view){
-  _recruitView = (view === 'dashboard') ? 'dashboard' : 'operations';
+  _recruitView = _RECRUIT_VIEWS.includes(view) ? view : 'operations';
   goatPrefs.set('recruitment', 'view', _recruitView);
   applyRecruitView();
+  // Operations pile counts derive from _recruitRows, which a booking made in the
+  // Sessions view leaves stale. Ops flip between these views constantly, so
+  // refetch on activation (Dashboard and Sessions already reload on activation).
+  // Safe from recursion: loadRecruitment calls applyRecruitView, never
+  // setRecruitView, and applyRecruitView never reloads for operations.
+  if(_recruitView === 'operations') loadRecruitment();
 }
-// Show one container, hide the other, and reflect the choice on the buttons.
-// Separate from setRecruitView so the remembered value can be applied on load
-// WITHOUT re-saving it.
+// Show the chosen container, hide the others, and reflect the choice on the
+// buttons. Separate from setRecruitView so the remembered value can be applied on
+// load WITHOUT re-saving it.
 function applyRecruitView(){
-  const ops  = document.getElementById('recruit-ops-view');
-  const dash = document.getElementById('recruit-dash-view');
-  const bOps = document.getElementById('recruit-view-ops');
-  const bDash= document.getElementById('recruit-view-dash');
-  const onDash = (_recruitView === 'dashboard');
-  if(ops)  ops.style.display  = onDash ? 'none' : '';
-  if(dash) dash.style.display = onDash ? '' : 'none';
-  if(bOps)  bOps.classList.toggle('active', !onDash);
-  if(bDash) bDash.classList.toggle('active', onDash);
-  // Import bookings lives in the header (outside both views) so it keeps its
-  // top-right spot untouched — but it's an Operations action, so hide it on
-  // Dashboard explicitly rather than by moving it into a container.
+  const v = _recruitView;
+  const panes = {
+    operations: document.getElementById('recruit-ops-view'),
+    dashboard:  document.getElementById('recruit-dash-view'),
+    sessions:   document.getElementById('recruit-sessions-view'),
+  };
+  const btns = {
+    operations: document.getElementById('recruit-view-ops'),
+    dashboard:  document.getElementById('recruit-view-dash'),
+    sessions:   document.getElementById('recruit-view-sessions'),
+  };
+  Object.keys(panes).forEach(k => { if(panes[k]) panes[k].style.display = (k === v) ? '' : 'none'; });
+  Object.keys(btns).forEach(k => { if(btns[k]) btns[k].classList.toggle('active', k === v); });
+  // Import bookings stays HIDDEN in every view under Option A (no TryBooking export
+  // exists). The code path is retained as the documented rollback (§11.2); the
+  // control simply must never be shown. Kept explicit so a future re-enable is one
+  // obvious line, not a hunt.
   const imp = document.getElementById('recruit-import-btn');
-  if(imp) imp.style.display = onDash ? 'none' : '';
-  if(onDash) loadRecruitMetrics();
+  if(imp) imp.style.display = 'none';
+  if(v === 'dashboard') loadRecruitMetrics();
+  if(v === 'sessions')  loadInductionSessions();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   INDUCTION SESSIONS (Recruitment tab · Sessions sub-view) — item 4
+   Ops UI over the induction-sessions-admin edge function (proxied by Flask at
+   /api/recruitment/sessions). The database owns correctness (seat counts, seat
+   supply, visibility); this code is transport + presentation only.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+let _sessionsData   = { sessions: [], intakes: [], supply: null };
+let _sessionsIntake = null;   // selected intake filter; null = not yet chosen
+let _sessionsLoading = false;
+let _bobSelectedCand = null;  // book-on-behalf: chosen candidate {id,name,reference}
+
+// POST an action to the sessions proxy. Returns {httpError, status, body}. The
+// proxy passes the edge function's status + body straight through, so business
+// outcomes ({ok:false, reason} at HTTP 200) arrive intact and are NOT httpError.
+async function postSessions(payload){
+  try{
+    const r = await fetch('/api/recruitment/sessions', {
+      method:'POST', cache:'no-store',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    let body = null;
+    try{ body = await r.json(); }catch(e){}
+    if(!r.ok) return { httpError:true, status:r.status, body:body||{} };
+    return { httpError:false, status:r.status, body:body||{} };
+  }catch(e){
+    return { httpError:true, status:0, body:{error:e.message} };
+  }
+}
+
+// Induction SESSION state badge (draft/open/closed/cancelled). DELIBERATELY a
+// separate vocabulary from _ctStatusBadge / _tiStatusChip / CREW_STATUS_OPTS,
+// which all map SmartStaff NUMERIC shift statuses (Confirmed/Declined/No-show/…)
+// — a different domain. Folding session states into one of those is exactly how
+// those three diverged; when the status-helper reconciliation backlog item is
+// picked up, this should be reconsidered THERE, not bent into a crew-status map now.
+function _sessionStateBadge(state){
+  const map = {
+    draft:     ['Draft',     'var(--muted)'],
+    open:      ['Open',      'var(--ok,#10b981)'],
+    closed:    ['Closed',    'var(--accent)'],
+    cancelled: ['Cancelled', 'var(--conflict,#ef4444)'],
+  };
+  const e = map[state] || [state || '—', 'var(--muted)'];
+  return '<span style="display:inline-block;font-size:9px;letter-spacing:.5px;'
+    + 'text-transform:uppercase;padding:2px 6px;border-radius:3px;border:1px solid var(--border);color:'
+    + e[1] + '">' + escapeHtml(e[0]) + '</span>';
+}
+
+// ---- Melbourne time helpers (always Australia/Melbourne, never machine-local) ----
+function _fmtMelbParts(iso, opts){
+  if(!iso) return '';
+  try{
+    return new Intl.DateTimeFormat('en-AU',
+      Object.assign({timeZone:'Australia/Melbourne'}, opts)).format(new Date(iso));
+  }catch(e){ return ''; }
+}
+// "Thu 20 Aug 2026, 11:00 am" — day name + date + time, Melbourne.
+function _fmtSessionStart(iso){
+  if(!iso) return '—';
+  const d = _fmtMelbParts(iso, {weekday:'short', day:'numeric', month:'short', year:'numeric'});
+  const t = _fmtMelbParts(iso, {hour:'numeric', minute:'2-digit', hour12:true});
+  return d ? (d + ', ' + t) : '';
+}
+// UTC ISO → "YYYY-MM-DDTHH:mm" Melbourne wall-clock, for a datetime-local input.
+function _isoToMelbLocalInput(iso){
+  if(!iso) return '';
+  try{
+    const p = {};
+    new Intl.DateTimeFormat('en-CA', {timeZone:'Australia/Melbourne',
+      year:'numeric', month:'2-digit', day:'2-digit',
+      hour:'2-digit', minute:'2-digit', hour12:false})
+      .formatToParts(new Date(iso)).forEach(x => { if(x.type!=='literal') p[x.type]=x.value; });
+    if(!p.year) return '';
+    const hh = (p.hour === '24') ? '00' : p.hour;   // Intl can emit 24 for midnight
+    return p.year+'-'+p.month+'-'+p.day+'T'+hh+':'+p.minute;
+  }catch(e){ return ''; }
+}
+// "YYYY-MM-DDTHH:mm" Melbourne wall-clock → UTC ISO. Deliberately crude: THE GOAT
+// runs on Melbourne ops machines, so the browser's local tz IS Melbourne and
+// new Date() interprets the wall-clock correctly. No offset table — the booking
+// window is a human default, not a precision instrument, and every operator
+// machine shares the timezone.
+function _melbLocalToIso(localStr){
+  if(!localStr) return null;
+  const d = new Date(localStr);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+// Default booking-closes = 5pm on the previous WEEKDAY before the start date.
+// Weekday arithmetic only — no public-holiday calendar (that's why the value is
+// an editable column, not logic: ops can nudge it when a session sits near a
+// holiday). A crude, overridable default; not worth more than this.
+function _defaultBookingCloses(startLocal){
+  if(!startLocal || startLocal.length < 10) return '';
+  const parts = startLocal.slice(0,10).split('-');
+  if(parts.length !== 3) return '';
+  const d = new Date(Number(parts[0]), Number(parts[1])-1, Number(parts[2]), 12, 0, 0);
+  if(isNaN(d.getTime())) return '';
+  d.setDate(d.getDate() - 1);
+  while(d.getDay() === 0 || d.getDay() === 6){ d.setDate(d.getDate() - 1); }  // skip Sun/Sat
+  const y = d.getFullYear();
+  const mo = String(d.getMonth()+1).padStart(2,'0');
+  const da = String(d.getDate()).padStart(2,'0');
+  return y+'-'+mo+'-'+da+'T17:00';
+}
+
+// ---- load + render ----
+async function loadInductionSessions(){
+  const wrap = document.getElementById('recruit-sessions-view');
+  if(!wrap || _sessionsLoading) return;
+  _sessionsLoading = true;
+  wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:16px 2px">Loading sessions…</div>';
+  try{
+    let intake = _sessionsIntake;
+    const res = await postSessions({ action:'list', intake_label: intake || null });
+    if(res.httpError){
+      wrap.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:16px 2px">'
+        + (res.status === 403 ? 'You do not have access to recruitment.'
+                              : 'Could not load sessions. Please try again.') + '</div>';
+      return;
+    }
+    let data = res.body || {};
+    const intakes = data.intakes || [];
+    // First open: default to the MOST RECENT intake (sorted ascending → last),
+    // then re-request so sessions + supply are scoped to it.
+    if(intake === null && intakes.length){
+      intake = intakes[intakes.length - 1];
+      _sessionsIntake = intake;
+      const res2 = await postSessions({ action:'list', intake_label: intake });
+      if(!res2.httpError) data = res2.body || data;
+    }
+    _sessionsData = { sessions:data.sessions||[], intakes:intakes, supply:data.supply||null };
+    renderInductionSessions();
+  }catch(e){
+    wrap.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:16px 2px">Could not load sessions: '+escapeHtml(e.message)+'</div>';
+  }finally{
+    _sessionsLoading = false;
+  }
+}
+
+function setSessionsIntake(v){ _sessionsIntake = v || null; loadInductionSessions(); }
+
+function renderInductionSessions(){
+  const wrap = document.getElementById('recruit-sessions-view');
+  if(!wrap) return;
+  const d = _sessionsData;
+
+  const intakeOpts = d.intakes.map(x =>
+    '<option value="'+escapeHtml(x)+'"'+(x===_sessionsIntake?' selected':'')+'>'+escapeHtml(x)+'</option>'
+  ).join('') || '<option value="">— no intakes yet —</option>';
+
+  // Seat-supply line (§1). Server-computed; null when no intake is selected —
+  // render nothing rather than a misleading global figure.
+  const sp = d.supply;
+  const supplyLine = sp
+    ? '<div style="font-family:\'Share Tech Mono\',monospace;font-size:12px;color:var(--text);'
+      + 'background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:8px 12px;margin-bottom:12px">'
+      + '<b>'+sp.invited+'</b> invited · <b>'+sp.booked+'</b> booked · <b>'+sp.outstanding+'</b> outstanding · '
+      + '<b>'+sp.seats_remaining_open+'</b> seats remaining across all open sessions</div>'
+    : '';
+
+  const rows = d.sessions.length
+    ? d.sessions.map(renderSessionRow).join('')
+    : '<tr><td colspan="9" style="padding:14px 8px;color:var(--muted);font-size:12px;text-align:center">No sessions in this intake yet. Create one to begin.</td></tr>';
+
+  const th = (t) => '<th style="text-align:left;padding:6px 8px;font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap">'+t+'</th>';
+
+  wrap.innerHTML =
+    '<div id="sess-banner"></div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">'
+    +   '<div style="display:flex;gap:8px;align-items:center">'
+    +     '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Intake</span>'
+    +     '<select onchange="setSessionsIntake(this.value)" style="'+EF_INPUT_STYLE+';width:auto">'+intakeOpts+'</select>'
+    +   '</div>'
+    +   '<div style="display:flex;gap:8px">'
+    +     entityBtn('Book on behalf', 'openBookOnBehalf(null)')
+    +     entityBtn('+ New session', 'openSessionEdit(null)', {primary:true})
+    +   '</div>'
+    + '</div>'
+    + supplyLine
+    + '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +   '<thead><tr>'+th('Label')+th('Intake')+th('Starts')+th('Mode')+th('Location')+th('Booked')+th('Waitlist')+th('State')+th('Actions')+'</tr></thead>'
+    +   '<tbody>'+rows+'</tbody>'
+    + '</table></div>'
+    + '<div id="session-nonesuit" style="margin-top:22px"></div>';
+
+  renderNoneSuitable();
+}
+
+function renderSessionRow(s){
+  const modeLabel = {in_person:'In person', online:'Online', hybrid:'Hybrid'}[s.mode] || s.mode || '';
+  const loc = (s.mode === 'online') ? 'Online' : (s.location || '—');
+  const wl = (s.waitlist_count > 0) ? String(s.waitlist_count) : '';
+  const td = (inner, extra) => '<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap;'+(extra||'')+'">'+inner+'</td>';
+  const actions = entityBtn('Edit', "openSessionEdit('"+s.id+"')")
+    + ' ' + entityBtn('Roster', "openSessionRoster('"+s.id+"')")
+    + ' ' + sessionStateControls(s);
+  return '<tr>'
+    + td(escapeHtml(s.label||''))
+    + td(escapeHtml(s.intake_label||''))
+    + td(escapeHtml(_fmtSessionStart(s.starts_at)))
+    + td(escapeHtml(modeLabel))
+    + td(escapeHtml(loc))
+    + td('<b>'+(s.booked||0)+'</b> / '+(s.capacity||0))
+    + td(wl)
+    + td(_sessionStateBadge(s.state))
+    + td(actions, 'white-space:normal')
+    + '</tr>';
+}
+
+// ---- state controls (§3). Draft→Open, Open→Closed, Closed→Open. NO Cancel:
+// cancelling strands booked candidates without the email that ships in item 6. ----
+function sessionStateControls(s){
+  if(s.state === 'draft')  return entityBtn('Open',   "setSessionState('"+s.id+"','open')",   {primary:true});
+  if(s.state === 'open')   return entityBtn('Close',  "setSessionState('"+s.id+"','closed')");
+  if(s.state === 'closed') return entityBtn('Reopen', "setSessionState('"+s.id+"','open')");
+  return '';   // cancelled: no controls, and Cancel is never offered anywhere
+}
+async function setSessionState(id, state){
+  const res = await postSessions({ action:'set_state', id:id, state:state });
+  if(res.httpError || (res.body && res.body.ok === false)){
+    sessBanner('Could not change state: ' + ((res.body && (res.body.error || res.body.reason)) || 'error'), true);
+    return;
+  }
+  loadInductionSessions();
+}
+
+function sessBanner(msg, isError){
+  const b = document.getElementById('sess-banner');
+  if(!b){ return; }
+  b.innerHTML = '<div style="font-size:12px;padding:8px 12px;margin-bottom:10px;border-radius:5px;border:1px solid var(--border);color:'
+    + (isError ? 'var(--conflict)' : 'var(--ok,#10b981)') + '">' + escapeHtml(msg) + '</div>';
+}
+// ════════ Create / edit session dialog (§2) ════════
+function openSessionEdit(id){
+  const s = id ? (_sessionsData.sessions.find(x => x.id === id) || null) : null;
+  const isEdit = !!s;
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = isEdit ? 'Edit session' : 'New session';
+  document.getElementById('entity-modal-sub').textContent = isEdit
+    ? (s.label || '') : 'Created as a Draft — opens when you set it to Open';
+
+  const intakes = _sessionsData.intakes || [];
+  const curIntake = isEdit ? (s.intake_label || '') : (_sessionsIntake || '');
+  let intakeOpts = '';
+  if(curIntake && intakes.indexOf(curIntake) === -1){
+    intakeOpts += '<option value="'+escapeHtml(curIntake)+'" selected>'+escapeHtml(curIntake)+'</option>';
+  }
+  intakeOpts += intakes.map(x =>
+    '<option value="'+escapeHtml(x)+'"'+(x===curIntake?' selected':'')+'>'+escapeHtml(x)+'</option>').join('');
+  intakeOpts += '<option value="__new__">＋ New intake…</option>';
+
+  const modeOpt = (v,l) => '<option value="'+v+'"'+((isEdit?s.mode:'in_person')===v?' selected':'')+'>'+l+'</option>';
+  const dt = (i,val) => '<input id="'+i+'" type="datetime-local" value="'+escapeHtml(val||'')+'" style="'+EF_INPUT_STYLE+'">';
+
+  const body =
+      efRow('Label', '<input id="sess-label" type="text" value="'+escapeHtml(isEdit?(s.label||''):'')+'" style="'+EF_INPUT_STYLE+'">')
+    + efRow('Intake',
+        '<select id="sess-intake" onchange="sessIntakeToggle()" style="'+EF_INPUT_STYLE+'">'+intakeOpts+'</select>'
+        + '<input id="sess-intake-new" type="text" placeholder="New intake label" style="'+EF_INPUT_STYLE+';margin-top:6px;display:none">')
+    + efRow('Starts', dt('sess-start', isEdit?_isoToMelbLocalInput(s.starts_at):''))
+    + efRow('Ends', dt('sess-end', isEdit?_isoToMelbLocalInput(s.ends_at):'')
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Optional</div>')
+    + efRow('Capacity',
+        '<input id="sess-capacity" type="number" min="1" value="'+(isEdit?(s.capacity||''):'')+'" style="'+EF_INPUT_STYLE+'">'
+        + '<div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.45">Set capacity <b>below</b> the room\'s physical limit. Ops can deliberately overfill when booking on someone\'s behalf, and that override should land in headroom rather than past a fire limit — a room holding 100 should be a session of 85.</div>')
+    + efRow('Mode', '<select id="sess-mode" onchange="sessModeToggle()" style="'+EF_INPUT_STYLE+'">'+modeOpt('in_person','In person')+modeOpt('online','Online')+modeOpt('hybrid','Hybrid')+'</select>')
+    + '<div id="sess-loc-row">'+efRow('Location', '<input id="sess-location" type="text" value="'+escapeHtml(isEdit?(s.location||''):'')+'" style="'+EF_INPUT_STYLE+'">')+'</div>'
+    + '<div id="sess-url-row">'+efRow('Meeting URL', '<input id="sess-url" type="text" value="'+escapeHtml(isEdit?(s.meeting_url||''):'')+'" style="'+EF_INPUT_STYLE+'">')+'</div>'
+    + efRow('Meeting notes', '<textarea id="sess-mnotes" rows="2" style="'+EF_INPUT_STYLE+';resize:vertical" placeholder="Parking, what to bring, dial-in">'+escapeHtml(isEdit?(s.meeting_notes||''):'')+'</textarea>')
+    + efRow('Booking closes', dt('sess-close', isEdit?_isoToMelbLocalInput(s.booking_closes_at):'')
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Defaults to 5pm the previous working day; editable.</div>')
+    + efRow('Waitlist', '<label style="font-size:12px;color:var(--text);display:flex;gap:8px;align-items:center"><input id="sess-waitlist" type="checkbox" '+((!isEdit||s.waitlist_enabled)?'checked':'')+'> Enable waitlist</label>')
+    + efRow('Notes', '<textarea id="sess-notes" rows="2" style="'+EF_INPUT_STYLE+';resize:vertical" placeholder="Ops-only — never shown to candidates">'+escapeHtml(isEdit?(s.notes||''):'')+'</textarea>');
+
+  document.getElementById('entity-modal-body').innerHTML = body;
+  document.getElementById('entity-modal-actions').innerHTML =
+    entityBtn('Cancel', 'closeEntityModal()')
+    + entityBtn(isEdit?'Save changes':'Create session', 'saveSession('+(isEdit?("'"+s.id+"'"):'null')+')', {primary:true});
+
+  sessModeToggle();
+  sessIntakeToggle();
+  const startEl = document.getElementById('sess-start');
+  if(startEl){
+    startEl.addEventListener('change', function(){
+      const c = document.getElementById('sess-close');
+      if(c && !c.value){ c.value = _defaultBookingCloses(startEl.value); }
+    });
+  }
+}
+function sessModeToggle(){
+  const mode = (document.getElementById('sess-mode')||{}).value || 'in_person';
+  const loc = document.getElementById('sess-loc-row');
+  const url = document.getElementById('sess-url-row');
+  if(loc) loc.style.display = (mode==='in_person'||mode==='hybrid') ? '' : 'none';
+  if(url) url.style.display = (mode==='online'||mode==='hybrid') ? '' : 'none';
+}
+function sessIntakeToggle(){
+  const sel = document.getElementById('sess-intake');
+  const nu  = document.getElementById('sess-intake-new');
+  if(sel && nu) nu.style.display = (sel.value==='__new__') ? '' : 'none';
+}
+function sessDialogError(msg){
+  const b = document.getElementById('entity-modal-body');
+  if(!b) return;
+  let e = document.getElementById('sess-dialog-err');
+  if(!e){
+    e = document.createElement('div');
+    e.id = 'sess-dialog-err';
+    e.style.cssText = 'color:var(--conflict);font-size:12px;padding:6px 0';
+    b.insertBefore(e, b.firstChild);
+  }
+  e.textContent = msg;
+}
+function saveSession(id){
+  const val = (i) => { const el = document.getElementById(i); return el ? el.value : ''; };
+  const label = val('sess-label').trim();
+  let intake = val('sess-intake');
+  if(intake === '__new__') intake = val('sess-intake-new').trim();
+  const capacity = parseInt(val('sess-capacity'), 10);
+  const mode = val('sess-mode') || 'in_person';
+  const startLocal = val('sess-start');
+  const endLocal = val('sess-end');
+  const closeLocal = val('sess-close');
+  const location = val('sess-location').trim();
+  const meetingUrl = val('sess-url').trim();
+
+  const errs = [];
+  if(!label) errs.push('a label');
+  if(!intake) errs.push('an intake');
+  if(!startLocal) errs.push('a start time');
+  if(!(capacity > 0)) errs.push('a capacity greater than 0');
+  if(errs.length){ sessDialogError('Please provide ' + errs.join(', ') + '.'); return; }
+
+  const payload = {
+    action: id ? 'update' : 'create',
+    label: label,
+    intake_label: intake,
+    starts_at: _melbLocalToIso(startLocal),
+    ends_at: endLocal ? _melbLocalToIso(endLocal) : null,
+    capacity: capacity,
+    mode: mode,
+    location: (mode === 'online') ? null : (location || null),
+    meeting_url: (mode === 'in_person') ? null : (meetingUrl || null),
+    meeting_notes: val('sess-mnotes') || null,
+    booking_closes_at: closeLocal ? _melbLocalToIso(closeLocal) : null,
+    waitlist_enabled: !!(document.getElementById('sess-waitlist')||{}).checked,
+    notes: val('sess-notes') || null,
+  };
+  if(id) payload.id = id;
+
+  if(id){
+    const orig = _sessionsData.sessions.find(x => x.id === id);
+    const booked = orig ? (orig.booked || 0) : 0;
+    const warnings = [];
+    if(booked > 0 && capacity < booked){
+      warnings.push('Capacity ('+capacity+') is below the '+booked+' already booked. Existing bookings are kept — nobody is un-booked — but the session is now over capacity.');
+    }
+    if(orig && booked > 0){
+      // Compare at the form's minute precision in Melbourne-local terms — raw ISO
+      // strings differ by microseconds/offset formatting even when unchanged,
+      // which would fire the "not notified" warning on every save.
+      const changed = (startLocal !== _isoToMelbLocalInput(orig.starts_at))
+        || (endLocal !== _isoToMelbLocalInput(orig.ends_at))
+        || (orig.mode !== mode)
+        || ((orig.location || '') !== location);
+      if(changed){
+        warnings.push(booked+' candidate'+(booked===1?' is':'s are')+' booked into this session. They will NOT be notified automatically. Automatic notification ships with the email work; until then you must contact them yourself.');
+      }
+    }
+    if(warnings.length){ showSessionSaveWarnings(warnings, payload); return; }
+  }
+  doSaveSession(payload);
+}
+function showSessionSaveWarnings(warnings, payload){
+  window._pendingSessionSave = payload;
+  const html = '<div id="sess-warn" style="margin-bottom:10px">'
+    + warnings.map(w => '<div style="font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border-gold);border-radius:5px;padding:8px 10px;margin-bottom:8px">⚠ '+escapeHtml(w)+'</div>').join('')
+    + '</div>';
+  const existing = document.getElementById('sess-warn'); if(existing) existing.remove();
+  document.getElementById('entity-modal-body').insertAdjacentHTML('afterbegin', html);
+  document.getElementById('entity-modal-actions').innerHTML =
+    entityBtn('Cancel','closeEntityModal()')
+    + entityBtn('Save anyway','doSaveSession(window._pendingSessionSave)', {primary:true});
+}
+async function doSaveSession(payload){
+  const res = await postSessions(payload);
+  if(res.httpError || (res.body && res.body.ok === false)){
+    sessDialogError('Could not save: ' + ((res.body && (res.body.error || res.body.reason)) || 'error'));
+    return;
+  }
+  closeEntityModal();
+  loadInductionSessions();
+}
+
+// ════════ Roster + cancel-on-behalf (§4/§5) ════════
+async function openSessionRoster(id){
+  const s = _sessionsData.sessions.find(x => x.id === id);
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Roster';
+  document.getElementById('entity-modal-sub').textContent = s ? (s.label + ' · ' + _fmtSessionStart(s.starts_at)) : '';
+  document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading roster…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  const res = await postSessions({ action:'roster', id:id });
+  if(res.httpError || !res.body || res.body.ok === false){
+    document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">Could not load roster.</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    return;
+  }
+  const roster = res.body.roster || [];
+  const waitlist = res.body.waitlist || [];
+  const contact = (c) => escapeHtml([c.email, c.phone].filter(Boolean).join(' · ')) || '<span style="color:var(--muted)">—</span>';
+  const bookedRows = roster.length
+    ? roster.map((c,i) =>
+        '<tr>'
+        + '<td style="padding:5px 8px;border-bottom:1px solid var(--border);color:var(--muted)">'+(i+1)+'</td>'
+        + '<td style="padding:5px 8px;border-bottom:1px solid var(--border)"><b>'+escapeHtml(c.name||'')+'</b><br><span style="color:var(--muted);font-size:10px">'+escapeHtml(c.reference||'')+'</span></td>'
+        + '<td style="padding:5px 8px;border-bottom:1px solid var(--border);font-size:11px">'+contact(c)+'</td>'
+        + '<td style="padding:5px 8px;border-bottom:1px solid var(--border)">'+entityBtn('Cancel', "cancelOnBehalf('"+id+"','"+c.id+"')")+'</td>'
+        + '</tr>').join('')
+    : '<tr><td colspan="4" style="padding:10px 8px;color:var(--muted);font-size:12px">No one booked yet.</td></tr>';
+
+  const waitRows = waitlist.length
+    ? '<div style="margin-top:16px"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px">Waitlist ('+waitlist.length+')</div>'
+      + waitlist.map((c,i) => '<div style="padding:4px 0;border-bottom:1px solid var(--border);font-size:12px"><b>'+escapeHtml(c.name||'')+'</b> <span style="color:var(--muted);font-size:10px">'+escapeHtml(c.reference||'')+' · '+contact(c)+'</span></div>').join('')
+      + '</div>'
+    : '';
+
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div style="max-height:50vh;overflow-y:auto">'
+    + '<div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px">Booked ('+roster.length+')</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>'+bookedRows+'</tbody></table>'
+    + waitRows + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+    entityBtn('Book on behalf', "openBookOnBehalf('"+id+"')")
+    + entityBtn('Close','closeEntityModal()');
+}
+async function cancelOnBehalf(sessionId, candidateId){
+  if(!confirm('Cancel this booking? The candidate keeps their invite but loses the seat.')) return;
+  const res = await postSessions({ action:'cancel_on_behalf', candidate_id:candidateId });
+  if(res.httpError || (res.body && res.body.ok === false)){
+    alert('Could not cancel: ' + ((res.body && (res.body.error || res.body.reason)) || 'error'));
+    return;
+  }
+  loadInductionSessions();
+  openSessionRoster(sessionId);
+}
+
+// ════════ Book on behalf (§5 — critical path) ════════
+function bobEligible(){
+  const rows = (typeof _recruitRows !== 'undefined' && Array.isArray(_recruitRows)) ? _recruitRows : [];
+  return rows.filter(c => c.status === 'invited_to_induction' || c.status === 'booked');
+}
+function openBookOnBehalf(presetSessionId){
+  _bobSelectedCand = null;
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Book on behalf';
+  document.getElementById('entity-modal-sub').textContent = 'Ops override — recorded as actor:ops';
+  const sessions = _sessionsData.sessions || [];
+  const sessOpts = sessions.map(s =>
+    '<option value="'+s.id+'"'+(s.id===presetSessionId?' selected':'')+'>'
+    + escapeHtml(s.label)+' — '+escapeHtml(_fmtSessionStart(s.starts_at))+' ('+(s.booked||0)+'/'+(s.capacity||0)+')</option>').join('');
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Candidate',
+        '<input id="bob-search" type="text" placeholder="Search name or reference…" oninput="bobFilter(this.value)" autocomplete="off" style="'+EF_INPUT_STYLE+'">'
+        + '<div id="bob-results" style="max-height:160px;overflow-y:auto;margin-top:6px;border:1px solid var(--border);border-radius:4px;display:none"></div>'
+        + '<div id="bob-chosen" style="font-size:12px;color:var(--muted);margin-top:6px">No candidate selected.</div>')
+    + efRow('Session', '<select id="bob-session" onchange="bobSessionChange()" style="'+EF_INPUT_STYLE+'">'+(sessOpts||'<option value="">— no sessions —</option>')+'</select>')
+    + '<div id="bob-warn"></div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+    entityBtn('Cancel','closeEntityModal()') + entityBtn('Book','bobConfirm()', {primary:true});
+  bobSessionChange();
+}
+function bobFilter(q){
+  q = (q||'').trim().toLowerCase();
+  const box = document.getElementById('bob-results');
+  if(!box) return;
+  if(!q){ box.style.display='none'; box.innerHTML=''; return; }
+  const matches = bobEligible().filter(c =>
+    ((c.name||'').toLowerCase().indexOf(q) !== -1) || ((c.reference||'').toLowerCase().indexOf(q) !== -1)).slice(0, 30);
+  box.style.display = '';
+  box.innerHTML = matches.length
+    ? matches.map(c => '<div onclick="bobPick(\''+c.id+'\')" style="padding:6px 8px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px">'
+        + '<b>'+escapeHtml(c.name||'')+'</b> <span style="color:var(--muted);font-size:10px">'+escapeHtml(c.reference||'')+' · '+escapeHtml(c.status||'')+'</span></div>').join('')
+    : '<div style="padding:6px 8px;color:var(--muted);font-size:12px">No matching invited candidates.</div>';
+}
+function bobPick(id){
+  const c = bobEligible().find(x => x.id === id);
+  if(!c) return;
+  _bobSelectedCand = { id:c.id, name:c.name, reference:c.reference };
+  const chosen = document.getElementById('bob-chosen');
+  if(chosen) chosen.innerHTML = 'Selected: <b style="color:var(--text)">'+escapeHtml(c.name||'')+'</b> '+escapeHtml(c.reference||'');
+  const box = document.getElementById('bob-results'); if(box) box.style.display='none';
+  const inp = document.getElementById('bob-search'); if(inp) inp.value = c.name||'';
+}
+function bobSessionChange(){
+  const sel = document.getElementById('bob-session');
+  const warn = document.getElementById('bob-warn');
+  if(!sel || !warn) return;
+  const s = (_sessionsData.sessions||[]).find(x => x.id === sel.value);
+  warn.innerHTML = (s && (s.booked||0) >= (s.capacity||0))
+    ? '<div style="font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border-gold);border-radius:5px;padding:8px 10px;margin-top:8px">⚠ This session is full ('+(s.booked||0)+'/'+(s.capacity||0)+'). Booking on behalf will overfill it — the override is deliberate and recorded in booking_history.</div>'
+    : '';
+}
+async function bobConfirm(){
+  const warn = document.getElementById('bob-warn');
+  const sel = document.getElementById('bob-session');
+  if(!_bobSelectedCand){ if(warn) warn.innerHTML = '<div style="color:var(--conflict);font-size:12px;margin-top:8px">Pick a candidate first.</div>'; return; }
+  const sessionId = sel ? sel.value : '';
+  if(!sessionId){ if(warn) warn.innerHTML = '<div style="color:var(--conflict);font-size:12px;margin-top:8px">Pick a session.</div>'; return; }
+  const res = await postSessions({ action:'book_on_behalf', candidate_id:_bobSelectedCand.id, session_id:sessionId });
+  if(res.httpError || (res.body && res.body.ok === false)){
+    if(warn) warn.innerHTML = '<div style="color:var(--conflict);font-size:12px;margin-top:8px">Could not book: '+escapeHtml((res.body && (res.body.error||res.body.reason))||'error')+'</div>';
+    return;
+  }
+  closeEntityModal();
+  loadInductionSessions();
+}
+
+// ════════ "None of these suit me" (§6) ════════
+async function renderNoneSuitable(){
+  const box = document.getElementById('session-nonesuit');
+  if(!box) return;
+  box.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading “none of these suit me”…</div>';
+  const res = await postSessions({ action:'no_suitable_list', intake_label:_sessionsIntake || null });
+  if(res.httpError || !res.body || res.body.ok === false){ box.innerHTML = ''; return; }
+  const byReason = res.body.by_reason || {};
+  const total = res.body.total || 0;
+  const LABELS = { working:'Working those dates', away:'Away', travel:'Too far to travel', timing:'Timing', other:'Other' };
+  const order = ['working','away','travel','timing','other'];
+  const reasons = order.filter(r => (byReason[r]||[]).length);
+  Object.keys(byReason).forEach(r => { if(order.indexOf(r)===-1 && (byReason[r]||[]).length) reasons.push(r); });
+
+  const summary = reasons.length
+    ? reasons.map(r => escapeHtml(LABELS[r]||r)+' — '+byReason[r].length).join(' · ')
+    : 'No one has said “none of these suit me” for this intake.';
+  const groups = reasons.map(r => {
+    const cands = byReason[r] || [];
+    const rows = cands.map(c => '<div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">'
+      + '<b>'+escapeHtml(c.name||'')+'</b> <span style="color:var(--muted);font-size:10px">'+escapeHtml(c.reference||'')+'</span>'
+      + (c.no_session_note ? '<div style="color:var(--muted);font-size:11px;margin-top:2px">“'+escapeHtml(c.no_session_note)+'”</div>' : '')
+      + '</div>').join('');
+    return '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--text)">'
+      + escapeHtml(LABELS[r]||r)+' — '+cands.length+'</summary><div style="padding:4px 0 0 12px">'+rows+'</div></details>';
+  }).join('');
+
+  box.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">'
+    + '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:15px;letter-spacing:.05em;color:var(--accent)">“None of these suit me” ('+total+')</div>'
+    + entityBtn('Notify these candidates', '', {disabled:true, title:'Ships with the email work (item 6).'})
+    + '</div>'
+    + '<div style="font-family:\'Share Tech Mono\',monospace;font-size:12px;color:var(--text);margin-bottom:6px">'+summary+'</div>'
+    + groups;
 }
 
 let _recruitMetrics = null;      // last successful payload
@@ -4562,7 +5138,7 @@ async function loadRecruitment(){
     // the stored value — storage is hand-editable and a bad value would hide both
     // views (applyRecruitView shows exactly one).
     const saved = goatPrefs.get('recruitment', 'view', 'operations');
-    _recruitView = (saved === 'dashboard') ? 'dashboard' : 'operations';
+    _recruitView = _RECRUIT_VIEWS.includes(saved) ? saved : 'operations';
     applyRecruitView();
   }catch(e){
     filtersEl.innerHTML = '';
@@ -6293,7 +6869,7 @@ function renderRecruitRow(c, i){
   const summary = `
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
-      <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}<span class="rc-chevron">▾</span></td>
+      <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}${c.is_test ? ' <span title="Test fixture — badged, not hidden (decision 19)" style="font-size:8px;letter-spacing:.5px;background:var(--border-gold,#8a6d1a);color:#000;padding:1px 4px;border-radius:3px;vertical-align:middle;text-transform:uppercase;font-weight:700">Test</span>' : ''}<span class="rc-chevron">▾</span></td>
       <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}${flags}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>

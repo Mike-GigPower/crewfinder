@@ -270,6 +270,11 @@ RECRUITMENT_EXCEPTIONS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions
 # gated inside the edge function by KEYPAY_WRITE_ENABLED === "true" (a Supabase
 # secret), NOT here — Flask/UI gating is presentation only and is not the control.
 KEYPAY_COMPLETE_SETUP_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/keypay-complete-setup"
+# Induction sessions ops surface (item 4). A single action-router edge function
+# (list/create/update/set_state/roster/book_on_behalf/cancel_on_behalf/
+# no_suitable_list); the Flask route below forwards {action, ...} with the secret
+# in X-Goat-Service-Key, same key discipline as every other recruitment route.
+INDUCTION_SESSIONS_ADMIN_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/induction-sessions-admin"
 # The only statuses this doorway may set — must match the edge function exactly.
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "all_docs_received", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
@@ -4541,6 +4546,52 @@ def api_recruitment_invite():
     except Exception:
         print(f"[recruitment] invite edge function returned {r.status_code}")
         return jsonify({"error": "Recruitment service error"}), 502
+
+
+# The actions the induction-sessions-admin router accepts. Validated here so we
+# never forward junk to the edge function (same discipline as set-status).
+INDUCTION_SESSION_ACTIONS = {
+    "list", "create", "update", "set_state", "roster",
+    "book_on_behalf", "cancel_on_behalf", "no_suitable_list",
+}
+
+
+@app.route("/api/recruitment/sessions", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_recruitment_sessions():
+    """Proxy to the induction-sessions-admin edge function (item 4 ops UI).
+
+    The browser POSTs {action, ...}; we forward it with our secret in the
+    X-Goat-Service-Key header. The key stays in Python — never seen by the
+    WKWebView. Only admin/operations reach it (require_cohort).
+
+    We pass the edge function's status code AND body straight through: business
+    outcomes come back as HTTP 200 with {ok:false, reason:'...'} (a full session,
+    a closed one) and must NOT be rewritten as errors, while malformed requests
+    come back as 4xx with {error:'...'}. Rewriting either would blind the UI."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action", "")).strip()
+    if action not in INDUCTION_SESSION_ACTIONS:
+        return jsonify({"error": "Unknown session action"}), 400
+
+    try:
+        r = http.post(
+            INDUCTION_SESSIONS_ADMIN_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json=data,
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"[induction-sessions] request failed: {e}")
+        return jsonify({"error": "Sessions service unavailable"}), 502
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        print(f"[induction-sessions] non-JSON response ({r.status_code})")
+        return jsonify({"error": "Bad response from sessions service"}), 502
 
 
 # ─── CONVERT A CANDIDATE TO A SMARTSTAFF CREW MEMBER ──────────────────────────
