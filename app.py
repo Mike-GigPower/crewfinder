@@ -9567,6 +9567,7 @@ def api_admin_crew_list():
             "ein":    c.get("ein") or c["id"],
             "phone":  c.get("phone", "") or "",
             "active": int(c.get("active", 1)),
+            "groups": c.get("groups", []) or [],
         }
         for c in (crew or [])
         if int(c.get("active", 1)) == (1 if want_active else 0)
