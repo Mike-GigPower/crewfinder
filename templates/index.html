@@ -1518,7 +1518,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <div class="tab-panel" id="tab-induction-checker">
     <div class="ind-panel">
       <div class="ind-toolbar">
-        <span class="ind-filter-label">Name:</span><input class="ind-search" id="ind-name-search" type="text" placeholder="Search..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="renderInductionTable()"><span class="ind-filter-label">Group:</span>
+        <span class="ind-filter-label">Name:</span><input class="ind-search" id="ind-name-search" type="text" placeholder="Search..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; renderInductionTable()"><span class="ind-filter-label">Group:</span>
         <div class="ind-group-chips" id="ind-group-chips"></div>
         <div class="venue-selector" id="venue-selector">
           <button class="venue-selector-btn" onclick="toggleVenueDropdown()">
@@ -1836,7 +1836,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
 
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
 
-        <input type="text" class="fc-search" id="fc-search" placeholder="Search name..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="renderForecastTable()">
+        <input type="text" class="fc-search" id="fc-search" placeholder="Search name..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; renderForecastTable()">
 
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
 
@@ -4037,6 +4037,10 @@ function switchTab(tab){
   if(tab==='all-bookings') loadAllBookings();
   if(tab==='my-status') loadMyStatus();
   if(tab==='recruitment') loadRecruitment();
+  // Crew workspace: sync this view's toolbar to the shared filter, then re-render.
+  // Runs on every entry (incl. re-entry, where no load fires); both renderers and
+  // chip builders guard on their data, so it is safe on a cold first entry too.
+  if(tab === 'forecast' || tab === 'induction-checker') crewFilterApplyToUI(tab);
   // Reflect the active tab in the URL so it can be deep-linked / popped out.
   // replaceState (not `location.hash=`) keeps the back button clean and fires no event.
   try { history.replaceState(null, '', location.pathname + '#' + tab); } catch(e) {}
@@ -7854,7 +7858,52 @@ function toggleBookingGroup(el){
 }
 
 
-let _indData=null, _indActiveGroup=null, _selectedVenues=new Set();
+// ── SHARED CREW FILTER ───────────────────────────────────────────────────────
+// One filter state for every view in the Crew group, so a filter set on
+// Inductions survives a switch to Utilization and vice versa. This is the whole
+// point of the crew workspace: you narrow to a set of people once, then look at
+// them through different lenses.
+//
+// `q` is stored RAW, exactly as typed. Renderers lowercase and trim at compare
+// time. Storing it normalised would mean writing the normalised value back into
+// the input and fighting the user's cursor.
+//
+// Views keep their own toolbars for now (slice 1) — they read and write this
+// instead of their own local state. Consolidating the two toolbars into one bar
+// is a later, purely cosmetic step.
+const crewFilter = { q: '', group: null };
+
+// Bring a Crew view's toolbar into line with the shared filter, then re-render.
+// Called on every entry to a Crew view — including re-entry, where no load runs
+// and nothing else would repaint.
+//
+// The group vocabulary is per-view. Both views are active-crew-only so the sets
+// should match, but a group present in one and not the other would otherwise
+// leave the view empty with no chip lit and nothing to click to recover. Clearing
+// it is the safe failure: the operator sees everyone, not nobody.
+function crewFilterApplyToUI(tab){
+  const inputId = (tab === 'forecast') ? 'fc-search' : 'ind-name-search';
+  const inp = document.getElementById(inputId);
+  if(inp) inp.value = crewFilter.q;
+
+  if(tab === 'forecast'){
+    if(crewFilter.group && _fcGroups.length && !_fcGroups.includes(crewFilter.group)){
+      crewFilter.group = null;
+    }
+    renderFcGroupChips();
+    renderForecastTable();
+  } else {
+    if(crewFilter.group && _indData){
+      const have = new Set();
+      (_indData.crew||[]).forEach(c => (c.groups||[]).forEach(g => have.add(g)));
+      if(have.size && !have.has(crewFilter.group)) crewFilter.group = null;
+    }
+    renderIndGroupChips();
+    renderInductionTable();
+  }
+}
+
+let _indData=null, _selectedVenues=new Set();
 
 async function loadInductions(force=false){
   if(_indData && !force) return;
@@ -7863,11 +7912,7 @@ async function loadInductions(force=false){
   try{
     const resp=await fetch('/api/inductions'), data=await resp.json();
     _indData=data;
-    const groups=new Set();
-    data.crew.forEach(c=>(c.groups||[]).forEach(g=>groups.add(g)));
-    document.getElementById('ind-group-chips').innerHTML=[...groups].sort().map(g=>
-      '<button class="ind-chip" onclick="toggleIndGroup(this,\''+g+'\')">'+g+'</button>'
-    ).join('');
+    renderIndGroupChips();
     _selectedVenues=new Set(data.venues);
     buildVenueChecklist(data.venues);
     renderInductionTable();
@@ -7928,24 +7973,36 @@ function toggleVenueDropdown(){
   }
 }
 
-function toggleIndGroup(el, group){
-  if(_indActiveGroup===group){_indActiveGroup=null;el.classList.remove('active')}
-  else{
-    document.querySelectorAll('#ind-group-chips .ind-chip').forEach(c=>c.classList.remove('active'));
-    _indActiveGroup=group; el.classList.add('active');
-  }
+// Signature changed: no longer takes the element. Active state is derived from
+// crewFilter.group and repainted wholesale, so re-entering the view restores it.
+function toggleIndGroup(group){
+  crewFilter.group = (crewFilter.group === group) ? null : group;
+  renderIndGroupChips();
   renderInductionTable();
+}
+
+// Extracted from loadInductions so the chips can be repainted on re-entry, not
+// only on first load. Reads its vocabulary from _indData.
+function renderIndGroupChips(){
+  const el = document.getElementById('ind-group-chips');
+  if(!el || !_indData) return;
+  const groups = new Set();
+  (_indData.crew||[]).forEach(c => (c.groups||[]).forEach(g => groups.add(g)));
+  el.innerHTML = [...groups].sort().map(g =>
+    '<button class="ind-chip' + (crewFilter.group === g ? ' active' : '') + '"'
+    + ' onclick="toggleIndGroup(\'' + g + '\')">' + g + '</button>'
+  ).join('');
 }
 
 function renderInductionTable(){
   if(!_indData) return;
-  const nameQ=(document.getElementById('ind-name-search').value||'').toLowerCase().trim();
+  const nameQ = (crewFilter.q||'').toLowerCase().trim();
   const venues=(_indData.venues||[]).filter(v=>_selectedVenues.size===0||_selectedVenues.has(v));
 
   // Filter crew
   let crew=_indData.crew.filter(c=>{
     if(nameQ && !(c.name||'').toLowerCase().includes(nameQ)) return false;
-    if(_indActiveGroup && !(c.groups||[]).includes(_indActiveGroup)) return false;
+    if(crewFilter.group && !(c.groups||[]).includes(crewFilter.group)) return false;
     return true;
   });
 
@@ -13715,7 +13772,6 @@ let _fcSortDir    = 1;      // 1=asc, -1=desc
 let _fcLastSort   = null;   // track double-click for direction toggle
 let _fcInitDone   = false;
 let _fcGroups     = [];
-let _fcActiveGrp  = null;
 
 function phoneLink(phone){
   if(!phone) return '<span style="color:var(--muted);font-size:10px">—</span>';
@@ -13779,13 +13835,13 @@ async function updateFcCacheStatus(){
 function renderFcGroupChips(){
   const el = document.getElementById('fc-group-chips');
   el.innerHTML = _fcGroups.map(g =>
-    `<span class="fc-group-chip${_fcActiveGrp===g?' active':''}"
+    `<span class="fc-group-chip${crewFilter.group===g?' active':''}"
            onclick="toggleFcGroup('${g}')">${g}</span>`
   ).join('');
 }
 
 function toggleFcGroup(g){
-  _fcActiveGrp = _fcActiveGrp === g ? null : g;
+  crewFilter.group = (crewFilter.group === g) ? null : g;
   renderFcGroupChips();
   renderForecastTable();
 }
@@ -13855,7 +13911,7 @@ function renderForecastTable(){
   if(!_fcData) return;
   _fcCards = [];   // fresh per render; indices below are only valid for this pass
 
-  const search   = document.getElementById('fc-search').value.toLowerCase().trim();
+  const search   = (crewFilter.q||'').toLowerCase().trim();
   const minStars = parseInt(document.getElementById('fc-min-stars').value) || 0;
   const dates    = _fcData.dates; // 28 YYYY-MM-DD strings
 
@@ -13863,7 +13919,7 @@ function renderForecastTable(){
   let crew = _fcData.crew.filter(c => {
     if(search && !c.name.toLowerCase().includes(search)) return false;
     if(minStars && (c.rating||0) < minStars) return false;
-    if(_fcActiveGrp && !(c.groups||[]).includes(_fcActiveGrp)) return false;
+    if(crewFilter.group && !(c.groups||[]).includes(crewFilter.group)) return false;
     return true;
   });
 
