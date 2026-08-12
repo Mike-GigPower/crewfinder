@@ -31,7 +31,8 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column}
 nav{display:flex;align-items:center;gap:16px;padding:0 20px;height:58px;background:var(--surface);border-bottom:1px solid var(--border-gold);flex-shrink:0;box-shadow:0 1px 20px rgba(212,175,55,0.08);position:relative}
-.nav-logo{display:flex;align-items:center;gap:12px}
+.nav-logo{display:flex;align-items:center;gap:12px;flex:1 1 0}
+.nav-centre{flex:0 1 auto;display:flex;align-items:center;gap:10px;min-width:0}
 .nav-logo img{height:36px;width:36px;object-fit:contain;background:#000;border-radius:4px;padding:2px}
 .nav-goat-wordmark{display:flex;flex-direction:column;line-height:1}
 .nav-goat-title{font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--accent);letter-spacing:.12em;line-height:1}
@@ -39,11 +40,11 @@ nav{display:flex;align-items:center;gap:16px;padding:0 20px;height:58px;backgrou
 .nav-appname{font-family:'Bebas Neue',sans-serif;font-size:15px;font-weight:800;color:var(--accent)}
 .nav-div{width:1px;height:24px;background:var(--border-gold);opacity:.3}
 .nav-title{font-size:12px;color:var(--muted)}
-.nav-right{margin-left:auto;display:flex;align-items:center;gap:10px}
-.cache-badge{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--border);color:var(--muted);cursor:pointer;background:var(--surface2);transition:all .15s}
+.nav-right{display:flex;align-items:center;gap:10px;flex:1 1 0;justify-content:flex-end}
+.cache-badge{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--border);color:var(--muted);cursor:pointer;background:var(--surface2);transition:all .15s;white-space:nowrap}
 .cache-badge:hover{border-color:var(--accent);color:var(--accent)}
 .cache-badge.fresh{border-color:#a8d5b5;color:var(--available);background:var(--avail-bg)}
-.btn-logout{font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-family:'Share Tech Mono',monospace;text-decoration:none;transition:all .15s;letter-spacing:.05em}
+.btn-logout{font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-family:'Share Tech Mono',monospace;text-decoration:none;transition:all .15s;letter-spacing:.05em;white-space:nowrap}
 .btn-logout:hover{border-color:var(--accent2);color:var(--accent2)}
 .main{display:flex;flex:1;overflow:hidden;height:0}
 .sidebar{width:320px;flex-shrink:0;border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface);overflow:hidden;height:100%}
@@ -336,6 +337,32 @@ tr.skipped{opacity:.6}
 .tab-scroll-arrow.show{display:block}
 .tab-btn:hover{color:var(--text);background:rgba(212,175,55,0.04)}
 .tab-btn.active{color:var(--accent);border-bottom-color:var(--accent);background:rgba(212,175,55,0.05)}
+/* GROUP row — inherits the old .tab-btn look: this is now the primary level. */
+.tab-grp{flex:0 0 auto;padding:0 20px;height:40px;font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+.tab-grp:hover{color:var(--text);background:rgba(212,175,55,0.04)}
+.tab-grp.active{color:var(--accent);border-bottom-color:var(--accent);background:rgba(212,175,55,0.05)}
+/* CHILD row — the .recruit-viewbtn pill language, so it reads as subordinate.
+   Hidden entirely when the active group has 0 or 1 visible children, so single-
+   child groups (Today, Recruitment, Admin) cost no vertical height. */
+.subtab-bar{display:none;padding:7px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.subtab-bar.show{display:flex}
+.subtab-group{display:none}
+.subtab-group.active{display:inline-flex;border:1px solid var(--border-gold);border-radius:20px;overflow:hidden}
+.subtab-group .tab-btn{height:28px;padding:0 18px;font-size:12px;font-weight:600;letter-spacing:.04em;border-bottom:none}
+.subtab-group .tab-btn.active{background:var(--accent);color:#000;border-bottom:none}
+/* My Status lives in the identity nav now; .btn-logout has no active state. */
+.nav-tab-btn.active{border-color:var(--accent);color:var(--accent)}
+/* ── COMMAND PALETTE (⌘K) — navigation only, above all modals ── */
+.cmd-palette-panel{width:520px;max-width:92vw;margin-top:20vh;background:var(--surface);border:1px solid var(--border-gold);border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,0.6);overflow:hidden}
+.cmd-palette-input{width:100%;box-sizing:border-box;background:var(--surface2);border:none;border-bottom:1px solid var(--border);padding:14px 18px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:14px;outline:none}
+.cmd-palette-input::placeholder{color:var(--muted)}
+.cmd-palette-list{max-height:340px;overflow-y:auto;padding:6px}
+.cmd-palette-row{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:5px;cursor:pointer;font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;color:var(--text)}
+.cmd-palette-row .cmd-grp{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.cmd-palette-row .cmd-sep{color:var(--muted);opacity:.6}
+.cmd-palette-row.sel{background:var(--accent);color:#000}
+.cmd-palette-row.sel .cmd-grp,.cmd-palette-row.sel .cmd-sep{color:#000;opacity:.75}
+.cmd-palette-empty{padding:16px 18px;color:var(--muted);font-size:12px;font-family:'Share Tech Mono',monospace}
 .tab-panel{display:none;flex:1;overflow:hidden;flex-direction:row;min-height:0}
 .tab-panel.active{display:flex}
 @keyframes goat-run{0%{transform:translateX(-12vw) translateY(0)}25%{transform:translateX(28vw) translateY(-10px)}50%{transform:translateX(56vw) translateY(0)}75%{transform:translateX(84vw) translateY(-10px)}100%{transform:translateX(116vw) translateY(0)}}
@@ -1184,7 +1211,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <div class="nav-logo">
     <img src="/static/logo.png" alt="Gig Power" style="height:36px;width:auto;object-fit:contain">
   </div>
-  <div style="position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px">
+  <div class="nav-centre">
     <img src="/static/the-goat-emblem.png" alt="THE GOAT" onclick="goatStampede()" title="🐐"
          style="height:46px;width:46px;object-fit:contain;cursor:pointer;
                 filter:drop-shadow(0 0 10px rgba(212,175,55,0.5))">
@@ -1196,6 +1223,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
   </div>
   <div class="nav-right">
     <div class="cache-badge" id="cache-badge" onclick="refreshCache()">Loading cache...</div>
+    <button id="tab-btn-my-status" class="btn-logout nav-tab-btn"
+            onclick="switchTab('my-status')">👤 My Status</button>
     <button id="btn-elevate" class="btn-logout" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="openElevateModal()">🔑 Admin</button>
     <button id="btn-exit-admin" class="btn-logout" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="exitAdmin()">⤓ Exit Admin</button>
     <a href="/logout" class="btn-logout">Sign out</a>
@@ -1208,29 +1237,40 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <button class="update-banner-close" onclick="document.getElementById('update-banner').classList.remove('show')">&#215;</button>
 </div>
 <div class="tab-bar">
-  <button class="tab-scroll-arrow" id="tab-arrow-left" type="button"
-          aria-label="Scroll tabs left" onclick="scrollTabs(-1)">&lsaquo;</button>
-  <div class="tab-bar-scroll" id="tab-bar-scroll">
-  <button class="tab-btn" id="tab-btn-ops" onclick="switchTab('ops')">⚡ Ops</button>
-  <button class="tab-btn active" id="tab-btn-schedule" onclick="switchTab('schedule')">📅 Schedule</button>
-  <button class="tab-btn" id="tab-btn-all-bookings" onclick="switchTab('all-bookings')">📚 All Bookings</button>
-  <button class="tab-btn" id="tab-btn-crew-finder" onclick="switchTab('crew-finder')">⚡ Crew Finder</button>
-  <button class="tab-btn" id="tab-btn-forecast" onclick="switchTab('forecast')">📊 Crew Utilization</button>
-  <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">✓ Induction Checker</button>
-  <button class="tab-btn" id="tab-btn-import" onclick="switchTab('import')">📋 Create Booking</button>
-  <button class="tab-btn" id="tab-btn-administration" onclick="switchTab('administration')">⚙ Administration</button>
-  <button class="tab-btn" id="tab-btn-recruitment" onclick="switchTab('recruitment')">🧑‍💼 Recruitment</button>
-  <button class="tab-btn" id="tab-btn-my-status" onclick="switchTab('my-status')">👤 My Status</button>
-  </div><!-- /.tab-bar-scroll -->
-  <button class="tab-scroll-arrow" id="tab-arrow-right" type="button"
-          aria-label="Scroll tabs right" onclick="scrollTabs(1)">&rsaquo;</button>
-  <button class="tab-btn" id="btn-tab-popout"
+  <button class="tab-grp" id="tab-grp-today"       onclick="switchGroup('today')">⚡ Today</button>
+  <button class="tab-grp" id="tab-grp-bookings"    onclick="switchGroup('bookings')">📅 Bookings</button>
+  <button class="tab-grp" id="tab-grp-crew"        onclick="switchGroup('crew')">👥 Crew</button>
+  <button class="tab-grp" id="tab-grp-recruitment" onclick="switchGroup('recruitment')">🧑‍💼 Recruitment</button>
+  <button class="tab-grp" id="tab-grp-admin"       onclick="switchGroup('admin')">⚙️ Admin</button>
+  <button class="tab-grp" id="btn-tab-popout" style="margin-left:auto"
           title="Open the current tab in a new window"
           onclick="popOutCurrentTab()">⧉ New window</button>
   <button class="btn-ask-goat" onclick="toggleGoatDrawer()" id="btn-ask-goat" style="align-self:center;margin-right:10px">
     <img src="/static/goat-logo.png" alt="" style="height:18px;width:18px;object-fit:contain;filter:drop-shadow(0 0 4px rgba(212,175,55,0.6))">
     Ask THE GOAT
   </button>
+</div>
+
+<div class="subtab-bar" id="subtab-bar">
+  <div class="subtab-group" id="subtab-today">
+    <button class="tab-btn" id="tab-btn-ops" onclick="switchTab('ops')">Today</button>
+  </div>
+  <div class="subtab-group" id="subtab-bookings">
+    <button class="tab-btn active" id="tab-btn-schedule"     onclick="switchTab('schedule')">Schedule</button>
+    <button class="tab-btn"        id="tab-btn-crew-finder"  onclick="switchTab('crew-finder')">Crew Finder</button>
+    <button class="tab-btn"        id="tab-btn-all-bookings" onclick="switchTab('all-bookings')">All Bookings</button>
+    <button class="tab-btn"        id="tab-btn-import"       onclick="switchTab('import')">Create Booking</button>
+  </div>
+  <div class="subtab-group" id="subtab-crew">
+    <button class="tab-btn" id="tab-btn-forecast"          onclick="switchTab('forecast')">Utilization</button>
+    <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">Inductions</button>
+  </div>
+  <div class="subtab-group" id="subtab-recruitment">
+    <button class="tab-btn" id="tab-btn-recruitment" onclick="switchTab('recruitment')">Recruitment</button>
+  </div>
+  <div class="subtab-group" id="subtab-admin">
+    <button class="tab-btn" id="tab-btn-administration" onclick="switchTab('administration')">Administration</button>
+  </div>
 </div>
 <div class="main">
   <!-- ── CREW FINDER TAB ── -->
@@ -2179,6 +2219,9 @@ function applyCohort(d){
   hide('btn-ask-goat');
   hide('cache-badge');
   const bar = document.querySelector('.tab-bar'); if(bar) bar.style.display='none';
+  // Hide the child row with style.display (not the .show class) so a later
+  // switchTab can't re-reveal it.
+  const sbar = document.getElementById('subtab-bar'); if(sbar) sbar.style.display='none';
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   const ms = document.getElementById('tab-my-status'); if(ms) ms.classList.add('active');
 }
@@ -2375,6 +2418,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   const cohort = await loadWhoami();        // identity + cohort-aware nav
   if(cohort === 'crew'){ loadMyStatus(); return; }   // crew: personal view only — no tab bar, ignore any hash
   // admin + leadership
+  applyGroupVisibility();   // hide group buttons whose children are all cohort-hidden (after applyCohort)
   loadGroups();
   loadCacheStatus();
   if(cohort === 'admin') loadCalls();       // Crew Finder call list — admin only
@@ -2386,20 +2430,25 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // otherwise reach. The visibility check mirrors exactly how applyCohort hides
   // things: a hidden tab button has inline style.display === 'none', and crew
   // have the whole .tab-bar hidden.
+  let _didDeepLink = false;
   if(wantTab){
     const btn = document.getElementById('tab-btn-' + wantTab);
     const bar = document.querySelector('.tab-bar');
     const barVisible = bar && bar.style.display !== 'none';
     if(btn && btn.style.display !== 'none' && barVisible){
       switchTab(wantTab);
+      _didDeepLink = true;
     }
   }
-  // Tab-bar overflow chevrons. Must run AFTER the await above: applyCohort has
-  // by now hidden any cohort-gated tab buttons, so scrollWidth is correct.
-  const tabScroller = document.getElementById('tab-bar-scroll');
-  if(tabScroller) tabScroller.addEventListener('scroll', updateTabArrows);
-  window.addEventListener('resize', updateTabArrows);
-  updateTabArrows();
+  // No hash, or the hash was rejected: the default panel is already .active from
+  // the markup, but no group is lit and no child row is shown. Run switchTab once
+  // on it to bring the bar into a consistent state. Do NOT infer "nothing
+  // deep-linked" from `.tab-grp.active` — a #my-status link lights no group, so
+  // that test would fire here and clobber the deep link.
+  if(!_didDeepLink){
+    const cur = document.querySelector('.tab-panel.active');
+    switchTab(cur ? cur.id.replace(/^tab-/, '') : 'schedule');
+  }
 });
 
 async function loadGroups(){
@@ -3914,11 +3963,67 @@ async function sendSMS(){
   }
 }
 
+// ── TAB GROUPS ──────────────────────────────────────────────────────────────
+// The ONE definition of the two-level structure. Children are existing tab keys
+// in display order; the FIRST VISIBLE child is a group's default landing view.
+//
+// The tab buttons stay permanently in the DOM inside .subtab-group containers —
+// they are never rendered from this map. applyCohort sets display:none on them by
+// id, and the #hash deep-link check reads the same property, so both must be able
+// to find a button for a group that isn't active.
+//
+// My Status is deliberately NOT here — it moved to the identity nav, so
+// groupOfTab('my-status') returns null and it sits outside the group structure.
+const TAB_GROUPS = {
+  today:       ['ops'],
+  bookings:    ['schedule', 'crew-finder', 'all-bookings', 'import'],
+  crew:        ['forecast', 'induction-checker'],
+  recruitment: ['recruitment'],
+  admin:       ['administration'],
+};
+
+let _activeTab = 'schedule';   // set by switchTab; the source of truth for pop-out
+
+/** Group key owning a tab key, or null. */
+function groupOfTab(tab){
+  return Object.keys(TAB_GROUPS).find(g => TAB_GROUPS[g].includes(tab)) || null;
+}
+
+/** A tab button is visible when it exists and applyCohort hasn't hidden it. */
+function tabVisible(tab){
+  const b = document.getElementById('tab-btn-' + tab);
+  return !!b && b.style.display !== 'none';
+}
+
+/** Visible children of a group, in declared order. */
+function visibleChildren(g){
+  return (TAB_GROUPS[g] || []).filter(tabVisible);
+}
+
+// Click a group → its remembered child if still visible, else its first visible
+// child. This is what makes grouping cost zero clicks on the common path.
+function switchGroup(g){
+  const kids = visibleChildren(g);
+  if(!kids.length) return;                       // group is fully cohort-hidden
+  const remembered = goatPrefs.get('nav', 'last:' + g, null);
+  switchTab(kids.includes(remembered) ? remembered : kids[0]);
+}
+
+// Hide a group button when every one of its children is hidden for this cohort.
+// Called once from DOMContentLoaded, AFTER loadWhoami/applyCohort have resolved.
+function applyGroupVisibility(){
+  Object.keys(TAB_GROUPS).forEach(g => {
+    const el = document.getElementById('tab-grp-' + g);
+    if(el) el.style.display = visibleChildren(g).length ? '' : 'none';
+  });
+}
+
 // ── TABS ──
 function switchTab(tab){
+  _activeTab = tab;   // source of truth for pop-out (nav My Status isn't a .tab-btn)
   // Match buttons/panels by id, not list position — robust to hidden/added tabs
   // (the positional version broke when the My Status tab was added).
-  document.querySelectorAll('.tab-btn').forEach(b=>{
+  document.querySelectorAll('.tab-btn, .nav-tab-btn').forEach(b=>{
     b.classList.toggle('active', b.id === 'tab-btn-'+tab);
   });
   document.querySelectorAll('.tab-panel').forEach(p=>{
@@ -3935,49 +4040,37 @@ function switchTab(tab){
   // Reflect the active tab in the URL so it can be deep-linked / popped out.
   // replaceState (not `location.hash=`) keeps the back button clean and fires no event.
   try { history.replaceState(null, '', location.pathname + '#' + tab); } catch(e) {}
-  // Keep the newly-active tab visible when the row is scrolled — matters for
-  // deep-links (#recruitment on a narrow window) and for the pop-out button.
-  // block:'nearest' is required: without it scrollIntoView also tries to scroll
-  // ancestors vertically, and body is overflow:hidden in a fixed-height column.
-  const activeBtn = document.getElementById('tab-btn-' + tab);
-  if(activeBtn && activeBtn.scrollIntoView){
-    activeBtn.scrollIntoView({behavior:'smooth', block:'nearest', inline:'nearest'});
-  }
-  updateTabArrows();
-}
-
-// ── TAB-BAR OVERFLOW ────────────────────────────────────────────────────────
-// Show a chevron only when there is somewhere to scroll in that direction.
-// Called on scroll, on resize, from switchTab, and once on load (after
-// applyCohort, since hiding tab buttons changes scrollWidth).
-function updateTabArrows(){
-  const sc = document.getElementById('tab-bar-scroll');
-  const L  = document.getElementById('tab-arrow-left');
-  const R  = document.getElementById('tab-arrow-right');
-  if(!sc || !L || !R) return;
-  const max = sc.scrollWidth - sc.clientWidth;   // ~0 when everything fits
-  // The ±1 fuzz is deliberate: sub-pixel layout means scrollLeft rarely lands
-  // exactly on 0 or on max, and a strict compare leaves a chevron stuck on.
-  L.classList.toggle('show', max > 1 && sc.scrollLeft > 1);
-  R.classList.toggle('show', max > 1 && sc.scrollLeft < max - 1);
-}
-
-// One click nudges by 60% of the visible width, floored at 160px so a very
-// narrow window still moves roughly one tab at a time.
-function scrollTabs(dir){
-  const sc = document.getElementById('tab-bar-scroll');
-  if(!sc) return;
-  sc.scrollBy({left: dir * Math.max(160, sc.clientWidth * 0.6), behavior:'smooth'});
+  // TEMPORARY (remove after ~2 weeks): per-person tab open counts, so the
+  // default-child choices are set from evidence rather than intuition.
+  // Read with: goatPrefs.get('nav','counts',{}) in the console.
+  try{
+    const c = goatPrefs.get('nav', 'counts', {}) || {};
+    c[tab] = (c[tab] || 0) + 1;
+    goatPrefs.set('nav', 'counts', c);
+  }catch(e){}
+  // Two-level bar: light the owning group, reveal only its child row, and
+  // remember the choice so returning to the group lands where you left it.
+  const grp = groupOfTab(tab);
+  document.querySelectorAll('.tab-grp').forEach(b=>{
+    b.classList.toggle('active', b.id === 'tab-grp-' + grp);
+  });
+  document.querySelectorAll('.subtab-group').forEach(el=>{
+    el.classList.toggle('active', el.id === 'subtab-' + grp);
+  });
+  // The child row only earns its height when there is a real choice on it.
+  const bar = document.getElementById('subtab-bar');
+  if(bar) bar.classList.toggle('show', visibleChildren(grp).length > 1);
+  if(grp) goatPrefs.set('nav', 'last:' + grp, tab);
 }
 
 // Open whatever tab is currently active in a fresh browser view, deep-linked via
 // #<tab> so it lands straight on that tab. This opens a new TAB by default. To
 // force a separate free-floating WINDOW instead, add a size to the third arg,
 // e.g. window.open(url, '_blank', 'width=1400,height=900').
+// Reads _activeTab rather than sniffing the DOM: My Status is a nav button, not a
+// .tab-btn, so a DOM sniff would pop out the wrong tab from there.
 function popOutCurrentTab(){
-  const active = document.querySelector('.tab-btn.active');
-  const tab = active ? active.id.replace('tab-btn-', '') : 'schedule';
-  window.open(location.pathname + '#' + tab, '_blank');
+  window.open(location.pathname + '#' + _activeTab, '_blank');
 }
 
 // ── RECRUITMENT (applicant triage; admin/operations only) ────────────────────
@@ -11373,6 +11466,140 @@ document.addEventListener('keydown', function(e){
   }
 });
 
+// ── COMMAND PALETTE (⌘K) ─────────────────────────────────────────────────────
+// Navigation only — jump to any cohort-visible tab. Additive: nothing existing
+// changes. Group labels carry the same emoji as the group row so a row reads
+// "Group › Label" and teaches the new structure rather than bypassing it.
+const PALETTE_GROUP_LABELS = {
+  today: '⚡ Today', bookings: '📅 Bookings', crew: '👥 Crew',
+  recruitment: '🧑‍💼 Recruitment', admin: '⚙️ Admin',
+};
+// Aliases: the labels are not what people say. Both spellings of "utilisation"
+// are required — the tab is labelled the US way, Rich and Monty type the AU way.
+// "ops" is an alias too, since that is what the tab was called in v4.38.0 and
+// what the URL still says even though the label now reads "Today".
+const PALETTE_ALIASES = {
+  'crew-finder':       ['cf', 'find crew', 'search'],
+  'forecast':          ['utilisation', 'utilization', 'capacity'],
+  'induction-checker': ['inductions', 'induction checker'],
+  'import':            ['create booking', 'new booking', 'estimate'],
+  'all-bookings':      ['bookings'],
+  'administration':    ['admin', 'settings', 'manage'],
+  'ops':               ['today', 'home', 'landing', 'ops'],
+  'my-status':         ['me', 'my shifts'],
+};
+
+// One entry per tab key, built from TAB_GROUPS so it can never drift from the bar.
+// My Status is appended by hand — it lives outside the group structure (nav), so
+// it has no group prefix. Labels are read from the buttons, so they can't drift.
+function buildPaletteIndex(){
+  const rows = [];
+  Object.keys(TAB_GROUPS).forEach(g=>{
+    TAB_GROUPS[g].forEach(key=>rows.push({key, group: PALETTE_GROUP_LABELS[g] || g}));
+  });
+  rows.push({key:'my-status', group:''});   // nav destination, no group prefix
+  return rows.map(r=>{
+    const btn = document.getElementById('tab-btn-' + r.key);
+    const label = btn ? btn.textContent.trim() : r.key;
+    return {key:r.key, group:r.group, label, aliases:(PALETTE_ALIASES[r.key]||[])};
+  });
+}
+
+let _paletteRows = [];
+let _paletteSel = 0;
+
+function paletteIsOpen(){
+  const p = document.getElementById('cmd-palette');
+  return !!p && p.style.display === 'flex';
+}
+function openPalette(){
+  const p = document.getElementById('cmd-palette');
+  if(!p) return;
+  p.style.display = 'flex';
+  const inp = document.getElementById('cmd-palette-input');
+  if(inp) inp.value = '';
+  _paletteSel = 0;
+  renderPalette();
+  if(inp) setTimeout(()=>inp.focus(), 20);
+}
+function closePalette(){
+  const p = document.getElementById('cmd-palette');
+  if(p) p.style.display = 'none';
+}
+// Filter cohort-visible destinations at OPEN time (not load), by case-insensitive
+// substring across label, group name and aliases.
+function renderPalette(){
+  const inp = document.getElementById('cmd-palette-input');
+  const q = (inp ? inp.value : '').trim().toLowerCase();
+  const all = buildPaletteIndex().filter(r => tabVisible(r.key));
+  _paletteRows = q ? all.filter(r =>
+    (r.label + ' ' + r.group + ' ' + r.aliases.join(' ')).toLowerCase().includes(q)
+  ) : all;
+  if(_paletteSel >= _paletteRows.length) _paletteSel = Math.max(0, _paletteRows.length - 1);
+  const list = document.getElementById('cmd-palette-list');
+  if(!list) return;
+  if(!_paletteRows.length){
+    list.innerHTML = '<div class="cmd-palette-empty">No matches</div>';
+    return;
+  }
+  list.innerHTML = _paletteRows.map((r,i)=>{
+    const head = r.group
+      ? '<span class="cmd-grp">' + escapeHtml(r.group) + '</span><span class="cmd-sep">&rsaquo;</span>'
+      : '';
+    return '<div class="cmd-palette-row' + (i===_paletteSel ? ' sel' : '') + '" '
+      + 'onmouseenter="paletteHover(' + i + ')" onclick="paletteChoose(' + i + ')">'
+      + head + '<span>' + escapeHtml(r.label) + '</span></div>';
+  }).join('');
+}
+function paletteHover(i){ _paletteSel = i; paintPaletteSel(); }
+function paintPaletteSel(){
+  document.querySelectorAll('#cmd-palette-list .cmd-palette-row')
+    .forEach((el,i)=>el.classList.toggle('sel', i===_paletteSel));
+}
+function scrollPaletteSel(){
+  const el = document.querySelectorAll('#cmd-palette-list .cmd-palette-row')[_paletteSel];
+  if(el && el.scrollIntoView) el.scrollIntoView({block:'nearest'});
+}
+function paletteChoose(i){
+  const r = _paletteRows[i];
+  if(!r) return;
+  closePalette();
+  switchTab(r.key);
+}
+function paletteKeydown(e){
+  if(e.key === 'ArrowDown'){
+    e.preventDefault();
+    if(_paletteSel < _paletteRows.length - 1){ _paletteSel++; paintPaletteSel(); scrollPaletteSel(); }
+  } else if(e.key === 'ArrowUp'){
+    e.preventDefault();
+    if(_paletteSel > 0){ _paletteSel--; paintPaletteSel(); scrollPaletteSel(); }
+  } else if(e.key === 'Enter'){
+    e.preventDefault();
+    paletteChoose(_paletteSel);
+  }
+}
+
+document.addEventListener('keydown', function(e){
+  // Open: ⌘K / Ctrl-K. Suppressed while any modal owns the screen, so the palette
+  // can never stack on the call dialog or the ops detail modal.
+  if((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')){
+    const em = document.getElementById('entity-modal');
+    const om = document.getElementById('ops-modal');
+    if(em && em.style.display === 'flex') return;
+    if(om && om.style.display === 'flex') return;
+    e.preventDefault();          // ⌘K is otherwise a browser/OS binding
+    openPalette();
+    return;
+  }
+  // Close: Esc. stopPropagation is load-bearing — the Escape handlers above also
+  // listen, and without it one press would close the palette AND whatever sits
+  // behind it.
+  if(e.key === 'Escape' && paletteIsOpen()){
+    e.stopPropagation();
+    closePalette();
+  }
+}, true);   // capture phase, so the palette's Esc is seen before the two above
+
 function entityRow(label, value){
   return '<div style="display:flex;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)">'
     + '<div style="width:110px;flex-shrink:0;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-top:2px">'+label+'</div>'
@@ -16681,6 +16908,19 @@ function applyGoldRows(){
     <div id="entity-modal-body" style="padding:16px 18px"></div>
     <div id="entity-modal-actions" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;
                 padding:12px 18px;border-top:1px solid var(--border);background:#0a0a0a"></div>
+  </div>
+</div>
+
+<!-- Command palette (⌘K) — z-index 99993 sits above entity-modal (99991) and the
+     call dialog (99992), navigation only. -->
+<div id="cmd-palette" style="display:none;position:fixed;inset:0;z-index:99993;
+     background:rgba(0,0,0,0.55);align-items:flex-start;justify-content:center"
+     onclick="if(event.target===this)closePalette()">
+  <div class="cmd-palette-panel">
+    <input id="cmd-palette-input" class="cmd-palette-input" type="text"
+           placeholder="Jump to…" autocomplete="off" spellcheck="false"
+           oninput="renderPalette()" onkeydown="paletteKeydown(event)">
+    <div id="cmd-palette-list" class="cmd-palette-list"></div>
   </div>
 </div>
 
