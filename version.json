@@ -1,6 +1,6 @@
 {
-  "version": "4.38.0",
+  "version": "5.0.0",
   "release_date": "2026-08-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.38.0/TheGOAT.dmg",
-  "release_notes": "The Recruitment tab has a new Sessions view for creating and filling induction sittings, with rosters and book-on-behalf. The recruitment dashboard now excludes test records, so it starts from zero."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.0.0/TheGOAT.dmg",
+  "release_notes": "The tab row is now five groups — Today, Bookings, Crew, Recruitment and Admin — each opening on the view you used last. Press Cmd-K anywhere to jump straight to a view, and crew name and group filters now carry between Utilization and Inductions."
 }
