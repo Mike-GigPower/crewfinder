@@ -1887,7 +1887,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <div class="recruit-head">
         <div>
           <div class="recruit-title">Recruitment</div>
-          <div class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
+          <div id="recruit-sub" class="recruit-sub">Job applicants — triage into piles. Click an applicant to expand the full detail.</div>
         </div>
         <!-- Import bookings is HIDDEN under Option A: there is no TryBooking export to
              import (the form is closed, no event exists). The button is kept in the
@@ -4200,6 +4200,16 @@ function applyRecruitView(){
   };
   Object.keys(panes).forEach(k => { if(panes[k]) panes[k].style.display = (k === v) ? '' : 'none'; });
   Object.keys(btns).forEach(k => { if(btns[k]) btns[k].classList.toggle('active', k === v); });
+  // Subheading tracks the sub-view. Set here — the single view-activation path,
+  // same seam as the pile-count refresh — so it can never go stale the way a
+  // one-time static line under one of three views would.
+  const SUBS = {
+    operations: 'Job applicants — triage into piles. Click an applicant to expand the full detail.',
+    dashboard:  "How this year's applicants are converting, stage by stage.",
+    sessions:   "Induction sittings — create and open sessions, and see who's booked.",
+  };
+  const sub = document.getElementById('recruit-sub');
+  if(sub) sub.textContent = SUBS[v] || SUBS.operations;
   // Import bookings stays HIDDEN in every view under Option A (no TryBooking export
   // exists). The code path is retained as the documented rollback (§11.2); the
   // control simply must never be shown. Kept explicit so a future re-enable is one
