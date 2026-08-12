@@ -1,6 +1,6 @@
 {
-  "version": "4.37.0",
-  "release_date": "2026-08-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.37.0/TheGOAT.dmg",
-  "release_notes": "Crew who hold a valid induction for the booking venue now show a green Current induction badge in Crew Finder, and the results bar names which venues need one. Induction checks now respect the Published setting in Manage Inductions."
+  "version": "4.38.0",
+  "release_date": "2026-08-12",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v4.38.0/TheGOAT.dmg",
+  "release_notes": "The Recruitment tab has a new Sessions view for creating and filling induction sittings, with rosters and book-on-behalf. The recruitment dashboard now excludes test records, so it starts from zero."
 }
