@@ -350,6 +350,10 @@ tr.skipped{opacity:.6}
 .subtab-group.active{display:inline-flex;border:1px solid var(--border-gold);border-radius:20px;overflow:hidden}
 .subtab-group .tab-btn{height:28px;padding:0 18px;font-size:12px;font-weight:600;letter-spacing:.04em;border-bottom:none}
 .subtab-group .tab-btn.active{background:var(--accent);color:#000;border-bottom:none}
+/* Inactive crew aren't scheduled or inducted (slice 2 §6a): the Utilization and
+   Inductions pills are disabled while Records shows the Inactive set. */
+.subtab-group .tab-btn.pill-disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+.subtab-group .tab-btn.pill-disabled.active{background:none;color:var(--muted)}
 /* My Status lives in the identity nav now; .btn-logout has no active state. */
 .nav-tab-btn.active{border-color:var(--accent);color:var(--accent)}
 /* ── COMMAND PALETTE (⌘K) — navigation only, above all modals ── */
@@ -1264,6 +1268,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <div class="subtab-group" id="subtab-crew">
     <button class="tab-btn" id="tab-btn-forecast"          onclick="switchTab('forecast')">Utilization</button>
     <button class="tab-btn" id="tab-btn-induction-checker" onclick="switchTab('induction-checker')">Inductions</button>
+    <button class="tab-btn" id="tab-btn-crew-records"      onclick="switchTab('crew-records')">Records</button>
   </div>
   <div class="subtab-group" id="subtab-recruitment">
     <button class="tab-btn" id="tab-btn-recruitment" onclick="switchTab('recruitment')">Recruitment</button>
@@ -1890,6 +1895,23 @@ a.recruit-action{text-decoration:none;display:inline-block}
 
     </div>
   </div><!-- end tab-forecast -->
+  <!-- ── CREW RECORDS (was the Manage Crew modal; now a panel under Crew) ── -->
+  <div class="tab-panel" id="tab-crew-records">
+    <div class="ind-panel">
+      <div class="ind-toolbar">
+        <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="adminAddUser()">+ Add Crew Member</button>
+        <span class="ind-filter-label">Name:</span><input class="ind-search" id="crew-list-search" type="text" placeholder="Search name, EIN or phone..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; _renderCrewList()"><span class="ind-filter-label">Group:</span>
+        <div class="ind-group-chips" id="crew-list-chips"></div>
+        <div class="ind-actions">
+          <div id="crew-list-seg" style="display:inline-flex;gap:6px"></div>
+          <button class="btn" onclick="_loadCrewList()">&#8635; Refresh</button>
+        </div>
+      </div>
+      <div id="crew-list-count" style="font-size:11px;color:var(--muted);padding:6px 16px 0;min-height:14px"></div>
+      <div id="crew-inactive-note" style="display:none;font-size:11px;color:var(--muted);padding:2px 16px 0">Inactive crew aren&rsquo;t scheduled or inducted &mdash; Utilization and Inductions are unavailable for them.</div>
+      <div class="ind-table-wrap"><div id="crew-list-rows" style="padding:0 16px"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading&hellip;</div></div></div>
+    </div>
+  </div><!-- end tab-crew-records -->
   <!-- ── MY STATUS (crew self view) ── -->
   <div class="tab-panel" id="tab-my-status">
     <div class="ms-wrap">
@@ -1995,13 +2017,6 @@ a.recruit-action{text-decoration:none;display:inline-block}
 
       <div class="admin-hub-section">Records</div>
       <div class="admin-card-grid">
-        <button class="admin-card" onclick="adminCrewList()">
-          <div class="admin-card-icon">📋</div>
-          <div class="admin-card-body">
-            <div class="admin-card-title">Manage Crew</div>
-            <div class="admin-card-desc">Search, view and edit crew records.</div>
-          </div>
-        </button>
         <button class="admin-card" onclick="adminCustomerList()">
           <div class="admin-card-icon">🏢</div>
           <div class="admin-card-body">
@@ -2209,6 +2224,7 @@ function applyCohort(d){
     hide('tab-btn-all-bookings');                 // All Bookings is admin-only
     hide('tab-btn-import');                       // Estimate Import is admin-only
     hide('tab-btn-administration');               // Administration is admin-only
+    hide('tab-btn-crew-records');                 // Records: /api/admin/crew-list is admin-only
     if(cohort !== 'operations') hide('tab-btn-recruitment'); // Recruitment: ops yes, leadership no
     // My Status tab stays: leadership are crew too — own inductions/shifts and
     // can add/remove their own availability (the /api/me/* routes are any-cohort).
@@ -3977,7 +3993,7 @@ async function sendSMS(){
 const TAB_GROUPS = {
   today:       ['ops'],
   bookings:    ['schedule', 'crew-finder', 'all-bookings', 'import'],
-  crew:        ['forecast', 'induction-checker'],
+  crew:        ['forecast', 'induction-checker', 'crew-records'],
   recruitment: ['recruitment'],
   admin:       ['administration'],
 };
@@ -4037,10 +4053,11 @@ function switchTab(tab){
   if(tab==='all-bookings') loadAllBookings();
   if(tab==='my-status') loadMyStatus();
   if(tab==='recruitment') loadRecruitment();
+  if(tab === 'crew-records' && !_crewListData.length) _loadCrewList();
   // Crew workspace: sync this view's toolbar to the shared filter, then re-render.
   // Runs on every entry (incl. re-entry, where no load fires); both renderers and
   // chip builders guard on their data, so it is safe on a cold first entry too.
-  if(tab === 'forecast' || tab === 'induction-checker') crewFilterApplyToUI(tab);
+  if(tab === 'forecast' || tab === 'induction-checker' || tab === 'crew-records') crewFilterApplyToUI(tab);
   // Reflect the active tab in the URL so it can be deep-linked / popped out.
   // replaceState (not `location.hash=`) keeps the back button clean and fires no event.
   try { history.replaceState(null, '', location.pathname + '#' + tab); } catch(e) {}
@@ -7871,7 +7888,7 @@ function toggleBookingGroup(el){
 // Views keep their own toolbars for now (slice 1) — they read and write this
 // instead of their own local state. Consolidating the two toolbars into one bar
 // is a later, purely cosmetic step.
-const crewFilter = { q: '', group: null };
+const crewFilter = { q: '', group: null, active: true };
 
 // Bring a Crew view's toolbar into line with the shared filter, then re-render.
 // Called on every entry to a Crew view — including re-entry, where no load runs
@@ -7882,6 +7899,21 @@ const crewFilter = { q: '', group: null };
 // leave the view empty with no chip lit and nothing to click to recover. Clearing
 // it is the safe failure: the operator sees everyone, not nobody.
 function crewFilterApplyToUI(tab){
+  if(tab === 'crew-records'){
+    const inp = document.getElementById('crew-list-search');
+    if(inp) inp.value = crewFilter.q;
+    if(crewFilter.group && _crewListData.length){
+      const have = new Set();
+      _crewListData.forEach(c => (c.groups||[]).forEach(g => have.add(g)));
+      if(have.size && !have.has(crewFilter.group)) crewFilter.group = null;
+    }
+    renderCrewListSeg();
+    applyCrewActiveGate();
+    renderCrewGroupChips();
+    _renderCrewList();
+    return;
+  }
+
   const inputId = (tab === 'forecast') ? 'fc-search' : 'ind-name-search';
   const inp = document.getElementById(inputId);
   if(inp) inp.value = crewFilter.q;
@@ -7981,17 +8013,27 @@ function toggleIndGroup(group){
   renderInductionTable();
 }
 
+// Shared pill-style group-chip renderer for the Crew group's list views
+// (Inductions, Records). Builds the group vocabulary from a crew array, lights the
+// chip matching the shared crewFilter.group, and wires each to the view's toggle.
+// Utilization uses a different chip element (.fc-group-chip / <span>) so it keeps
+// renderFcGroupChips.
+function renderGroupChips(elId, crewArr, toggleFn){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  const groups = new Set();
+  (crewArr||[]).forEach(c => (c.groups||[]).forEach(g => groups.add(g)));
+  el.innerHTML = [...groups].sort().map(g =>
+    '<button class="ind-chip' + (crewFilter.group === g ? ' active' : '') + '"'
+    + ' onclick="' + toggleFn + '(\'' + g + '\')">' + g + '</button>'
+  ).join('');
+}
+
 // Extracted from loadInductions so the chips can be repainted on re-entry, not
 // only on first load. Reads its vocabulary from _indData.
 function renderIndGroupChips(){
-  const el = document.getElementById('ind-group-chips');
-  if(!el || !_indData) return;
-  const groups = new Set();
-  (_indData.crew||[]).forEach(c => (c.groups||[]).forEach(g => groups.add(g)));
-  el.innerHTML = [...groups].sort().map(g =>
-    '<button class="ind-chip' + (crewFilter.group === g ? ' active' : '') + '"'
-    + ' onclick="toggleIndGroup(\'' + g + '\')">' + g + '</button>'
-  ).join('');
+  if(!_indData) return;
+  renderGroupChips('ind-group-chips', _indData.crew, 'toggleIndGroup');
 }
 
 function renderInductionTable(){
@@ -8757,53 +8799,67 @@ async function submitAddContactAdmin(){
   }
 }
 
-// ── Administration: Crew list ────────────────────────────────────────────────
-// Read-only roster browser (batch 1). Per-row actions (inductions, make
-// inactive) arrive in a later commit. Mirrors the Manage Cohorts modal idiom.
-let _crewListData   = [];    // rows currently loaded from the server
-let _crewListActive = true;  // true = Active set, false = Inactive set
+// ── Crew Records (Crew group panel; was the Manage Crew modal) ────────────────
+// A .tab-panel under Crew, sharing the crew workspace filter. Active/Inactive is
+// now a workspace state (crewFilter.active), not a per-modal local. The rows,
+// search, group chips and Active/Inactive segment all live in the panel markup.
+let _crewListData = [];    // rows currently loaded from the server
 
-function adminCrewList(){ openCrewListModal(true); }
-
-async function openCrewListModal(active){
-  _crewListActive = (active !== false);
-  openEntityModal();
-  document.getElementById('entity-modal-title').textContent = 'Manage Crew';
-  document.getElementById('entity-modal-sub').textContent   = 'Search the roster \u00b7 view EIN, phone and status';
-  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
-  document.getElementById('entity-modal-body').innerHTML =
-      _crewListControls()
-    + '<div id="crew-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div></div>';
-  await _loadCrewList();
-}
-
-function _crewListControls(){
-  const seg = function(label, isActive){
-    const on = (isActive === _crewListActive);
-    return '<button class="btn-logout" onclick="_crewListSetActive('+(isActive?'true':'false')+')" '
+// Paint the Active/Inactive segment from crewFilter.active. Kept out of the
+// static markup so the highlight can follow the shared state on every entry.
+function renderCrewListSeg(){
+  const el = document.getElementById('crew-list-seg');
+  if(!el) return;
+  const seg = function(label, val){
+    const on = (val === crewFilter.active);
+    return '<button class="btn-logout" onclick="_crewListSetActive('+(val?'true':'false')+')" '
       + 'style="'+(on?'border-color:var(--accent);color:var(--accent)':'')+'">'+label+'</button>';
   };
-  return '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%;margin-bottom:10px" onclick="adminAddUser()">+ Add Crew Member</button>'
-    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
-    + '<input id="crew-list-search" oninput="_renderCrewList()" placeholder="Search name, EIN or phone\u2026" style="'+EF_INPUT_STYLE+';flex:1">'
-    + seg('Active', true)
-    + seg('Inactive', false)
-    + '</div>'
-    + '<div id="crew-list-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>';
+  el.innerHTML = seg('Active', true) + seg('Inactive', false);
+}
+
+// Utilization and Inductions are active-crew-only. While Records shows the
+// Inactive set, disable those two pills (they are reachable only from Records, so
+// the operator can never be stranded on a disabled view) and show why. Disabling
+// beats an empty matrix, which reads as a loading failure.
+function applyCrewActiveGate(){
+  const off = !crewFilter.active;
+  ['tab-btn-forecast', 'tab-btn-induction-checker'].forEach(function(id){
+    const b = document.getElementById(id);
+    if(!b) return;
+    b.classList.toggle('pill-disabled', off);
+    if(off){ b.setAttribute('disabled', ''); b.title = 'Inactive crew aren\u2019t scheduled or inducted.'; }
+    else   { b.removeAttribute('disabled'); b.removeAttribute('title'); }
+  });
+  const note = document.getElementById('crew-inactive-note');
+  if(note) note.style.display = off ? 'block' : 'none';
+}
+
+function toggleCrewGroup(group){
+  crewFilter.group = (crewFilter.group === group) ? null : group;
+  renderCrewGroupChips();
+  _renderCrewList();
+}
+
+// Records' group vocabulary comes from _crewListData (needs the endpoint's
+// `groups`, added in slice 2 §2). Same pill shape as Inductions.
+function renderCrewGroupChips(){
+  renderGroupChips('crew-list-chips', _crewListData, 'toggleCrewGroup');
 }
 
 async function _crewListSetActive(active){
-  if(_crewListActive === active) return;
-  _crewListActive = active;
-  document.getElementById('entity-modal-body').innerHTML =
-      _crewListControls()
-    + '<div id="crew-list-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div></div>';
+  if(crewFilter.active === active) return;
+  crewFilter.active = active;
+  renderCrewListSeg();
+  applyCrewActiveGate();
+  const rows = document.getElementById('crew-list-rows');
+  if(rows) rows.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading\u2026</div>';
   await _loadCrewList();
 }
 
 async function _loadCrewList(){
   try{
-    const url = '/api/admin/crew-list' + (_crewListActive ? '' : '?active=0');
+    const url = '/api/admin/crew-list' + (crewFilter.active ? '' : '?active=0');
     const r = await fetch(url);
     const d = await r.json();
     if(d.error) throw new Error(d.error);
@@ -8813,6 +8869,7 @@ async function _loadCrewList(){
     if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load crew: '+escapeHtml(e.message)+'</div>';
     return;
   }
+  renderCrewGroupChips();
   _renderCrewList();
 }
 
@@ -9015,7 +9072,7 @@ async function openCrewEdit(id){
     + '<div id="ce-panel-shifts" style="display:none"></div>'
     + '<div id="ce-panel-unavail" style="display:none"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
-      entityBtn('Cancel', 'openCrewListModal(_crewListActive)')
+      entityBtn('Cancel', 'closeEntityModal()')
     + entityBtn('Save changes', "submitCrewEdit('"+String(c.id)+"')", {primary:true, id:'ce-submit'});
   ceShowTab(String(c.id), 'details');
 }
@@ -9083,7 +9140,8 @@ async function submitCrewEdit(id){
     });
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
-    openCrewListModal(_crewListActive);   // back to the refreshed list
+    closeEntityModal();
+    await _loadCrewList();          // refresh the panel behind the modal (ends in _renderCrewList)
   }catch(e){
     if(err) err.textContent = e.message;
     if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
@@ -9502,16 +9560,19 @@ async function ceUnavailDelete(id, eventId){
 
 // ── _renderCrewList — rows are now click-to-edit ─────────────────────────────
 function _renderCrewList(){
-  const box = document.getElementById('crew-list-search');
-  const q = box ? box.value : '';
+  // q comes from the shared crew filter (kept for the no-match message below).
+  // Name/EIN/phone match is a deliberate superset of the other two views, which
+  // match name only — correct for a records lookup.
+  const q = crewFilter.q || '';
   const needle = q.toLowerCase().trim();
-  const rows = needle
-    ? _crewListData.filter(function(c){
-        return (c.name||'').toLowerCase().indexOf(needle) >= 0
-            || String(c.ein||'').indexOf(needle) >= 0
-            || (c.phone||'').toLowerCase().indexOf(needle) >= 0;
-      })
-    : _crewListData;
+  const rows = _crewListData.filter(function(c){
+    if(needle
+       && (c.name||'').toLowerCase().indexOf(needle) < 0
+       && String(c.ein||'').indexOf(needle) < 0
+       && (c.phone||'').toLowerCase().indexOf(needle) < 0) return false;
+    if(crewFilter.group && !((c.groups||[]).includes(crewFilter.group))) return false;
+    return true;
+  });
 
   const cnt = document.getElementById('crew-list-count');
   if(cnt) cnt.textContent = rows.length + ' of ' + _crewListData.length + ' shown';
