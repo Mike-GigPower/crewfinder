@@ -1091,16 +1091,37 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .ops-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
 .ops-asat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
-.ops-lanes{flex:1;min-height:0;padding:14px 16px;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:12px}
-.ops-page-note{font-size:13px;color:var(--text);padding:8px 2px;width:100%;max-width:1100px}
-.ops-lane{flex-shrink:0;width:100%;max-width:1100px;border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
+/* Two lanes abreast (v4.38.0): five summary tablets fit above the fold, so the
+   whole "state of the nation" reads in one glance. Lanes flow by row — 1&2,
+   3&4, 5 alone — matching the pairing the design calls for. align-items:start
+   keeps each lane its natural height, so expanding one never stretches its
+   row-neighbour. */
+.ops-lanes{flex:1;min-height:0;padding:14px 16px;overflow-y:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start;align-items:start;gap:12px;width:100%;max-width:1700px;margin:0 auto}
+@media (max-width:960px){.ops-lanes{grid-template-columns:1fr}}
+.ops-page-note{grid-column:1/-1;font-size:13px;color:var(--text);padding:8px 2px}
+.ops-lane{border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
 .ops-lane-head{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none}
 .ops-lane-head:hover{background:var(--surface2)}
 .ops-lane-caret{color:var(--muted);font-size:11px;width:12px;flex-shrink:0}
 .ops-lane-label{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:600;color:var(--text)}
 .ops-lane-badge{margin-left:auto;min-width:26px;text-align:center;font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--accent);background:var(--accent-bg);border:1px solid var(--border);border-radius:12px;padding:2px 9px}
 .ops-lane-body{padding:4px 14px 14px}
-.ops-lane.collapsed .ops-lane-body{display:none}
+/* A lane with no rows behind it (loading, empty, unavailable) has nothing to
+   reveal — hide its caret and make the head inert. */
+.ops-lane.no-detail .ops-lane-caret{visibility:hidden}
+.ops-lane.no-detail .ops-lane-head{cursor:default}
+.ops-lane.no-detail .ops-lane-head:hover{background:none}
+/* Chips bar carries 10px of padding even with no chips in it. */
+.ops-chips:empty{display:none}
+/* Detail window (v4.38.0). Sits BELOW entity-modal (99991) on purpose: the call
+   dialog opened from a row stacks on top, and dismissing it returns to this
+   list rather than to the dashboard. */
+.ops-modal-panel{background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;width:900px;max-width:94vw;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,0.6)}
+.ops-modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:#0a0a0a;flex-shrink:0}
+.ops-modal-title{font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.06em;color:var(--accent)}
+.ops-modal-sub{font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace}
+.ops-modal-x{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1;flex-shrink:0;margin-left:12px}
+.ops-modal-body{padding:14px 18px;overflow-y:auto}
 .ops-lane-status{color:var(--muted);font-size:12px;padding:10px 2px}
 .ops-empty{font-size:13px;color:var(--text);padding:12px 2px}
 .ops-unavail{font-size:13px;color:var(--warn);padding:12px 2px}
@@ -11332,6 +11353,19 @@ function closeEntityModal(){
   document.getElementById('entity-modal').style.display = 'none';
 }
 
+// Ops detail window owns Esc only when it is the topmost modal. Registered
+// BEFORE the entity-modal handler below (listeners fire in registration order)
+// so that, with the call dialog stacked on top, this one yields and the
+// entity-modal handler closes the call dialog alone; a second Esc then closes
+// this window. (v4.38.0)
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  const em = document.getElementById('entity-modal');
+  if(em && em.style.display === 'flex') return;   // call dialog is on top; it owns Esc
+  const om = document.getElementById('ops-modal');
+  if(om && om.style.display === 'flex') closeOpsDetail();
+});
+
 document.addEventListener('keydown', function(e){
   if(e.key === 'Escape'){
     const m = document.getElementById('entity-modal');
@@ -14507,20 +14541,22 @@ function toggleSchedBack(){
 // draws its "already offered" overlap disclosure. loadOps*/renderOps* are
 // hoisted function declarations, so naming them above their definitions is fine;
 // dims carry only strings, so no const is referenced before it exists.
+// `list` names the lane's row-list renderer; it is called ONLY by the detail
+// window (opsSyncDetail) — the card itself draws graphics only.
 const OPS_LANES = [
   { key:'confirmations', label:'Confirmations to chase',
-    load: loadOpsOffers, render: renderOpsOffers, dims:['status','age'] },
+    load: loadOpsOffers, render: renderOpsOffers, list: renderOpsList, dims:['status','age'] },
   { key:'calls_to_fill', label:'Calls to fill',
-    load: loadOpsCalls, render: renderOpsCalls, dims:['fill','lead'] },
+    load: loadOpsCalls, render: renderOpsCalls, list: renderOpsCallsList, dims:['fill','lead'] },
   { key:'acks', label:'Acknowledgements outstanding',
-    load: loadOpsAcks, render: renderOpsAcks, dims:['kind','lead'] },
+    load: loadOpsAcks, render: renderOpsAcks, list: renderOpsAcksList, dims:['kind','lead'] },
   // Lanes A and B share ONE fetch (source:'induction'): both blocks come back in
   // a single response, so declaring a source instead of a load lets loadOps fetch
   // once and render both. Load order A-before-B is preserved by array order.
   { key:'bookings_at_risk', label:'Bookings at risk', source:'induction',
-    render: renderOpsAtRisk, dims:['risk','lead'] },
+    render: renderOpsAtRisk, list: renderOpsAtRiskList, dims:['risk','lead'] },
   { key:'inductions_expiring', label:'Inductions expiring', source:'induction',
-    render: renderOpsExpiring, dims:['lead'] }
+    render: renderOpsExpiring, list: renderOpsExpiringList, dims:['lead'] }
 ];
 
 // Shared-source cache: name -> in-flight/resolved Promise<responseJSON>. Memoised
@@ -14656,8 +14692,8 @@ function renderOpsFrame(){
   wrap.innerHTML = OPS_LANES.map(function(lane){
     return ''
       + '<div class="ops-lane" id="ops-lane-'+lane.key+'">'
-      +   '<div class="ops-lane-head" onclick="toggleOpsLane(\''+lane.key+'\')">'
-      +     '<span class="ops-lane-caret" id="ops-caret-'+lane.key+'">▾</span>'
+      +   '<div class="ops-lane-head" onclick="opsOpenDetail(\''+lane.key+'\')" title="Open detail">'
+      +     '<span class="ops-lane-caret" id="ops-caret-'+lane.key+'">▸</span>'
       +     '<span class="ops-lane-label">'+escapeHtml(lane.label)+'</span>'
       +     '<span class="ops-lane-badge" id="ops-badge-'+lane.key+'">…</span>'
       +   '</div>'
@@ -14674,6 +14710,8 @@ function setOpsLaneLoading(lane){
   const body  = document.getElementById('ops-body-'+lane.key);
   if(badge){ badge.textContent = '…'; }
   if(body)  body.innerHTML = '<div class="ops-lane-status">Loading…</div>';
+  setOpsLaneDetail(lane, false);
+  opsSyncDetail(lane);      // status is already 'loading' when this is called
 }
 
 function setOpsAsAt(iso){
@@ -14689,12 +14727,82 @@ function setOpsAsAt(iso){
   el.textContent = 'as at ' + hhmm;
 }
 
-function toggleOpsLane(key){
-  const lane  = document.getElementById('ops-lane-'+key);
-  const caret = document.getElementById('ops-caret-'+key);
+// Loading, empty and unavailable lanes have nothing to reveal: caret hidden,
+// head inert. Purely a flag now — there is no collapsed state left to force.
+function setOpsLaneDetail(lane, hasDetail){
+  const el = document.getElementById('ops-lane-'+lane.key);
+  if(el) el.classList.toggle('no-detail', !hasDetail);
+}
+
+// laneKey while the detail window is open; null when it is shut.
+let _opsDetailLane = null;
+
+function opsOpenDetail(key){
+  const el = document.getElementById('ops-lane-'+key);
+  if(el && el.classList.contains('no-detail')) return;    // nothing behind it
+  const lane = OPS_LANES.find(function(l){ return l.key === key; });
   if(!lane) return;
-  const collapsed = lane.classList.toggle('collapsed');
-  if(caret) caret.textContent = collapsed ? '▸' : '▾';
+  _opsDetailLane = key;
+  document.getElementById('ops-modal-title').textContent = lane.label;
+  document.getElementById('ops-modal').style.display = 'flex';
+  opsSyncDetail(lane);
+}
+
+// Filters are scoped to the window (§3.1): clearing them on close means the card
+// behind can never show a highlighted segment with no way to clear it.
+function closeOpsDetail(){
+  const key = _opsDetailLane;
+  _opsDetailLane = null;
+  document.getElementById('ops-modal').style.display = 'none';
+  if(!key) return;
+  const st   = _opsLaneState[key];
+  const lane = OPS_LANES.find(function(l){ return l.key === key; });
+  if(!st || !lane) return;
+  let changed = false;
+  lane.dims.forEach(function(d){ if(st.chips[d]){ st.chips[d] = null; changed = true; } });
+  if(changed && st.status === 'ready') lane.render(lane);
+}
+
+// Single repaint path for the window. Every route that changes what a lane knows
+// calls this, so the window is never a stale copy of a lane that has moved on.
+function opsSyncDetail(lane){
+  if(_opsDetailLane !== lane.key) return;
+  const st   = _opsLaneState[lane.key] || {};
+  const body = document.getElementById('ops-modal-body');
+  const sub  = document.getElementById('ops-modal-sub');
+  if(!body) return;
+  if(st.status === 'loading'){
+    body.innerHTML = '<div class="ops-lane-status">Loading…</div>';
+    if(sub) sub.textContent = '';
+    return;
+  }
+  if(st.status === 'unavailable'){
+    body.innerHTML = '<div class="ops-unavail">Unavailable'
+      + (st.error ? ' <span style="color:var(--muted);font-size:11px">('+escapeHtml(st.error)+')</span>' : '')
+      + '</div>';
+    if(sub) sub.textContent = '';
+    return;
+  }
+  if(!st.total){
+    // The lane emptied underneath an open window. Say so; never self-dismiss.
+    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    if(sub) sub.textContent = '';
+    return;
+  }
+  if(sub) sub.textContent = opsDetailSub(lane);
+  body.innerHTML = opsChipsBar(lane)
+    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
+  if(lane.list) lane.list(lane);
+}
+
+function opsDetailSub(lane){
+  const st = _opsLaneState[lane.key] || {};
+  const on = [];
+  lane.dims.forEach(function(d){
+    const seg = st.chips && st.chips[d];
+    if(seg) on.push(((OPS_DIM_LABELS[d] || {})[seg]) || seg);
+  });
+  return String(st.total || 0) + (on.length ? ' · filtered: ' + on.join(' + ') : '');
 }
 
 // ── Lane 1: Confirmations to chase ──────────────────────────────────────────
@@ -14724,6 +14832,8 @@ function renderOpsUnavailable(lane){
   if(body) body.innerHTML = '<div class="ops-unavail">Unavailable'
     + (st && st.error ? ' <span style="color:var(--muted);font-size:11px">('+escapeHtml(st.error)+')</span>' : '')
     + '</div>';
+  setOpsLaneDetail(lane, false);
+  opsSyncDetail(lane);
 }
 
 function renderOpsOffers(lane){
@@ -14731,6 +14841,7 @@ function renderOpsOffers(lane){
   const data  = st && st.data;
   const counts= (data && data.counts) || {};
   const total = counts.total || 0;
+  st.total = total;   // the one place the window reads a lane's headline count
   const badge = document.getElementById('ops-badge-'+lane.key);
   const body  = document.getElementById('ops-body-'+lane.key);
   if(badge) badge.textContent = total;
@@ -14738,6 +14849,8 @@ function renderOpsOffers(lane){
   // Empty is the SUCCESS state here — calm, normal text, not an error.
   if(total === 0){
     body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
     return;
   }
   const statusSegs = ['not_messaged','awaiting'].map(function(k){
@@ -14752,10 +14865,9 @@ function renderOpsOffers(lane){
     + '<div class="ops-donuts">'
     +   opsDonutBlock(lane, 'Status', 'status', statusSegs)
     +   opsDonutBlock(lane, 'Age',    'age',    ageSegs)
-    + '</div>'
-    + opsChipsBar(lane)
-    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
-  renderOpsList(lane);
+    + '</div>';
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
 }
 
 // Hand-rolled donut: one <circle> per segment, offset with stroke-dashoffset.
@@ -14848,7 +14960,10 @@ function opsToggleChip(laneKey, dim, seg){
   const st = _opsLaneState[laneKey]; if(!st) return;
   st.chips[dim] = (st.chips[dim] === seg) ? null : seg;
   const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
-  if(lane) lane.render(lane);            // re-render THIS lane, whichever it is
+  if(!lane) return;
+  // Clicking an arc or a legend row is a request to SEE the matching rows.
+  if(_opsDetailLane !== laneKey) opsOpenDetail(laneKey);
+  lane.render(lane);      // card legend updates; render() re-syncs the window
 }
 function opsClearChip(laneKey, dim){
   const st = _opsLaneState[laneKey]; if(!st) return;
@@ -14996,6 +15111,7 @@ function renderOpsCalls(lane){
   const data      = st && st.data;
   const counts    = (data && data.counts) || {};
   const total     = counts.total || 0;
+  st.total = total;   // the one place the window reads a lane's headline count
   const positions = counts.positions || 0;
   const badge = document.getElementById('ops-badge-'+lane.key);
   const body  = document.getElementById('ops-body-'+lane.key);
@@ -15006,6 +15122,8 @@ function renderOpsCalls(lane){
   // Empty is the SUCCESS state here — calm, normal text, not an error.
   if(total === 0){
     body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
     return;
   }
   const fillSegs = ['empty','partial'].map(function(k){
@@ -15022,10 +15140,9 @@ function renderOpsCalls(lane){
     + '<div class="ops-donuts">'
     +   opsDonutBlock(lane, 'Fill state', 'fill', fillSegs)
     +   opsDonutBlock(lane, 'Lead time',  'lead', leadSegs)
-    + '</div>'
-    + opsChipsBar(lane)
-    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
-  renderOpsCallsList(lane);
+    + '</div>';
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
 }
 
 // Filter on the server's fill_state / lead_bucket tags — never a recomputed
@@ -15152,6 +15269,7 @@ function renderOpsAcks(lane){
   const data   = st && st.data;
   const counts = (data && data.counts) || {};
   const total  = counts.total || 0;
+  st.total = total;   // the one place the window reads a lane's headline count
   const badge = document.getElementById('ops-badge-'+lane.key);
   const body  = document.getElementById('ops-body-'+lane.key);
   if(badge) badge.textContent = total;
@@ -15161,6 +15279,8 @@ function renderOpsAcks(lane){
   // lane is the expected result, not a broken join.)
   if(total === 0){
     body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
     return;
   }
   const kindSegs = ['change','promo'].map(function(k){
@@ -15175,10 +15295,9 @@ function renderOpsAcks(lane){
     + '<div class="ops-donuts">'
     +   opsDonutBlock(lane, 'Kind',      'kind', kindSegs)
     +   opsDonutBlock(lane, 'Lead time', 'lead', leadSegs)
-    + '</div>'
-    + opsChipsBar(lane)
-    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
-  renderOpsAcksList(lane);
+    + '</div>';
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
 }
 
 // Filter on the server's kind / lead_bucket tags — never a recomputed boundary.
@@ -15320,12 +15439,15 @@ function renderOpsAtRisk(lane){
   const block  = (st && st.data && st.data.at_risk) || {};
   const counts = block.counts || {};
   const total  = counts.total || 0;
+  st.total = total;   // the one place the window reads a lane's headline count
   const badge = document.getElementById('ops-badge-'+lane.key);
   const body  = document.getElementById('ops-body-'+lane.key);
   if(badge) badge.textContent = total;
   if(!body) return;
   if(total === 0){
     body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
     return;
   }
   const riskSegs = ['none','expired_by','expiring_by'].map(function(k){
@@ -15340,10 +15462,9 @@ function renderOpsAtRisk(lane){
     + '<div class="ops-donuts">'
     +   opsDonutBlock(lane, 'Risk',      'risk', riskSegs)
     +   opsDonutBlock(lane, 'Lead time', 'lead', leadSegs)
-    + '</div>'
-    + opsChipsBar(lane)
-    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
-  renderOpsAtRiskList(lane);
+    + '</div>';
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
 }
 
 function opsFilteredAtRisk(lane){
@@ -15418,12 +15539,15 @@ function renderOpsExpiring(lane){
   const block  = (st && st.data && st.data.expiring) || {};
   const counts = block.counts || {};
   const total  = counts.total || 0;
+  st.total = total;   // the one place the window reads a lane's headline count
   const badge = document.getElementById('ops-badge-'+lane.key);
   const body  = document.getElementById('ops-body-'+lane.key);
   if(badge) badge.textContent = total;
   if(!body) return;
   if(total === 0){
     body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
     return;
   }
   // One donut only — lead time (now → expiry). Already-expired is excluded server-
@@ -15435,10 +15559,9 @@ function renderOpsExpiring(lane){
   body.innerHTML = ''
     + '<div class="ops-donuts">'
     +   opsDonutBlock(lane, 'Lead time', 'lead', leadSegs)
-    + '</div>'
-    + opsChipsBar(lane)
-    + '<div class="ops-list" id="ops-list-'+lane.key+'"></div>';
-  renderOpsExpiringList(lane);
+    + '</div>';
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
 }
 
 function opsFilteredExpiring(lane){
@@ -16527,6 +16650,21 @@ function applyGoldRows(){
 }
 </script>
 <!-- ── UNAVAILABILITY MANAGER MODAL ── -->
+<div id="ops-modal" style="display:none;position:fixed;inset:0;z-index:99990;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center"
+     onclick="if(event.target===this)closeOpsDetail()">
+  <div class="ops-modal-panel">
+    <div class="ops-modal-head">
+      <div style="min-width:0">
+        <div class="ops-modal-title" id="ops-modal-title"></div>
+        <div class="ops-modal-sub" id="ops-modal-sub"></div>
+      </div>
+      <button class="ops-modal-x" onclick="closeOpsDetail()">✕</button>
+    </div>
+    <div class="ops-modal-body" id="ops-modal-body"></div>
+  </div>
+</div>
+
 <div id="entity-modal" style="display:none;position:fixed;inset:0;z-index:99991;
      background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeEntityModal()">
   <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
