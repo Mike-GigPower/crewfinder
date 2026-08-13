@@ -280,6 +280,26 @@ tr.skipped{opacity:.6}
 #crew-card .cc-stat{font-weight:600}
 #crew-card .cc-stat-late{color:var(--warn,#f59e0b)}
 #crew-card .cc-stat-ns{color:var(--conflict,#ef4444)}
+/* Crew-card ±48h shift list (Phase 1). Everything scoped under #crew-card so it
+   cannot leak into the shared .ce-hdr admin dialog. Colours come from existing CSS
+   custom properties only — no new hardcoded hex. The list container has a FIXED
+   max-height with overflow:hidden (NOT auto) as a guard: #crew-card is
+   pointer-events:none, so a scrollbar here would be unusable. Content is JS-capped
+   at 4 rows + a "+N more" line, so this ceiling is never actually hit. */
+#crew-card .cc-sh-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:2px 0 4px}
+#crew-card .cc-shifts{max-height:180px;overflow:hidden;margin-bottom:8px}
+#crew-card .cc-sh-empty{font-size:11px;color:var(--muted);font-style:italic;margin-bottom:8px}
+#crew-card .cc-sh-row{padding:2px 0}
+#crew-card .cc-sh-line1{display:flex;align-items:baseline;justify-content:space-between;gap:6px;font-size:11px;line-height:1.4;color:var(--text)}
+#crew-card .cc-sh-when{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#crew-card .cc-sh-tag{flex-shrink:0;font-family:'Share Tech Mono',monospace;font-size:8px;letter-spacing:.08em;text-transform:uppercase;font-weight:700}
+#crew-card .cc-sh-tag--ok{color:var(--available)}
+#crew-card .cc-sh-tag--bad{color:var(--conflict)}
+#crew-card .cc-sh-tag--warn{color:var(--warn)}
+#crew-card .cc-sh-tag--accent{color:var(--accent)}
+#crew-card .cc-sh-tag--muted{color:var(--muted)}
+#crew-card .cc-sh-sub{font-size:10px;line-height:1.35;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#crew-card .cc-sh-more{font-size:10px;color:var(--muted);font-style:italic;padding-top:3px}
 /* Crew-details header banner (admin edit dialog) */
 .ce-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:0 0 14px;margin-bottom:12px;border-bottom:1px solid var(--border)}
 .ce-hdr-left{min-width:0;flex:1}
@@ -3228,6 +3248,47 @@ function targetRelationship(crew){
   return 'waiting';
 }
 
+// Shift bar classification — the single source of truth for what colour a shift
+// bar is and what its tooltip state line says. Called by the Crew Finder results
+// timeline (addTlRow) and by the crew detail panel, which lay bars out
+// differently but must classify them identically.
+//   s   — a shift from crew.shifts (carries status, is_target, conflicts_target,
+//         overlaps_target from _tag_shift_for_timeline in app.py)
+//   rel — targetRelationship(crew), or null
+function shiftBarState(s, rel){
+  let barClass, state;
+  if(s.is_target){
+    if(s.status===5){ barClass='bar-booked';   state='Booked — confirmed on this call'; }
+    else if(s.status===6){ barClass='bar-conflict'; state='Declined this call'; }
+    else if(s.status===7){ barClass='bar-backup'; state='Backup — accepted, call was full'; }
+    else { barClass='bar-assigned'; state='Assigned — awaiting confirmation'; }
+  } else if(s.status===5 && s.conflicts_target){
+    barClass='bar-conflict'; state='Confirmed — conflicts with requested shift';
+  } else if(s.status===1 && s.conflicts_target){
+    barClass='bar-warn'; state='Unconfirmed — would conflict if confirmed';
+  } else if(s.status===6 && s.overlaps_target){
+    barClass='bar-warn'; state='Declined — overlaps the requested shift';
+  } else if(s.status===7){
+    barClass='bar-backup'; state='Backup — accepted, call was full';
+  } else {
+    barClass='bar-info';
+    state=(s.status===5)?'Confirmed':(s.status===6)?'Declined':(s.status===1)?'Pending':(s.status===8)?'No Show':'Unconfirmed';
+  }
+  return {barClass, state};
+}
+
+// Class + state for the synthetic bar drawn over the requested call window.
+// This is what covers waiting and declined crew who have NO calendar row at all —
+// without it they render as an empty timeline, which reads as "free".
+function targetBarState(rel){
+  const cls   = rel==='booked'?'bar-booked':rel==='backup'?'bar-backup':rel==='declined'?'bar-conflict':'bar-assigned';
+  const state = rel==='booked'?'Booked — confirmed on this call'
+              : rel==='backup'?'Backup — accepted, call was full'
+              : rel==='declined'?'Declined this call'
+              : 'Assigned — awaiting confirmation';
+  return {barClass: cls, state};
+}
+
 // Floating shift tooltip (fixed-position; not clipped by the scroll container).
 let _tlTipEl=null;
 function _tlTip(){if(_tlTipEl)return _tlTipEl;const e=document.createElement('div');e.id='tl-tip';document.body.appendChild(e);_tlTipEl=e;return e;}
@@ -3357,6 +3418,86 @@ function crewStatsHtml(crew){
   }
   return '<div class="cc-stat-label">Reliability</div><div class="cc-stats">'+rows+'</div>';
 }
+// ±48h shift list for the crew hover card. Reads crew.shifts, which already rides
+// along on every /api/availability row — no extra request. Renders nothing when
+// there are no targets or no shifts array, so it degrades to today's card.
+function crewShiftsHtml(crew){
+  const targets = (currentResult && currentResult.targets) || [];
+  if(!targets.length) return '';
+  const shifts = (crew && crew.shifts) || [];
+  const label = '<div class="cc-sh-label">Shifts ±48h</div>';
+
+  // Span = hard targets only (ignore soft_targets), widened by 48h each side.
+  // Parse the ISO local strings (no offset) so day-boundary maths can't drift.
+  const H48 = 48*3600*1000;
+  const spanStart = Math.min.apply(null, targets.map(t=>new Date(t.start_dt).getTime())) - H48;
+  const spanEnd   = Math.max.apply(null, targets.map(t=>new Date(t.end_dt).getTime()))   + H48;
+
+  // Overlap, not start-within: a night shift beginning before the span but running
+  // into it must still appear. Then chronological ascending by start.
+  const inSpan = shifts.filter(s=>s && s.start && s.end
+      && new Date(s.end).getTime()   > spanStart
+      && new Date(s.start).getTime() < spanEnd)
+    .sort((a,b)=> a.start<b.start?-1 : a.start>b.start?1 : 0);
+
+  if(!inSpan.length){
+    return label + '<div class="cc-sh-empty">No shifts ±48h</div>';
+  }
+
+  const rows = inSpan.slice(0,4).map(s=>{
+    // One tag only — the card is 240px wide, no room for two. Relation beats status.
+    let tag, tone;
+    if(s.is_target){ tag='THIS CALL'; tone='accent'; }
+    else if(s.conflicts_target){ tag='CLASH'; tone='bad'; }
+    else if(s.overlaps_target){ tag='OVERLAP'; tone='warn'; }
+    else {
+      const st = Number(s.status);
+      if(st===5){ tag='BOOKED'; tone='ok'; }
+      else if(st===1){ tag='PENDING'; tone='warn'; }
+      else if(st===6){ tag='DECLINED'; tone='bad'; }
+      else if(st===8){ tag='NO-SHOW'; tone='bad'; }
+      else if(st===7){ tag='BACKUP'; tone='muted'; }
+      else { tag='UNSET'; tone='muted'; }   // 0 or missing
+    }
+
+    // Date/time straight off the ISO local string — NOT hToLabel/dtToH, which are
+    // anchored to the timeline's targetDate. Building the Date from the bare date
+    // part avoids any timezone drift on the day boundary.
+    const day   = new Date(s.start.slice(0,10)+'T00:00').toLocaleDateString('en-AU',{weekday:'short',day:'numeric'});
+    const times = s.start.slice(11,16)+'–'+s.end.slice(11,16);
+
+    // decodeEntities THEN escapeHtml — SmartStaff stores names HTML-encoded, and
+    // the reverse order renders apostrophes as &#039;.
+    const venue = s.venue     ? escapeHtml(decodeEntities(s.venue))     : '';
+    const call  = s.call_name ? escapeHtml(decodeEntities(s.call_name)) : '';
+    const sub   = [venue, call].filter(Boolean).join(' · ');
+    const line2 = sub ? '<div class="cc-sh-sub">'+sub+'</div>' : '';
+
+    // Full detail for the native tooltip — booking, call, venue, times, status —
+    // since it doesn't fit on the 240px card.
+    const tLines = [];
+    if(s.booking_name) tLines.push(decodeEntities(s.booking_name));
+    if(s.call_name)    tLines.push('Call: '+decodeEntities(s.call_name));
+    if(s.venue)        tLines.push('Venue: '+decodeEntities(s.venue));
+    tLines.push(day+' '+times);
+    tLines.push(tag);
+    const title = escapeHtml(tLines.join('\n'));
+
+    return '<div class="cc-sh-row" title="'+title+'">'
+      +   '<div class="cc-sh-line1">'
+      +     '<span class="cc-sh-when">'+escapeHtml(day)+' · '+escapeHtml(times)+'</span>'
+      +     '<span class="cc-sh-tag cc-sh-tag--'+tone+'">'+tag+'</span>'
+      +   '</div>'
+      +   line2
+      + '</div>';
+  }).join('');
+
+  const more = inSpan.length>4
+    ? '<div class="cc-sh-more">+'+(inSpan.length-4)+' more</div>'
+    : '';
+
+  return label + '<div class="cc-shifts">'+rows+more+'</div>';
+}
 function showCrewCard(anchor,crew){
   if(!crew) return;
   const el=_ensureCrewCardEl();
@@ -3367,7 +3508,7 @@ function showCrewCard(anchor,crew){
   const notes=hasNotes
     ? `<div class="cc-notes">${escapeHtml(crew.notes)}</div>`
     : `<div class="cc-notes empty">No notes on file</div>`;
-  el.innerHTML=`<div class="cc-name">${escapeHtml(crew.name)}</div>${photo}${crewStatsHtml(crew)}<div class="cc-notes-label">Notes</div>${notes}`;
+  el.innerHTML=`<div class="cc-name">${escapeHtml(crew.name)}</div>${photo}${crewStatsHtml(crew)}${crewShiftsHtml(crew)}<div class="cc-notes-label">Notes</div>${notes}`;
   el.style.display='block';
   _positionCrewCard(el,anchor);
 }
@@ -3690,34 +3831,13 @@ function renderTimeline(result,details,targets){
       (crew.shifts||[]).forEach(s=>{
         const sh=dtToH(s.start,targetDate),eh=dtToH(s.end,targetDate);
         if(s.is_target && rel) return;   // covered by the synthetic target bar below
-        let barClass, state;
-        if(s.is_target){
-          if(s.status===5){ barClass='bar-booked';   state='Booked — confirmed on this call'; }
-          else if(s.status===6){ barClass='bar-conflict'; state='Declined this call'; }
-          else if(s.status===7){ barClass='bar-backup'; state='Backup — accepted, call was full'; }
-          else { barClass='bar-assigned'; state='Assigned — awaiting confirmation'; }
-        } else if(s.status===5 && s.conflicts_target){
-          barClass='bar-conflict'; state='Confirmed — conflicts with requested shift';
-        } else if(s.status===1 && s.conflicts_target){
-          barClass='bar-warn'; state='Unconfirmed — would conflict if confirmed';
-        } else if(s.status===6 && s.overlaps_target){
-          barClass='bar-warn'; state='Declined — overlaps the requested shift';
-        } else if(s.status===7){
-          barClass='bar-backup'; state='Backup — accepted, call was full';
-        } else {
-          barClass='bar-info';
-          state=(s.status===5)?'Confirmed':(s.status===6)?'Declined':(s.status===1)?'Pending':(s.status===8)?'No Show':'Unconfirmed';
-        }
+        const {barClass, state} = shiftBarState(s, rel);
         addBar(sh,eh,barClass,shiftTip(s,targetDate,sh,eh,state));
       });
 
       // Synthetic bar(s) for the requested call, coloured by the relationship.
       if(rel){
-        const cls   = rel==='booked'?'bar-booked':rel==='backup'?'bar-backup':rel==='declined'?'bar-conflict':'bar-assigned';
-        const state = rel==='booked'?'Booked — confirmed on this call'
-                    : rel==='backup'?'Backup — accepted, call was full'
-                    : rel==='declined'?'Declined this call'
-                    : 'Assigned — awaiting confirmation';
+        const {barClass: cls, state} = targetBarState(rel);
         const tgtShift=(crew.shifts||[]).find(s=>s.is_target);
         targetWindows.forEach(tw=>{
           let tip;
