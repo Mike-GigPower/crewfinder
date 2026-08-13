@@ -1,6 +1,6 @@
 {
-  "version": "5.1.0",
-  "release_date": "2026-08-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.1.0/TheGOAT.dmg",
-  "release_notes": "Manage Crew has moved out of Administration into the Crew tab as Records, alongside Utilization and Inductions. Name and group filters now carry across all three, and switching Records to Inactive greys out the two views that only cover active crew."
+  "version": "5.2.0",
+  "release_date": "2026-08-13",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.2.0/TheGOAT.dmg",
+  "release_notes": "Manage Crew now has a Payslips tab on every crew record — each pay week they have on file, with the workslip PDF one click away. Opening a payslip is recorded; viewing the list of weeks is not."
 }
