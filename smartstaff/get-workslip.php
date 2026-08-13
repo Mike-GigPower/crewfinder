@@ -55,6 +55,11 @@
 	}
 
 	$smarty->assign('invoiceLines', $invoiceLines);
+	/* The print template renders the week-ending date from $smarty.get.id, which
+	/* only exists on the two entry points that pass ?id=. This endpoint passes
+	/* ?week_ending=, so assign it explicitly; the template prefers this and falls
+	/* back to the GET read for the legacy callers. */
+	$smarty->assign('week_ending', $weekending);
 	$smarty->assign('action', 'pdf');
 	$smarty->assign('body', 'print/workslips');
 
