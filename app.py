@@ -5957,7 +5957,12 @@ def api_availability():
     # commitment that should cause a conflict; other statuses pass through to
     # the timeline as informational so the operator has context.
     win_start = min(t["start"] for t in targets) - timedelta(days=2)
-    win_end   = max(t["end"]   for t in targets) + timedelta(days=2)
+    # 3 days, not 2: fetch_shifts_bulk truncates both ends to a date string and
+    # get-shifts-bulk.php compares `cal.start < $end_sql`, where $end_sql is midnight
+    # at the START of that day. At days=2 a call ending 23:00 gets a window reaching
+    # only ~25h past it, so the crew card's +48h list would silently omit shifts.
+    # Truncation only ever widens the "before" side, so win_start stays at 2.
+    win_end   = max(t["end"]   for t in targets) + timedelta(days=3)
     shifts_by_name = _get_shifts_for_window(ss, win_start, win_end)
     # Live unavailability read (3.4.5) — sub-second via bulk endpoint, replaces
     # the cache lookup. Keyed by str(user_id) to match the previous shape.
