@@ -3457,9 +3457,9 @@ function crewShiftsHtml(crew){
       // Status of the shift ON the searched call — per-shift, NOT collapsed from rel,
       // so a multi-call search shows each call's own truth.
       tag = st===5?'BOOKED' : st===6?'DECLINED' : st===7?'BACKUP' : 'WAITING';   // 1/0/missing → WAITING
-    } else if(s.conflicts_target){
+    } else if(s.conflicts_target && (st===5 || st===1)){
       tag = 'CLASH';
-    } else if(s.overlaps_target){
+    } else if(s.overlaps_target && (st===5 || st===1)){
       tag = 'OVERLAP';
     } else {
       tag = st===5?'BOOKED' : st===1?'PENDING' : st===6?'DECLINED' : st===8?'NO-SHOW' : st===7?'BACKUP' : 'UNSET';   // 0/missing → UNSET
