@@ -9053,11 +9053,11 @@ async function openCrewEdit(id){
     + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
-  window._ceLoaded = {inductions:false, licences:false, shifts:false, unavail:false};
+  window._ceLoaded = {inductions:false, licences:false, payslips:false, shifts:false, unavail:false};
 
   const ceTabBar =
       '<div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap">'
-    + [['details','Details'],['inductions','Inductions'],['licences','Licences'],['shifts','Calls'],['unavail','Unavailability']].map(function(t){
+    + [['details','Details'],['inductions','Inductions'],['licences','Licences'],['payslips','Payslips'],['shifts','Calls'],['unavail','Unavailability']].map(function(t){
         return '<button type="button" id="ce-tabbtn-'+t[0]+'" onclick="ceShowTab(\''+String(c.id)+'\',\''+t[0]+'\')" '
           + 'style="background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:\'Rajdhani\',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer">'+t[1]+'</button>';
       }).join('')
@@ -9069,6 +9069,7 @@ async function openCrewEdit(id){
     + '<div id="ce-panel-details">'+detailsHtml+'</div>'
     + '<div id="ce-panel-inductions" style="display:none"></div>'
     + '<div id="ce-panel-licences" style="display:none"></div>'
+    + '<div id="ce-panel-payslips" style="display:none"></div>'
     + '<div id="ce-panel-shifts" style="display:none"></div>'
     + '<div id="ce-panel-unavail" style="display:none"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
@@ -9150,7 +9151,7 @@ async function submitCrewEdit(id){
 
 // ── Edit Crew Member: tabbed panels (Details / Inductions / Shifts / Unavailability) ──
 function ceShowTab(id, tab){
-  ['details','inductions','licences','shifts','unavail'].forEach(function(t){
+  ['details','inductions','licences','payslips','shifts','unavail'].forEach(function(t){
     var panel = document.getElementById('ce-panel-'+t);
     var btn   = document.getElementById('ce-tabbtn-'+t);
     var on    = (t===tab);
@@ -9163,6 +9164,7 @@ function ceShowTab(id, tab){
   window._ceLoaded = window._ceLoaded || {};
   if(tab==='inductions' && !window._ceLoaded.inductions){ window._ceLoaded.inductions = true; ceLoadInductions(id); }
   if(tab==='licences'   && !window._ceLoaded.licences){   window._ceLoaded.licences = true;   ceLoadLicences(id); }
+  if(tab==='payslips'   && !window._ceLoaded.payslips){   window._ceLoaded.payslips = true;   ceLoadPayslips(id); }
   if(tab==='shifts'     && !window._ceLoaded.shifts){     window._ceLoaded.shifts = true;     ceLoadShifts(id); }
   if(tab==='unavail'    && !window._ceLoaded.unavail){    window._ceLoaded.unavail = true;    ceLoadUnavail(id); }
 }
@@ -9316,6 +9318,50 @@ async function ceLoadLicences(id){
     + rows
     + '<div id="lic-edit-slot"></div>'
     + addForm;
+}
+
+// Format a workslip week_ending (unix SECONDS) as "Week ending Tue 14/04/26",
+// Melbourne time — matching Crew Hub's weekLabel so ops and crew read one string.
+// week_ending is NOT midnight-aligned (it carries the generation time of day); we
+// only ever format it for display and never reconstruct or range-compare it. Built
+// from formatToParts so the parts join without en-AU's default comma.
+function psWeekLabel(sec){
+  var g = {};
+  new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Melbourne',
+    weekday: 'short', day: '2-digit', month: '2-digit', year: '2-digit'
+  }).formatToParts(new Date(Number(sec) * 1000)).forEach(function(p){ g[p.type] = p.value; });
+  return 'Week ending ' + g.weekday + ' ' + g.day + '/' + g.month + '/' + g.year;
+}
+
+async function ceLoadPayslips(id){
+  var panel = document.getElementById('ce-panel-payslips');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading payslips…</div>';
+  var data;
+  try{
+    var r = await fetch('/api/admin/crew/'+encodeURIComponent(id)+'/payslips');
+    data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.error || ('HTTP '+r.status));
+  }catch(e){
+    panel.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load payslips: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  var weeks = data.workslips || [];
+  if(!weeks.length){
+    panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No payslips on record.</div>';
+    return;
+  }
+  // Upstream order is newest-first (DESC) — preserve it, do not re-sort. The View
+  // link is a plain anchor: the browser's own PDF viewer opens it inline in a new
+  // tab (target=_blank), so there is nothing to spin and no blob handling here.
+  panel.innerHTML = weeks.map(function(w){
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+      + '<div style="min-width:0"><div style="font-size:13px;color:var(--text)">'+escapeHtml(psWeekLabel(w.week_ending))+'</div></div>'
+      + '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">'
+      +   '<a href="/api/admin/crew/'+encodeURIComponent(id)+'/payslips/'+w.week_ending+'" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none">View PDF</a>'
+      + '</div></div>';
+  }).join('');
 }
 
 function licEditForm(id, licId){
