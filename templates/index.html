@@ -300,6 +300,7 @@ tr.skipped{opacity:.6}
 #crew-card .cc-sh-tag--muted{color:var(--muted)}
 #crew-card .cc-sh-sub{font-size:10px;line-height:1.35;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #crew-card .cc-sh-more{font-size:10px;color:var(--muted);font-style:italic;padding-top:3px}
+#crew-card .cc-sh-row--target{border-left:2px solid var(--accent);padding-left:6px;margin-left:-8px}
 /* Crew-details header banner (admin edit dialog) */
 .ce-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:0 0 14px;margin-bottom:12px;border-bottom:1px solid var(--border)}
 .ce-hdr-left{min-width:0;flex:1}
@@ -3425,6 +3426,7 @@ function crewShiftsHtml(crew){
   const targets = (currentResult && currentResult.targets) || [];
   if(!targets.length) return '';
   const shifts = (crew && crew.shifts) || [];
+  const rel = targetRelationship(crew);
   const label = '<div class="cc-sh-label">Shifts ±48h</div>';
 
   // Span = hard targets only (ignore soft_targets), widened by 48h each side.
@@ -3445,20 +3447,30 @@ function crewShiftsHtml(crew){
   }
 
   const rows = inSpan.slice(0,4).map(s=>{
-    // One tag only — the card is 240px wide, no room for two. Relation beats status.
-    let tag, tone;
-    if(s.is_target){ tag='THIS CALL'; tone='accent'; }
-    else if(s.conflicts_target){ tag='CLASH'; tone='bad'; }
-    else if(s.overlaps_target){ tag='OVERLAP'; tone='warn'; }
-    else {
-      const st = Number(s.status);
-      if(st===5){ tag='BOOKED'; tone='ok'; }
-      else if(st===1){ tag='PENDING'; tone='warn'; }
-      else if(st===6){ tag='DECLINED'; tone='bad'; }
-      else if(st===8){ tag='NO-SHOW'; tone='bad'; }
-      else if(st===7){ tag='BACKUP'; tone='muted'; }
-      else { tag='UNSET'; tone='muted'; }   // 0 or missing
+    // Classify through shiftBarState — the SAME source of truth the timeline uses —
+    // so the card and the bar can never disagree about severity. barClass drives the
+    // tone; the tag text is the status word (CLASH/OVERLAP only for non-target rows).
+    const {barClass, state} = shiftBarState(s, rel);
+    const st = Number(s.status);
+    let tag;
+    if(s.is_target){
+      // Status of the shift ON the searched call — per-shift, NOT collapsed from rel,
+      // so a multi-call search shows each call's own truth.
+      tag = st===5?'BOOKED' : st===6?'DECLINED' : st===7?'BACKUP' : 'WAITING';   // 1/0/missing → WAITING
+    } else if(s.conflicts_target){
+      tag = 'CLASH';
+    } else if(s.overlaps_target){
+      tag = 'OVERLAP';
+    } else {
+      tag = st===5?'BOOKED' : st===1?'PENDING' : st===6?'DECLINED' : st===8?'NO-SHOW' : st===7?'BACKUP' : 'UNSET';   // 0/missing → UNSET
     }
+    // Tone from barClass, never from the tag, so severity tracks the timeline exactly.
+    let tone;
+    if(barClass==='bar-conflict')      tone='bad';
+    else if(barClass==='bar-warn')     tone='warn';
+    else if(barClass==='bar-booked')   tone='ok';
+    else if(barClass==='bar-info')     tone=(st===5)?'ok':'muted';
+    else                               tone='muted';   // bar-backup, bar-assigned
 
     // Date/time straight off the ISO local string — NOT hToLabel/dtToH, which are
     // anchored to the timeline's targetDate. Building the Date from the bare date
@@ -3473,17 +3485,17 @@ function crewShiftsHtml(crew){
     const sub   = [venue, call].filter(Boolean).join(' · ');
     const line2 = sub ? '<div class="cc-sh-sub">'+sub+'</div>' : '';
 
-    // Full detail for the native tooltip — booking, call, venue, times, status —
-    // since it doesn't fit on the 240px card.
+    // Full detail for the native tooltip — booking, call, venue, times, and the full
+    // human state line from shiftBarState — since it doesn't fit on the 240px card.
     const tLines = [];
     if(s.booking_name) tLines.push(decodeEntities(s.booking_name));
     if(s.call_name)    tLines.push('Call: '+decodeEntities(s.call_name));
     if(s.venue)        tLines.push('Venue: '+decodeEntities(s.venue));
     tLines.push(day+' '+times);
-    tLines.push(tag);
+    tLines.push(state);
     const title = escapeHtml(tLines.join('\n'));
 
-    return '<div class="cc-sh-row" title="'+title+'">'
+    return '<div class="cc-sh-row'+(s.is_target?' cc-sh-row--target':'')+'" title="'+title+'">'
       +   '<div class="cc-sh-line1">'
       +     '<span class="cc-sh-when">'+escapeHtml(day)+' · '+escapeHtml(times)+'</span>'
       +     '<span class="cc-sh-tag cc-sh-tag--'+tone+'">'+tag+'</span>'
