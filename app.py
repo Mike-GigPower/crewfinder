@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.1.0"
+APP_VERSION    = "5.2.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -275,6 +275,12 @@ KEYPAY_COMPLETE_SETUP_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/
 # no_suitable_list); the Flask route below forwards {action, ...} with the secret
 # in X-Goat-Service-Key, same key discipline as every other recruitment route.
 INDUCTION_SESSIONS_ADMIN_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/induction-sessions-admin"
+# THE GOAT's own audit sink (payslip disclosure trail). The payslip PDF route below
+# POSTs one row per *disclosure* — never on list view — proving the caller is THE GOAT
+# via X-Goat-Service-Key, same key discipline as every recruitment route: the secret
+# stays in Python and the browser never sees it. Writes fail open (see _write_audit):
+# an audit error must never block or alter the PDF response.
+GOAT_AUDIT_LOG_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat-audit-log"
 # The only statuses this doorway may set — must match the edge function exactly.
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "all_docs_received", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
@@ -856,6 +862,62 @@ def add_crew_induction(crew_id, venue_ids, complete_date, cert):
             return out, None
         except Exception as e:
             return None, str(e)
+        finally:
+            _release(ss)
+
+
+def fetch_crew_workslips(crew_id):
+    """One crew member's pay weeks via my-workslips.php, through brief impersonation
+    of that crew member's SmartStaff session. my-workslips.php self-scopes to the
+    acquired session user, so the impersonated GET returns exactly that crew member's
+    workslip weeks. Returns (list_of_{week_ending}, error).
+
+    week_ending is a unix timestamp in SECONDS and is NOT midnight-aligned — it
+    carries the time of day the week was generated. The rows come back DESC (newest
+    first); preserve that order and return the integers untouched. Never reconstruct,
+    round-trip through a date formatter, or range-compare one (see the PDF helper)."""
+    with _unavail_write_lock:                      # serialise impersonation ops
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return None, err
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/crew/my-workslips.php",
+                          allow_redirects=True)
+            data = json.loads(resp.text or "{}")
+            if isinstance(data, dict) and data.get("error"):
+                return None, data["error"]
+            # Already DESC — do not re-sort, do not touch the week_ending ints.
+            return data.get("workslips", []), None
+        except Exception as e:
+            return None, str(e)
+        finally:
+            _release(ss)
+
+
+def fetch_crew_workslip_pdf(crew_id, week_ending):
+    """One workslip PDF via get-workslip.php, through brief impersonation.
+    get-workslip.php self-scopes to the acquired session user, so the impersonated
+    GET returns exactly this crew member's own workslip for that week. week_ending is
+    the raw unix-seconds integer straight from my-workslips.php — pass it through
+    untouched, never reconstruct it. Returns (bytes, content_type, error). A 404
+    upstream (no workslip for that week) becomes a friendly error the route turns
+    into a 404 rather than a 502."""
+    with _unavail_write_lock:                      # serialise impersonation ops
+        ss, err = _in_impersonated_session(crew_id)
+        if err:
+            return None, None, err
+        try:
+            resp = ss.get(f"{BASE_URL}/ajax/crew/get-workslip.php",
+                          params={"week_ending": int(week_ending)},
+                          timeout=60, allow_redirects=True)
+            if resp.status_code == 404:
+                return None, None, "No payslip found for that week"
+            if resp.status_code != 200:
+                return None, None, f"HTTP {resp.status_code}"
+            ctype = (resp.headers.get("Content-Type") or "application/pdf").split(";")[0].strip()
+            return resp.content, ctype, None
+        except Exception as e:
+            return None, None, str(e)
         finally:
             _release(ss)
 
@@ -11505,6 +11567,104 @@ def api_admin_add_crew_induction(crew_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(out)
+
+
+# ── Manage Crew: Payslips ─────────────────────────────────────────────────────
+# Read-only view of a crew member's SmartStaff workslips (Crew Hub's pay weeks),
+# on-behalf via impersonation. The week list carries only timestamps and is not a
+# disclosure, so it writes NO audit row; opening a PDF IS the disclosure, so that
+# route — and only that route — writes one. Both are admin-gated (@require_cohort).
+
+def _write_audit(action, subject_type, subject_id, detail):
+    """Fire-and-forget audit row to the goat-audit-log edge function. Fails open: on
+    ANY error (exception, timeout, non-200) it logs server-side and returns, so the
+    audit write can never change or block the caller's response.
+
+    Actor fields are resolved from the SERVER SESSION and are never read from the
+    request — a client that could name its own actor makes the log worthless (the
+    _keypay_acting_user_id rule). During an admin step-up the human who clicked is
+    the stashed pre-elevation crew identity, while the request actually runs as the
+    elevated admin account; the row credits the human and records the elevation."""
+    try:
+        sid    = session.get("sid")
+        pre    = _pre_elevation.get(sid) or {}
+        human  = pre.get("ident") or current_identity() or {}   # who actually clicked
+        acting = current_identity() or {}                        # which account it ran as
+        payload = {
+            "action":        action,
+            "subject_type":  subject_type,
+            "subject_id":    str(subject_id),
+            # String, not int: this is a non-empty-string column upstream and, because
+            # _write_audit fails open, an int would 400 SILENTLY — a working feature
+            # with an audit log that records nothing but a Flask warning line.
+            "actor_user_id": str(human.get("user_id") or ""),
+            "actor_name":    human.get("name"),
+            "actor_cohort":  human.get("cohort"),
+            "detail":        dict(detail or {}),   # copy — never mutate the caller's dict
+        }
+        # Which SmartStaff environment produced this row. Raw BASE_URL (not a
+        # "prod"/"test" label) so a third box or renamed host needs no code change;
+        # resolved once at import, so this is a constant read. Set AFTER the detail
+        # copy and as a top-level field so a caller can never override it, and so
+        # every future consumer of _write_audit inherits it automatically. (AMENDMENT 1)
+        payload["env"] = BASE_URL
+        if pre:
+            payload["detail"]["elevated"] = True
+            # via_account: WHICH admin account the elevation ran as. Deliberately
+            # user_id, NOT ein — every usergroupID==1 account has ein = 0, and "0"
+            # is truthy in Python, so an `ein or user_id` fallback silently records
+            # "0" for everyone. The name is captured alongside the id for the same
+            # reason actor_name is: an opaque id is only resolvable while SmartStaff
+            # exists to resolve it against.
+            payload["detail"]["via_account"]      = acting.get("user_id")
+            payload["detail"]["via_account_name"] = acting.get("name")
+        if not GOAT_RECRUITMENT_KEY:
+            app.logger.warning("[audit] GOAT_RECRUITMENT_KEY not configured; audit row skipped")
+            return
+        r = http.post(
+            GOAT_AUDIT_LOG_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json=payload,
+            timeout=5,
+        )
+        if r.status_code != 200:
+            app.logger.warning(f"[audit] goat-audit-log returned {r.status_code}")
+    except Exception as e:
+        app.logger.warning(f"[audit] write failed (fail-open, response unaffected): {e}")
+
+
+@app.route("/api/admin/crew/<crew_id>/payslips")
+@require_cohort("admin")
+def api_admin_crew_payslips(crew_id):
+    """One crew member's pay weeks (on-behalf, via impersonation), newest first.
+    Timestamps only — not a disclosure — so this writes NO audit row."""
+    weeks, err = fetch_crew_workslips(crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"workslips": weeks})
+
+
+@app.route("/api/admin/crew/<crew_id>/payslips/<int:week_ending>")
+@require_cohort("admin")
+def api_admin_crew_payslip_pdf(crew_id, week_ending):
+    """Stream one workslip PDF inline, on the crew member's behalf (impersonation).
+    Once the bytes are in hand, write ONE audit row recording the disclosure; that
+    write fails open (see _write_audit) so a dead audit host never blocks the PDF.
+    Response shape mirrors api_admin_licence_file. Content-Disposition is forced to
+    inline so the browser's own viewer opens it — never a forced download (decision
+    4). week_ending is the raw unix-seconds int, passed straight through."""
+    content, ctype, err = fetch_crew_workslip_pdf(crew_id, week_ending)
+    if err:
+        status = 404 if err.startswith("No payslip") else 502
+        return jsonify({"error": err}), status
+    # Audit AFTER the bytes exist, and only here (never on the list route). The
+    # actor is resolved server-side inside _write_audit; week_ending is the only
+    # request-derived value, and it names the record, not the actor.
+    _write_audit("payslip.view", "crew", crew_id, {"week_ending": week_ending})
+    return Response(content, mimetype=(ctype or "application/pdf"), headers={
+        "Content-Disposition": "inline",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 # ── Manage Crew: Licences ─────────────────────────────────────────────────────
