@@ -1,6 +1,6 @@
 {
-  "version": "5.3.0",
+  "version": "5.3.1",
   "release_date": "2026-08-14",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.3.0/TheGOAT.dmg",
-  "release_notes": "Click a crew name in Crew Finder to open a panel showing every shift they have 48 hours either side of the call you're filling. Schedule call counts now come from the roster — the unconfirmed count was reading zero. Crew without Crew Hub notifications are marked."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.3.1/TheGOAT.dmg",
+  "release_notes": "The Add Crew Member button in Crew → Records has moved to the right of the filters, beside Refresh, so it stops catching stray clicks on the way to the search box."
 }
