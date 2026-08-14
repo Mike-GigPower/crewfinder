@@ -1959,10 +1959,10 @@ a.recruit-action{text-decoration:none;display:inline-block}
   <div class="tab-panel" id="tab-crew-records">
     <div class="ind-panel">
       <div class="ind-toolbar">
-        <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="adminAddUser()">+ Add Crew Member</button>
         <span class="ind-filter-label">Name:</span><input class="ind-search" id="crew-list-search" type="text" placeholder="Search name, EIN or phone..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; _renderCrewList()"><span class="ind-filter-label">Group:</span>
         <div class="ind-group-chips" id="crew-list-chips"></div>
         <div class="ind-actions">
+          <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="adminAddUser()">+ Add Crew Member</button>
           <div id="crew-list-seg" style="display:inline-flex;gap:6px"></div>
           <button class="btn" onclick="_loadCrewList()">&#8635; Refresh</button>
         </div>
