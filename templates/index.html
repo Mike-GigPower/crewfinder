@@ -301,6 +301,15 @@ tr.skipped{opacity:.6}
 #crew-card .cc-sh-sub{font-size:10px;line-height:1.35;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #crew-card .cc-sh-more{font-size:10px;color:var(--muted);font-style:italic;padding-top:3px}
 #crew-card .cc-sh-row--target{border-left:2px solid var(--accent);padding-left:6px;margin-left:-8px}
+/* Crew detail expansion row (Phase 2, Step 2). Prefix cd-. Tokens only, no new hex.
+   The panel owns its own padding; the cell must not add its own. .crew-name gains a
+   pointer cursor here (source order beats the base .crew-name rule; not modified). */
+.crew-detail-row > td{padding:0}
+.cd-panel{position:relative;border-top:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface2);padding:12px}
+.cd-close{position:absolute;top:8px;right:10px;background:none;border:none;color:var(--muted);font-size:18px;line-height:1;cursor:pointer;padding:2px 8px}
+.cd-close:hover{color:var(--accent)}
+.cd-name{font-weight:700;font-size:13px;color:var(--accent);letter-spacing:.02em}
+.crew-name{cursor:pointer}
 /* Crew-details header banner (admin edit dialog) */
 .ce-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:0 0 14px;margin-bottom:12px;border-bottom:1px solid var(--border)}
 .ce-hdr-left{min-width:0;flex:1}
@@ -3094,6 +3103,7 @@ function applyCrewSpec(result, spec){
 }
 
 function renderResults(result,details,targets){
+  closeCrewDetail();   // table is about to be rebuilt — drop any open detail row (no reopen)
   // Apply an active ASK THE GOAT filter/sort to the on-screen list (if any).
   let goatInfo=null;
   if(_goatSpec){
@@ -3376,6 +3386,7 @@ function shiftTip(s,targetDate,sh,eh,state){
 // authenticated /api/crew-photo proxy with an onerror placeholder, so the card
 // renders instantly with no extra round trip.
 let _crewCardEl=null, _crewCardTimer=null;
+let _expandedCrew = null;   // crew.name of the open detail row, or null
 
 function _ensureCrewCardEl(){
   if(_crewCardEl) return _crewCardEl;
@@ -3537,6 +3548,47 @@ function attachCrewCardHover(td,crew){
     clearTimeout(_crewCardTimer);
     hideCrewCard();
   });
+  // Click the name cell to open/close the detail row. On the name cell ONLY, so the
+  // checkbox cell (a separate <td>) is untouched. stopPropagation so the click can't
+  // reach any ancestor handler. Hover (above) is unaffected — both must keep working.
+  td.addEventListener('click',(e)=>{
+    e.stopPropagation();
+    toggleCrewDetail(td.closest('tr'),crew);
+  });
+}
+
+// ── Crew detail expansion row (Phase 2, Step 2 — shell only) ─────────────────
+// A full-width row inserted beneath a clicked crew row, in either Crew Finder view.
+// Accordion: one open at a time. Step 3 fills .cd-panel with the header strip + Gantt.
+function closeCrewDetail(){
+  // Find by class, never a stored reference — the results table is rebuilt from
+  // scratch on every re-render, so a kept node would be detached and stale.
+  const row = document.querySelector('tr.crew-detail-row');
+  if(row) row.remove();
+  _expandedCrew = null;
+}
+function openCrewDetail(anchorTr, crew){
+  closeCrewDetail();          // accordion — only one open at a time
+  hideCrewCard();             // the hover card must not sit over the panel
+  const tr = document.createElement('tr');
+  tr.className = 'crew-detail-row';
+  const td = document.createElement('td');
+  // The anchor row's OWN cell count spans the table unchanged in table view,
+  // timeline view, and with geo search active (7 / 8 / 9 columns).
+  td.colSpan = anchorTr.children.length;
+  const panel = document.createElement('div');
+  panel.className = 'cd-panel';
+  panel.innerHTML =
+      '<button type="button" class="cd-close" title="Close" onclick="closeCrewDetail()">×</button>'
+    + '<div class="cd-name">'+escapeHtml(crew.name)+'</div>';
+  td.appendChild(panel);
+  tr.appendChild(td);
+  anchorTr.parentNode.insertBefore(tr, anchorTr.nextSibling);
+  _expandedCrew = crew.name;
+}
+function toggleCrewDetail(anchorTr, crew){
+  if(_expandedCrew === crew.name) closeCrewDetail();   // same name twice closes it
+  else openCrewDetail(anchorTr, crew);
 }
 
 function inductionWarnHtml(crew){
@@ -11760,6 +11812,17 @@ document.addEventListener('keydown', function(e){
     const m = document.getElementById('entity-modal');
     if(m && m.style.display === 'flex') closeEntityModal();
   }
+});
+
+// Lowest-priority Escape: closes the crew detail row, but only when neither the call
+// dialog (entity-modal) nor the ops dialog (ops-modal) is open — they own Esc first.
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  const em = document.getElementById('entity-modal');
+  if(em && em.style.display === 'flex') return;
+  const om = document.getElementById('ops-modal');
+  if(om && om.style.display === 'flex') return;
+  closeCrewDetail();
 });
 
 // ── COMMAND PALETTE (⌘K) ─────────────────────────────────────────────────────
