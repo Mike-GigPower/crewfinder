@@ -1,6 +1,6 @@
 {
-  "version": "5.2.0",
-  "release_date": "2026-08-13",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.2.0/TheGOAT.dmg",
-  "release_notes": "Manage Crew now has a Payslips tab on every crew record — each pay week they have on file, with the workslip PDF one click away. Opening a payslip is recorded; viewing the list of weeks is not."
+  "version": "5.3.0",
+  "release_date": "2026-08-14",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.3.0/TheGOAT.dmg",
+  "release_notes": "Click a crew name in Crew Finder to open a panel showing every shift they have 48 hours either side of the call you're filling. Schedule call counts now come from the roster — the unconfirmed count was reading zero. Crew without Crew Hub notifications are marked."
 }
