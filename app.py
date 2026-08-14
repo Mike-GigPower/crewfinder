@@ -106,6 +106,7 @@ VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/mai
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
 GP_PUSH_URL       = "https://crew.gigpower.com/api/push/offer"
+GP_REACHABLE_URL  = "https://crew.gigpower.com/api/push/reachable"
 GP_PUSH_SECRET = os.environ.get("GP_PUSH_SECRET", "") or load_config().get("gp_push_secret", "")
 GP_PUSH_DEDUP_TTL = 900   # seconds; suppress a repeat push for the same crew+call
 
@@ -221,6 +222,33 @@ def gp_notify_change(crew_id, call, kind):
         )
     except Exception:
         pass   # never let a push break the call-edit response
+
+def gp_fetch_push_reachable():
+    """Distinct EINs with at least one live Crew Hub push subscription.
+
+    Returns a set of EIN strings, or None on ANY failure. None means "unknown"
+    and MUST be distinguished from an empty set: the Hub returns a non-200
+    rather than an empty list precisely so a Supabase blip can't be read as
+    "nobody is reachable". Callers show no indicator when this is None.
+    """
+    try:
+        r = http.get(
+            GP_REACHABLE_URL,
+            headers={"X-Push-Secret": GP_PUSH_SECRET},
+            timeout=6,
+        )
+        if r.status_code != 200:
+            app.logger.warning(f"[push-reachable] HTTP {r.status_code}")
+            return None
+        data = r.json()
+        eins = data.get("eins")
+        if not isinstance(eins, list):
+            app.logger.warning("[push-reachable] malformed response: 'eins' not a list")
+            return None
+        return {str(e).strip() for e in eins if str(e).strip()}
+    except Exception as e:
+        app.logger.warning(f"[push-reachable] fetch error: {e}")
+        return None
 
 # ─── RECRUITMENT (ops applicant review) ───────────────────────────────────────
 # Read-only applicant list, served by a deployed Supabase edge function. The URL
@@ -469,6 +497,18 @@ def _do_cache_refresh(ss):
                     # Save incrementally every 50 crew
                     if _refresh_progress["done"] % 50 == 0:
                         save_cache(new_cache)
+
+        # Stamp Crew Hub push-reachability onto every entry, in its own try/except
+        # so a Hub/Supabase blip can never fail the crew rebuild. A None result is
+        # "unknown" — leave each entry's existing push_ok untouched rather than
+        # writing False, so a failed fetch keeps the last known state.
+        try:
+            reachable = gp_fetch_push_reachable()
+            if reachable is not None:
+                for _entry in new_cache.values():
+                    _entry["push_ok"] = str(_entry.get("ein", "")).strip() in reachable
+        except Exception as e:
+            app.logger.warning(f"[push-reachable] apply error: {e}")
 
         save_cache(new_cache)
 
@@ -5911,6 +5951,13 @@ def api_availability():
         # EIN for display: prefer freshly-scraped EIN, then cached EIN, then userID
         if not crew.get("ein"):
             crew["ein"] = cache.get(cid, {}).get("ein", crew.get("id", cid))
+
+        # Push-reachability, carried from the cache entry ONLY when known. Absent
+        # means the reachable fetch hasn't run yet or failed — leave it unset so
+        # the frontend treats it as unknown (no indicator), never "no push".
+        _push_ok = cache.get(cid, {}).get("push_ok")
+        if _push_ok is not None:
+            crew["push_ok"] = _push_ok
 
         reasons = []
         if rating < min_rating:
