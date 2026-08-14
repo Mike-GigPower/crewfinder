@@ -310,6 +310,33 @@ tr.skipped{opacity:.6}
 .cd-close:hover{color:var(--accent)}
 .cd-name{font-weight:700;font-size:13px;color:var(--accent);letter-spacing:.02em}
 .crew-name{cursor:pointer}
+/* Crew detail — header strip + ±48h Gantt (Phase 2, Step 3). Prefix cd-. Bar colours
+   are reused from .tl-bar.bar-* (cd-bar overrides geometry only); the target band and
+   6h grid reuse .tl-target / .tl-grid. No colour value is restated here — tokens only. */
+.cd-hdr{display:flex;align-items:center;gap:14px;margin-bottom:12px;padding-right:26px}
+.cd-hdr-name{font-weight:700;font-size:15px;color:var(--accent);letter-spacing:.02em}
+.cd-hdr-stats{margin-left:auto}
+.cd-empty{color:var(--muted);font-style:italic;font-size:12px;padding:6px 2px}
+.cd-gantt{display:flex;align-items:flex-start;max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
+.cd-gantt-labels{width:260px;flex:none;border-right:1px solid var(--border)}
+.cd-gantt-scroll{flex:1;overflow-x:auto;overflow-y:hidden}
+.cd-gantt-inner{position:relative}
+.cd-axis-spacer{height:22px;border-bottom:1px solid var(--border)}
+.cd-axis{position:sticky;top:0;height:22px;background:var(--surface2);border-bottom:1px solid var(--border);z-index:3}
+.cd-tick-time{position:absolute;bottom:2px;font-size:9px;color:var(--muted);transform:translateX(-50%);white-space:nowrap;pointer-events:none}
+.cd-tick-date{position:absolute;top:1px;font-size:8px;font-weight:700;letter-spacing:.04em;color:var(--muted);transform:translateX(-50%);white-space:nowrap;pointer-events:none}
+.cd-label{height:40px;box-sizing:border-box;padding:4px 8px;border-bottom:1px solid var(--border);overflow:hidden}
+.cd-label--target{border-left:2px solid var(--accent);padding-left:6px}
+.cd-label-l1{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;line-height:1.35;color:var(--text)}
+.cd-when{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cd-label-l2{font-size:10px;line-height:1.3;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cd-tag{flex:none;font-family:'Share Tech Mono',monospace;font-size:8px;letter-spacing:.08em;text-transform:uppercase;font-weight:700}
+.cd-tag--ok{color:var(--available)}
+.cd-tag--bad{color:var(--conflict)}
+.cd-tag--warn{color:var(--warn)}
+.cd-tag--muted{color:var(--muted)}
+.cd-lane{position:relative;height:40px;box-sizing:border-box;border-bottom:1px solid var(--border)}
+.cd-bar{top:12px;height:16px;bottom:auto}
 /* Crew-details header banner (admin edit dialog) */
 .ce-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:0 0 14px;margin-bottom:12px;border-bottom:1px solid var(--border)}
 .ce-hdr-left{min-width:0;flex:1}
@@ -317,13 +344,13 @@ tr.skipped{opacity:.6}
 .ce-hdr-photo{width:76px;height:76px;object-fit:cover;border-radius:6px;border:1px solid var(--border);background:var(--surface);display:block}
 .ce-hdr-photo-ph{width:76px;height:76px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px dashed var(--border);background:var(--surface);color:var(--muted);font-size:10px;text-align:center;padding:4px}
 /* reuse the CrewFinder rollover stat styling outside #crew-card */
-.ce-hdr .cc-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 4px}
-.ce-hdr .cc-stats{margin-bottom:0}
-.ce-hdr .cc-stat-row{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.7}
-.ce-hdr .cc-stat-period{min-width:34px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
-.ce-hdr .cc-stat{font-weight:600}
-.ce-hdr .cc-stat-late{color:var(--warn,#f59e0b)}
-.ce-hdr .cc-stat-ns{color:var(--conflict,#ef4444)}
+.ce-hdr .cc-stat-label, .cd-panel .cc-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 4px}
+.ce-hdr .cc-stats, .cd-panel .cc-stats{margin-bottom:0}
+.ce-hdr .cc-stat-row, .cd-panel .cc-stat-row{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.7}
+.ce-hdr .cc-stat-period, .cd-panel .cc-stat-period{min-width:34px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+.ce-hdr .cc-stat, .cd-panel .cc-stat{font-weight:600}
+.ce-hdr .cc-stat-late, .cd-panel .cc-stat-late{color:var(--warn,#f59e0b)}
+.ce-hdr .cc-stat-ns, .cd-panel .cc-stat-ns{color:var(--conflict,#ef4444)}
 .tl-time-header{position:relative;height:20px}
 .tl-time-label{position:absolute;font-size:9px;color:var(--muted);transform:translateX(-50%);white-space:nowrap}
 .section-row-tl td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
@@ -3462,26 +3489,9 @@ function crewShiftsHtml(crew){
     // so the card and the bar can never disagree about severity. barClass drives the
     // tone; the tag text is the status word (CLASH/OVERLAP only for non-target rows).
     const {barClass, state} = shiftBarState(s, rel);
-    const st = Number(s.status);
-    let tag;
-    if(s.is_target){
-      // Status of the shift ON the searched call — per-shift, NOT collapsed from rel,
-      // so a multi-call search shows each call's own truth.
-      tag = st===5?'BOOKED' : st===6?'DECLINED' : st===7?'BACKUP' : 'WAITING';   // 1/0/missing → WAITING
-    } else if(s.conflicts_target && (st===5 || st===1)){
-      tag = 'CLASH';
-    } else if(s.overlaps_target && (st===5 || st===1)){
-      tag = 'OVERLAP';
-    } else {
-      tag = st===5?'BOOKED' : st===1?'PENDING' : st===6?'DECLINED' : st===8?'NO-SHOW' : st===7?'BACKUP' : 'UNSET';   // 0/missing → UNSET
-    }
-    // Tone from barClass, never from the tag, so severity tracks the timeline exactly.
-    let tone;
-    if(barClass==='bar-conflict')      tone='bad';
-    else if(barClass==='bar-warn')     tone='warn';
-    else if(barClass==='bar-booked')   tone='ok';
-    else if(barClass==='bar-info')     tone=(st===5)?'ok':'muted';
-    else                               tone='muted';   // bar-backup, bar-assigned
+    // Tag word + tone come from the ONE shared derivation (shiftTagTone), so this
+    // card and the detail Gantt can never classify the same shift differently.
+    const {tag, tone} = shiftTagTone(s, barClass);
 
     // Date/time straight off the ISO local string — NOT hToLabel/dtToH, which are
     // anchored to the timeline's targetDate. Building the Date from the bare date
@@ -3520,6 +3530,165 @@ function crewShiftsHtml(crew){
     : '';
 
   return label + '<div class="cc-shifts">'+rows+more+'</div>';
+}
+
+// Shift tag word + tone — the SINGLE shared derivation, called by both the hover card
+// (crewShiftsHtml) and the detail Gantt (crewGanttHtml). Two copies of this diverged
+// once already and caused defects on this branch, so it lives in exactly one place.
+// barClass comes from shiftBarState; tone is driven by it (never by the tag) so the
+// tag word and the bar colour can never disagree about severity.
+function shiftTagTone(s, barClass){
+  const st = Number(s.status);
+  let tag;
+  if(s.is_target){
+    tag = st===5?'BOOKED' : st===6?'DECLINED' : st===7?'BACKUP' : 'WAITING';   // 1/0/missing → WAITING
+  } else if(s.conflicts_target && (st===5 || st===1)){
+    tag = 'CLASH';
+  } else if(s.overlaps_target && (st===5 || st===1)){
+    tag = 'OVERLAP';
+  } else {
+    tag = st===5?'BOOKED' : st===1?'PENDING' : st===6?'DECLINED' : st===8?'NO-SHOW' : st===7?'BACKUP' : 'UNSET';   // 0/missing → UNSET
+  }
+  let tone;
+  if(barClass==='bar-conflict')      tone='bad';
+  else if(barClass==='bar-warn')     tone='warn';
+  else if(barClass==='bar-booked')   tone='ok';
+  else if(barClass==='bar-info')     tone=(st===5)?'ok':'muted';
+  else                               tone='muted';   // bar-backup, bar-assigned
+  return {tag, tone};
+}
+
+// Crew detail panel body (Phase 2, Step 3): identity strip + ±48h Gantt. Called by
+// openCrewDetail. No notes — the hover card carries those and they'd dwarf the Gantt.
+function crewDetailBody(crew){
+  const photo = crew.id
+    ? '<img class="ce-hdr-photo" src="/api/crew-photo/'+encodeURIComponent(crew.id)+'" alt="" '
+      + 'onerror="this.outerHTML=\'<div class=&quot;ce-hdr-photo-ph&quot;>No photo</div>\'">'
+    : '<div class="ce-hdr-photo-ph">No photo</div>';
+  const header =
+      '<div class="cd-hdr">'
+    +   photo
+    +   '<div class="cd-hdr-name">'+escapeHtml(crew.name)+'</div>'
+    +   '<div class="cd-hdr-stats">'+crewStatsHtml(crew)+'</div>'
+    + '</div>';
+  return header + crewGanttHtml(crew);
+}
+
+// ±48h Gantt for the crew detail panel. Classification is delegated entirely to
+// shiftBarState / targetBarState / shiftTagTone — no second colour or status chain.
+// Fixed 12px/hour; the panel scrolls if the span is wider than it (no fit-to-width).
+function crewGanttHtml(crew){
+  const targets = (currentResult && currentResult.targets) || [];
+  if(!targets.length) return '';
+  const rel = targetRelationship(crew);
+
+  const HOUR = 3600000, PXH = 12;
+  const tStarts = targets.map(t=>new Date(t.start_dt).getTime());
+  const tEnds   = targets.map(t=>new Date(t.end_dt).getTime());
+  let spanStart = Math.min.apply(null, tStarts) - 48*HOUR;
+  spanStart = Math.floor(spanStart/HOUR)*HOUR;                 // floor to the hour
+  const spanEnd = Math.max.apply(null, tEnds) + 48*HOUR;
+  const spanHours = Math.max(1, Math.ceil((spanEnd - spanStart)/HOUR));
+  const innerW = spanHours * PXH;
+
+  // Row list: shifts + unavailabilities overlapping the span, one chronological run.
+  // Every field read defensively — the fallback scraper omits status/call/booking.
+  const rows = [];
+  ((crew && crew.shifts) || []).forEach(s=>{
+    if(!s || !s.start || !s.end) return;
+    const a = new Date(s.start).getTime(), b = new Date(s.end).getTime();
+    if(!(b > spanStart && a < spanEnd)) return;
+    const {barClass, state} = shiftBarState(s, rel);
+    const {tag, tone} = shiftTagTone(s, barClass);
+    rows.push({start:a, end:b, iso:s.start, isoEnd:s.end, barClass, tag, tone,
+               is_target:!!s.is_target, l2:[s.booking_name, s.call_name],
+               titleExtra:[s.booking_name, s.call_name, s.venue], state});
+  });
+  ((crew && crew.unavails) || []).forEach(u=>{
+    if(!u || !u.start || !u.end) return;
+    const a = new Date(u.start).getTime(), b = new Date(u.end).getTime();
+    if(!(b > spanStart && a < spanEnd)) return;
+    const reason = u.reason || 'Unavailable';
+    rows.push({start:a, end:b, iso:u.start, isoEnd:u.end, barClass:'bar-unavail',
+               tag:'UNAVAILABLE', tone:'muted', is_target:false,
+               l2:[reason], titleExtra:[], state:'Unavailable: '+reason});
+  });
+
+  // Conan case — declined/waiting crew with NO calendar row for the target call would
+  // show an empty Gantt (reads as "free"). If rel is set and no is_target shift landed
+  // in span, prepend a synthetic target row from targetBarState. Required, not optional.
+  if(rel && !rows.some(r=>r.is_target)){
+    const tb = targetBarState(rel);
+    const a = Math.min.apply(null, tStarts), b = Math.max.apply(null, tEnds);
+    const tag  = rel==='booked'?'BOOKED' : rel==='declined'?'DECLINED' : rel==='backup'?'BACKUP' : 'WAITING';
+    const tone = tb.barClass==='bar-conflict'?'bad' : tb.barClass==='bar-booked'?'ok' : 'muted';
+    rows.push({start:a, end:b, iso:targets[tStarts.indexOf(a)].start_dt, isoEnd:targets[tEnds.indexOf(b)].end_dt,
+               barClass:tb.barClass, tag, tone, is_target:true, l2:['Requested call'],
+               titleExtra:[], state:tb.state});
+  }
+
+  if(!rows.length){
+    return '<div class="cd-empty">No shifts ±48h</div>';   // only when truly nothing
+  }
+  rows.sort((a,b)=> a.start - b.start);
+
+  // Format off the ISO local strings — NOT dtToH/hToLabel (those are anchored to the
+  // results timeline's targetDate).
+  const fmtDay  = iso => new Date(iso.slice(0,10)+'T00:00').toLocaleDateString('en-AU',{weekday:'short',day:'numeric'});
+  const fmtTime = iso => iso.slice(11,16);
+
+  // Axis: 6h grid lines (reuse .tl-grid), 12h time labels, a date label at each midnight
+  // — a ±48h window spans 4-5 calendar days, so time-only labels aren't unambiguous.
+  let grid = '', ticks = '';
+  for(let t = spanStart; t <= spanEnd; t += HOUR){
+    const d = new Date(t), hr = d.getHours();
+    const x = ((t - spanStart)/HOUR) * PXH;
+    if(hr % 6 === 0)  grid  += '<div class="tl-grid" style="left:'+x+'px"></div>';
+    if(hr % 12 === 0) ticks += '<span class="cd-tick-time" style="left:'+x+'px">'+String(hr).padStart(2,'0')+':00</span>';
+    if(hr === 0)      ticks += '<span class="cd-tick-date" style="left:'+x+'px">'+escapeHtml(d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric'}))+'</span>';
+  }
+
+  // Target band(s) — reuse .tl-target (dashed edges, translucent fill), one per window.
+  let bands = '';
+  tStarts.forEach((_,i)=>{
+    const a = Math.max(spanStart, tStarts[i]), b = Math.min(spanEnd, tEnds[i]);
+    if(b <= a) return;
+    const left = ((a - spanStart)/HOUR)*PXH, width = ((b - a)/HOUR)*PXH;
+    bands += '<div class="tl-target" style="left:'+left+'px;width:'+width+'px"></div>';
+  });
+
+  // Rows → aligned label cells (left column) + lanes (scrolling column).
+  let labels = '<div class="cd-axis-spacer"></div>', lanes = '';
+  rows.forEach(r=>{
+    const day = fmtDay(r.iso), times = fmtTime(r.iso)+'–'+fmtTime(r.isoEnd);
+    const l2 = r.l2.filter(Boolean).map(x=>escapeHtml(decodeEntities(x))).join(' · ');
+    // Venue lives only in the title (it repeats across a 96h window and distinguishes
+    // nothing on-row); the human state string rides along too.
+    const tParts = [];
+    r.titleExtra.forEach(x=>{ if(x) tParts.push(decodeEntities(x)); });
+    tParts.push(day+' '+times);
+    if(r.state) tParts.push(r.state);
+    const title = escapeHtml(tParts.join('\n'));
+    labels +=
+        '<div class="cd-label'+(r.is_target?' cd-label--target':'')+'" title="'+title+'">'
+      +   '<div class="cd-label-l1"><span class="cd-when">'+escapeHtml(day)+' · '+escapeHtml(times)+'</span>'
+      +     '<span class="cd-tag cd-tag--'+r.tone+'">'+r.tag+'</span></div>'
+      +   '<div class="cd-label-l2">'+l2+'</div>'
+      + '</div>';
+    // Bar geometry, clamped to the span so an overhanging shift can't overflow the box.
+    const a = Math.max(spanStart, r.start), b = Math.min(spanEnd, r.end);
+    const left = ((a - spanStart)/HOUR)*PXH, width = Math.max(3, ((b - a)/HOUR)*PXH);
+    lanes += '<div class="cd-lane"><div class="tl-bar '+r.barClass+' cd-bar" style="left:'+left+'px;width:'+width+'px"></div></div>';
+  });
+
+  return '<div class="cd-gantt">'
+    +   '<div class="cd-gantt-labels">'+labels+'</div>'
+    +   '<div class="cd-gantt-scroll"><div class="cd-gantt-inner" style="width:'+innerW+'px">'
+    +     bands + grid
+    +     '<div class="cd-axis">'+ticks+'</div>'
+    +     lanes
+    +   '</div></div>'
+    + '</div>';
 }
 function showCrewCard(anchor,crew){
   if(!crew) return;
@@ -3580,7 +3749,7 @@ function openCrewDetail(anchorTr, crew){
   panel.className = 'cd-panel';
   panel.innerHTML =
       '<button type="button" class="cd-close" title="Close" onclick="closeCrewDetail()">×</button>'
-    + '<div class="cd-name">'+escapeHtml(crew.name)+'</div>';
+    + crewDetailBody(crew);
   td.appendChild(panel);
   tr.appendChild(td);
   anchorTr.parentNode.insertBefore(tr, anchorTr.nextSibling);
