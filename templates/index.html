@@ -16993,8 +16993,26 @@ function schedMarkCallClash(callId, hasClash){
 }
 
 function renderCallStatusBadge(el, data, callMeta){
-  const { confirmed, waiting, declined, required, crew } = data;
-  const unfilled = Math.max(0, required - confirmed - waiting - declined);
+  const { crew } = data;
+  // Counts derive from the real roster (data.crew) — D1: the scraped banner is a
+  // fallback only when the roster is empty. get-booking.php emits status as a LABEL
+  // string, not an int (5→'confirmed', 1→'sent', 6→'declined', 8→'noshow',
+  // 7→'backup', anything else →'unconfirmed').
+  const roster = Array.isArray(data.crew) ? data.crew : [];
+  const useRoster = roster.length > 0;
+  const st = s => String(s || '').toLowerCase();
+  const confirmed = useRoster
+    ? roster.filter(c => st(c.status) === 'confirmed').length
+    : (data.confirmed || 0);
+  const waiting = useRoster
+    ? roster.filter(c => ['unconfirmed','sent'].includes(st(c.status))).length   // D2: unanswered = unconfirmed + sent
+    : (data.waiting || 0);
+  const declined = useRoster
+    ? roster.filter(c => st(c.status) === 'declined').length
+    : (data.declined || 0);
+  const noshow = useRoster
+    ? roster.filter(c => st(c.status) === 'noshow').length
+    : 0;                                                          // D3: backup is never counted; banner carries no no-show
   let html = '';
 
   // Clash detection now happens server-side (3.4.6) — see /api/schedule's
@@ -17021,8 +17039,11 @@ function renderCallStatusBadge(el, data, callMeta){
     html += `<span style="color:var(--warn);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">⏳${waiting}</span>`;
   if(declined > 0)
     html += `<span style="color:var(--accent2);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">✗${declined}</span>`;
-  if(unfilled > 0 && required > 0)
-    html += `<span style="color:var(--muted);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">○${unfilled}</span>`;
+  // D4: no-show badge, only when past days are visible (a no-show is meaningless on a
+  // future call). D5: the ○ unfilled badge is removed — the row's 59/80 already states
+  // filled-against-required directly, and the old arithmetic disagreed with it.
+  if(noshow > 0 && _schedBack > 0)
+    html += `<span style="color:var(--accent2);font-size:9px;font-family:'Share Tech Mono',monospace;margin-left:4px">⊘${noshow}</span>`;
   // Badges count DISTINCT people per severity. A person with a clash counts
   // once under clash. Of the rest, someone with at least one unacknowledged
   // warning counts under warning; someone whose warnings are ALL acknowledged
