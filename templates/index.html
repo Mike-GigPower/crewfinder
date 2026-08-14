@@ -315,7 +315,6 @@ tr.skipped{opacity:.6}
    6h grid reuse .tl-target / .tl-grid. No colour value is restated here — tokens only. */
 .cd-hdr{display:flex;align-items:center;gap:14px;margin-bottom:12px;padding-right:26px}
 .cd-hdr-name{font-weight:700;font-size:15px;color:var(--accent);letter-spacing:.02em}
-.cd-hdr-stats{margin-left:auto}
 .cd-empty{color:var(--muted);font-style:italic;font-size:12px;padding:6px 2px}
 .cd-gantt{display:flex;align-items:flex-start;max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;background:var(--surface)}
 .cd-gantt-labels{width:260px;flex:none;border-right:1px solid var(--border)}
@@ -3568,7 +3567,7 @@ function crewDetailBody(crew){
   const header =
       '<div class="cd-hdr">'
     +   photo
-    +   '<div class="cd-hdr-name">'+escapeHtml(crew.name)+'</div>'
+    +   '<div class="cd-hdr-name">'+escapeHtml(decodeEntities(crew.name))+'</div>'
     +   '<div class="cd-hdr-stats">'+crewStatsHtml(crew)+'</div>'
     + '</div>';
   return header + crewGanttHtml(crew);
@@ -3698,9 +3697,9 @@ function showCrewCard(anchor,crew){
     : `<div class="cc-photo-ph">No photo on file</div>`;
   const hasNotes=crew.notes&&String(crew.notes).trim();
   const notes=hasNotes
-    ? `<div class="cc-notes">${escapeHtml(crew.notes)}</div>`
+    ? `<div class="cc-notes">${escapeHtml(decodeEntities(crew.notes))}</div>`
     : `<div class="cc-notes empty">No notes on file</div>`;
-  el.innerHTML=`<div class="cc-name">${escapeHtml(crew.name)}</div>${photo}${crewStatsHtml(crew)}${crewShiftsHtml(crew)}<div class="cc-notes-label">Notes</div>${notes}`;
+  el.innerHTML=`<div class="cc-name">${escapeHtml(decodeEntities(crew.name))}</div>${photo}${crewStatsHtml(crew)}${crewShiftsHtml(crew)}<div class="cc-notes-label">Notes</div>${notes}`;
   el.style.display='block';
   _positionCrewCard(el,anchor);
 }
