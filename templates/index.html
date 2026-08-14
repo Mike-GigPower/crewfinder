@@ -124,6 +124,11 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .induction-expired{font-size:10px;font-weight:600;color:#ef4444;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
 .induction-expiring{font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
 .induction-current{font-size:10px;font-weight:600;color:var(--ok,#10b981);background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.30);padding:2px 7px;border-radius:4px;margin-left:4px;white-space:nowrap}
+/* Quiet marker for crew with no Crew Hub push subscription. A bare glyph — no
+   pill — greyed and dimmed so it never competes with the induction/conflict
+   badges, which block a booking; this one only informs. */
+.push-warn{color:var(--muted);opacity:.55;filter:grayscale(1);font-size:11px;margin-left:5px;cursor:default}
+.cd-push-warn{color:var(--muted);font-size:11px;margin-top:3px}
 .crew-remove-btn{background:none;border:none;color:var(--muted);font-size:13px;line-height:1;cursor:pointer;padding:0 4px;border-radius:3px;opacity:.6}
 .crew-remove-btn:hover{color:#ef4444;background:rgba(239,68,68,0.12);opacity:1}
 .crew-remove-btn:disabled{opacity:.3;cursor:default}
@@ -3567,7 +3572,7 @@ function crewDetailBody(crew){
       '<div class="cd-hdr">'
     +   photo
     +   '<div class="cd-hdr-name">'+escapeHtml(decodeEntities(crew.name))+'</div>'
-    +   '<div class="cd-hdr-stats">'+crewStatsHtml(crew)+'</div>'
+    +   '<div class="cd-hdr-stats">'+crewStatsHtml(crew)+pushDetailHtml(crew)+'</div>'
     + '</div>';
   return header + crewGanttHtml(crew);
 }
@@ -3776,6 +3781,21 @@ function inductionWarnHtml(crew){
   ).join('');
   return warnHtml+okHtml;
 }
+// Small, quiet marker for crew with no Crew Hub push subscription. Rendered only
+// when we actually know: crew.push_ok === false. Absent/undefined means the Hub
+// fetch failed or hasn't run — show nothing rather than guessing. The !== false
+// guard is deliberate: !crew.push_ok would mark the whole roster on a failed fetch.
+function pushWarnHtml(crew){
+  if(!crew || crew.push_ok !== false) return '';
+  return '<span class="push-warn" title="No Crew Hub push notifications on file">🔕</span>';
+}
+// Detail-panel counterpart: one quiet line. Worded "on file", not "unreachable" —
+// the flag means no subscription is recorded (e.g. a reinstall drops the row until
+// the Hub is next opened), which is softer than "cannot be contacted".
+function pushDetailHtml(crew){
+  if(!crew || crew.push_ok !== false) return '';
+  return '<div class="cd-push-warn">No Crew Hub push notifications</div>';
+}
 function breakdownHtml(crew){
   if(!crew.call_results||crew.call_results.length<=1)return '';
   return '<div class="call-breakdown">'+crew.call_results.map(function(r){
@@ -3878,7 +3898,7 @@ function addTableRow(tbody,crew,status,targets){
   tr.appendChild(cbTd);
   function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
   const ph=phoneLink(crew.phone);
-  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew);
+  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew)+pushWarnHtml(crew);
   const nameTd=mkTd('name-cell',nameHtml);
   if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
   tr.appendChild(nameTd);
@@ -4004,7 +4024,7 @@ function renderTimeline(result,details,targets){
     tr.appendChild(cbTd);
     function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
     const ph=phoneLink(crew.phone);
-    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew));
+    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew)+pushWarnHtml(crew));
     tr.appendChild(nameTd);
     attachCrewCardHover(nameTd,crew);
     tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
