@@ -1,6 +1,6 @@
 {
-  "version": "5.5.0",
+  "version": "5.5.1",
   "release_date": "2026-08-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.5.0/TheGOAT.dmg",
-  "release_notes": "Cancelling an induction session now emails everyone booked and reverts their bookings. Inviting a candidate asks which intake they're being invited to. Sessions can carry a venue address and entry map, and reminders can be sent manually."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.5.1/TheGOAT.dmg",
+  "release_notes": "Licence triage now captures the date of attainment from the card alongside the expiry, and carries it onto every row when a card is split."
 }
