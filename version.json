@@ -1,6 +1,6 @@
 {
-  "version": "5.3.1",
-  "release_date": "2026-08-14",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.3.1/TheGOAT.dmg",
-  "release_notes": "The Add Crew Member button in Crew → Records has moved to the right of the filters, beside Refresh, so it stops catching stray clicks on the way to the search box."
+  "version": "5.4.0",
+  "release_date": "2026-08-17",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.4.0/TheGOAT.dmg",
+  "release_notes": "Licence records now use a 41-code catalogue covering the full high-risk work licence schedule. New Licence Triage screen under Administration for confirming licences against the card image."
 }
