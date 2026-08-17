@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.5.0"
+APP_VERSION    = "5.5.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -12072,15 +12072,21 @@ def ss_list_triage_queue(ss):
     return (data.get("rows") or []), None
 
 
-def ss_save_triage(ss, licence_id, codes, date_expiry):
+def ss_save_triage(ss, licence_id, codes, date_expiry, date_certified=""):
     """Commit ONE triage decision via save-licence-triage.php. `codes` is a list of
     catalogue codes (empty = mark the row unresolvable). The endpoint UPDATEs the
     row with the first code and INSERTs a copy per additional code. Returns
-    (result_dict, error)."""
+    (result_dict, error).
+
+    NOTE: this dict is built field by field — it does NOT forward the posted form.
+    A new field must be added HERE as well as in the route and the endpoint, or it
+    is dropped silently between them: the app still works, the endpoint still
+    returns ok, and the value never lands."""
     data = {
-        "id":          str(int(licence_id)),
-        "codes":       ",".join(codes),
-        "date_expiry": date_expiry or "",
+        "id":             str(int(licence_id)),
+        "codes":          ",".join(codes),
+        "date_expiry":    date_expiry or "",
+        "date_certified": date_certified or "",
     }
     try:
         resp = ss.post(f"{BASE_URL}/ajax/crew/save-licence-triage.php",
@@ -12119,10 +12125,11 @@ def api_licence_triage_queue():
 @app.route("/api/licence-triage/save", methods=["POST"])
 @require_cohort("admin")
 def api_licence_triage_save():
-    """Commit one triage decision: 0..N catalogue codes + optional expiry against
-    one queue row. Empty codes marks the row unresolvable (type_triaged = 2). Codes
-    are validated app-side against the catalogue AS WELL AS endpoint-side, per the
-    convert-B pattern where the two allow-lists are guaranteed to agree."""
+    """Commit one triage decision: 0..N catalogue codes + optional expiry and date
+    of attainment against one queue row. Empty codes marks the row unresolvable
+    (type_triaged = 2). Codes are validated app-side against the catalogue AS WELL
+    AS endpoint-side, per the convert-B pattern where the two allow-lists are
+    guaranteed to agree."""
     try:
         licence_id = int(request.form.get("id"))
     except (TypeError, ValueError):
@@ -12134,11 +12141,13 @@ def api_licence_triage_save():
     for c in codes:
         if c not in LICENCE_TYPE_ALLOWLIST:
             return jsonify({"error": f"Invalid code: {c}"}), 400
-    date_exp = _licence_date_ymd(request.form.get("date_expiry"))
+    date_exp  = _licence_date_ymd(request.form.get("date_expiry"))
+    date_cert = _licence_date_ymd(request.form.get("date_certified"))
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
-    out, err = ss_save_triage(ss, licence_id, codes, date_exp)
+    out, err = ss_save_triage(ss, licence_id, codes, date_exp,
+                              date_certified=date_cert)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(out)

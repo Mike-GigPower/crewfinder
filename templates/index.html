@@ -11658,6 +11658,7 @@ var _ltByGroup = [];      // [{group, items:[{code,name}]}] in display order
 var _ltFlatCodes = [];    // codes in display order — number-key shortcuts index this
 var _ltPicked = [];       // codes ticked for the current row, in tick order
 var _ltExpiry = '';       // current expiry field value (survives grid re-renders)
+var _ltCert = '';         // current date-of-attainment value (survives grid re-renders)
 var _ltDone = 0;          // rows triaged this session
 var _ltSaving = false;
 
@@ -11709,6 +11710,12 @@ function _ltBuildGroups(){
 
 // Move to a row: reset the picks and seed the expiry from the row's existing value,
 // else from a 20xx year embedded in the raw type string (e.g. "FORK LIFT 2029").
+//
+// Certified is seeded from the row's stored value ONLY — never from _ltYearExpiry.
+// A year in the type string is usually an expiry, and it is not evidence of an
+// issue date; "1st Aid 2022" is the standing proof that guessing which one a bare
+// year represents is how a certification year becomes a false expiry. Blank, and
+// the operator reads it off the card.
 function _ltGoto(idx){
   _ltIdx = idx;
   _ltPicked = [];
@@ -11716,6 +11723,8 @@ function _ltGoto(idx){
   if(row && row.date_expiry) _ltExpiry = String(row.date_expiry).slice(0,10);
   else if(row) _ltExpiry = _ltYearExpiry(row.type);
   else _ltExpiry = '';
+  if(row && row.date_certified) _ltCert = String(row.date_certified).slice(0,10);
+  else _ltCert = '';
   _ltRenderRow();
 }
 
@@ -11748,9 +11757,14 @@ function _ltRenderRow(){
   if(row.has_image){
     evidence = '<img src="/api/licence/'+row.id+'/file" alt="licence card" style="max-width:100%;max-height:100%;object-fit:contain">';
   } else if(row.pdf_file){
-    evidence = '<iframe src="/api/licence/'+row.id+'/file" title="licence card" style="width:100%;height:100%;border:0;background:#fff"></iframe>';
+    // #view=FitH is the PDF open parameter for fit-to-width, so a card opens
+    // readable instead of at the viewer's default (41%) and costing a zoom on
+    // every row. It is a URL FRAGMENT — never sent to the server, so it cannot
+    // affect the response. Chrome's viewer honours it; a viewer that doesn't
+    // recognise it ignores the fragment and renders exactly as it does today.
+    evidence = '<iframe src="/api/licence/'+row.id+'/file#view=FitH" title="licence card" style="width:100%;height:100%;border:0;background:#fff"></iframe>';
   } else {
-    evidence = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px;max-width:280px">No card image or PDF on file for this licence. Confirm from the recorded type alone, or mark it can&#39;t-tell.</div>';
+    evidence = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px;max-width:280px">No card image or PDF on file for this licence. Confirm from the recorded type alone, or mark it not-in-catalogue.</div>';
   }
 
   var name = ((row.firstname||'') + ' ' + (row.lastname||'')).trim() || '(no name)';
@@ -11770,11 +11784,19 @@ function _ltRenderRow(){
     +   '<div style="padding:12px 16px;border-top:1px solid var(--border);background:#0a0a0a">'
     +     '<div id="lt-picked" style="margin-bottom:8px">'+_ltPickedHtml()+'</div>'
     +     '<div id="lt-err" style="color:var(--conflict);font-size:11px;min-height:0;margin-bottom:6px"></div>'
-    +     '<label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px">Expiry (confirm against card)</label>'
-    +     '<input type="date" id="lt-expiry" value="'+escapeHtml(_ltExpiry)+'" oninput="_ltExpiry=this.value" style="'+EF_INPUT_STYLE+';margin-bottom:10px">'
+    +     '<div style="display:flex;gap:8px;margin-bottom:10px">'
+    +       '<div style="flex:1;min-width:0">'
+    +         '<label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px">Certified (from card)</label>'
+    +         '<input type="date" id="lt-cert" value="'+escapeHtml(_ltCert)+'" oninput="_ltCert=this.value" style="'+EF_INPUT_STYLE+'">'
+    +       '</div>'
+    +       '<div style="flex:1;min-width:0">'
+    +         '<label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px">Expiry (confirm against card)</label>'
+    +         '<input type="date" id="lt-expiry" value="'+escapeHtml(_ltExpiry)+'" oninput="_ltExpiry=this.value" style="'+EF_INPUT_STYLE+'">'
+    +       '</div>'
+    +     '</div>'
     +     '<div style="display:flex;gap:8px">'
     +       '<button id="lt-save" onclick="_ltSavePicked()" style="flex:1;background:var(--surface2);border:1px solid var(--border-gold);border-radius:5px;padding:9px;color:var(--accent);font-family:\'Share Tech Mono\',monospace;font-size:12px;cursor:pointer">Save &amp; next ⏎</button>'
-    +       '<button onclick="_ltCantTell()" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:9px 12px;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:12px;cursor:pointer">Can&#39;t tell</button>'
+    +       '<button onclick="_ltCantTell()" title="No catalogue code applies, or the card is illegible — both land as type_triaged = 2" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:9px 12px;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:12px;cursor:pointer">Not in catalogue</button>'
     +     '</div>'
     +   '</div>'
     + '</div>';
@@ -11807,7 +11829,7 @@ function _ltRenderGrid(){
 }
 
 function _ltPickedHtml(){
-  if(!_ltPicked.length) return '<span style="color:var(--muted);font-size:11px">none — &ldquo;Can&#39;t tell&rdquo; marks this unresolvable</span>';
+  if(!_ltPicked.length) return '<span style="color:var(--muted);font-size:11px">none — &ldquo;Not in catalogue&rdquo; marks this unresolvable (also use it for an illegible card)</span>';
   return _ltPicked.map(function(c){
     return '<span style="display:inline-block;background:rgba(212,175,55,0.14);border:1px solid var(--border-gold);color:var(--accent);border-radius:3px;padding:1px 6px;margin:0 4px 4px 0;font-size:11px">'+escapeHtml(c)+'</span>';
   }).join('');
@@ -11847,6 +11869,7 @@ async function _ltSave(codes){
     fd.append('id', row.id);
     fd.append('codes', codes.join(','));
     fd.append('date_expiry', _ltExpiry || '');
+    fd.append('date_certified', _ltCert || '');
     var r = await fetch('/api/licence-triage/save', {method:'POST', body:fd});
     var d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
@@ -11861,13 +11884,20 @@ async function _ltSave(codes){
 }
 
 // Keyboard: 1-9 toggle the first nine codes, Enter saves, Esc closes. Inert while
-// the modal is hidden, and yields to the date field so digits type normally there.
+// the modal is hidden, and yields to the date fields so digits type normally there.
+//
+// Escape yields TOO, which it did not before: the branch used to sit above the
+// input check, so Esc closed the modal from inside the expiry field and took the
+// row's picks and dates with it. With two date fields there is twice as much
+// typing to lose, and mid-queue that reads as the app throwing work away. Esc
+// still closes from anywhere else in the modal; from inside a date field it does
+// nothing at all, so closing from there means tabbing or clicking out first.
 function _ltKeydown(e){
   var m = document.getElementById('lt-modal');
   if(!m || m.style.display === 'none') return;
-  if(e.key === 'Escape'){ closeLicenceTriage(); return; }
   var tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
   if(tag === 'input') return;
+  if(e.key === 'Escape'){ closeLicenceTriage(); return; }
   if(e.key === 'Enter'){ e.preventDefault(); _ltSavePicked(); return; }
   if(/^[1-9]$/.test(e.key)){
     var code = _ltFlatCodes[parseInt(e.key, 10) - 1];

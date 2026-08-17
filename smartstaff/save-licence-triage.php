@@ -21,10 +21,13 @@
 	/* Own endpoint rather than chaining edit + add: one call, no partial-write
 	/* window, no allow-list round-trip per code.
 	/*
-	/*   POST id=<int> codes=LF,WP,DG date_expiry=YYYY-MM-DD
+	/*   POST id=<int> codes=LF,WP,DG date_expiry=YYYY-MM-DD date_certified=YYYY-MM-DD
+	/*
+	/*   Both dates are OPTIONAL and independent. Malformed or absent leaves the
+	/*   row's existing value untouched — never blanks it.
 	/*
 	/*   codes empty  -> type_triaged = 2 (unresolvable), type_canonical stays NULL
-	/*   first code   -> UPDATE the row canonical, type_triaged = 1, optional expiry
+	/*   first code   -> UPDATE the row canonical, type_triaged = 1, optional dates
 	/*   each extra   -> INSERT a copy with its own code, type_triaged = 1
 	/*
 	/* The row must be a non-induction, empty-venue licence — this path can never
@@ -127,6 +130,21 @@
 	}
 
 	/*
+	/* 4b. optional date of attainment — same shape, same strictness. Issue dates are
+	/* on the cards and triage is the only moment anyone opens the images, so the
+	/* field is captured here or not at all. Independent of expiry: supplying one
+	/* never touches the other. */
+
+	$hasCert     = false;
+	$certPostSql = 'NULL';
+	if (isset($_POST['date_certified'])
+	    && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim($_POST['date_certified'])))
+	{
+		$hasCert     = true;
+		$certPostSql = "'" . mysql_real_escape_string(trim($_POST['date_certified'])) . "'";
+	}
+
+	/*
 	/* 5. empty codes = can't-tell. Mark the row unresolvable (type_triaged = 2),
 	/* leave type_canonical NULL, and stop. This is where volunteer WWCCs and
 	/* unreadable cards land — out of the queue, but never falsely canonicalised. */
@@ -154,15 +172,16 @@
 
 	/*
 	/* 6. first code UPDATEs the row in place: canonical value, triaged = 1, and the
-	/* new expiry if one was supplied. `type` stays as the original raw string — it
+	/* new dates if they were supplied. `type` stays as the original raw string — it
 	/* is the audit trail of what the card literally said. */
 
 	$firstEsc  = mysql_real_escape_string($codes[0]);
 	$setExpiry = $hasExpiry ? (", date_expiry = " . $expirySql) : '';
+	$setCert   = $hasCert ? (", date_certified = " . $certPostSql) : '';
 
 	mysql_query(
 		"UPDATE user_licenses
-		 SET type_canonical = '" . $firstEsc . "', type_triaged = 1" . $setExpiry . "
+		 SET type_canonical = '" . $firstEsc . "', type_triaged = 1" . $setExpiry . $setCert . "
 		 WHERE id = " . $id
 	);
 
@@ -174,10 +193,11 @@
 
 	/*
 	/* 7. each additional code INSERTs a copy of the row, carrying the SAME evidence
-	/* (pdf_file, has_image) and date_certified, with its own canonical code and
-	/* triaged = 1. Copying the evidence is what keeps the card reachable from any
-	/* split row. date_expiry on a copy follows the same rule as the UPDATE: the
-	/* supplied expiry if one was given, else the row's original date_expiry. */
+	/* (pdf_file, has_image), with its own canonical code and triaged = 1. Copying
+	/* the evidence is what keeps the card reachable from any split row. BOTH dates
+	/* on a copy follow the same rule as the UPDATE: the supplied value if one was
+	/* given, else the row's original — so a confirmed date reaches every split row
+	/* rather than only the one updated in place. */
 
 	$user     = (int) $rowObj->user;
 	$typeEsc  = mysql_real_escape_string($rowObj->type);
@@ -188,7 +208,9 @@
 		$pdfSql = "'" . mysql_real_escape_string($rowObj->pdf_file) . "'";
 
 	$certSql = 'NULL';
-	if ($rowObj->date_certified !== null && $rowObj->date_certified !== '0000-00-00')
+	if ($hasCert)
+		$certSql = $certPostSql;
+	else if ($rowObj->date_certified !== null && $rowObj->date_certified !== '0000-00-00')
 		$certSql = "'" . mysql_real_escape_string($rowObj->date_certified) . "'";
 
 	if ($hasExpiry)
