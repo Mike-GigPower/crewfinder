@@ -2107,6 +2107,17 @@ a.recruit-action{text-decoration:none;display:inline-block}
         </button>
       </div>
 
+      <div class="admin-hub-section">Compliance</div>
+      <div class="admin-card-grid">
+        <button class="admin-card" onclick="adminLicenceTriage()">
+          <div class="admin-card-icon">🪪</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Licence Triage</div>
+            <div class="admin-card-desc">Confirm recorded licences against the card image.</div>
+          </div>
+        </button>
+      </div>
+
       <div class="admin-hub-section">Access</div>
       <div class="admin-card-grid">
         <button class="admin-card" onclick="adminManageCohorts()">
@@ -9611,7 +9622,27 @@ async function ceLoadInductions(id){
 // than adding a second. New adds/edits are PDF-only; legacy image licences (from
 // before PDF storage) still render read-only and View works. Status pills reuse
 // the induction palette; the compliance status is computed server-side.
-var LICENCE_TYPES = ['CI','EWP','WWC','Forklift','Truck','Working at Heights'];
+// Licence catalogue for the Manage Crew dropdowns, fetched ON THE WIRE from
+// /api/licences/catalogue (app.py's LICENCE_CATALOGUE — the single source) so the
+// 41 codes are never a hardcoded copy here. Cached after first load; both the Add
+// and Edit dialogs read from it.
+var _licCatalogue = null;        // [{code,name,group}] once loaded
+var _licExpiryExpected = [];     // codes that carry an expiry (for the helper text)
+async function _ensureLicCatalogue(){
+  if(_licCatalogue) return _licCatalogue;
+  var r = await fetch('/api/licences/catalogue');
+  var d = await r.json();
+  if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+  _licCatalogue = d.catalogue || [];
+  _licExpiryExpected = d.expiry_expected || [];
+  return _licCatalogue;
+}
+// Dropdown option label: "CODE — Full name" (value = code). Legacy free-text types
+// not in the catalogue fall back to showing the stored string verbatim.
+function _licTypeLabel(code){
+  var e = (_licCatalogue||[]).find(function(x){ return x.code===code; });
+  return e ? (e.code+' — '+e.name) : code;
+}
 
 function licPill(s){
   var map = {
@@ -9631,6 +9662,11 @@ async function ceLoadLicences(id){
   var panel = document.getElementById('ce-panel-licences');
   if(!panel) return;
   panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading licences\u2026</div>';
+  // Load the catalogue (for the Add/Edit type dropdowns) alongside the crew member's
+  // licences. A catalogue failure doesn't sink the tab \u2014 the list still renders; the
+  // Add form shows a note in its place.
+  var catErr = null;
+  try{ await _ensureLicCatalogue(); }catch(e){ catErr = e; }
   var data;
   try{
     var r = await fetch('/api/user/'+encodeURIComponent(id)+'/licences');
@@ -9670,19 +9706,38 @@ async function ceLoadLicences(id){
       }).join('')
     : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No licences on record.</div>';
 
-  var held  = {}; lics.forEach(function(l){ held[l.type] = true; });
-  var avail = LICENCE_TYPES.filter(function(t){ return !held[t]; });
-  var addForm = avail.length ? (
-      '<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:12px">'
-    + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Add a licence</div>'
-    + efRow('Type', '<select id="lic-add-type" style="'+EF_INPUT_STYLE+'">'+avail.map(function(t){ return '<option value="'+escapeHtml(t)+'">'+escapeHtml(t)+'</option>'; }).join('')+'</select>')
-    + efRow('Certified', '<input id="lic-add-cert" type="date" style="'+EF_INPUT_STYLE+'">')
-    + efRow('Expires', '<input id="lic-add-exp" type="date" style="'+EF_INPUT_STYLE+'"><div style="font-size:10px;color:var(--muted);padding-top:3px">WWC, Forklift and Truck expire; leaving those blank flags the licence to chase.</div>')
-    + efRow('Licence (PDF)', '<input id="lic-add-file" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'">')
-    + '<div id="lic-add-status" style="font-size:11px;min-height:14px;padding:4px 0"></div>'
-    + '<div style="padding-top:4px">'+entityBtn('Add licence', "submitLicenceAdd('"+String(id)+"')", {primary:true, id:'lic-add-btn'})+'</div>'
-    + '</div>'
-  ) : '<div style="font-size:11px;color:var(--muted);padding:10px 0 0;border-top:1px solid var(--border);margin-top:10px">This crew member holds every tracked licence type. Use Edit to renew a line.</div>';
+  var codes = (_licCatalogue||[]).map(function(e){ return e.code; });
+  // Dedupe on the CANONICAL identity (code when triaged, raw type as fallback for
+  // untriaged rows) — same NULL-fallback shape the write endpoints key on. A raw-type
+  // key would offer e.g. CI to someone whose backfilled row reads 'CI Card'.
+  var held  = {}; lics.forEach(function(l){ held[l.type_canonical || l.type] = true; });
+  var avail = codes.filter(function(t){ return !held[t]; });
+  // Helper text derived from which codes carry an expiry — the families listed can
+  // never drift from LICENCE_EXPIRY_EXPECTED because they come off the same wire.
+  var expGroups = [];
+  (_licCatalogue||[]).forEach(function(e){
+    if(_licExpiryExpected.indexOf(e.code) >= 0 && expGroups.indexOf(e.group) < 0) expGroups.push(e.group);
+  });
+  var expHelp = expGroups.length
+    ? escapeHtml(expGroups.join(', ')) + ' licences carry an expiry; leaving the date blank flags the licence to chase.'
+    : '';
+  var addForm;
+  if(catErr){
+    addForm = '<div style="font-size:11px;color:var(--conflict);padding:10px 0 0;border-top:1px solid var(--border);margin-top:10px">Couldn&#39;t load licence types: '+escapeHtml(catErr.message)+'. Reopen the tab to retry.</div>';
+  } else if(avail.length){
+    addForm =
+        '<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:12px">'
+      + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Add a licence</div>'
+      + efRow('Type', '<select id="lic-add-type" style="'+EF_INPUT_STYLE+'">'+avail.map(function(t){ return '<option value="'+escapeHtml(t)+'">'+escapeHtml(_licTypeLabel(t))+'</option>'; }).join('')+'</select>')
+      + efRow('Certified', '<input id="lic-add-cert" type="date" style="'+EF_INPUT_STYLE+'">')
+      + efRow('Expires', '<input id="lic-add-exp" type="date" style="'+EF_INPUT_STYLE+'">'+(expHelp?'<div style="font-size:10px;color:var(--muted);padding-top:3px">'+expHelp+'</div>':''))
+      + efRow('Licence (PDF)', '<input id="lic-add-file" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'">')
+      + '<div id="lic-add-status" style="font-size:11px;min-height:14px;padding:4px 0"></div>'
+      + '<div style="padding-top:4px">'+entityBtn('Add licence', "submitLicenceAdd('"+String(id)+"')", {primary:true, id:'lic-add-btn'})+'</div>'
+      + '</div>';
+  } else {
+    addForm = '<div style="font-size:11px;color:var(--muted);padding:10px 0 0;border-top:1px solid var(--border);margin-top:10px">This crew member holds every tracked licence type. Use Edit to renew a line.</div>';
+  }
 
   panel.innerHTML =
       '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+(summary.length?escapeHtml(summary.join(' \u00b7 ')):'No licences on record')+'</div>'
@@ -9744,14 +9799,26 @@ function licEditForm(id, licId){
   if(!lic) return;
 
   // One-per-(user,type): the type select offers the current type plus any type
-  // no OTHER row holds, so a rename can never collide.
-  var heldByOthers = {}; lics.forEach(function(l){ if(l.id!==licId) heldByOthers[l.type] = true; });
-  var typeOpts = LICENCE_TYPES.filter(function(t){ return t===lic.type || !heldByOthers[t]; });
+  // no OTHER row holds, so a rename can never collide. Types come from the catalogue
+  // loaded by ceLoadLicences; the current type is always kept selectable, even a
+  // legacy free-text value not in the catalogue, so an edit can't silently drop it.
+  var codes = (_licCatalogue||[]).map(function(e){ return e.code; });
+  // Dedupe against OTHER rows' canonical identity (code when triaged, raw type as
+  // fallback), matching the write endpoints' key. selfKey is this row's own identity;
+  // it stays offered so a re-save can't collide with itself.
+  var selfKey = lic.type_canonical || lic.type;
+  var heldByOthers = {}; lics.forEach(function(l){ if(l.id!==licId) heldByOthers[l.type_canonical || l.type] = true; });
+  var typeOpts = codes.filter(function(t){ return t===selfKey || !heldByOthers[t]; });
+  // An untriaged legacy row's identity is free text, not a catalogue code — keep it
+  // visible as the selected placeholder so the operator sees what's on file (saving
+  // still requires picking a real code; the endpoint rejects free text). A triaged
+  // row already shows its code, so nothing is prepended.
+  if(codes.indexOf(selfKey) < 0 && typeOpts.indexOf(selfKey) < 0) typeOpts.unshift(selfKey);
 
   slot.innerHTML =
       '<div style="border:1px solid var(--border);border-radius:6px;padding:12px;margin-top:12px;background:var(--surface2)">'
     + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Edit / renew licence</div>'
-    + efRow('Type', '<select id="lic-edit-type" style="'+EF_INPUT_STYLE+'">'+typeOpts.map(function(t){ var sel=(t===lic.type)?' selected':''; return '<option value="'+escapeHtml(t)+'"'+sel+'>'+escapeHtml(t)+'</option>'; }).join('')+'</select>')
+    + efRow('Type', '<select id="lic-edit-type" style="'+EF_INPUT_STYLE+'">'+typeOpts.map(function(t){ var sel=(t===selfKey)?' selected':''; return '<option value="'+escapeHtml(t)+'"'+sel+'>'+escapeHtml(_licTypeLabel(t))+'</option>'; }).join('')+'</select>')
     + efRow('Certified', '<input id="lic-edit-cert" type="date" value="'+escapeHtml(lic.date_certified||'')+'" style="'+EF_INPUT_STYLE+'">')
     + efRow('Expires', '<input id="lic-edit-exp" type="date" value="'+escapeHtml(lic.date_expiry||'')+'" style="'+EF_INPUT_STYLE+'">')
     + efRow('Replace PDF', '<input id="lic-edit-file" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'"><div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep the current file'+((!lic.pdf_file && lic.has_image)?' (this is a legacy image \u2014 attaching a PDF replaces it).':'.')+'</div>')
@@ -11338,6 +11405,241 @@ async function _cohortSet(ein, cohort){
 // SmartStaff website directly; admin + operations, THE GOAT and Crew Hub are all
 // exempt. Backed by /api/direct-login-block -> manage-direct-login.php.
 function adminDirectLoginBlock(){ _dlxOpen = false; openDirectLoginModal(); }
+
+// ── LICENCE TRIAGE (admin) ───────────────────────────────────────────────────
+// Confirm each recorded free-text licence against its stored card image and stamp
+// 1..N canonical catalogue codes. The queue (untriaged, empty-venue, non-induction
+// rows) is fetched ONCE and held client-side; we advance locally after each save
+// rather than refetching, so 107 rows is 107 saves and one load. Multi-select is
+// the split mechanism: N ticks on one card writes N canonical rows server-side
+// (save-licence-triage.php). The catalogue + group order ride along on the queue
+// response, so the grid renders from app.py's LICENCE_CATALOGUE — never a hardcoded
+// copy here. Admin-gated: adminLicenceTriage bails for any non-admin cohort.
+var _ltQueue = [];        // full queue as fetched
+var _ltIdx = 0;           // cursor into _ltQueue
+var _ltCatalogue = [];    // [{code,name,group}] from the server
+var _ltGroupOrder = [];   // display order (frequency, not alphabetical)
+var _ltByGroup = [];      // [{group, items:[{code,name}]}] in display order
+var _ltFlatCodes = [];    // codes in display order — number-key shortcuts index this
+var _ltPicked = [];       // codes ticked for the current row, in tick order
+var _ltExpiry = '';       // current expiry field value (survives grid re-renders)
+var _ltDone = 0;          // rows triaged this session
+var _ltSaving = false;
+
+function adminLicenceTriage(){
+  if(window._cohort !== 'admin') return;   // presentation gate; Flask enforces the real one
+  document.getElementById('lt-modal').style.display = 'flex';
+  _ltLoad();
+}
+function closeLicenceTriage(){
+  document.getElementById('lt-modal').style.display = 'none';
+}
+
+async function _ltLoad(){
+  var body = document.getElementById('lt-body');
+  if(body) body.innerHTML = '<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">Loading queue…</div>';
+  try{
+    var r = await fetch('/api/licence-triage/queue');
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _ltQueue = d.rows || [];
+    _ltCatalogue = d.catalogue || [];
+    _ltGroupOrder = d.group_order || [];
+    _ltBuildGroups();
+    _ltDone = 0;
+    _ltGoto(0);
+  }catch(e){
+    if(body) body.innerHTML = '<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--conflict);font-size:12px;padding:20px;text-align:center">Couldn&#39;t load the triage queue: '+escapeHtml(e.message)+'</div>';
+  }
+}
+
+// Bucket the catalogue by group, in LICENCE_GROUP_ORDER; any group the server adds
+// that isn't in the order list is appended (defensive) rather than dropped.
+function _ltBuildGroups(){
+  var byGroup = {};
+  _ltCatalogue.forEach(function(e){
+    if(!byGroup[e.group]) byGroup[e.group] = [];
+    byGroup[e.group].push({code:e.code, name:e.name});
+  });
+  var order = _ltGroupOrder.slice();
+  Object.keys(byGroup).forEach(function(g){ if(order.indexOf(g) < 0) order.push(g); });
+  _ltByGroup = [];
+  _ltFlatCodes = [];
+  order.forEach(function(g){
+    if(!byGroup[g]) return;
+    _ltByGroup.push({group:g, items:byGroup[g]});
+    byGroup[g].forEach(function(it){ _ltFlatCodes.push(it.code); });
+  });
+}
+
+// Move to a row: reset the picks and seed the expiry from the row's existing value,
+// else from a 20xx year embedded in the raw type string (e.g. "FORK LIFT 2029").
+function _ltGoto(idx){
+  _ltIdx = idx;
+  _ltPicked = [];
+  var row = _ltQueue[idx];
+  if(row && row.date_expiry) _ltExpiry = String(row.date_expiry).slice(0,10);
+  else if(row) _ltExpiry = _ltYearExpiry(row.type);
+  else _ltExpiry = '';
+  _ltRenderRow();
+}
+
+function _ltYearExpiry(type){
+  var m = /(20\d{2})/.exec(String(type||''));
+  return m ? (m[1] + '-01-01') : '';   // day is a 1-Jan approximation; operator confirms
+}
+
+function _ltRenderRow(){
+  var body = document.getElementById('lt-body');
+  if(!body) return;
+  var q = _ltQueue;
+  if(_ltIdx >= q.length){
+    body.innerHTML =
+      '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:40px;text-align:center">'
+      + '<div style="font-size:40px">✅</div>'
+      + '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:22px;letter-spacing:.05em;color:var(--accent)">'
+      + (q.length ? 'Queue clear' : 'Nothing to triage') + '</div>'
+      + '<div style="font-size:12px;color:var(--muted)">'
+      + (q.length ? (_ltDone + ' licence' + (_ltDone===1?'':'s') + ' triaged this session.')
+                  : 'Every crew licence already carries a canonical code.') + '</div>'
+      + '<button onclick="closeLicenceTriage()" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:8px 16px;color:var(--accent);font-family:\'Share Tech Mono\',monospace;font-size:12px;cursor:pointer">Close</button>'
+      + '</div>';
+    _ltUpdateProgress();
+    return;
+  }
+  var row = q[_ltIdx];
+
+  var evidence;
+  if(row.has_image){
+    evidence = '<img src="/api/licence/'+row.id+'/file" alt="licence card" style="max-width:100%;max-height:100%;object-fit:contain">';
+  } else if(row.pdf_file){
+    evidence = '<iframe src="/api/licence/'+row.id+'/file" title="licence card" style="width:100%;height:100%;border:0;background:#fff"></iframe>';
+  } else {
+    evidence = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px;max-width:280px">No card image or PDF on file for this licence. Confirm from the recorded type alone, or mark it can&#39;t-tell.</div>';
+  }
+
+  var name = ((row.firstname||'') + ' ' + (row.lastname||'')).trim() || '(no name)';
+
+  body.innerHTML =
+    '<div style="flex:1;min-width:0;display:flex;align-items:center;justify-content:center;background:#050505;border-right:1px solid var(--border);padding:12px;overflow:auto">'
+    + evidence
+    + '</div>'
+    + '<div style="width:440px;max-width:44%;flex-shrink:0;display:flex;flex-direction:column;min-height:0">'
+    +   '<div style="padding:14px 16px;border-bottom:1px solid var(--border)">'
+    +     '<div style="font-size:14px;color:var(--text);font-weight:600">'+escapeHtml(name)+'</div>'
+    +     '<div style="font-size:11px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">EIN '+escapeHtml(String(row.ein||'—'))+'</div>'
+    +     '<div style="margin-top:8px;font-size:11px;color:var(--muted)">Recorded as</div>'
+    +     '<div style="font-size:13px;color:var(--accent);word-break:break-word">'+escapeHtml(String(row.type||''))+'</div>'
+    +   '</div>'
+    +   '<div id="lt-grid" style="flex:1;min-height:0;overflow-y:auto;padding:12px 16px">'+_ltRenderGrid()+'</div>'
+    +   '<div style="padding:12px 16px;border-top:1px solid var(--border);background:#0a0a0a">'
+    +     '<div id="lt-picked" style="margin-bottom:8px">'+_ltPickedHtml()+'</div>'
+    +     '<div id="lt-err" style="color:var(--conflict);font-size:11px;min-height:0;margin-bottom:6px"></div>'
+    +     '<label style="display:block;font-size:11px;color:var(--muted);margin-bottom:4px">Expiry (confirm against card)</label>'
+    +     '<input type="date" id="lt-expiry" value="'+escapeHtml(_ltExpiry)+'" oninput="_ltExpiry=this.value" style="'+EF_INPUT_STYLE+';margin-bottom:10px">'
+    +     '<div style="display:flex;gap:8px">'
+    +       '<button id="lt-save" onclick="_ltSavePicked()" style="flex:1;background:var(--surface2);border:1px solid var(--border-gold);border-radius:5px;padding:9px;color:var(--accent);font-family:\'Share Tech Mono\',monospace;font-size:12px;cursor:pointer">Save &amp; next ⏎</button>'
+    +       '<button onclick="_ltCantTell()" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:9px 12px;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:12px;cursor:pointer">Can&#39;t tell</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+  _ltUpdateProgress();
+}
+
+// The multi-select grid. Groups in frequency order; codes 1-9 across the whole
+// grid carry a number-key hint. Full name under each code where it fits.
+function _ltRenderGrid(){
+  var flatN = 0;
+  return _ltByGroup.map(function(g){
+    var items = g.items.map(function(it){
+      flatN++;
+      var on = _ltPicked.indexOf(it.code) >= 0;
+      var hint = flatN <= 9 ? '<span style="opacity:.5;font-size:9px">'+flatN+'</span> ' : '';
+      var bg = on ? 'rgba(212,175,55,0.16)' : 'var(--surface2)';
+      var bc = on ? 'var(--border-gold)' : 'var(--border)';
+      var col = on ? 'var(--accent)' : 'var(--text)';
+      return '<button type="button" onclick="_ltToggleCode(\''+it.code+'\')" title="'+escapeHtml(it.name)+'" '
+        + 'style="text-align:left;background:'+bg+';border:1px solid '+bc+';border-radius:4px;padding:5px 7px;color:'+col+';font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer;display:flex;flex-direction:column;gap:1px;min-width:0">'
+        + '<span style="font-weight:600">'+hint+escapeHtml(it.code)+'</span>'
+        + '<span style="font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(it.name)+'</span>'
+        + '</button>';
+    }).join('');
+    return '<div style="margin-bottom:10px">'
+      + '<div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:5px">'+escapeHtml(g.group)+'</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:6px">'+items+'</div>'
+      + '</div>';
+  }).join('');
+}
+
+function _ltPickedHtml(){
+  if(!_ltPicked.length) return '<span style="color:var(--muted);font-size:11px">none — &ldquo;Can&#39;t tell&rdquo; marks this unresolvable</span>';
+  return _ltPicked.map(function(c){
+    return '<span style="display:inline-block;background:rgba(212,175,55,0.14);border:1px solid var(--border-gold);color:var(--accent);border-radius:3px;padding:1px 6px;margin:0 4px 4px 0;font-size:11px">'+escapeHtml(c)+'</span>';
+  }).join('');
+}
+
+// Toggle a code without re-rendering the whole row — the evidence pane (an <iframe>
+// or <img>) must NOT reload on every tick, so only the grid + pick chips redraw.
+function _ltToggleCode(code){
+  var i = _ltPicked.indexOf(code);
+  if(i >= 0) _ltPicked.splice(i, 1); else _ltPicked.push(code);
+  var g = document.getElementById('lt-grid'); if(g) g.innerHTML = _ltRenderGrid();
+  var p = document.getElementById('lt-picked'); if(p) p.innerHTML = _ltPickedHtml();
+}
+
+function _ltUpdateProgress(){
+  var el = document.getElementById('lt-progress');
+  if(!el) return;
+  var n = _ltQueue.length;
+  if(_ltIdx >= n){ el.textContent = n ? (_ltDone + ' triaged this session') : ''; return; }
+  el.textContent = (_ltIdx+1) + ' of ' + n + ' · ' + _ltDone + ' triaged this session';
+}
+
+function _ltSavePicked(){ _ltSave(_ltPicked.slice()); }
+function _ltCantTell(){ _ltSave([]); }
+
+async function _ltSave(codes){
+  if(_ltSaving) return;
+  var row = _ltQueue[_ltIdx];
+  if(!row) return;
+  _ltSaving = true;
+  var btn = document.getElementById('lt-save');
+  var err = document.getElementById('lt-err');
+  if(err) err.textContent = '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var fd = new FormData();
+    fd.append('id', row.id);
+    fd.append('codes', codes.join(','));
+    fd.append('date_expiry', _ltExpiry || '');
+    var r = await fetch('/api/licence-triage/save', {method:'POST', body:fd});
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _ltDone++;
+    _ltSaving = false;
+    _ltGoto(_ltIdx + 1);   // advance locally — no refetch
+  }catch(e){
+    _ltSaving = false;
+    if(btn){ btn.disabled = false; btn.textContent = 'Save & next ⏎'; }
+    if(err) err.textContent = 'Save failed: ' + e.message;
+  }
+}
+
+// Keyboard: 1-9 toggle the first nine codes, Enter saves, Esc closes. Inert while
+// the modal is hidden, and yields to the date field so digits type normally there.
+function _ltKeydown(e){
+  var m = document.getElementById('lt-modal');
+  if(!m || m.style.display === 'none') return;
+  if(e.key === 'Escape'){ closeLicenceTriage(); return; }
+  var tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+  if(tag === 'input') return;
+  if(e.key === 'Enter'){ e.preventDefault(); _ltSavePicked(); return; }
+  if(/^[1-9]$/.test(e.key)){
+    var code = _ltFlatCodes[parseInt(e.key, 10) - 1];
+    if(code){ e.preventDefault(); _ltToggleCode(code); }
+  }
+}
+document.addEventListener('keydown', _ltKeydown);
 
 // Selected add-duration (module-level, defaults to 14 days) and per-render caches
 // keyed by EIN so the interactive handlers never carry server text through an
@@ -17455,6 +17757,29 @@ function applyGoldRows(){
       <button class="ops-modal-x" onclick="closeOpsDetail()">✕</button>
     </div>
     <div class="ops-modal-body" id="ops-modal-body"></div>
+  </div>
+</div>
+
+<!-- ── Licence Triage (admin) — dedicated wide two-pane workspace. The shared
+     entity-modal (560px) can't hold a card image beside the code grid, and
+     widening it would touch every other admin surface, so this gets its own
+     overlay. Same z-index as entity-modal; only one is ever open at a time. -->
+<div id="lt-modal" style="display:none;position:fixed;inset:0;z-index:99991;
+     background:rgba(0,0,0,0.72);align-items:center;justify-content:center"
+     onclick="if(event.target===this)closeLicenceTriage()">
+  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+              width:1100px;max-width:94vw;height:90vh;max-height:90vh;display:flex;flex-direction:column;
+              box-shadow:0 10px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+                border-bottom:1px solid var(--border);background:#0a0a0a;flex-shrink:0">
+      <div style="min-width:0">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.06em;color:var(--accent)">Licence Triage</div>
+        <div id="lt-progress" style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace"></div>
+      </div>
+      <button onclick="closeLicenceTriage()" style="background:none;border:none;color:var(--muted);
+              font-size:20px;cursor:pointer;line-height:1;flex-shrink:0;margin-left:12px">✕</button>
+    </div>
+    <div id="lt-body" style="flex:1;min-height:0;display:flex"></div>
   </div>
 </div>
 

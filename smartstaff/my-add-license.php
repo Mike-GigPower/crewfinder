@@ -40,7 +40,13 @@
 	/* 'Induction Certificate' — is rejected, so a licence write can never touch or
 	/* create an induction row. */
 
-	$allowedTypes = array('CI', 'EWP', 'WWC', 'Forklift', 'Truck', 'Working at Heights');
+	$allowedTypes = array(
+		'SB', 'SI', 'SA', 'DG', 'RB', 'RI', 'RA', 'BS', 'BA', 'TO', 'ES',
+		'CT', 'CS', 'CD', 'CP', 'CB', 'CV', 'CN', 'C2', 'C6', 'C1', 'C0',
+		'HM', 'HP', 'LF', 'LO', 'WP', 'RS', 'PB', 'TV',
+		'CI', 'WAH', 'EWPSOA', 'FA', 'TC', 'WWCC',
+		'LR', 'MR', 'HR', 'HC', 'MC'
+	);
 
 	$type = isset($_POST['type']) ? trim($_POST['type']) : '';
 
@@ -71,13 +77,21 @@
 	$typeEsc = mysql_real_escape_string($type);
 
 	/*
-	/* idempotency — one row per (user, type). If a row already exists for this
-	/* (user, type), stop here: no file written, no row inserted. The crew form
-	/* only offers types the member doesn't already hold, so this is a backstop. */
+	/* idempotency — one row per (user, licence). If a row already exists, stop here:
+	/* no file written, no row inserted. The crew form only offers types the member
+	/* doesn't already hold, so this is a backstop.
+	/*
+	/* Keyed on the CANONICAL code, not the raw type: post-backfill `type` holds the
+	/* original free text ('CI Card') while type_canonical holds the code ('CI'), so a
+	/* type-only match would miss and duplicate. Match type_canonical when set; fall
+	/* back to raw type only for still-untriaged rows (type_canonical NULL). */
 
 	$existing = mysql_query(
 		"SELECT id FROM user_licenses
-		 WHERE `user` = " . $user . " AND type = '" . $typeEsc . "' LIMIT 1"
+		 WHERE `user` = " . $user . "
+		   AND (type_canonical = '" . $typeEsc . "'
+		        OR (type_canonical IS NULL AND type = '" . $typeEsc . "'))
+		 LIMIT 1"
 	);
 
 	if ($existing !== false && mysql_num_rows($existing) > 0)
@@ -143,11 +157,15 @@
 	/*
 	/* INSERT. `venue` is deliberately NOT set, so the row is a licence (empty
 	/* venue), never an induction. has_image is the bare 0 the native handlers
-	/* write for a non-image (PDF/metadata) licence. */
+	/* write for a non-image (PDF/metadata) licence.
+	/*
+	/* type_canonical = the type and type_triaged = 1: the value was validated against
+	/* the 41-code catalogue above, so a crew self-add is already canonical and must
+	/* not enter the triage queue (type_canonical IS NULL / type_triaged = 0). */
 
 	mysql_query(
-		"INSERT INTO user_licenses (`user`, type, pdf_file, has_image, date_certified, date_expiry)
-		 VALUES (" . $user . ", '" . $typeEsc . "', " . $pdfFileSql . ", 0, "
+		"INSERT INTO user_licenses (`user`, type, type_canonical, type_triaged, pdf_file, has_image, date_certified, date_expiry)
+		 VALUES (" . $user . ", '" . $typeEsc . "', '" . $typeEsc . "', 1, " . $pdfFileSql . ", 0, "
 		 . $dateCertifiedSql . ", " . $dateExpirySql . ")"
 	);
 

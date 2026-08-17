@@ -4712,21 +4712,103 @@ def api_recruitment_sessions():
 # convert route).
 RECRUITMENT_CONVERTED_STATUS = "active_crew"
 
-# Fixed licence types we push into SmartStaff during convert-B (see
-# _push_candidate_licences). This list is one of three copies that must stay in
-# sync (Supabase onboarding, here, and admin-add-license.php's allow-list); if it
-# ever changes, all three move together. Anything NOT in this list — including
-# 'Induction Certificate' — is skipped GOAT-side and rejected endpoint-side, so a
-# licence write can never touch an induction row.
-LICENCE_TYPE_ALLOWLIST = ["CI", "EWP", "WWC", "Forklift", "Truck", "Working at Heights"]
+# The canonical licence taxonomy: 30 WorkSafe high-risk work classes plus six
+# non-HRW additions and the five VicRoads driver classes. `code` is the value
+# stored in user_licenses.type_canonical — display names are presentation only
+# and can be reworded without touching data.
+#
+# This list is one of three copies that must stay in sync: here,
+# website/lib/licences.ts, and admin-add-license.php's $allowedTypes. If it
+# changes, all three move together. Anything NOT in this list — including
+# 'Induction Certificate' — is rejected at both the app and endpoint boundary,
+# so a licence write can never touch an induction row.
+LICENCE_CATALOGUE = [
+    # ── WorkSafe high-risk work licences (30) ────────────────────────────────
+    {"code": "SB", "name": "Basic scaffolding",                    "group": "Scaffolding"},
+    {"code": "SI", "name": "Intermediate scaffolding",             "group": "Scaffolding"},
+    {"code": "SA", "name": "Advanced scaffolding",                 "group": "Scaffolding"},
+    {"code": "DG", "name": "Dogging",                              "group": "Rigging"},
+    {"code": "RB", "name": "Basic rigging",                        "group": "Rigging"},
+    {"code": "RI", "name": "Intermediate rigging",                 "group": "Rigging"},
+    {"code": "RA", "name": "Advanced rigging",                     "group": "Rigging"},
+    {"code": "BS", "name": "Standard boiler operation",            "group": "Pressure equipment"},
+    {"code": "BA", "name": "Advanced boiler operation",            "group": "Pressure equipment"},
+    {"code": "TO", "name": "Turbine operation",                    "group": "Pressure equipment"},
+    {"code": "ES", "name": "Reciprocating steam engine operation", "group": "Pressure equipment"},
+    {"code": "CT", "name": "Tower crane",                          "group": "Cranes"},
+    {"code": "CS", "name": "Self-erecting tower crane",            "group": "Cranes"},
+    {"code": "CD", "name": "Derrick crane",                        "group": "Cranes"},
+    {"code": "CP", "name": "Portal boom crane",                    "group": "Cranes"},
+    {"code": "CB", "name": "Bridge and gantry crane",              "group": "Cranes"},
+    {"code": "CV", "name": "Vehicle loading crane",                "group": "Cranes"},
+    {"code": "CN", "name": "Non-slewing mobile crane",             "group": "Cranes"},
+    {"code": "C2", "name": "Slewing mobile crane, up to 20t",      "group": "Cranes"},
+    {"code": "C6", "name": "Slewing mobile crane, up to 60t",      "group": "Cranes"},
+    {"code": "C1", "name": "Slewing mobile crane, up to 100t",     "group": "Cranes"},
+    {"code": "C0", "name": "Slewing mobile crane, over 100t",      "group": "Cranes"},
+    {"code": "HM", "name": "Materials hoist (cantilever platform)", "group": "Hoists"},
+    {"code": "HP", "name": "Hoist (personnel and materials)",      "group": "Hoists"},
+    {"code": "LF", "name": "Forklift truck",                       "group": "Forklift"},
+    {"code": "LO", "name": "Order-picking forklift truck",         "group": "Forklift"},
+    {"code": "WP", "name": "Boom-type elevating work platform, over 11m", "group": "EWP"},
+    {"code": "RS", "name": "Reach stacker",                        "group": "Other HRW"},
+    {"code": "PB", "name": "Concrete-placing boom",                "group": "Other HRW"},
+    {"code": "TV", "name": "Non-slewing telehandler, over 3t",     "group": "Other HRW"},
+    # ── Non-HRW additions (6) ────────────────────────────────────────────────
+    {"code": "CI",     "name": "Construction Induction (white card)",     "group": "Construction"},
+    {"code": "WAH",    "name": "Working at Heights",                      "group": "Heights"},
+    {"code": "EWPSOA", "name": "EWP statement of attainment, under 11m",  "group": "EWP"},
+    {"code": "FA",     "name": "First Aid",                               "group": "First aid"},
+    {"code": "TC",     "name": "Traffic Control",                         "group": "Traffic"},
+    {"code": "WWCC",   "name": "Working with Children Check",             "group": "Child safety"},
+    # ── VicRoads driver classes (5) — upward match, see DRIVER_TIERS ─────────
+    {"code": "LR", "name": "Light rigid",                          "group": "Driver"},
+    {"code": "MR", "name": "Medium rigid",                         "group": "Driver"},
+    {"code": "HR", "name": "Heavy rigid",                          "group": "Driver"},
+    {"code": "HC", "name": "Heavy combination",                    "group": "Driver"},
+    {"code": "MC", "name": "Multi-combination",                    "group": "Driver"},
+]
+LICENCE_TYPE_ALLOWLIST = [e["code"] for e in LICENCE_CATALOGUE]
+# Group display order for the triage code grid and the Crew Finder chips. Ordered
+# by how often a group is needed (Forklift/EWP are the bulk of the queue and the
+# most-used filters), NOT alphabetically or by the WorkSafe schedule order.
+LICENCE_GROUP_ORDER = [
+    "Forklift", "EWP", "Heights", "Construction", "Child safety",
+    "First aid", "Traffic", "Driver",
+    "Rigging", "Scaffolding", "Cranes", "Hoists",
+    "Pressure equipment", "Other HRW",
+]
 _LICENCE_TYPE_CANON = {t.lower(): t for t in LICENCE_TYPE_ALLOWLIST}
+
+# Inbound aliases for convert-B. Gigpower-apply onboarding still emits the OLD
+# free-text licence spellings, so map them to catalogue codes BEFORE the exact
+# catalogue lookup. WITHOUT this, the catalogue swap turns every onboarding licence
+# into a _canonical_licence_type() miss and convert-B silently stops pushing them —
+# the worst failure mode available. A None value is a DELIBERATE, KNOWN skip that we
+# still log (see _push_candidate_licences), never an oversight.
+#   ewp -> EWPSOA, not WP: an onboarding form can't establish the over-11m licence,
+#     and guessing upward (WP) overstates capability — the unsafe direction.
+#   truck -> None: the string carries no vehicle class, so it can't be mapped safely.
+_LICENCE_INBOUND_ALIASES = {
+    "ci":                 "CI",
+    "wwc":                "WWCC",
+    "forklift":           "LF",
+    "working at heights": "WAH",
+    "ewp":                "EWPSOA",
+    "truck":              None,
+}
 
 
 def _canonical_licence_type(t):
-    """Map an incoming type to its canonical allow-list spelling (case-insensitive),
-    or None if it isn't an allowed licence type. Returning the canonical value means
-    the PHP endpoint's exact-match allow-list always agrees with us."""
-    return _LICENCE_TYPE_CANON.get(str(t or "").strip().lower())
+    """Map an incoming type to its canonical catalogue code (case-insensitive), or
+    None if it isn't a mappable licence type. Inbound aliases (the retired free-text
+    spellings onboarding still sends) are consulted FIRST, then the catalogue's own
+    exact-match. Returning the canonical value means the PHP endpoint's exact-match
+    allow-list always agrees with us."""
+    s = str(t or "").strip().lower()
+    if s in _LICENCE_INBOUND_ALIASES:
+        return _LICENCE_INBOUND_ALIASES[s]
+    return _LICENCE_TYPE_CANON.get(s)
 
 
 # ─── LICENCE EXPIRY COMPLIANCE ────────────────────────────────────────────────
@@ -4738,11 +4820,36 @@ LICENCE_TYPES = tuple(LICENCE_TYPE_ALLOWLIST)
 
 # v1 decision: chase only the hard-expiry types. A blank expiry on these is a
 # real gap ("unknown"); a blank on the others is fine ("na"). A present date is
-# always scored normally, whatever the type.
+# always scored normally, whatever the type. Keyed on catalogue CODES (not the
+# old type strings) — only the True cases need listing, since _decorate_licences
+# looks up with .get(code, False). EWPSOA is True alongside WP: both carry expiry
+# in practice, and the sub-11m split shouldn't open a compliance gap.
 LICENCE_EXPIRY_EXPECTED = {
-    "WWC": True, "Forklift": True, "Truck": True,
-    "CI": False, "EWP": False, "Working at Heights": False,
+    "WWCC": True, "FA": True,
+    "LF": True, "LO": True, "WP": True, "EWPSOA": True,
+    "LR": True, "MR": True, "HR": True, "HC": True, "MC": True,
 }
+
+# Driver classes are hierarchical: an HC holder can lawfully drive an MR vehicle,
+# so a required driver code is satisfied by that code OR any heavier one. Not used
+# by triage — built here so the Crew Finder filter release doesn't have to reopen
+# this constant block. expand_driver_codes([required]) -> the codes that satisfy it.
+DRIVER_TIERS = ["LR", "MR", "HR", "HC", "MC"]
+
+
+def expand_driver_codes(codes):
+    """Expand each driver code to itself plus every heavier class (upward match);
+    a required MR is satisfied by MR/HR/HC/MC. Non-driver codes pass through
+    unchanged. Returns a de-duplicated list, input order preserved."""
+    out = []
+    seen = set()
+    for c in (codes or []):
+        tiers = DRIVER_TIERS[DRIVER_TIERS.index(c):] if c in DRIVER_TIERS else [c]
+        for t in tiers:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+    return out
 
 LICENCE_WARN_DAYS = 60   # global v1 window (inductions use 14; the helper is parameterised)
 
@@ -4791,7 +4898,11 @@ def _decorate_licences(licences):
         if not isinstance(lic, dict):
             continue
         row = dict(lic)
-        ltype = row.get("type") or ""
+        # LICENCE_EXPIRY_EXPECTED is keyed on catalogue codes, so score against
+        # type_canonical; fall back to the raw type string for rows not yet triaged
+        # (canonical NULL). Without the fallback every untriaged row would miss the
+        # lookup and silently score 'na', quietly emptying the compliance surface.
+        ltype = row.get("type_canonical") or row.get("type") or ""
         expected = LICENCE_EXPIRY_EXPECTED.get(ltype, False)
         row["status"] = compliance_status(
             _licence_parse_date(row.get("date_expiry")),
@@ -4911,9 +5022,21 @@ def _push_candidate_licences(ss, user_id, licences):
     for lic in licences:
         if not isinstance(lic, dict):
             continue
-        canon = _canonical_licence_type(lic.get("type"))
+        raw = lic.get("type")
+        canon = _canonical_licence_type(raw)
         if not canon:
-            continue   # not an allow-listed licence (e.g. induction cert) — skip
+            # Never a silent skip. A KNOWN-but-unmappable type (an inbound alias that
+            # maps to None, e.g. 'Truck' with no class) is logged at WARNING — that is
+            # the dangerous case, an onboarding licence we recognise but can't push.
+            # Anything else (induction certs, genuine unknowns) is expected and logged
+            # at INFO. Either way the raw string is on the record.
+            if str(raw or "").strip().lower() in _LICENCE_INBOUND_ALIASES:
+                app.logger.warning(f"[convert-licence] user {user_id}: known but "
+                                   f"unmappable licence type {raw!r} — skipped, not pushed")
+            else:
+                app.logger.info(f"[convert-licence] user {user_id}: {raw!r} is not a "
+                                f"tracked licence type — skipped")
+            continue
         date_cert = _licence_date_ymd(lic.get("date_certified"))
 
         # Fetch the PDF bytes from the signed URL, if the licence has one. A licence
@@ -11886,6 +12009,127 @@ def api_admin_licence_file(licence_id):
         "Content-Disposition": resp.headers.get("Content-Disposition", "inline"),
         "X-Content-Type-Options": "nosniff",
     })
+
+
+@app.route("/api/licences/catalogue")
+@require_cohort("admin")
+def api_licences_catalogue():
+    """The licence catalogue (code · name · group), its group order, and which codes
+    carry an expiry — for building the Manage Crew licence dropdowns and helper text
+    ON THE WIRE from app.py's LICENCE_CATALOGUE (the single source), never a hardcoded
+    copy in the template. Exposed separately so the Licences tab doesn't have to pull
+    the whole triage queue just to populate a <select>."""
+    return jsonify({
+        "catalogue":       LICENCE_CATALOGUE,
+        "group_order":     LICENCE_GROUP_ORDER,
+        "expiry_expected": [c for c, v in LICENCE_EXPIRY_EXPECTED.items() if v],
+    })
+
+
+# ── Administration: Licence Triage ────────────────────────────────────────────
+# The one-off tool that clears the untriaged-licence backlog: every empty-venue,
+# non-induction licence whose type_canonical is still NULL. The operator confirms
+# the recorded free-text type against the stored card image and stamps 1..N
+# catalogue codes. Both routes are admin-gated here and at the PHP boundary, and
+# neither can touch an induction row (empty-venue + explicit type guard, enforced
+# in the endpoints exactly as the other licence routes are).
+
+def ss_list_triage_queue(ss):
+    """The untriaged-licence queue via list-licence-triage.php (admin-gated). Rows
+    are empty-venue, non-induction, type_canonical IS NULL, type_triaged = 0, each
+    joined to its crew member (ein + name). Returns (list, error) — same shape and
+    failure contract as ss_list_licences."""
+    url = f"{BASE_URL}/ajax/crew/list-licence-triage.php"
+    try:
+        resp = ss.get(url, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and data.get("error"):
+        return None, data["error"]
+    return (data.get("rows") or []), None
+
+
+def ss_save_triage(ss, licence_id, codes, date_expiry):
+    """Commit ONE triage decision via save-licence-triage.php. `codes` is a list of
+    catalogue codes (empty = mark the row unresolvable). The endpoint UPDATEs the
+    row with the first code and INSERTs a copy per additional code. Returns
+    (result_dict, error)."""
+    data = {
+        "id":          str(int(licence_id)),
+        "codes":       ",".join(codes),
+        "date_expiry": date_expiry or "",
+    }
+    try:
+        resp = ss.post(f"{BASE_URL}/ajax/crew/save-licence-triage.php",
+                       data=data, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+@app.route("/api/licence-triage/queue")
+@require_cohort("admin")
+def api_licence_triage_queue():
+    """The licence triage queue plus the catalogue that drives the code grid. The
+    catalogue and group order ride along on the response so the client renders the
+    grid from app.py (the single source), never a hardcoded copy in the template."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    rows, err = ss_list_triage_queue(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({
+        "rows":        rows,
+        "total":       len(rows),
+        "catalogue":   LICENCE_CATALOGUE,
+        "group_order": LICENCE_GROUP_ORDER,
+    })
+
+
+@app.route("/api/licence-triage/save", methods=["POST"])
+@require_cohort("admin")
+def api_licence_triage_save():
+    """Commit one triage decision: 0..N catalogue codes + optional expiry against
+    one queue row. Empty codes marks the row unresolvable (type_triaged = 2). Codes
+    are validated app-side against the catalogue AS WELL AS endpoint-side, per the
+    convert-B pattern where the two allow-lists are guaranteed to agree."""
+    try:
+        licence_id = int(request.form.get("id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid licence id"}), 400
+    if licence_id <= 0:
+        return jsonify({"error": "Invalid licence id"}), 400
+    raw = request.form.get("codes") or ""
+    codes = [c.strip() for c in raw.split(",") if c.strip()]
+    for c in codes:
+        if c not in LICENCE_TYPE_ALLOWLIST:
+            return jsonify({"error": f"Invalid code: {c}"}), 400
+    date_exp = _licence_date_ymd(request.form.get("date_expiry"))
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    out, err = ss_save_triage(ss, licence_id, codes, date_exp)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
 
 
 if __name__ == "__main__":

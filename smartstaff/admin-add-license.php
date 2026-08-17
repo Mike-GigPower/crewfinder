@@ -57,7 +57,13 @@
 	/* 'Induction Certificate' — is rejected, so licence writes can never touch or
 	/* create induction rows (handover rule #2, enforced at the write boundary). */
 
-	$allowedTypes = array('CI', 'EWP', 'WWC', 'Forklift', 'Truck', 'Working at Heights');
+	$allowedTypes = array(
+		'SB', 'SI', 'SA', 'DG', 'RB', 'RI', 'RA', 'BS', 'BA', 'TO', 'ES',
+		'CT', 'CS', 'CD', 'CP', 'CB', 'CV', 'CN', 'C2', 'C6', 'C1', 'C0',
+		'HM', 'HP', 'LF', 'LO', 'WP', 'RS', 'PB', 'TV',
+		'CI', 'WAH', 'EWPSOA', 'FA', 'TC', 'WWCC',
+		'LR', 'MR', 'HR', 'HC', 'MC'
+	);
 
 	$type = isset($_POST['type']) ? trim($_POST['type']) : '';
 
@@ -89,12 +95,22 @@
 	$typeEsc = mysql_real_escape_string($type);
 
 	/*
-	/* 5. idempotency — if a row already exists for this (user, type), stop here.
-	/* No file is written and no row inserted, so re-running a conversion is safe. */
+	/* 5. idempotency — if a row already exists for this (user, licence), stop here.
+	/* No file is written and no row inserted, so re-running a conversion is safe.
+	/*
+	/* The key is the CANONICAL code, not the raw type. Post-backfill a triaged row
+	/* holds the original free text in `type` (e.g. 'CI Card') and the code in
+	/* type_canonical ('CI'), so a type-only match would miss it and insert a second
+	/* CI for the ~190 crew who already hold one. Match type_canonical when it is set;
+	/* fall back to the raw type only for still-untriaged rows (type_canonical NULL),
+	/* which keeps their behaviour exactly as it is today. */
 
 	$existing = mysql_query(
 		"SELECT id FROM user_licenses
-		 WHERE `user` = " . $user . " AND type = '" . $typeEsc . "' LIMIT 1"
+		 WHERE `user` = " . $user . "
+		   AND (type_canonical = '" . $typeEsc . "'
+		        OR (type_canonical IS NULL AND type = '" . $typeEsc . "'))
+		 LIMIT 1"
 	);
 
 	if ($existing !== false && mysql_num_rows($existing) > 0)
@@ -163,11 +179,17 @@
 	/*
 	/* 7. INSERT. has_image is the same literal the native handlers write for a
 	/* non-image (PDF/metadata) licence — a bare 0, exactly as add-my-induction.php
-	/* writes into this binary(1) column via raw mysql_query. */
+	/* writes into this binary(1) column via raw mysql_query.
+	/*
+	/* type_canonical is set to the type itself and type_triaged to 1: the value was
+	/* validated against the 41-code catalogue a few lines up, so a licence written
+	/* here is already canonical and must NOT land in the triage queue (which is
+	/* type_canonical IS NULL / type_triaged = 0). That keeps the "new untriaged"
+	/* signal meaningful — non-zero only when free text is written elsewhere. */
 
 	mysql_query(
-		"INSERT INTO user_licenses (`user`, type, pdf_file, has_image, date_certified, date_expiry)
-		 VALUES (" . $user . ", '" . $typeEsc . "', " . $pdfFileSql . ", 0, "
+		"INSERT INTO user_licenses (`user`, type, type_canonical, type_triaged, pdf_file, has_image, date_certified, date_expiry)
+		 VALUES (" . $user . ", '" . $typeEsc . "', '" . $typeEsc . "', 1, " . $pdfFileSql . ", 0, "
 		 . $dateCertifiedSql . ", " . $dateExpirySql . ")"
 	);
 

@@ -50,7 +50,7 @@
 	/* 3. load the existing row + guard it is a licence (never an induction). */
 
 	$loadRes = mysql_query(
-		"SELECT id, `user`, type, venue, pdf_file, has_image
+		"SELECT id, `user`, type, type_canonical, venue, pdf_file, has_image
 		 FROM user_licenses WHERE id = " . $id . " LIMIT 1"
 	);
 
@@ -69,6 +69,7 @@
 	$row       = mysql_fetch_object($loadRes);
 	$rowUser   = (int) $row->user;
 	$oldType   = $row->type;
+	$oldCanon  = $row->type_canonical;   /* NULL until triaged/migrated; the dedup key */
 	$rowVenue  = $row->venue;
 	$oldPdf    = $row->pdf_file;
 	$oldHasImg = (int) $row->has_image;
@@ -86,7 +87,13 @@
 	/*
 	/* 4. validate the new type against the fixed allow-list. */
 
-	$allowedTypes = array('CI', 'EWP', 'WWC', 'Forklift', 'Truck', 'Working at Heights');
+	$allowedTypes = array(
+		'SB', 'SI', 'SA', 'DG', 'RB', 'RI', 'RA', 'BS', 'BA', 'TO', 'ES',
+		'CT', 'CS', 'CD', 'CP', 'CB', 'CV', 'CN', 'C2', 'C6', 'C1', 'C0',
+		'HM', 'HP', 'LF', 'LO', 'WP', 'RS', 'PB', 'TV',
+		'CI', 'WAH', 'EWPSOA', 'FA', 'TC', 'WWCC',
+		'LR', 'MR', 'HR', 'HC', 'MC'
+	);
 
 	$type = isset($_POST['type']) ? trim($_POST['type']) : '';
 
@@ -99,14 +106,26 @@
 	$typeEsc = mysql_real_escape_string($type);
 
 	/*
-	/* 5. one-per-(user,type) guard — if the type is being CHANGED and a different
-	/* row already holds the new (user, type), refuse rather than create a dup. */
+	/* 5. one-per-(user,licence) guard — if the CANONICAL licence is being changed and
+	/* a different row already holds the new one, refuse rather than create a dup.
+	/*
+	/* Compare the new code against the row's type_canonical, NOT its raw type. After
+	/* the backfill $oldType is free text ('CI Card') while the canonical value is the
+	/* code ('CI'), so editing that row and re-picking CI is NOT a change — comparing
+	/* against $oldType would wrongly read it as one and run a needless collision check.
+	/* $oldCanon is NULL on a still-untriaged row, so picking any code there counts as
+	/* a change and the check runs, which is correct.
+	/*
+	/* The collision query is keyed the same way as the add endpoints: match
+	/* type_canonical when set, fall back to raw type only for untriaged rows. */
 
-	if ($type !== $oldType)
+	if ($type !== $oldCanon)
 	{
 		$dupRes = mysql_query(
 			"SELECT id FROM user_licenses
-			 WHERE `user` = " . $rowUser . " AND type = '" . $typeEsc . "'
+			 WHERE `user` = " . $rowUser . "
+			   AND (type_canonical = '" . $typeEsc . "'
+			        OR (type_canonical IS NULL AND type = '" . $typeEsc . "'))
 			   AND id != " . $id . " LIMIT 1"
 		);
 
@@ -189,8 +208,15 @@
 	/* on a no-op save). On error, delete any newly written file so a failed
 	/* update never leaves an orphan. */
 
+	/* type_canonical is set to the (validated) new type and type_triaged to 1, so an
+	/* edit ALWAYS leaves the row fully canonical — including the legacy case where the
+	/* old type was free text not in the catalogue and the operator picks a real code:
+	/* both columns become that code, never half-migrated. It also keeps an edited row
+	/* out of the triage queue (type_canonical IS NULL / type_triaged = 0). */
+
 	mysql_query(
 		"UPDATE user_licenses SET type = '" . $typeEsc . "',"
+		. " type_canonical = '" . $typeEsc . "', type_triaged = 1,"
 		. " date_certified = " . $dateCertifiedSql . ","
 		. " date_expiry = " . $dateExpirySql . $pdfClause
 		. " WHERE id = " . $id

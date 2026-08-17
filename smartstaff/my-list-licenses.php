@@ -41,7 +41,7 @@
 	/* read the rows (never the induction rows). */
 
 	$res = mysql_query(
-		"SELECT id, `user`, type, pdf_file, has_image, date_certified, date_expiry
+		"SELECT id, `user`, type, type_canonical, pdf_file, has_image, date_certified, date_expiry
 		 FROM user_licenses
 		 WHERE `user` = " . $user . "
 		   AND (venue IS NULL OR venue = 0 OR venue = '')
@@ -75,6 +75,7 @@
 			'id'             => (int) $row->id,
 			'user'           => (int) $row->user,
 			'type'           => $row->type,
+			'type_canonical' => ($row->type_canonical !== null && $row->type_canonical !== '') ? $row->type_canonical : null,
 			'pdf_file'       => ($row->pdf_file !== null && $row->pdf_file !== '') ? $row->pdf_file : null,
 			'has_image'      => (int) $row->has_image,
 			'date_certified' => $certified,
