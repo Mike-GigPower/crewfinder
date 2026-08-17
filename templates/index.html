@@ -4934,6 +4934,8 @@ function renderSessionRow(s){
   const td = (inner, extra) => '<td style="padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap;'+(extra||'')+'">'+inner+'</td>';
   const actions = entityBtn('Edit', "openSessionEdit('"+s.id+"')")
     + ' ' + entityBtn('Roster', "openSessionRoster('"+s.id+"')")
+    // Reminders only where there is someone to remind and a sitting still ahead.
+    + ((s.booked > 0 && s.state !== 'cancelled') ? ' ' + entityBtn('Remind', "openSessionReminders('"+s.id+"')") : '')
     + ' ' + sessionStateControls(s);
   return '<tr>'
     + td(escapeHtml(s.label||''))
@@ -4948,13 +4950,139 @@ function renderSessionRow(s){
     + '</tr>';
 }
 
-// ---- state controls (§3). Draft→Open, Open→Closed, Closed→Open. NO Cancel:
-// cancelling strands booked candidates without the email that ships in item 6. ----
+// ---- state controls (§3). Draft→Open, Open→Closed, Closed→Open, and — since
+// item 6b — Cancel. Cancel was withheld until the email existed, because
+// cancelling a session strands everyone booked into it. It now reverts them to
+// Invited, clears the waitlist and emails them all, so it can finally be offered.
+// It goes through cancelSession, NOT setSessionState: the edge function refuses
+// 'cancelled' via set_state for exactly this reason. ----
 function sessionStateControls(s){
-  if(s.state === 'draft')  return entityBtn('Open',   "setSessionState('"+s.id+"','open')",   {primary:true});
-  if(s.state === 'open')   return entityBtn('Close',  "setSessionState('"+s.id+"','closed')");
-  if(s.state === 'closed') return entityBtn('Reopen', "setSessionState('"+s.id+"','open')");
-  return '';   // cancelled: no controls, and Cancel is never offered anywhere
+  const cancel = ' ' + entityBtn('Cancel session', "openSessionCancel('"+s.id+"')");
+  if(s.state === 'draft')  return entityBtn('Open',   "setSessionState('"+s.id+"','open')",   {primary:true}) + cancel;
+  if(s.state === 'open')   return entityBtn('Close',  "setSessionState('"+s.id+"','closed')") + cancel;
+  if(s.state === 'closed') return entityBtn('Reopen', "setSessionState('"+s.id+"','open')") + cancel;
+  return '';   // already cancelled: nothing left to do
+}
+
+// ---- Manual reminders (item 6b §8) ----
+// There is no scheduler, deliberately: it is the one component with no precedent
+// in this codebase and the worst thing to put between us and a fixed date. Ops
+// picks the session and the milestone and presses send. Both milestones can go
+// out for one session and neither blocks the other; pressing the same one twice
+// re-sends nothing, because the send is recorded per (candidate, session,
+// milestone) and dedupes on what actually sent.
+function openSessionReminders(id){
+  const s = _sessionsData.sessions.find(x => x.id === id);
+  if(!s) return;
+  const booked = s.booked || 0;
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Send reminders';
+  document.getElementById('entity-modal-sub').textContent =
+    (s.label || '') + ' · ' + _fmtSessionStart(s.starts_at);
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div id="sess-remind-err" style="color:var(--conflict);font-size:12px"></div>'
+    + '<div style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:12px">'
+    +   'Emails all <b>'+booked+'</b> booked candidate'+(booked===1?'':'s')+' with the session details. '
+    +   'Sending the same reminder twice is safe — anyone already sent it is skipped.'
+    + '</div>'
+    + efRow('Which reminder',
+        '<select id="sess-remind-milestone" style="'+EF_INPUT_STYLE+'">'
+        + '<option value="3day">Coming up (a few days before)</option>'
+        + '<option value="morning">Today (morning of)</option>'
+        + '</select>');
+  document.getElementById('entity-modal-actions').innerHTML =
+    entityBtn('Cancel','closeEntityModal()')
+    + entityBtn('Send to '+booked, "doSendReminders('"+id+"')", {primary:true});
+}
+async function doSendReminders(id){
+  const sel = document.getElementById('sess-remind-milestone');
+  const milestone = sel ? sel.value : '3day';
+  const actions = document.getElementById('entity-modal-actions');
+  if(actions) actions.querySelectorAll('button').forEach(b => b.disabled = true);
+  const res = await postSessions({ action:'send_reminders', id:id, milestone:milestone });
+  if(res.httpError || !res.body || res.body.ok === false){
+    const err = document.getElementById('sess-remind-err');
+    if(err) err.textContent = 'Could not send: ' + ((res.body && (res.body.error || res.body.reason)) || 'error');
+    if(actions) actions.querySelectorAll('button').forEach(b => b.disabled = false);
+    return;
+  }
+  const n = res.body.notified || {};
+  closeEntityModal();
+  let msg = 'Reminders: ' + (n.sent||0) + ' sent';
+  if(n.deduped) msg += ', ' + n.deduped + ' already had it';
+  if(n.blocked) msg += ' — ' + n.blocked + ' BLOCKED (email guard is off, nothing delivered)';
+  if(n.failed)  msg += ', ' + n.failed + ' failed';
+  msg += '.';
+  await loadInductionSessions();
+  sessBanner(msg, (n.blocked||0) > 0 || (n.failed||0) > 0);
+}
+
+// ---- Cancel a whole session (item 6b §7.1) ----
+// The dialog leads with the number of people who will be emailed, because that
+// is the part of this action that cannot be undone. Everything else — the state
+// flip, the reverted bookings — is recoverable; an apology sitting in 40 inboxes
+// is not.
+function openSessionCancel(id){
+  const s = _sessionsData.sessions.find(x => x.id === id);
+  if(!s) return;
+  const booked = s.booked || 0;
+  const waiting = s.waitlist_count || 0;
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Cancel session';
+  document.getElementById('entity-modal-sub').textContent =
+    (s.label || '') + ' · ' + _fmtSessionStart(s.starts_at);
+
+  const lead = booked > 0
+    ? '<b>'+booked+' candidate'+(booked===1?'':'s')+'</b> will be emailed an apology and a link to pick another session, and moved back to Invited.'
+    : 'Nobody is booked into this session, so no one will be emailed.';
+  const wait = waiting > 0
+    ? '<div style="margin-top:8px">'+waiting+' waitlisted candidate'+(waiting===1?'':'s')+' will be taken off the list. They keep their invite and can book elsewhere.</div>'
+    : '';
+
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div id="sess-cancel-err" style="color:var(--conflict);font-size:12px"></div>'
+    + '<div style="font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border-gold);border-radius:5px;padding:10px 12px;margin-bottom:12px;line-height:1.5">'
+    +   '⚠ ' + lead + wait
+    + '</div>'
+    + efRow('Reason', '<input id="sess-cancel-reason" type="text" placeholder="Venue double-booked" style="'+EF_INPUT_STYLE+'">'
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Recorded against each booking. Not shown to candidates — the email gives a plain apology, not this.</div>')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:10px">This cannot be undone.</div>';
+
+  document.getElementById('entity-modal-actions').innerHTML =
+    entityBtn('Keep session', 'closeEntityModal()')
+    + entityBtn(booked > 0 ? ('Cancel and email '+booked) : 'Cancel session', "doCancelSession('"+id+"')", {primary:true});
+}
+async function doCancelSession(id){
+  const reasonEl = document.getElementById('sess-cancel-reason');
+  const btns = document.getElementById('entity-modal-actions');
+  if(btns) btns.querySelectorAll('button').forEach(b => b.disabled = true);
+  const res = await postSessions({
+    action: 'cancel_session',
+    id: id,
+    reason: reasonEl ? reasonEl.value.trim() : '',
+  });
+  if(res.httpError || !res.body || res.body.ok === false){
+    const err = document.getElementById('sess-cancel-err');
+    const msg = (res.body && (res.body.error || res.body.reason)) || 'error';
+    if(err) err.textContent = 'Could not cancel: ' + (msg === 'already_cancelled' ? 'this session is already cancelled.' : msg);
+    if(btns) btns.querySelectorAll('button').forEach(b => b.disabled = false);
+    return;
+  }
+  const n = res.body.notified || {};
+  const reached = (n.sent || 0);
+  const held = (n.blocked || 0);
+  closeEntityModal();
+  // Report what actually left the building. A blocked send means the email guard
+  // is off (EMAIL_LIVE unset) — the cancellation still happened, but nobody was
+  // told, and saying "emailed 12" in that case would be a lie.
+  let msg = 'Session cancelled. ' + (res.body.booked_count || 0) + ' booking(s) reverted';
+  if(held > 0) msg += ' — but ' + held + ' email(s) were BLOCKED and did not send. Contact them yourself.';
+  else if(reached > 0) msg += ', ' + reached + ' candidate(s) emailed.';
+  else msg += '.';
+  // Awaited: loadInductionSessions rewrites the wrapper that holds #sess-banner,
+  // so banking the message first would wipe it.
+  await loadInductionSessions();
+  sessBanner(msg, held > 0);
 }
 async function setSessionState(id, state){
   const res = await postSessions({ action:'set_state', id:id, state:state });
@@ -4994,7 +5122,8 @@ function openSessionEdit(id){
   const dt = (i,val) => '<input id="'+i+'" type="datetime-local" value="'+escapeHtml(val||'')+'" style="'+EF_INPUT_STYLE+'">';
 
   const body =
-      efRow('Label', '<input id="sess-label" type="text" value="'+escapeHtml(isEdit?(s.label||''):'')+'" style="'+EF_INPUT_STYLE+'">')
+      efRow('Label', '<input id="sess-label" type="text" placeholder="Wed 2 Sept, 9:00 AM" value="'+escapeHtml(isEdit?(s.label||''):'')+'" style="'+EF_INPUT_STYLE+'">'
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Names this sitting. The intake below names the whole round.</div>')
     + efRow('Intake',
         '<select id="sess-intake" onchange="sessIntakeToggle()" style="'+EF_INPUT_STYLE+'">'+intakeOpts+'</select>'
         + '<input id="sess-intake-new" type="text" placeholder="New intake label" style="'+EF_INPUT_STYLE+';margin-top:6px;display:none">')
@@ -5005,9 +5134,14 @@ function openSessionEdit(id){
         '<input id="sess-capacity" type="number" min="1" value="'+(isEdit?(s.capacity||''):'')+'" style="'+EF_INPUT_STYLE+'">'
         + '<div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.45">Set capacity <b>below</b> the room\'s physical limit. Ops can deliberately overfill when booking on someone\'s behalf, and that override should land in headroom rather than past a fire limit — a room holding 100 should be a session of 85.</div>')
     + efRow('Mode', '<select id="sess-mode" onchange="sessModeToggle()" style="'+EF_INPUT_STYLE+'">'+modeOpt('in_person','In person')+modeOpt('online','Online')+modeOpt('hybrid','Hybrid')+'</select>')
-    + '<div id="sess-loc-row">'+efRow('Location', '<input id="sess-location" type="text" value="'+escapeHtml(isEdit?(s.location||''):'')+'" style="'+EF_INPUT_STYLE+'">')+'</div>'
+    + '<div id="sess-loc-row">'+efRow('Location', '<input id="sess-location" type="text" placeholder="Marvel Stadium" value="'+escapeHtml(isEdit?(s.location||''):'')+'" style="'+EF_INPUT_STYLE+'">')
+        + efRow('Street address', '<input id="sess-address" type="text" placeholder="740 Bourke St, Docklands VIC 3008" value="'+escapeHtml(isEdit?(s.location_address||''):'')+'" style="'+EF_INPUT_STYLE+'">'
+            + '<div style="font-size:10px;color:var(--muted);margin-top:3px">For a directions link. Not shown to candidates yet.</div>')
+        + efRow('Entry map', '<input id="sess-entrymap" type="text" placeholder="https://…/gate-3.png" value="'+escapeHtml(isEdit?(s.entry_map_url||''):'')+'" style="'+EF_INPUT_STYLE+'">'
+            + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Image of the crew entry point. Not shown to candidates yet — put the entry instructions in the box below for now.</div>')+'</div>'
     + '<div id="sess-url-row">'+efRow('Meeting URL', '<input id="sess-url" type="text" value="'+escapeHtml(isEdit?(s.meeting_url||''):'')+'" style="'+EF_INPUT_STYLE+'">')+'</div>'
-    + efRow('Meeting notes', '<textarea id="sess-mnotes" rows="2" style="'+EF_INPUT_STYLE+';resize:vertical" placeholder="Parking, what to bring, dial-in">'+escapeHtml(isEdit?(s.meeting_notes||''):'')+'</textarea>')
+    + efRow('What attendees need to know', '<textarea id="sess-mnotes" rows="3" style="'+EF_INPUT_STYLE+';resize:vertical" placeholder="Enter via Gate 3. Bring photo ID and steel-caps. Parking on Pearl River Rd.">'+escapeHtml(isEdit?(s.meeting_notes||''):'')+'</textarea>'
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Goes out in their confirmation and reminder emails. Entry instructions, what to bring, parking.</div>')
     + efRow('Booking closes', dt('sess-close', isEdit?_isoToMelbLocalInput(s.booking_closes_at):'')
         + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Defaults to 5pm the previous working day; editable.</div>')
     + efRow('Waitlist', '<label style="font-size:12px;color:var(--text);display:flex;gap:8px;align-items:center"><input id="sess-waitlist" type="checkbox" '+((!isEdit||s.waitlist_enabled)?'checked':'')+'> Enable waitlist</label>')
@@ -5063,6 +5197,8 @@ function saveSession(id){
   const endLocal = val('sess-end');
   const closeLocal = val('sess-close');
   const location = val('sess-location').trim();
+  const address = val('sess-address').trim();
+  const entryMap = val('sess-entrymap').trim();
   const meetingUrl = val('sess-url').trim();
 
   const errs = [];
@@ -5081,6 +5217,10 @@ function saveSession(id){
     capacity: capacity,
     mode: mode,
     location: (mode === 'online') ? null : (location || null),
+    // Venue mapping follows the same rule as Location: meaningless for an online
+    // sitting, so it is cleared rather than left behind when the mode changes.
+    location_address: (mode === 'online') ? null : (address || null),
+    entry_map_url: (mode === 'online') ? null : (entryMap || null),
     meeting_url: (mode === 'in_person') ? null : (meetingUrl || null),
     meeting_notes: val('sess-mnotes') || null,
     booking_closes_at: closeLocal ? _melbLocalToIso(closeLocal) : null,
@@ -5099,13 +5239,17 @@ function saveSession(id){
     if(orig && booked > 0){
       // Compare at the form's minute precision in Melbourne-local terms — raw ISO
       // strings differ by microseconds/offset formatting even when unchanged,
-      // which would fire the "not notified" warning on every save.
+      // which would otherwise claim an edit had changed something on every save.
       const changed = (startLocal !== _isoToMelbLocalInput(orig.starts_at))
         || (endLocal !== _isoToMelbLocalInput(orig.ends_at))
         || (orig.mode !== mode)
         || ((orig.location || '') !== location);
       if(changed){
-        warnings.push(booked+' candidate'+(booked===1?' is':'s are')+' booked into this session. They will NOT be notified automatically. Automatic notification ships with the email work; until then you must contact them yourself.');
+        // Item 6b: they ARE notified now. This stays a confirmation rather than
+        // disappearing, because emailing everyone booked is still a consequence
+        // worth seeing before you commit to it — it just stopped being a chore
+        // the operator had to do by hand.
+        warnings.push(booked+' candidate'+(booked===1?' is':'s are')+' booked into this session and will be emailed the new details automatically.');
       }
     }
     if(warnings.length){ showSessionSaveWarnings(warnings, payload); return; }
@@ -5130,7 +5274,21 @@ async function doSaveSession(payload){
     return;
   }
   closeEntityModal();
-  loadInductionSessions();
+  await loadInductionSessions();
+  // Say what the edit actually did. An edit that emailed nobody is normal —
+  // nothing material moved — but after removing the old "you must contact them
+  // yourself" warning, silence here would leave the operator guessing whether
+  // anyone was told.
+  const n = (res.body && res.body.notified) || null;
+  const changed = (res.body && res.body.changed_fields) || [];
+  if(n && changed.length){
+    let msg = 'Saved. ';
+    if(n.sent)    msg += n.sent + ' candidate(s) emailed the new details.';
+    if(n.blocked) msg += n.blocked + ' email(s) BLOCKED — the email guard is off, so nobody was told. Contact them yourself.';
+    if(n.failed)  msg += ' ' + n.failed + ' failed to send.';
+    if(!n.sent && !n.blocked && !n.failed) msg += 'Nobody is booked, so no emails were sent.';
+    sessBanner(msg, (n.blocked||0) > 0 || (n.failed||0) > 0);
+  }
 }
 
 // ════════ Roster + cancel-on-behalf (§4/§5) ════════
@@ -6086,27 +6244,104 @@ async function recruitBatchSentToEh(){
 }
 // Batch invite — reuses the single-row invite route, one call per applicant.
 // This EMAILS each applicant, so it confirms once for the whole batch and
-// reports a per-person summary (some may fail, e.g. no induction link on file).
+// reports a per-person summary.
+//
+// ITEM 6b: the operator must now choose an INTAKE first. The booking page only
+// shows sessions whose intake matches the candidate's, so an invite sent without
+// one — or with the wrong one — does not fail. It sends perfectly and every
+// recipient opens the link to an empty page. That is why this is a picklist over
+// intakes that actually exist rather than a free-text box, and why an intake with
+// no open sessions is called out before the send rather than after it.
 async function recruitBatchInvite(){
   const ids = Array.from(_recruitSelected);
   if(ids.length === 0) return;
-  if(!confirm(`Send induction invites to ${ids.length} applicant(s)?\n\nThis emails each of them their booking link.`)) return;
-  const bar = document.getElementById('recruit-batch');
-  if(bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
-  let ok = 0; const failed = [];
+
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Invite to induction';
+  document.getElementById('entity-modal-sub').textContent =
+    ids.length + ' applicant' + (ids.length===1?'':'s') + ' — this emails each of them';
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading intakes…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Cancel','closeEntityModal()');
+
+  const res = await postSessions({ action:'list' });
+  if(res.httpError || !res.body || res.body.ok === false){
+    document.getElementById('entity-modal-body').innerHTML =
+      '<div style="color:var(--conflict);font-size:12px">Could not load intakes. Try again.</div>';
+    return;
+  }
+  const sessions = res.body.sessions || [];
+  const intakes = res.body.intakes || [];
+  const now = Date.now();
+  // Bookable = what get_booking_page will actually show: open, and still ahead.
+  const bookableBy = {};
+  sessions.forEach(s => {
+    if(s.state === 'open' && new Date(s.starts_at).getTime() > now){
+      bookableBy[s.intake_label] = (bookableBy[s.intake_label] || 0) + 1;
+    }
+  });
+
+  if(intakes.length === 0){
+    document.getElementById('entity-modal-body').innerHTML =
+      '<div style="font-size:12px;color:var(--text);line-height:1.5">There are no intakes yet. Create and open at least one induction session before inviting anyone — otherwise the invite link opens an empty page.</div>';
+    return;
+  }
+
+  const opts = intakes.map(x => {
+    const n = bookableBy[x] || 0;
+    return '<option value="'+escapeHtml(x)+'">'+escapeHtml(x)+' — '+(n?(n+' session'+(n===1?'':'s')+' open'):'no open sessions')+'</option>';
+  }).join('');
+
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div id="invite-err" style="color:var(--conflict);font-size:12px"></div>'
+    + efRow('Intake', '<select id="invite-intake" onchange="inviteIntakeHint()" style="'+EF_INPUT_STYLE+'">'+opts+'</select>'
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Which round these applicants are being invited to. They will only see sessions in this intake.</div>')
+    + '<div id="invite-hint" style="margin-top:10px"></div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+    entityBtn('Cancel','closeEntityModal()')
+    + entityBtn('Send '+ids.length+' invite'+(ids.length===1?'':'s'), 'doBatchInvite()', {primary:true});
+  window._inviteBookable = bookableBy;
+  inviteIntakeHint();
+}
+function inviteIntakeHint(){
+  const sel = document.getElementById('invite-intake');
+  const hint = document.getElementById('invite-hint');
+  if(!sel || !hint) return;
+  const n = (window._inviteBookable || {})[sel.value] || 0;
+  hint.innerHTML = n > 0
+    ? '<div style="font-size:11px;color:var(--muted)">Their link will show '+n+' session'+(n===1?'':'s')+'.</div>'
+    : '<div style="font-size:12px;color:var(--text);background:var(--surface2);border:1px solid var(--border-gold);border-radius:5px;padding:8px 10px;line-height:1.5">⚠ This intake has no open, future sessions. The invite would send, but the link would open an empty page. Open a session first.</div>';
+}
+async function doBatchInvite(){
+  const ids = Array.from(_recruitSelected);
+  const sel = document.getElementById('invite-intake');
+  const intake = sel ? sel.value : '';
+  if(!intake){ document.getElementById('invite-err').textContent = 'Pick an intake.'; return; }
+  const actions = document.getElementById('entity-modal-actions');
+  if(actions) actions.querySelectorAll('button').forEach(b => b.disabled = true);
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div style="color:var(--muted);font-size:12px;padding:8px 0">Sending '+ids.length+' invite'+(ids.length===1?'':'s')+'…</div>';
+
+  let ok = 0, blocked = 0; const failed = [];
   for(const id of ids){
     const cand = _recruitRows.find(c => String(c.id) === String(id)) || {};
     try{
       const r = await fetch('/api/recruitment/invite', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({id})
+        body: JSON.stringify({id, intake_label: intake})
       });
       const body = await r.json().catch(() => ({}));
-      if(r.ok) ok++;
+      // The edge function reports a guard-blocked send as HTTP 200 {ok:false,
+      // outcome:'blocked'}. That is NOT a success: the applicant is marked
+      // invited but no email left the building, so it is counted separately.
+      if(r.ok && body.outcome === 'blocked') blocked++;
+      else if(r.ok) ok++;
       else failed.push(`${cand.name || id}: ${body.error || 'failed'}`);
     }catch(e){ failed.push(`${cand.name || id}: network error`); }
   }
-  let msg = `Invites sent: ${ok} of ${ids.length}.`;
+  closeEntityModal();
+  let msg = `Invites sent: ${ok} of ${ids.length} for "${intake}".`;
+  if(blocked) msg += `\n\n${blocked} were BLOCKED by the email guard — EMAIL_LIVE is not enabled, so nothing was delivered.`;
   if(failed.length) msg += `\n\nNot sent:\n` + failed.join('\n');
   alert(msg);
   _recruitSelected.clear();

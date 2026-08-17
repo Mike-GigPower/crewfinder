@@ -4615,12 +4615,17 @@ def api_recruitment_invite():
     """Email an applicant their induction booking link and mark them invited.
 
     Unlike set-status (which only relabels the applicant), this calls the
-    recruitment-invite edge function, which sends the branded Resend email and —
-    only if the email actually sends — sets status=invited_to_induction and
-    stamps induction_invited_at. Same auth + key pattern as the other
-    recruitment routes: only admin/operations reach it (require_cohort), and the
-    secret key stays in Python (sent to the edge function in X-Goat-Service-Key,
-    never seen by the browser). The browser only sends us {id}."""
+    recruitment-invite edge function, which sends the branded Resend email,
+    sets status=invited_to_induction and stamps induction_invited_at. Same auth
+    + key pattern as the other recruitment routes: only admin/operations reach
+    it (require_cohort), and the secret key stays in Python (sent to the edge
+    function in X-Goat-Service-Key, never seen by the browser).
+
+    ITEM 6b: the browser now sends {id, intake_label}, and intake_label is
+    REQUIRED. The booking page only shows sessions whose intake matches the
+    candidate's, so inviting without one sends a real email whose link opens an
+    empty page. Refused here as well as in the edge function, so the round trip
+    is saved and the message is one the operator can act on."""
     if not GOAT_RECRUITMENT_KEY:
         return jsonify({"error": "Recruitment key not configured"}), 500
 
@@ -4628,12 +4633,15 @@ def api_recruitment_invite():
     cand_id = str(data.get("id", "")).strip()
     if not cand_id:
         return jsonify({"error": "Missing applicant id"}), 400
+    intake_label = str(data.get("intake_label", "")).strip()
+    if not intake_label:
+        return jsonify({"error": "Pick the intake to invite this applicant to"}), 400
 
     try:
         r = http.post(
             RECRUITMENT_INVITE_URL,
             headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
-            json={"id": cand_id},
+            json={"id": cand_id, "intake_label": intake_label},
             timeout=15,
         )
     except Exception as e:
@@ -4655,6 +4663,10 @@ def api_recruitment_invite():
 INDUCTION_SESSION_ACTIONS = {
     "list", "create", "update", "set_state", "roster",
     "book_on_behalf", "cancel_on_behalf", "no_suitable_list",
+    # Item 6b. cancel_session reverts every booked candidate and emails them —
+    # set_state no longer accepts 'cancelled' precisely so that cancelling cannot
+    # happen without those emails.
+    "cancel_session", "send_reminders",
 }
 
 
