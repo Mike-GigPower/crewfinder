@@ -241,36 +241,81 @@
 	}
 
 	/*
-	/* Capacity. A package confirm BYPASSES the full/backup check entirely
-	/* (DESIGN §3.3): those crew were promised the slot upstream and must never
-	/* be written as Backup because the receiving call was overfilled by direct
+	/* Capacity — checked on the package ROOTS.
+	/*
+	/* A root is a call in the package that no other package member feeds. It
+	/* is a call the crew member is being booked onto directly, so its
+	/* `required` must be honoured. Non-root members keep the DESIGN §3.3
+	/* bypass: those crew were promised the slot upstream and must never be
+	/* written as Backup because a receiving call was overfilled by direct
 	/* booking.
 	/*
-	/* An UNFED single call keeps the old sms-cron.php behaviour exactly — this
-	/* is the no-regression path for every call that has no feeds.
+	/* ALL-OR-NOTHING: if any root is full the WHOLE response becomes Backup,
+	/* matching the linked-call behaviour shipped in v3.18.1 slice A. A
+	/* `locked` package is answered as one unit, so it carries one status.
+	/*
+	/* A single unfed call has itself as its only root, so this path is
+	/* byte-identical to the previous behaviour and to sms-cron.php — the
+	/* no-regression case.
 	*/
 
 	$effectiveStatus = $callStatus;   /* 5 or 6 — may become 7 below */
 
-	if ($callStatus == 5 && count($callIDs) === 1)
+	if ($callStatus == 5)
 	{
-		$only     = $callIDs[0];
-		$callRow  = $db->selectFirst('required', 'calls', 'id=' . $db->sc($only));
-		$required = $callRow ? (int) $callRow->required : 0;
+		/* targets of locked edges that START inside the package */
 
-		$stat = $db->selectFirst(
-			'COUNT(call_crew_map.status) as cnt',
-			'call_crew_map',
-			'status=5 AND callID=' . $db->sc($only) . ' GROUP BY status'
-		);
-		$confirmed = $stat ? (int) $stat->cnt : 0;
+		$fedInside  = array();
+		$downstream = goat_feed_step($callIDs, 'down');
 
-		/* >= required matches sms-cron.php exactly (including the required=0
-		/* edge, where a call needing no crew reads as full). */
-
-		if ($confirmed >= $required)
+		foreach ($downstream as $d)
 		{
-			$effectiveStatus = 7;   /* Backup — accepted, but the call is full */
+			if (in_array((int) $d, $callIDs))
+			{
+				$fedInside[(int) $d] = true;
+			}
+		}
+
+		$roots = array();
+
+		foreach ($callIDs as $cid)
+		{
+			if (!isset($fedInside[(int) $cid]))
+			{
+				$roots[] = (int) $cid;
+			}
+		}
+
+		/* Cycle guard. The link_group backfill produced symmetric pairs
+		/* (A->B and B->A), which feed each other and would leave the root
+		/* set EMPTY — silently restoring the bypass this fix removes. When
+		/* that happens, check every member instead. */
+
+		if (!count($roots))
+		{
+			$roots = $callIDs;
+		}
+
+		foreach ($roots as $rid)
+		{
+			$callRow  = $db->selectFirst('required', 'calls', 'id=' . $db->sc($rid));
+			$required = $callRow ? (int) $callRow->required : 0;
+
+			$stat = $db->selectFirst(
+				'COUNT(call_crew_map.status) as cnt',
+				'call_crew_map',
+				'status=5 AND callID=' . $db->sc($rid) . ' GROUP BY status'
+			);
+			$confirmed = $stat ? (int) $stat->cnt : 0;
+
+			/* >= required matches sms-cron.php exactly (including the
+			/* required=0 edge, where a call needing no crew reads as full). */
+
+			if ($confirmed >= $required)
+			{
+				$effectiveStatus = 7;   /* Backup — a root call is full */
+				break;
+			}
 		}
 	}
 
