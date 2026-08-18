@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.5.2"
+APP_VERSION    = "5.6.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2700,9 +2700,18 @@ def fetch_crew_bulk(ss, include_inactive=False):
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
 
+    # `licences` rides along ONLY when the endpoint actually ran its licence query
+    # (licences_ok). An ABSENT key means "no licence data at all"; an EMPTY list
+    # means "this crew member holds none". The Crew Finder licence filter refuses
+    # to run on the first and treats the second as a real result, so defaulting
+    # the key to [] would turn a failed query into a silently empty search — the
+    # one failure mode a compliance filter must not have. An older endpoint with
+    # no licences_ok lands on absent, which is exactly right.
+    lic_ok = bool(data.get("licences_ok"))
+
     out = []
     for c in data.get("crew", []):
-        out.append({
+        entry = {
             "id":         str(c["id"]),
             "manage_id":  str(c["id"]),
             "name":       c.get("name", ""),
@@ -2717,7 +2726,10 @@ def fetch_crew_bulk(ss, include_inactive=False):
             "postcode":   str(c.get("postcode") or "").strip(),
             "notes":      c.get("notes") or "",          # users.notes — for the name-hover card
             "stats":      c.get("stats") or {},   # Late / No-show tallies for the hover card
-        })
+        }
+        if lic_ok:
+            entry["licences"] = c.get("licences") or []
+        out.append(entry)
     return out, None
 
 
@@ -4917,6 +4929,75 @@ def _licence_parse_date(s):
 # tab's {Expired:0, 'Expiring Soon':1, ...} ordering).
 _LICENCE_STATUS_ORDER = {"expired": 0, "expiring_soon": 1, "unknown": 2, "valid": 3, "na": 4}
 
+# Best-first rank, used when a crew member holds SEVERAL licences that satisfy one
+# requested code (two forklift rows; or an HC that satisfies a requested MR) and we
+# must decide which one represents them.
+#
+# Deliberately NOT _LICENCE_STATUS_ORDER reversed. That one is attention-first for
+# display and puts `unknown` ahead of `expiring_soon`, which is the wrong way round
+# when picking the STRONGEST licence somebody holds: an expiring licence is still
+# valid on the day of the call, an undated one is merely unproven. Reversing the
+# display order here would let a dated, still-current card lose to an undated one.
+_LICENCE_BEST_ORDER = {"na": 0, "valid": 1, "expiring_soon": 2, "unknown": 3, "expired": 4}
+
+_LICENCE_NAME_BY_CODE = dict((e["code"], e["name"]) for e in LICENCE_CATALOGUE)
+
+
+def _licence_name(code):
+    """Catalogue display name for a code, falling back to the bare code. A code
+    that has been retired from the catalogue while rows still carry it must render
+    readably rather than raise in the middle of a search."""
+    return _LICENCE_NAME_BY_CODE.get(code, code)
+
+
+def _licence_best_for(crew_lic, sat_codes, on_date):
+    """Score a crew member against ONE requested licence, on ONE call date.
+
+    `sat_codes` is the set of codes that satisfy the request — just the code
+    itself for most licences, the code plus every heavier class for a driver
+    tier (expand_driver_codes). Returns (status, expiry_date), or (None, None)
+    when they hold none of them.
+
+    Best is by _LICENCE_BEST_ORDER, tie-broken on the LATER expiry with a NULL
+    expiry treated as unbounded. So a renewal filed alongside a lapsed original
+    is what they are judged on, and a valid HC beats an expired MR."""
+    scored = []
+    for r in (crew_lic or []):
+        code = r.get("code")
+        if code not in sat_codes:
+            continue
+        exp = _licence_parse_date(r.get("expiry"))
+        scored.append((
+            compliance_status(exp, on_date, LICENCE_WARN_DAYS,
+                              LICENCE_EXPIRY_EXPECTED.get(code, False)),
+            exp,
+        ))
+    if not scored:
+        return None, None
+    return min(scored, key=lambda s: (
+        _LICENCE_BEST_ORDER.get(s[0], 9),
+        -((s[1] or datetime.max.date()).toordinal()),
+    ))
+
+
+def _licence_expired_reason(crew_lic, reqs):
+    """"Forklift truck expired 12 Mar 2026" for each requested code in `reqs`
+    (a list of (code, satisfying_codes) pairs), quoting the LATEST expiry held
+    among the satisfying codes — the date the operator has to chase. A code held
+    only on undated rows names the licence without a date rather than inventing
+    one."""
+    parts = []
+    for code, sat in reqs:
+        dates = [_licence_parse_date(r.get("expiry")) for r in (crew_lic or [])
+                 if r.get("code") in sat]
+        dates = [d for d in dates if d]
+        name = _licence_name(code)
+        if dates:
+            parts.append("%s expired %s" % (name, max(dates).strftime("%d %b %Y")))
+        else:
+            parts.append("%s expired" % name)
+    return " | ".join(parts) or "Licence expired"
+
 
 def _decorate_licences(licences):
     """Attach a compliance `status` to each licence row from admin-list-licenses
@@ -6007,6 +6088,17 @@ def api_availability():
     spot_ids        = set(str(x) for x in only_ids) if only_ids else None
     soft_ids        = set(str(x) for x in (data.get("soft_call_ids") or []))
 
+    # Licence filter. Each REQUESTED code expands to the SET of codes that satisfy
+    # it — itself, plus every heavier class for a driver tier, since an HC holder
+    # can lawfully drive an MR vehicle. Kept as (code, satisfying_set) pairs rather
+    # than one flat expanded list, because the filter is AND across the requested
+    # codes but OR WITHIN each expansion: flattening would quietly turn a ticked MR
+    # into "holds MR and HR and HC and MC", which nobody does, and the search would
+    # come back empty with no indication why.
+    required_licences   = [str(c) for c in (data.get("required_licences") or []) if c]
+    licence_reqs        = [(c, set(expand_driver_codes([c]))) for c in required_licences]
+    licences_valid_only = bool(data.get("licences_valid_only", False))
+
     # Support both single call (legacy) and multiple calls
     # Multi-call payload: { "calls": [ {booking_id, call_id, start_dt, end_dt, venue, call_num, call_name}, ... ] }
     # Single call payload (legacy): { booking_id, call_id, start_dt, end_dt, venue }
@@ -6062,6 +6154,18 @@ def api_availability():
      # Spot-check: narrow the roster to the requested crew before any work.
     if spot_ids is not None:
         all_crew = [c for c in all_crew if str(c.get("id")) in spot_ids]
+
+    # A licence filter with nothing behind it must fail LOUDLY. `licences` absent
+    # on every crew member means list-crew-bulk.php didn't run its licence query,
+    # or we fell back to the scraper entirely. That is a different thing from a
+    # crew member holding none, which is an empty list and a perfectly real result.
+    # Both a silently unfiltered list and a silently empty one would read as a
+    # working search, so neither is acceptable here.
+    if licence_reqs and all_crew and not any("licences" in c for c in all_crew):
+        return jsonify({"error":
+            "Licence data is unavailable, so the licence filter can't be applied. "
+            "Clear it to search without it."}), 400
+
     cache, _      = load_cache()
     updated_cache = dict(cache)
 
@@ -6072,6 +6176,11 @@ def api_availability():
     available = []
     conflicts  = []
     skipped    = []
+    # How many the valid-only toggle removed. Returned on the response so the UI can
+    # say "8 crew hidden — expired licence". Without the count the operator has to
+    # run the search twice and diff by eye, which is the diagnostic the toggle exists
+    # to provide in the first place.
+    licences_hidden = 0
 
     # Step 1: filter by rating/groups using cache only (fast)
     candidates = []
@@ -6118,6 +6227,15 @@ def api_availability():
         for cert in required_groups:
             if cert.lower() not in groups_lower:
                 reasons.append(f"Missing: {cert}")
+        # Licence gate — HOLDS THE CODE, nothing about dates. Whether a licence is
+        # still in date depends on WHICH CALL, and no target is in scope here, so
+        # validity is scored in Step 3. Somebody who has never held the licence is
+        # out whatever the date. Inherits the spot-check bypass below for free.
+        crew_lic = crew.get("licences") or []
+        held     = set(r.get("code") for r in crew_lic if r.get("code"))
+        for code, sat in licence_reqs:
+            if not (held & sat):
+                reasons.append("No %s on file" % _licence_name(code))
         # PT-only crew rely on public transport -- exclude on request so they
         # are not offered for venues/times they cannot reasonably reach.
         if exclude_pt and "pt only" in groups_lower:
@@ -6184,6 +6302,7 @@ def api_availability():
         shifts       = [s for s in all_shifts if s.get("status") == 5]  # conflict checks: confirmed only
         unavails     = unavail_cache.get(cid, [])
         inductions = crew["inductions"]
+        crew_lic     = crew.get("licences") or []
 
         call_results = []
         any_conflict = False
@@ -6222,6 +6341,18 @@ def api_availability():
                 elif ind_status == "Complete":
                     induction_current = f"Current induction: {t['venue']}"
 
+            # Licence validity, per CALL rather than per today. The whole point of
+            # the badge is whether the card covers the day they would be working,
+            # so it is scored against t["start"].date(). A code they do not hold at
+            # all is ABSENT from the map rather than carrying a status: Step 1 has
+            # already dropped them on a normal search, and on a spot-check "never
+            # held it" is a different claim from "expired".
+            lic_status = {}
+            for code, sat in licence_reqs:
+                st, _exp = _licence_best_for(crew_lic, sat, t["start"].date())
+                if st is not None:
+                    lic_status[code] = st
+
             call_results.append({
                 "call_id":           t["call_id"],
                 "call_num":          t["call_num"],
@@ -6230,6 +6361,7 @@ def api_availability():
                 "detail":            reason,
                 "induction_warning": induction_warning,
                 "induction_current": induction_current,
+                "licence_status":    lic_status,
             })
             if conflict and not t.get("soft"):
                 any_conflict = True
@@ -6239,6 +6371,31 @@ def api_availability():
         # a clash on a soft/considered target must not read as partial. free_for
         # / free_of stay over the WHOLE set — that is design §6's ranking.
         soft_result_ids = set(str(t["call_id"]) for t in targets if t.get("soft"))
+
+        # Valid-only toggle. It CANNOT be a Step 1 gate: whether someone is expired
+        # depends on which call, so it can only be resolved once every call_result
+        # exists. Expired on EVERY hard target => move to skipped; expired on some
+        # but not all => they stay, and the badge says which. HARD targets only, for
+        # the same reason avail_count ignores soft ones — a call merely being ranked
+        # against must never remove a crew member from the search.
+        # Never applied to a spot-check: that search exists to answer "what about
+        # this person", and hiding them is not an answer.
+        if licences_valid_only and licence_reqs and spot_ids is None:
+            hard_results = [r for r in call_results
+                            if str(r["call_id"]) not in soft_result_ids]
+            if hard_results and all(
+                any(r.get("licence_status", {}).get(code) == "expired"
+                    for code, _sat in licence_reqs)
+                for r in hard_results
+            ):
+                expired_reqs = [(code, sat) for code, sat in licence_reqs
+                                if any(r.get("licence_status", {}).get(code) == "expired"
+                                       for r in hard_results)]
+                skipped.append({**crew,
+                                "reason": _licence_expired_reason(crew_lic, expired_reqs)})
+                licences_hidden += 1
+                continue
+
         free_all    = sum(1 for r in call_results if r["available"])
         avail_count = sum(1 for r in call_results
                           if r["available"] and str(r["call_id"]) not in soft_result_ids)
@@ -6257,6 +6414,24 @@ def api_availability():
         induction_currents = list(dict.fromkeys(
             r["induction_current"] for r in call_results if r["induction_current"]
         ))
+
+        # Worst status per requested code across every call, attention-first. Its
+        # OWN field, never spliced into induction_warnings: the frontend pours that
+        # list into the detail cell alongside clash reasons, and a green "valid"
+        # entry per licence would fill that column with noise on every compliant
+        # crew member — which, on a clean search, is all of them.
+        licence_summary = []
+        for code, _sat in licence_reqs:
+            sts = [r["licence_status"].get(code) for r in call_results
+                   if r.get("licence_status") and r["licence_status"].get(code)]
+            if not sts:
+                continue
+            licence_summary.append({
+                "code":   code,
+                "name":   _licence_name(code),
+                "status": min(sts, key=lambda x: _LICENCE_STATUS_ORDER.get(x, 9)),
+            })
+        licence_summary.sort(key=lambda e: _LICENCE_STATUS_ORDER.get(e["status"], 9))
 
         # Nearby shifts for timeline — include shifts within 3 days of ANY target call,
         # plus any shift explicitly cited in a conflict reason (may be further away).
@@ -6301,6 +6476,7 @@ def api_availability():
             "detail":              conflict_details,
             "induction_warnings":  induction_warnings,
             "induction_currents":  induction_currents,
+            "licence_summary":     licence_summary,
         }
 
         if avail_count == total_calls:
@@ -6351,6 +6527,7 @@ def api_availability():
         "targets":      hard_targets,
         "soft_targets": soft_targets,
         "induction_venues": induction_venues,
+        "licences_hidden":  licences_hidden,
         # Legacy single-call fields for backward compat
         "call_id":    targets[0]["call_id"],
         "booking_id": targets[0]["booking_id"],
@@ -12040,18 +12217,60 @@ def api_admin_licence_file(licence_id):
     })
 
 
+def ss_licence_holder_counts(ss):
+    """{code: holders} from list-licences.php — how many ACTIVE crew hold each
+    licence code. Drives which Crew Finder chips are worth offering and the count
+    printed on each one.
+
+    Returns {} on ANY failure — no session, endpoint absent, 403, bad JSON. That
+    empty-dict fallback is the whole deploy-order story: the chip grid comes back
+    empty, every other filter still works, and the PHP can land after the app
+    without a broken screen. Same posture as api_groups' static fallback."""
+    if not ss:
+        return {}
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/list-licences.php",
+                      allow_redirects=True, timeout=15)
+        if resp.status_code != 200:
+            return {}
+        data = json.loads(resp.text or "{}")
+        if not data.get("ok"):
+            return {}
+        return dict((str(k), int(v)) for k, v in (data.get("counts") or {}).items()
+                    if int(v) > 0)
+    except Exception as e:
+        print(f"[licences] holder counts unavailable: {e}")
+        return {}
+
+
 @app.route("/api/licences/catalogue")
 @require_cohort("admin")
 def api_licences_catalogue():
-    """The licence catalogue (code · name · group), its group order, and which codes
-    carry an expiry — for building the Manage Crew licence dropdowns and helper text
-    ON THE WIRE from app.py's LICENCE_CATALOGUE (the single source), never a hardcoded
-    copy in the template. Exposed separately so the Licences tab doesn't have to pull
-    the whole triage queue just to populate a <select>."""
+    """The licence catalogue (code · name · group), its group order, which codes
+    carry an expiry, and the live holder count per code — for the Manage Crew licence
+    dropdowns and the Crew Finder licence chips. ON THE WIRE from app.py's
+    LICENCE_CATALOGUE (the single source), never a hardcoded copy in the template.
+    Exposed separately so the Licences tab doesn't have to pull the whole triage
+    queue just to populate a <select>.
+
+    READ_ALL, matching api_groups: this is the sibling of the group-chip feed, it is
+    constants plus a holder tally, and the PHP behind the tally is goat_can_read_all()
+    gated. (The Crew Finder tab itself is still admin-only — see api_availability.)
+
+    `chips` is the render list: codes with at least one holder, in LICENCE_GROUP_ORDER
+    sequence. A code nobody holds is a chip that can only ever return nothing."""
+    holders   = ss_licence_holder_counts(get_ss_session())
+    group_pos = dict((g, i) for i, g in enumerate(LICENCE_GROUP_ORDER))
+    chips = [e["code"] for e in sorted(
+        (e for e in LICENCE_CATALOGUE if holders.get(e["code"], 0) >= 1),
+        key=lambda e: (group_pos.get(e["group"], len(LICENCE_GROUP_ORDER)),
+                       e["name"].lower()))]
     return jsonify({
         "catalogue":       LICENCE_CATALOGUE,
         "group_order":     LICENCE_GROUP_ORDER,
         "expiry_expected": [c for c, v in LICENCE_EXPIRY_EXPECTED.items() if v],
+        "holders":         holders,
+        "chips":           chips,
     })
 
 

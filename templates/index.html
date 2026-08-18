@@ -52,6 +52,9 @@ nav{display:flex;align-items:center;gap:16px;padding:0 20px;height:58px;backgrou
 .sidebar-calls{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .section-label{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;font-weight:600}
 .groups-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:12px}
+.lic-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:10px}
+.lic-group-lbl{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);opacity:.75;margin:2px 0 5px}
+#licences-grid{max-height:230px;overflow-y:auto}
 .group-chip{padding:5px 6px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px;cursor:pointer;text-align:center;transition:all .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .group-chip:hover,.group-chip.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
 .group-chip.active{font-weight:500}
@@ -1389,6 +1392,13 @@ a.recruit-action{text-decoration:none;display:inline-block}
             <div class="cf-dd-lbl">Filter by group</div>
             <div class="groups-grid" id="groups-grid"></div>
           </div>
+          <div class="cf-dd-sec" id="cf-lic-sec" style="display:none">
+            <div class="cf-dd-lbl">Filter by licence</div>
+            <div id="licences-grid"></div>
+            <!-- Directly beneath the grid, deliberately: it is a modifier ON the
+                 licence filter, not a global search option. -->
+            <label class="cf-dd-check"><input type="checkbox" id="lic-valid-only" onchange="cfRenderChips();cfReSearchIfActive()"> Only show valid on the call date</label>
+          </div>
           <div class="cf-dd-sec">
             <div class="cf-dd-lbl">Minimum rating</div>
             <div class="rating-row">
@@ -1431,6 +1441,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <div class="stat"><span class="stat-num red" id="cnt-conf">0</span><span class="stat-label">conflicts</span></div>
       <div class="stat"><span class="stat-num grey" id="cnt-skip">0</span><span class="stat-label">skipped</span></div>
       <div class="stat" id="stat-unknown" style="display:none"><span class="stat-num grey" id="cnt-unknown">0</span><span class="stat-label">no location</span></div>
+      <div class="stat" id="stat-lic-hidden" style="display:none"><span class="stat-num grey" id="cnt-lic-hidden">0</span><span class="stat-label">hidden &mdash; expired licence</span></div>
       <div class="results-actions">
         <button class="btn" id="view-table-btn" onclick="setView('table')">&#9776; Table</button>
         <button class="btn btn-view-active" id="view-tl-btn" onclick="setView('timeline')">&#9632; Timeline</button>
@@ -2143,6 +2154,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
 let selectedCalls=new Map(), // call_id → call object
     consideredCalls=new Map(),   // call_id → call, ranked but not filtered
     allGroups=[],activeGroups=new Set(),
+    activeLicences=new Set(),   // catalogue CODES the operator has ticked
+    licHolders={},              // code -> active-crew holder count, for the chip labels
     selected=new Map(),  // crew name → crew entry (for adding to SmartStaff)
     currentResult=null,currentView='timeline';
 let geoMode='venue', _geoActive=false;  // distance-filter state
@@ -2506,7 +2519,11 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   if(cohort === 'crew'){ loadMyStatus(); return; }   // crew: personal view only — no tab bar, ignore any hash
   // admin + leadership
   applyGroupVisibility();   // hide group buttons whose children are all cohort-hidden (after applyCohort)
-  loadGroups();
+  // Chained, not fired alongside: both land on /ajax/crew/*, and the per-session
+  // PHP file lock makes two concurrent calls there hang. Neither is on the critical
+  // path, so serialising them costs nothing. .catch keeps a group-fetch failure from
+  // taking the licence chips down with it.
+  loadGroups().catch(function(){}).then(loadLicences);
   loadCacheStatus();
   if(cohort === 'admin') loadCalls();       // Crew Finder call list — admin only
   if(cohort === 'admin') loadCfRoster();    // spot-check autocomplete roster — admin only
@@ -2550,6 +2567,66 @@ function toggleGroup(el,group){
   cfRenderChips();
   cfReSearchIfActive();
 }
+// Licence chips. Same shape as loadGroups, with two differences the licence
+// catalogue forces: the codes arrive grouped (Forklift, EWP, Driver...) so the grid
+// is sectioned, and only codes SOMEBODY HOLDS are rendered — a chip nobody matches
+// can only ever return an empty search.
+//
+// Any failure hides the whole section rather than erroring: /api/licences/catalogue
+// already falls back to empty holders when list-licences.php isn't deployed yet, so
+// this is the visible half of that same no-deploy-order-dependency promise.
+async function loadLicences(){
+  const grid=document.getElementById('licences-grid'), sec=document.getElementById('cf-lic-sec');
+  if(!grid||!sec) return;
+  let d;
+  try{
+    const resp=await fetch('/api/licences/catalogue');
+    d=await resp.json();
+    if(!resp.ok||d.error) throw new Error(d.error||('HTTP '+resp.status));
+  }catch(e){ sec.style.display='none'; return; }
+  // Hand the catalogue to the Manage Crew tab's lazy loader so the page never
+  // fetches the same constants twice.
+  if(!_licCatalogue){ _licCatalogue=d.catalogue||[]; _licExpiryExpected=d.expiry_expected||[]; }
+  licHolders=d.holders||{};
+  const chips=d.chips||[];
+  const byCode={}; (d.catalogue||[]).forEach(function(e){ byCode[e.code]=e; });
+  function chipHtml(c){
+    const e=byCode[c], n=licHolders[c]||0;
+    const label=e.name+' ('+c+') \u00b7 '+n;
+    return '<button type="button" class="group-chip" data-lic="'+escapeHtml(c)+'"'
+         + ' title="'+escapeHtml(label)+'" onclick="toggleLicence(this,\''+c+'\')">'
+         + escapeHtml(label)+'</button>';
+  }
+  const placed={}, html=[];
+  (d.group_order||[]).forEach(function(g){
+    const codes=chips.filter(function(c){ return byCode[c] && byCode[c].group===g; });
+    if(!codes.length) return;            // a group with no qualifying codes hides entirely
+    codes.forEach(function(c){ placed[c]=1; });
+    html.push('<div class="lic-group-lbl">'+escapeHtml(g)+'</div>'
+            + '<div class="lic-grid">'+codes.map(chipHtml).join('')+'</div>');
+  });
+  // Anything whose group isn't in group_order still gets rendered — a catalogue
+  // addition that forgets the group list must not silently lose its chip.
+  const rest=chips.filter(function(c){ return byCode[c] && !placed[c]; });
+  if(rest.length) html.push('<div class="lic-group-lbl">Other</div>'
+                          + '<div class="lic-grid">'+rest.map(chipHtml).join('')+'</div>');
+  if(!html.length){ grid.innerHTML=''; sec.style.display='none'; return; }
+  grid.innerHTML=html.join('');
+  sec.style.display='';
+  cfRenderChips();
+}
+function toggleLicence(el,code){
+  if(activeLicences.has(code)){activeLicences.delete(code);el.classList.remove('active')}
+  else{activeLicences.add(code);el.classList.add('active')}
+  cfRenderChips();
+  cfReSearchIfActive();
+}
+// "Forklift truck (LF)" for the removable chip — the count belongs on the picker,
+// not on a chip that says what the search is currently doing.
+function licChipLabel(code){
+  const e=(_licCatalogue||[]).find(function(x){ return x.code===code; });
+  return e ? (e.name+' ('+code+')') : code;
+}
 function toggleGeo(){
   const on=document.getElementById('geo-enable').checked;
   document.getElementById('geo-body').classList.toggle('active',on);
@@ -2567,6 +2644,12 @@ function cfRenderChips(){
   const box=document.getElementById('cf-chips'); if(!box) return;
   const chips=[];
   activeGroups.forEach(function(g){ chips.push('<span class="cf-chip">Group <b>'+escapeHtml(g)+'</b><span class="cf-x" data-act="group" data-val="'+escapeHtml(g)+'">×</span></span>'); });
+  activeLicences.forEach(function(c){ chips.push('<span class="cf-chip">Licence <b>'+escapeHtml(licChipLabel(c))+'</b><span class="cf-x" data-act="lic" data-val="'+escapeHtml(c)+'">×</span></span>'); });
+  // Shown whenever it is ticked, even with no licence selected. It does nothing on
+  // its own, but a checkbox that is on and invisible is exactly how a silently
+  // narrowed search happens a fortnight later.
+  const lv=document.getElementById('lic-valid-only');
+  if(lv&&lv.checked) chips.push('<span class="cf-chip"><b>Valid on the call date</b><span class="cf-x" data-act="licvalid">×</span></span>');
   const rs=document.getElementById('rating-slider'); const rating=rs?(parseInt(rs.value)||1):1;
   if(rating>1) chips.push('<span class="cf-chip">Min rating <b>'+rating+'</b><span class="cf-x" data-act="rating">×</span></span>');
   const px=document.getElementById('exclude-pt'); if(px&&px.checked) chips.push('<span class="cf-chip"><b>Exclude PT-only</b><span class="cf-x" data-act="pt">×</span></span>');
@@ -2577,10 +2660,12 @@ function cfRenderChips(){
   else { box.innerHTML=''; box.style.display='none'; }
 }
 function cfRemoveGroup(g){ activeGroups.delete(g); const grid=document.getElementById('groups-grid'); if(grid) grid.querySelectorAll('.group-chip').forEach(function(b){ if(b.textContent===g) b.classList.remove('active'); }); cfRenderChips(); cfReSearchIfActive(); }
+function cfRemoveLicence(c){ activeLicences.delete(c); const grid=document.getElementById('licences-grid'); if(grid) grid.querySelectorAll('.group-chip[data-lic="'+c+'"]').forEach(function(b){ b.classList.remove('active'); }); cfRenderChips(); cfReSearchIfActive(); }
+function cfClearLicValidOnly(){ const c=document.getElementById('lic-valid-only'); if(c) c.checked=false; cfRenderChips(); cfReSearchIfActive(); }
 function cfResetRating(){ const s=document.getElementById('rating-slider'); if(s){ s.value=1; document.getElementById('rating-val').textContent='1'; } cfRenderChips(); cfReSearchIfActive(); }
 function cfClearExcludePt(){ const c=document.getElementById('exclude-pt'); if(c) c.checked=false; cfRenderChips(); cfReSearchIfActive(); }
 function cfClearDistance(){ const c=document.getElementById('geo-enable'); if(c){ c.checked=false; toggleGeo(); } else { cfRenderChips(); } cfReSearchIfActive(); }
-function cfClearAllFilters(){ activeGroups.clear(); const grid=document.getElementById('groups-grid'); if(grid) grid.querySelectorAll('.group-chip').forEach(function(b){ b.classList.remove('active'); }); const s=document.getElementById('rating-slider'); if(s){ s.value=1; document.getElementById('rating-val').textContent='1'; } const px=document.getElementById('exclude-pt'); if(px) px.checked=false; const gx=document.getElementById('geo-enable'); if(gx&&gx.checked){ gx.checked=false; toggleGeo(); } else { cfRenderChips(); } cfReSearchIfActive(); }
+function cfClearAllFilters(){ activeGroups.clear(); activeLicences.clear(); const lgrid=document.getElementById('licences-grid'); if(lgrid) lgrid.querySelectorAll('.group-chip').forEach(function(b){ b.classList.remove('active'); }); const lv=document.getElementById('lic-valid-only'); if(lv) lv.checked=false; const grid=document.getElementById('groups-grid'); if(grid) grid.querySelectorAll('.group-chip').forEach(function(b){ b.classList.remove('active'); }); const s=document.getElementById('rating-slider'); if(s){ s.value=1; document.getElementById('rating-val').textContent='1'; } const px=document.getElementById('exclude-pt'); if(px) px.checked=false; const gx=document.getElementById('geo-enable'); if(gx&&gx.checked){ gx.checked=false; toggleGeo(); } else { cfRenderChips(); } cfReSearchIfActive(); }
 document.addEventListener('click', function(e){
   const t=e.target;
   if(t&&t.classList){
@@ -2588,6 +2673,8 @@ document.addEventListener('click', function(e){
     if(t.classList.contains('cf-x')&&t.dataset&&t.dataset.act){
       const a=t.dataset.act;
       if(a==='group') cfRemoveGroup(t.dataset.val);
+      else if(a==='lic') cfRemoveLicence(t.dataset.val);
+      else if(a==='licvalid') cfClearLicValidOnly();
       else if(a==='rating') cfResetRating();
       else if(a==='pt') cfClearExcludePt();
       else if(a==='dist') cfClearDistance();
@@ -2902,6 +2989,8 @@ async function runSearch(){
         calls: callPayload,
         soft_call_ids: built.softIds,
         required_groups: [...activeGroups],
+        required_licences: [...activeLicences],
+        licences_valid_only: !!(document.getElementById('lic-valid-only') && document.getElementById('lic-valid-only').checked),
         min_rating:parseInt(document.getElementById('rating-slider').value),
         exclude_pt: !!(document.getElementById('exclude-pt') && document.getElementById('exclude-pt').checked),
         ...geoFields
@@ -3181,6 +3270,15 @@ function renderResults(result,details,targets){
   if(su){
     if(unknown.length){ document.getElementById('cnt-unknown').textContent=unknown.length; su.style.display=''; }
     else { su.style.display='none'; }
+  }
+  // How many the valid-only toggle removed. Reported from the SEARCH result, not
+  // recomputed from the rendered list — those crew are in `skipped` and the count
+  // is the only thing that says why the available list got shorter.
+  const lh = document.getElementById('stat-lic-hidden');
+  if(lh){
+    const nHidden = result.licences_hidden || 0;
+    if(nHidden){ document.getElementById('cnt-lic-hidden').textContent=nHidden; lh.style.display=''; }
+    else { lh.style.display='none'; }
   }
   document.getElementById('results-header').style.display='flex';
   document.getElementById('cf-legend').style.display='flex';
@@ -3792,6 +3890,24 @@ function inductionWarnHtml(crew){
   ).join('');
   return warnHtml+okHtml;
 }
+// One pill per REQUESTED licence, on every result row, carrying the WORST status
+// that licence holds across the searched calls. Labelled with the code as well as
+// the status ("LF Expired") because with two licences ticked a bare "Expired" says
+// nothing about which one. Styling comes from the Manage Crew licence tab via
+// _LIC_STATUS_META rather than new classes.
+//
+// 'na' gets an explicit green "Held" rather than licPill's blank. On the Licences
+// tab a blank is fine — it sits in a list of every licence. Here every pill answers
+// a filter the operator ticked, so a missing pill would read as missing data.
+function licenceBadgeHtml(crew){
+  const sum=crew.licence_summary||[];
+  if(!sum.length) return '';
+  return sum.map(function(e){
+    const m=_LIC_STATUS_META[e.status] || ['Held','#1f8f4e'];
+    return '<span style="margin-left:4px" title="'+escapeHtml(e.name+' \u2014 '+m[0])+'">'
+         + licPillHtml(e.code+' '+m[0], m[1])+'</span>';
+  }).join('');
+}
 // Small, quiet marker for crew with no Crew Hub push subscription. Rendered only
 // when we actually know: crew.push_ok === false. Absent/undefined means the Hub
 // fetch failed or hasn't run — show nothing rather than guessing. The !== false
@@ -3909,7 +4025,7 @@ function addTableRow(tbody,crew,status,targets){
   tr.appendChild(cbTd);
   function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
   const ph=phoneLink(crew.phone);
-  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew)+pushWarnHtml(crew);
+  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew);
   const nameTd=mkTd('name-cell',nameHtml);
   if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
   tr.appendChild(nameTd);
@@ -4035,7 +4151,7 @@ function renderTimeline(result,details,targets){
     tr.appendChild(cbTd);
     function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
     const ph=phoneLink(crew.phone);
-    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+inductionWarnHtml(crew)+pushWarnHtml(crew));
+    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew));
     tr.appendChild(nameTd);
     attachCrewCardHover(nameTd,crew);
     tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
@@ -9879,16 +9995,23 @@ function _licTypeLabel(code){
   return e ? (e.code+' — '+e.name) : code;
 }
 
+// Status label + colour, shared by the Manage Crew licence rows and the Crew Finder
+// result badges so the two surfaces cannot drift. `unknown` keeps its own grey: it
+// reads as needs-chasing, it is the most common non-valid state, and it means
+// something quite different from expired.
+var _LIC_STATUS_META = {
+  expired:      ['Expired',            '#ef4444'],
+  expiring_soon:['Expires soon',       '#f59e0b'],
+  valid:        ['Valid',              '#1f8f4e'],
+  unknown:      ['No expiry on file',  '#555']
+};
+function licPillHtml(label, colour){
+  return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+colour+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(label)+'</span>';
+}
 function licPill(s){
-  var map = {
-    expired:      ['Expired',            '#ef4444'],
-    expiring_soon:['Expires soon',       '#f59e0b'],
-    valid:        ['Valid',              '#1f8f4e'],
-    unknown:      ['No expiry on file',  '#555']
-  };
-  var m = map[s];
+  var m = _LIC_STATUS_META[s];
   if(!m) return '';   // 'na' \u2014 a type that never expires; no pill
-  return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+m[1]+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(m[0])+'</span>';
+  return licPillHtml(m[0], m[1]);
 }
 
 function licDate(d){ return d ? escapeHtml(d) : '\u2014'; }

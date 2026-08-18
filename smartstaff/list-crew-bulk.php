@@ -168,6 +168,7 @@
 			'active'     => $row->active,
 			'groups'     => array(),
 			'inductions' => array(),
+			'licences'   => array(),
 			'stats'      => array(
 				'late_all'    => 0,
 				'noshow_all'  => 0,
@@ -180,10 +181,14 @@
 
 	if (count($crew_by_id) == 0)
 	{
+		/* licences_ok true on this path: there are no crew, so no licence data is
+		/* missing. Emitting false here would tell the consumer the licence query
+		/* had failed and make it refuse a filter it could legitimately run. */
 		echo json_encode(array(
 			'crew'              => array(),
 			'induction_policy'  => (object) $induction_policy,
 			'warn_days_default' => (int) $WARN_DAYS_DEFAULT,
+			'licences_ok'       => true,
 		));
 		return;
 	}
@@ -306,13 +311,83 @@
 	}
 
 	/*
-	/* 5. emit
+	/* 5. licences — the canonical, non-induction, empty-venue rows.
+	/*
+	/* Feeds the Crew Finder licence filter. The code is what the filter matches
+	/* on and the expiry is what dates it against the CALL, so nothing else from
+	/* the row is needed here; the Manage Crew tab still reads full rows through
+	/* admin-list-licenses.php.
+	/*
+	/* type_canonical IS NOT NULL drops the untriaged backlog. A row whose free
+	/* text has not been confirmed against the stored card cannot be matched
+	/* safely, and guessing at it inside a compliance filter is the unsafe
+	/* direction.
+	/*
+	/* Induction rows can never appear: the empty-venue discriminator is the same
+	/* one admin-list-licenses.php uses, and the explicit type check is kept as
+	/* harmless extra cover (handover rule #2, enforced at every licence read/
+	/* write boundary). The venue = '' arm is deliberate — the column is not
+	/* strictly typed and the sibling endpoint already carries all three.
+	/*
+	/* Guarded on !== false like sections 2-4, so a failed query still serves the
+	/* roster. licences_ok is what lets the consumer tell "this crew member holds
+	/* no licences" from "the licence query did not run": without it an empty
+	/* array reads as the former and the filter silently returns nobody, which is
+	/* the one failure a compliance filter must not have.
+	*/
+
+	$licences_ok = false;
+
+	$sql_licences = "
+		SELECT l.`user` AS user_id,
+		       l.type_canonical AS code,
+		       l.date_expiry AS date_expiry
+		FROM user_licenses l
+		WHERE l.`user` IN ($crew_ids_csv)
+		  AND l.type_canonical IS NOT NULL
+		  AND (l.venue IS NULL OR l.venue = 0 OR l.venue = '')
+		  AND l.`type` != 'Induction Certificate'
+	";
+
+	$lic_result = mysql_query($sql_licences);
+
+	if ($lic_result !== false)
+	{
+		$licences_ok = true;
+
+		while ($row = mysql_fetch_object($lic_result))
+		{
+			$uid = (int) $row->user_id;
+
+			if (!isset($crew_by_id[$uid]))
+				continue;
+
+			/*
+			/* SQL NULL and the junk value 0000-00-00 both map to JSON null — the
+			/* same normalisation admin-list-licenses.php applies to this column,
+			/* so the app never sees a zero-date masquerading as a real one.
+			*/
+
+			$expiry = $row->date_expiry;
+			if ($expiry === null || $expiry === '0000-00-00')
+				$expiry = null;
+
+			$crew_by_id[$uid]['licences'][] = array(
+				'code'   => $row->code,
+				'expiry' => $expiry
+			);
+		}
+	}
+
+	/*
+	/* 6. emit
 	*/
 
 	echo json_encode(array(
 		'crew'              => array_values($crew_by_id),
 		'induction_policy'  => (object) $induction_policy,
 		'warn_days_default' => (int) $WARN_DAYS_DEFAULT,
+		'licences_ok'       => $licences_ok,
 	));
 
 ?>
