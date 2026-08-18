@@ -1,6 +1,6 @@
 {
-  "version": "5.5.2",
+  "version": "5.6.0",
   "release_date": "2026-08-18",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.5.2/TheGOAT.dmg",
-  "release_notes": "Crew Finder no longer reports an expired induction when a current one exists at another venue covered by the same induction, such as a different MCG gate."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.6.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder can now filter by licence, with driver classes understanding seniority — filtering for Medium rigid also returns Heavy rigid and above."
 }
