@@ -61,9 +61,12 @@
 		/*
 		/* The boss call supervising $childCall, or 0.
 		/*
-		/* LIMIT 1 is safe because of uniq_child. The INNER JOIN means a
-		/* surviving row pointing at a DELETED boss call resolves to 0, which
-		/* is the same answer as "no edge" — deliberately indistinguishable.
+		/* LIMIT 1 is safe because of uniq_child. BOTH ends are INNER JOINed:
+		/* a surviving row pointing at a deleted boss call OR a deleted child
+		/* call resolves to 0, the same answer as "no edge" — deliberately
+		/* indistinguishable. Joining only boss_call was the original bug:
+		/* a dangling child still found its boss, contradicting the file
+		/* header's claim that dangling edges are invisible.
 		/*
 		/* Cached per request: the contact resolver already caches per
 		/* (callID, viewerUserID) and a shift list can carry the same call
@@ -88,9 +91,10 @@
 
 			$cache[$childCall] = 0;
 
-			$res = mysql_query("SELECT s.boss_call AS n
+						$res = mysql_query("SELECT s.boss_call AS n
 			                    FROM call_supervision s
-			                    INNER JOIN calls c ON c.id = s.boss_call
+			                    INNER JOIN calls cb ON cb.id = s.boss_call
+			                    INNER JOIN calls cc ON cc.id = s.child_call
 			                    WHERE s.child_call = " . $childCall . "
 			                    LIMIT 1");
 
