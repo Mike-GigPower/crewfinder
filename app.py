@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.5.1"
+APP_VERSION    = "5.5.2"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1770,6 +1770,15 @@ def induction_status_for_venue(inductions, venue_code):
     match and silently stop gating those six venues. Status arithmetic comes from
     the catalogue via _induction_expiry(); only the code lookup is still local.
     Repointing code resolution is Phase 3, once the catalogue exposes codes.
+
+    ROLLUP: one code can match SEVERAL SmartStaff venue rows — MCG matches all
+    eight gate rows, Crown both Crown rows, MCEC both MCEC rows. The catalogue
+    says those are ONE induction (DESIGN-induction-catalogue-v0_5.md §6:
+    "inducted at any covered venue = inducted for the induction"), so every
+    matching row is examined and the BEST status wins. Returning on the first
+    match made the answer depend on the order list-crew-bulk.php happened to
+    emit its keys: a crew member current at MCG - Gate 7 but lapsed at
+    MCG - Brunton Ave Security was reported Expired, because Brunton sorts first.
     """
     keywords = INDUCTION_VENUE_MAP.get(venue_code, [])
     if not keywords:
@@ -1780,6 +1789,13 @@ def induction_status_for_venue(inductions, venue_code):
     # written by v4.17.0 already holds [] for those crew, so guard here too.
     if not isinstance(inductions, dict):
         return None, ""
+
+    # Lower rank wins. Every covered venue shares one catalogue row and therefore
+    # one validity, so best-status and latest-completion always agree; ranking on
+    # status additionally survives an unparseable date, which a date sort can't.
+    STATUS_RANK = {"Complete": 0, "Expiring Soon": 1, "Expired": 2, "Incomplete": 3}
+    best_rank = None
+    best      = None
 
     for venue_name, data in inductions.items():
         vl = venue_name.lower()
@@ -1794,19 +1810,20 @@ def induction_status_for_venue(inductions, venue_code):
             status    = data.get("status", "")
             completed = data.get("completed", "")
 
-        if status == "Incomplete":
-            return "Incomplete", venue_name
+        if status == "Incomplete" or not completed:
+            st = "Incomplete"
+        else:
+            # For Complete or Expired from SmartStaff, calculate expiry ourselves
+            st, _expiry = _induction_expiry(venue_name, completed)
+            if st is None:
+                st = status            # unparseable date, keep SmartStaff's own
 
-        # For Complete or Expired from SmartStaff, calculate expiry ourselves
-        if not completed:
-            return "Incomplete", venue_name
+        rank = STATUS_RANK.get(st, 3)  # an unrecognised status can't outrank a real one
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best      = (st, venue_name)
 
-        st, _expiry = _induction_expiry(venue_name, completed)
-        if st is None:
-            return status, venue_name      # unparseable date, assume valid
-        return st, venue_name
-
-    return None, ""
+    return best if best is not None else (None, "")
 
 def detect_venue(text):
     for substring, code in VENUE_MAP.items():
