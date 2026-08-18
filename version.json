@@ -1,6 +1,6 @@
 {
-  "version": "5.5.1",
-  "release_date": "2026-08-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.5.1/TheGOAT.dmg",
-  "release_notes": "Licence triage now captures the date of attainment from the card alongside the expiry, and carries it onto every row when a card is split."
+  "version": "5.5.2",
+  "release_date": "2026-08-18",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.5.2/TheGOAT.dmg",
+  "release_notes": "Crew Finder no longer reports an expired induction when a current one exists at another venue covered by the same induction, such as a different MCG gate."
 }
