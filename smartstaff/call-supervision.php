@@ -269,14 +269,32 @@
 		/* The message states the actual consequence rather than a generic
 		/* caution, because the consequence is specific and provable: rung 2 of
 		/* the contact hierarchy finds no one and crew on the supervised calls
-		/* fall through to the on-site contact. status = 5 is Confirmed. */
+		/* fall through to the on-site contact. status = 5 is Confirmed.
+		/*
+		/* The key column is crewmapID, NOT id. call_crew_map is the one table
+		/* here that does not use `id`, and the first cut of this query got it
+		/* wrong.
+		/*
+		/* A FAILED query is therefore a 500, not a warning. Degrading to "warn"
+		/* is what hid that mistake: the query failed on every call, so
+		/* no_confirmed_boss fired for every boss including one with three
+		/* confirmed crew, and a broken query became indistinguishable from a
+		/* real finding. A warning that always fires is worse than no warning —
+		/* it trains ops to click through the interstitial that also carries the
+		/* reassignment warning. */
 
-		$cres = mysql_query("SELECT ccm.id FROM call_crew_map ccm
+		$cres = mysql_query("SELECT ccm.crewmapID FROM call_crew_map ccm
 		                     WHERE ccm.callID = " . $boss . "
 		                       AND ccm.status = 5
 		                     LIMIT 1");
 
-		if ($cres === false || !mysql_fetch_object($cres))
+		if ($cres === false)
+		{
+			send_status(500, 'Internal Server Error');
+			die('{"error":"confirmed-crew lookup failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		if (!mysql_fetch_object($cres))
 		{
 			$warnings[] = array(
 				'type'      => 'no_confirmed_boss',
