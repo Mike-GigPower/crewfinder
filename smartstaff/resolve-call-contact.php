@@ -223,83 +223,171 @@
 			}
 		}
 
-		/* ---- RUNG 2 — overlapping dedicated boss calls in the same booking ----
-		   SQL does a cheap prefilter; goat_is_boss_call_name() is authoritative. */
+		/* ---- RUNG 2 — the dedicated boss call(s) supervising this call ----
+		   Two ways to FIND them, and only the finding changed here — turning a
+		   boss call into contacts is the foreach below, moved verbatim.
+
+		     EXPLICIT  call_supervision names exactly one boss call. Ops said so.
+		     OVERLAP   no edge: every %boss% call in the booking whose window
+		               overlaps this one. Today's behaviour, byte for byte.
+
+		   The explicit path deliberately applies NEITHER the name test nor the
+		   overlap test — see the comment on each branch. */
 
 		if (!$viewerOnBossCall)
 		{
-			$w   = goat_call_window($call);
-			$out = array();
+			$out       = array();
+			$bossCalls = array();   /* rows carrying ->id and ->call_name */
 
-			$bres = mysql_query("SELECT id, call_name, start_date, start_time, est_length
-			                     FROM calls
-			                     WHERE bookingID  = " . ((int) $call->bookingID) . "
-			                       AND id        <> " . $callID . "
-			                       AND call_name LIKE '%boss%'
-			                     ORDER BY start_date ASC, start_time ASC");
+			/*
+			/* GUARDED AT THE CALL SITE, AND THERE IS NO INCLUDE ABOVE.
+			/*
+			/* supervision-graph.php includes THIS file, for
+			/* goat_is_boss_call_name(), so including it back would be circular —
+			/* and this file declares at top level with no function_exists guard,
+			/* so the redeclare would be fatal rather than a no-op.
+			/*
+			/* That makes the fallback structural: wherever supervision-graph.php
+			/* is not loaded, rung 2 is exactly what it was before this change.
+			/* Callers opt in by including supervision-graph.php themselves.
+			*/
 
-			if ($bres !== false)
+			$supBoss = function_exists('goat_supervision_boss_call')
+			         ? goat_supervision_boss_call($callID)
+			         : 0;
+
+			/* A call cannot boss itself. Slice B rejects it, so this should never
+			   fire — it costs one comparison and stops a hand-inserted row
+			   resolving a call to its own crew, which is exactly what slice A
+			   testing inserts. */
+
+			if ($supBoss > 0 && $supBoss !== $callID)
 			{
-				while ($bc = mysql_fetch_object($bres))
+				/*
+				/* EXPLICIT EDGE — exactly one candidate, and no tests applied.
+				/*
+				/* NO NAME TEST. goat_is_boss_call_name() is a heuristic for
+				/* DISCOVERING boss calls where nothing states which they are. An
+				/* edge is ops stating it outright, and slice B warns-but-permits an
+				/* oddly-named supervisor — so filtering here would silently ignore a
+				/* deliberately-set edge to a call named "Steel Lead".
+				/*
+				/* NO OVERLAP TEST (Q14). A boss call may supervise a call it does
+				/* not overlap. This is not a check dropped by accident: time was the
+				/* thing that did not work, and is the reason this table exists.
+				*/
+
+				$sres = mysql_query("SELECT id, call_name FROM calls
+				                     WHERE id = " . ((int) $supBoss) . " LIMIT 1");
+
+				if ($sres !== false)
 				{
-					if (!goat_is_boss_call_name($bc->call_name)) continue;
+					$sbc = mysql_fetch_object($sres);
 
-					$bw = goat_call_window($bc);
-
-					/* strict overlap — a boss call ending exactly as yours begins
-					   does not count */
-
-					if (!($bw['start'] < $w['end'] && $bw['end'] > $w['start'])) continue;
-
-					$cres = mysql_query("SELECT ccm.is_call_boss, u.firstname, u.lastname, u.mobile, u.phone
-					                     FROM call_crew_map ccm
-					                     LEFT JOIN users u ON u.id = ccm.userID
-					                     WHERE ccm.callID  = " . ((int) $bc->id) . "
-					                       AND ccm.status  = 5
-					                       AND ccm.userID <> " . $viewerUserID . "
-					                     ORDER BY u.lastname ASC, u.firstname ASC");
-
-					/*
-					/* POC nomination — "the boss of the bosses".
-					/*
-					/* A big call can name several crew bosses on one Crew Boss
-					/* call. Ops nominate one as point-of-contact via the SAME
-					/* is_call_boss flag (makeboss enforces one per call), read
-					/* here with the (int) cast for the binary(50) reason above.
-					/*
-					/* If exactly one is flagged, that person IS the contact for
-					/* this boss call. If NONE is flagged we fall back to every
-					/* confirmed boss — the multi-name card is itself the prompt
-					/* to go nominate. We collect both passes in one loop.
-					*/
-
-					$bossAll  = array();
-					$bossPOC  = array();
-
-					if ($cres !== false)
-					{
-						while ($cr = mysql_fetch_object($cres))
-						{
-							if ($cr->firstname === null) continue;
-							if (goat_same_human($viewerMobile, $cr->mobile)) continue;
-
-							$contact = goat_contact_from_user($cr, 'boss_call', $bc->call_name);
-
-							$bossAll[] = $contact;
-
-							if ((int) $cr->is_call_boss === 1)
-								$bossPOC[] = $contact;
-						}
-					}
-
-					/* nominated POC wins for THIS boss call; else all its bosses */
-
-					$picked = (count($bossPOC) > 0) ? $bossPOC : $bossAll;
-
-					foreach ($picked as $contact)
-						$out[] = $contact;
+					if ($sbc) $bossCalls[] = $sbc;
 				}
 			}
+			else
+			{
+				/* NO EDGE — the Q12 fallback, unchanged. SQL does a cheap
+				   prefilter; goat_is_boss_call_name() is authoritative. */
+
+				$w = goat_call_window($call);
+
+				$bres = mysql_query("SELECT id, call_name, start_date, start_time, est_length
+				                     FROM calls
+				                     WHERE bookingID  = " . ((int) $call->bookingID) . "
+				                       AND id        <> " . $callID . "
+				                       AND call_name LIKE '%boss%'
+				                     ORDER BY start_date ASC, start_time ASC");
+
+				if ($bres !== false)
+				{
+					while ($bc = mysql_fetch_object($bres))
+					{
+						if (!goat_is_boss_call_name($bc->call_name)) continue;
+
+						$bw = goat_call_window($bc);
+
+						/* strict overlap — a boss call ending exactly as yours begins
+						   does not count */
+
+						if (!($bw['start'] < $w['end'] && $bw['end'] > $w['start'])) continue;
+
+						$bossCalls[] = $bc;
+					}
+				}
+			}
+
+			/* CONTACT RESOLUTION — moved out of the while body above, unchanged
+			   but for one tab of indentation. Confirm with `git diff -w`. */
+
+			foreach ($bossCalls as $bc)
+			{
+				$cres = mysql_query("SELECT ccm.is_call_boss, u.firstname, u.lastname, u.mobile, u.phone
+				                     FROM call_crew_map ccm
+				                     LEFT JOIN users u ON u.id = ccm.userID
+				                     WHERE ccm.callID  = " . ((int) $bc->id) . "
+				                       AND ccm.status  = 5
+				                       AND ccm.userID <> " . $viewerUserID . "
+				                     ORDER BY u.lastname ASC, u.firstname ASC");
+
+				/*
+				/* POC nomination — "the boss of the bosses".
+				/*
+				/* A big call can name several crew bosses on one Crew Boss
+				/* call. Ops nominate one as point-of-contact via the SAME
+				/* is_call_boss flag (makeboss enforces one per call), read
+				/* here with the (int) cast for the binary(50) reason above.
+				/*
+				/* If exactly one is flagged, that person IS the contact for
+				/* this boss call. If NONE is flagged we fall back to every
+				/* confirmed boss — the multi-name card is itself the prompt
+				/* to go nominate. We collect both passes in one loop.
+				*/
+
+				$bossAll  = array();
+				$bossPOC  = array();
+
+				if ($cres !== false)
+				{
+					while ($cr = mysql_fetch_object($cres))
+					{
+						if ($cr->firstname === null) continue;
+						if (goat_same_human($viewerMobile, $cr->mobile)) continue;
+
+						$contact = goat_contact_from_user($cr, 'boss_call', $bc->call_name);
+
+						$bossAll[] = $contact;
+
+						if ((int) $cr->is_call_boss === 1)
+							$bossPOC[] = $contact;
+					}
+				}
+
+				/* nominated POC wins for THIS boss call; else all its bosses */
+
+				$picked = (count($bossPOC) > 0) ? $bossPOC : $bossAll;
+
+				foreach ($picked as $contact)
+					$out[] = $contact;
+			}
+
+			/*
+			/* AN EXPLICIT EDGE THAT RESOLVES TO NOBODY FALLS THROUGH TO RUNG 3,
+			/* NOT BACK TO OVERLAP.
+			/*
+			/* If the edge names a boss call carrying no confirmed resource, $out
+			/* is empty and control reaches the on-site contact below. It does NOT
+			/* re-run the overlap loop. That differs from the previous behaviour,
+			/* where an unconfirmed boss call was skipped and a different
+			/* overlapping one could answer.
+			/*
+			/* The edge is a statement of fact about who bosses this call. If that
+			/* person is not confirmed, "go up to the on-site contact" is the right
+			/* answer; "here is a different boss who happens to overlap" is the
+			/* wrong-name failure this feature exists to remove.
+			*/
 
 			if (count($out) > 0)
 			{
