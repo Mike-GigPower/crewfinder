@@ -14211,6 +14211,7 @@ async function generateGoogleSheet(bookingId){
 async function openBookingDialog(bookingId){
   openEntityModal();
   _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
+  _bkSupMode  = false; _bkSupBoss = null; _bkSupSel  = {};
   const cached = window._bookingIndex[bookingId];
   document.getElementById('entity-modal-title').textContent = cached ? cached.name : 'Booking';
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
@@ -14368,8 +14369,8 @@ function bkFeedEdgeList(bookingId, c, maps){
   return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 0 26px">'+items+'</div>';
 }
 
-function bkCallRow(bookingId, c, maps){
-  var chips = bkFeedChips(c, maps);
+function bkCallRow(bookingId, c, maps, smaps){
+  var chips = bkFeedChips(c, maps) + bkSupChips(c, smaps);
   var name  = escapeHtml(decodeEntities(c.call_name || 'Call'));
   var when  = _abCallWhen(c.start_date, c.start_time);
   var whenLine = when
@@ -14423,6 +14424,57 @@ function bkCallRow(bookingId, c, maps){
       + '</label>' + edges;
   }
 
+  if(_bkSupMode){
+    // Same two-step shape as feed mode: choose the boss call, then tick what it
+    // covers. Deliberately identical in structure so ops learn one interaction,
+    // even though what the two SAVE could not be more different — feeds book
+    // crew, this only grants sight of them.
+    var isBoss = (_bkSupBoss !== null && String(_bkSupBoss) === String(c.call_id));
+    var kids   = bkSupChildList(bookingId, c, smaps);
+
+    // Step 1 — no boss chosen yet: every row is a picker.
+    if(_bkSupBoss === null){
+      return '<div onclick="bkPickBoss(\''+bookingId+'\',\''+c.call_id+'\')" '
+        + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
+        + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
+        + 'background:var(--surface2)" '
+        + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
+        + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
+        + '<div style="min-width:0">'
+        +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+        +   whenLine
+        + '</div>'
+        + '<span style="font-size:10px;color:var(--accent)">crew boss for \u2192</span>'
+        + '</div>' + kids;
+    }
+
+    // Step 2a — the chosen boss call, pinned at the top of the reading order.
+    if(isBoss){
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
+        + 'border:1px solid var(--accent);border-radius:4px;margin-bottom:5px;background:var(--surface2)">'
+        + '<div style="min-width:0">'
+        +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+        +   whenLine
+        + '</div>'
+        + '<span onclick="bkClearBoss(\''+bookingId+'\')" '
+        + 'style="font-size:10px;color:var(--muted);cursor:pointer">change</span>'
+        + '</div>' + kids;
+    }
+
+    // Step 2b — candidate covered calls.
+    var supChecked = _bkSupSel[c.call_id] ? 'checked' : '';
+    return '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;'
+      + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
+      + 'background:var(--surface2)">'
+      + '<input type="checkbox" '+supChecked+' '
+      + 'onchange="bkToggleSupSel(\''+bookingId+'\',\''+c.call_id+'\',this.checked)">'
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+      +   whenLine
+      + '</div>'
+      + '</label>' + kids;
+  }
+
   // Normal mode.
   return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" '
     + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
@@ -14437,23 +14489,39 @@ function bkCallRow(bookingId, c, maps){
     + '<span style="display:flex;align-items:center">'+bkFeedCount(c)
     + '<span style="font-size:10px;color:var(--accent)">view \u2192</span></span></div>';
 }
-
 function bkCallsSection(bookingId, d){
   var calls    = (d && d.calls) || [];
   var maps     = bkFeedMaps(calls);
+  var smaps    = bkSupMaps(calls);
   var hasCalls = calls.length > 0;
 
-  var toggle = (d && hasCalls)
-    ? (_bkFeedMode
-        ? '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>'
-        : '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">\u21e2 Call feeds</span>')
-    : '';
+  // Feeds editing is ungated here as it always has been (the route enforces
+  // admin). Supervision editing is gated in the UI too, so a non-admin sees
+  // the chips and the warning but is never offered a control that would 403.
+  var toggle = '';
+  if(d && hasCalls){
+    if(_bkFeedMode){
+      toggle = '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>';
+    } else if(_bkSupMode){
+      toggle = '<span onclick="bkToggleSupMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>';
+    } else {
+      toggle = '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">\u21e2 Call feeds</span>';
+      if(window._cohort === 'admin'){
+        toggle += '<span onclick="bkToggleSupMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">👷 Crew bosses</span>';
+      }
+    }
+  }
   var header = '<div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
     + '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Calls</span>'
-    + toggle + '</div>';
+    + (toggle ? '<span style="display:flex;align-items:center;gap:12px">'+toggle+'</span>' : '')
+    + '</div>';
 
-  // In feed mode with a feeder chosen, float it to the top so the two-step
-  // relationship reads top-down.
+  // Always visible, in every mode and for every cohort — it is advisory, and
+  // it stays silent on bookings with no boss call at all. See bkSupWarning.
+  var warn = hasCalls ? bkSupWarning(calls, smaps) : '';
+
+  // In either edit mode with a source/boss chosen, float it to the top so the
+  // two-step relationship reads top-down.
   var ordered = calls.slice();
   if(_bkFeedMode && _bkFeedSrc !== null){
     ordered.sort(function(a, b){
@@ -14461,10 +14529,16 @@ function bkCallsSection(bookingId, d){
       var bs = String(b.call_id) === String(_bkFeedSrc) ? 0 : 1;
       return as - bs;
     });
+  } else if(_bkSupMode && _bkSupBoss !== null){
+    ordered.sort(function(a, b){
+      var as = String(a.call_id) === String(_bkSupBoss) ? 0 : 1;
+      var bs = String(b.call_id) === String(_bkSupBoss) ? 0 : 1;
+      return as - bs;
+    });
   }
 
   var list = hasCalls
-    ? ordered.map(function(c){ return bkCallRow(bookingId, c, maps); }).join('')
+    ? ordered.map(function(c){ return bkCallRow(bookingId, c, maps, smaps); }).join('')
     : '<div style="color:var(--muted);font-size:12px">No calls on this booking yet.</div>';
 
   var footer = '';
@@ -14485,12 +14559,23 @@ function bkCallsSection(bookingId, d){
         + '<span style="font-size:10px;color:var(--muted)">Tick the calls those crew should also work.</span></div>'
         + '<div id="bk-feed-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
     }
+  } else if(_bkSupMode){
+    if(_bkSupBoss === null){
+      footer = '<div style="font-size:10px;color:var(--muted);margin-top:6px">'
+        + 'Pick the <em>crew boss</em> call. Whoever is confirmed on it will be able to see and act on the calls you choose next — it does not book anyone onto them.</div>'
+        + '<div id="bk-sup-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
+    } else {
+      var sn = Object.keys(_bkSupSel).length;
+      footer = '<div style="display:flex;align-items:center;gap:10px;margin-top:6px">'
+        + entityBtn('👷 Save crew boss'+(sn?' ('+sn+')':''), "bkSupSave('"+bookingId+"')", {primary:true, id:'bk-sup-go'})
+        + '<span style="font-size:10px;color:var(--muted)">Tick the calls this boss covers.</span></div>'
+        + '<div id="bk-sup-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
+    }
   } else if(d){
     footer = '<div onclick="openAddCallForm(\''+bookingId+'\')" style="display:flex;align-items:center;justify-content:center;gap:6px;padding:8px 10px;border:1px dashed var(--border);border-radius:4px;margin-top:2px;cursor:pointer;color:var(--muted);font-size:11px" onmouseover="this.style.borderColor=\'var(--border-gold)\';this.style.color=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.color=\'var(--muted)\'">+ Add call</div>';
   }
-  return header + list + footer;
+  return header + warn + list + footer;
 }
-
 function bkRerenderCalls(bookingId){
   var wrap = document.getElementById('bk-calls-wrap');
   if(wrap) wrap.innerHTML = bkCallsSection(bookingId, window._curBookingEdit);
@@ -14501,9 +14586,12 @@ function bkToggleFeedMode(bookingId){
   _bkFeedSrc  = null;
   _bkFeedSel  = {};
   _bkFeedRecommended = false;
+  // Mutually exclusive with the supervision editor — see bkToggleSupMode.
+  if(_bkFeedMode){
+    _bkSupMode = false; _bkSupBoss = null; _bkSupSel = {};
+  }
   bkRerenderCalls(bookingId);
 }
-
 function bkPickSource(bookingId, callId){
   _bkFeedSrc = callId;
   _bkFeedSel = {};
@@ -14601,6 +14689,238 @@ async function bkFeedRemove(bookingId, sourceId, targetId){
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
   }catch(e){ fail('Remove failed: '+e.message); }
+}
+
+// ── CREW BOSS SUPERVISION (booking dialog) ──────────────────────────────────
+// A supervision edge (boss_call -> child_call) means whoever is CONFIRMED on
+// the boss call oversees the child call. It grants VISIBILITY and
+// AUTHORISATION and nothing else: no crew are booked, no calendar moves,
+// nothing cascades. call_feeds does that. The two editors look alike and do
+// entirely different things.
+//
+// NOT TRANSITIVE — and these chips must not imply that it is. If 36809 bosses
+// 36815 and 36815 bosses 36817, then 36817 is NOT in 36809's boss's scope:
+// goat_boss_scope() walks exactly ONE hop, deliberately. Anyone reading a
+// chain of chips will assume it carries on down. It does not.
+//
+// ONE SUPERVISOR PER CALL — call_supervision is UNIQUE (child_call). That is
+// why bossed_by is a scalar (0 = unsupervised) where feeds' fed_by is an
+// array, and why clearing is keyed on the child alone without naming the boss.
+//
+// Saving posts to /api/calls/supervision/set -> call-supervision.php.
+var _bkSupMode = false;
+var _bkSupBoss = null;   // call_id of the chosen boss call, or null
+var _bkSupSel  = {};     // { call_id: true } covered calls, while in sup mode
+
+function bkSupMaps(calls){
+  // Built off the payload, like bkFeedMaps. get-booking.php emits bossed_by as
+  // a SCALAR (0 when unsupervised) and bosses already in call-time order — do
+  // NOT re-sort it here.
+  //
+  // /api/booking/<id> hands the endpoint's JSON through untouched, so a prod
+  // payload predating slice D carries neither key at all. The `||` defaults
+  // below are what stop that reaching the render as undefined; there is no
+  // Python-side mapper on this path to do it.
+  var byId = {}, bossOf = {}, bossesOf = {};
+  (calls||[]).forEach(function(c){
+    var id = String(c.call_id);
+    byId[id]     = c;
+    bossOf[id]   = c.bossed_by ? String(c.bossed_by) : '';
+    bossesOf[id] = (c.bosses || []).map(String);
+  });
+  return { byId: byId, bossOf: bossOf, bossesOf: bossesOf };
+}
+
+function bkSupChips(c, smaps){
+  // Reuses bkFeedName for call names — smaps carries byId for exactly that.
+  var id   = String(c.call_id);
+  var boss = smaps.bossOf[id] || '';
+  var kids = smaps.bossesOf[id] || [];
+  var base = 'display:inline-flex;align-items:center;gap:3px;font-size:9px;'
+           + 'font-weight:600;border-radius:3px;padding:1px 5px;margin-left:8px';
+  var out  = '';
+  function names(list){ return list.map(function(t){ return bkFeedName(smaps, t); }).join(', '); }
+
+  // A call can carry BOTH chips — bossing some calls while itself being bossed
+  // by another. Proven on test: 36815 read bossed_by=36809 and
+  // bosses=[36817,36816]. That is a real shape, not a bug, and it is also the
+  // shape that tempts a reader into assuming transitivity. See above: no.
+  if(kids.length){
+    out += '<span title="Bosses: '+names(kids)+' — whoever is confirmed here oversees them. One hop only: what those calls boss in turn is not covered." '
+         + 'style="'+base+';color:var(--accent);border:1px solid var(--accent)">'
+         + '👷 bosses '+kids.length+'</span>';
+  }
+  if(boss){
+    out += '<span title="Bossed by '+bkFeedName(smaps, boss)+' — whoever is confirmed there oversees this call" '
+         + 'style="'+base+';color:var(--muted);border:1px solid var(--border)">'
+         + '👷 '+bkFeedName(smaps, boss)+'</span>';
+  }
+  return out;
+}
+
+function bkSupWarning(calls, smaps){
+  // "N calls have no crew boss assigned." Non-blocking, shown in both modes.
+  // This is the ENTIRE mitigation for calls added after supervision was set
+  // (Q11: warn, don't auto-assign).
+  //
+  // CONDITIONAL ON A BOSS CALL EXISTING. Rich confirmed 19 Aug 2026 that not
+  // every call has a boss — the five crew sent to the Pro Stage factory have
+  // none, and that is normal work, not an omission. A booking with no
+  // boss-pattern call must therefore produce NO warning at all.
+  //
+  // Getting that wrong is not a cosmetic slip. A warning that always fires is
+  // worse than no warning: it trains ops to click straight through, which is
+  // exactly how slice B's no_confirmed_boss bug stayed invisible.
+  var list = calls || [];
+  function isBossCall(c){ return goatIsBossCallName(decodeEntities(c.call_name || '')); }
+
+  if(!list.some(isBossCall)) return '';
+
+  var unsupervised = list.filter(function(c){
+    if(isBossCall(c)) return false;
+    return !(smaps.bossOf[String(c.call_id)] || '');
+  });
+  if(!unsupervised.length) return '';
+
+  var n = unsupervised.length;
+  var who = unsupervised.map(function(c){ return decodeEntities(c.call_name || 'Call'); }).join(', ');
+  return '<div title="'+escapeHtml(who)+'" style="display:flex;align-items:flex-start;gap:6px;'
+    + 'font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;'
+    + 'padding:6px 8px;margin-bottom:6px">'
+    + '<span>\u26a0</span><span>'+n+' call'+(n===1?'':'s')+' ha'+(n===1?'s':'ve')
+    + ' no crew boss assigned.</span></div>';
+}
+
+function bkSupChildList(bookingId, c, smaps){
+  // The calls this one bosses, each individually clearable. Shown only in
+  // supervision mode — outside it the chips carry the same information more
+  // compactly. Clearing names only the CHILD: UNIQUE (child_call) means the
+  // child identifies its edge on its own.
+  var kids = smaps.bossesOf[String(c.call_id)] || [];
+  if(!kids.length) return '';
+  var items = kids.map(function(t){
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;'
+      + 'color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px">'
+      + '\u2192 '+bkFeedName(smaps, t)
+      + '<span onclick="event.preventDefault();event.stopPropagation();'
+      + 'bkSupClear(\''+bookingId+'\',\''+t+'\')" '
+      + 'title="Remove supervision from this call" '
+      + 'style="color:var(--conflict);cursor:pointer;font-weight:700">\u00d7</span></span>';
+  }).join(' ');
+  return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 0 26px">'+items+'</div>';
+}
+
+function bkToggleSupMode(bookingId){
+  _bkSupMode = !_bkSupMode;
+  _bkSupBoss = null;
+  _bkSupSel  = {};
+  // Mutually exclusive with the feeds editor — both rewrite the same rows, and
+  // a row cannot be a feed picker and a boss picker at once.
+  if(_bkSupMode){
+    _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
+  }
+  bkRerenderCalls(bookingId);
+}
+
+function bkPickBoss(bookingId, callId){
+  _bkSupBoss = callId;
+  _bkSupSel  = {};
+  bkRerenderCalls(bookingId);
+}
+
+function bkClearBoss(bookingId){
+  _bkSupBoss = null;
+  _bkSupSel  = {};
+  bkRerenderCalls(bookingId);
+}
+
+function bkToggleSupSel(bookingId, callId, checked){
+  if(checked) _bkSupSel[callId] = true; else delete _bkSupSel[callId];
+  bkRerenderCalls(bookingId);
+}
+
+async function bkSupSave(bookingId, confirmOverride){
+  // call-supervision.php returns needs_confirm with warnings for a boss call
+  // not named as one (not_boss_named), a boss call with no confirmed crew
+  // (no_confirmed_boss), and children already bossed elsewhere (reassignment).
+  // All three are overridable — ops legitimately assign a boss before crew
+  // confirm on it — so they are surfaced with "Save anyway" rather than
+  // refused.
+  var ids = Object.keys(_bkSupSel);
+  var st  = document.getElementById('bk-sup-status');
+  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.innerHTML=m; } }
+
+  if(_bkSupBoss === null) return fail('Pick the crew boss call first.');
+  if(!ids.length) return fail('Tick at least one call it covers.');
+
+  if(st){ st.style.color='var(--muted)'; st.textContent='Saving\u2026'; }
+  var btn = document.getElementById('bk-sup-go'); if(btn) btn.disabled = true;
+
+  try{
+    var resp = await fetch('/api/calls/supervision/set', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        boss_call:   _bkSupBoss,
+        child_calls: ids,
+        confirm:     confirmOverride ? true : false
+      })
+    });
+    var j = await resp.json();
+
+    if(j && j.needs_confirm){
+      // Each message from this endpoint already names its own call and states
+      // its consequence, so it is rendered WHOLE rather than prefixed with the
+      // call name the way feeds' warnings are — prefixing would read
+      // '"Crew Boss" — "Crew Boss" has no confirmed crew...'. no_confirmed_boss
+      // is the one that most needs its full text: it tells ops the actual
+      // outcome, that crew on those calls will be shown the on-site contact
+      // instead, which a generic "proceed?" throws away.
+      var lines = (j.warnings||[]).map(function(w){
+        return '\u2022 '+escapeHtml(decodeEntities(w.message||''));
+      }).join('<br>');
+      fail(lines
+        + '<br><span onclick="bkSupSave(\''+bookingId+'\', true)" '
+        + 'style="color:var(--accent);cursor:pointer;text-decoration:underline">Save anyway</span>');
+      if(btn) btn.disabled = false;
+      return;
+    }
+
+    if(!resp.ok || (j && j.error)){
+      fail((j && j.error) ? escapeHtml(j.error) : ('HTTP '+resp.status));
+      if(btn) btn.disabled = false;
+      return;
+    }
+
+    _bkSupMode = false; _bkSupBoss = null; _bkSupSel = {};
+    delete window._bookingIndex[bookingId];
+    openBookingDialog(bookingId);
+  }catch(e){
+    fail('Save failed: '+escapeHtml(e.message));
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function bkSupClear(bookingId, childId){
+  // Keyed on the child alone; no boss_call is sent. Clearing a call that was
+  // never supervised is not an error — the caller asked for it to be
+  // unsupervised and it is.
+  var st = document.getElementById('bk-sup-status');
+  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.textContent=m; } }
+  try{
+    var resp = await fetch('/api/calls/supervision/clear', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({child_calls: [childId]})
+    });
+    var j = await resp.json();
+    if(!resp.ok || (j && j.error)){
+      fail((j && j.error) ? j.error : ('HTTP '+resp.status));
+      return;
+    }
+    delete window._bookingIndex[bookingId];
+    openBookingDialog(bookingId);
+  }catch(e){ fail('Clear failed: '+e.message); }
 }
 
 function renderBookingDialog(bookingId, d, cached){
