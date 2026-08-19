@@ -156,6 +156,60 @@
 		}
 	}
 
+	/*
+	/* Supervision edges for this booking, in one query. Same shape as the
+	/* feed maps above: collect first, so the per-call emit is a lookup.
+	/*
+	/* No include of supervision-graph.php. One booking-wide query beats N
+	/* per-call helper calls, and not including it keeps this file free of a
+	/* dependency on that file existing — which is what lets this change ship
+	/* to prod ahead of the migration.
+	/*
+	/* BOTH ends INNER JOINed, as in supervision-graph.php and
+	/* call-supervision.php: sss::deleteCall does not know this table exists,
+	/* so an edge left dangling by a deleted call must stay invisible.
+	/*
+	/* Ordered by CHILD call time so the client can render `bosses` without
+	/* re-sorting.
+	/*
+	/* If `call_supervision` does not exist, mysql_query returns false, the
+	/* guard skips the loop, and every call emits bossed_by 0 / bosses []. That
+	/* degradation is deliberate and is the same precedent as `mode` above: a
+	/* failed lookup feeding a DISPLAY degrades to empty, because the result is
+	/* a visible absence and nobody is told anything untrue. A failed lookup
+	/* feeding an ASSERTION (call-supervision.php's safety warning) must 500
+	/* instead. This file backs the whole booking dialog; a 500 here would
+	/* break booking viewing for all of Ops to hide a feature nothing consumes
+	/* yet.
+	*/
+
+	$bossOf   = array();   /* child_call -> boss_call id (scalar) */
+	$bossesOf = array();   /* boss_call  -> [child ids], call-time order */
+
+	$sres = mysql_query("SELECT s.boss_call, s.child_call
+	                     FROM call_supervision s
+	                     INNER JOIN calls cb ON cb.id = s.boss_call
+	                     INNER JOIN calls cc ON cc.id = s.child_call
+	                     WHERE s.booking_id = " . $bookingID . "
+	                     ORDER BY cc.start_date ASC, cc.start_time ASC");
+
+	if ($sres !== false)
+	{
+		while ($srow = mysql_fetch_object($sres))
+		{
+			$bc = (int) $srow->boss_call;
+			$cc = (int) $srow->child_call;
+
+			if (!isset($bossesOf[$bc]))
+			{
+				$bossesOf[$bc] = array();
+			}
+
+			$bossesOf[$bc][] = $cc;
+			$bossOf[$cc]     = $bc;
+		}
+	}
+
 	$calls = array();
 	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes, link_group
 	                     FROM calls
@@ -248,6 +302,16 @@
 				'fed_by'             => isset($fedByOf[$callID]) ? $fedByOf[$callID] : array(),
 				'feeds_recommended'  => isset($feedsRec[$callID]) ? $feedsRec[$callID] : array(),
 				'fed_by_recommended' => isset($fedByRec[$callID]) ? $fedByRec[$callID] : array(),
+				/* NOTE THE ASYMMETRY WITH FEEDS. feeds and fed_by are both
+				/* arrays because a call may be fed by many. bossed_by is a
+				/* SCALAR because UNIQUE (child_call) permits exactly one
+				/* supervisor. 0 means unsupervised — the same answer
+				/* goat_supervision_boss_call() gives for that condition.
+				/* Deliberately not null: link_group above uses null, but every
+				/* consumer of a supervision value tests truthiness, and 0
+				/* spares the client a null/0 split. */
+				'bossed_by'          => isset($bossOf[$callID])   ? $bossOf[$callID]   : 0,
+				'bosses'             => isset($bossesOf[$callID]) ? $bossesOf[$callID] : array(),
 				'committed'          => $fc['committed'],
 				'reserved'           => $fc['reserved'],
 				'likely'             => $fc['likely'],
