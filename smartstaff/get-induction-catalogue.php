@@ -36,6 +36,21 @@
 	/* in the consumer silently. warn_days is deliberately NOT coerced — NULL means
 	/* "inherit the global default", which the editor must be able to tell apart
 	/* from an explicit 14. The default travels separately as warn_days_default.
+	/*
+	/* crew_note, ops_note and links are returned for the Phase 2 Manage
+	/* Inductions editor. DO NOT REMOVE THEM. The editor seeds its form from this
+	/* payload and always POSTs all three keys back; save-induction-catalogue.php
+	/* gates each on isset(), which is always true. So a payload missing any of
+	/* the three makes the form open empty and the next Save silently blank that
+	/* row's content — the field it wipes is the field it could not display.
+	/*
+	/* ops_note is included deliberately, despite being ops-only content: this
+	/* endpoint is gated on goat_can_read_all() (admin, leadership, operations, or
+	/* the service key), and the editor cannot round-trip the field otherwise. The
+	/* consequence is real and stated here: anything holding the service key can
+	/* read ops_note. Crew Hub does not call this endpoint — it calls
+	/* get-induction-content.php, which omits ops_note by design — but the
+	/* reachability exists.
 	*/
 
 	if (!goat_can_read_all())
@@ -56,6 +71,9 @@
 	$sql = "SELECT c.id AS id,
 	               c.code AS code,
 	               c.title AS title,
+	               c.crew_note AS crew_note,
+	               c.ops_note AS ops_note,
+	               c.links AS links,
 	               c.validity_months AS validity_months,
 	               c.warn_days AS warn_days,
 	               c.show_in_checker AS show_in_checker,
@@ -117,10 +135,37 @@
 				}
 			}
 
+			/*
+			/* links is TEXT holding a JSON array and arrives in four shapes:
+			/* NULL, '', '[]' and real JSON. Decode here so consumers only ever
+			/* handle a list — json_decode(NULL) returns NULL, not an array.
+			/* array_values() as well, so a row holding a JSON object rather than
+			/* an array cannot re-encode as an object.
+			/*
+			/* The editor's seed accepts a JSON string OR an array
+			/* (index.html ~11136); an array is the cleaner contract and matches
+			/* get-induction-content.php.
+			*/
+
+			$links = array();
+
+			if ($row->links !== null && strlen(trim($row->links)) > 0)
+			{
+				$decoded = json_decode($row->links, true);
+
+				if (is_array($decoded))
+				{
+					$links = array_values($decoded);
+				}
+			}
+
 			$byId[$id] = array(
 				'id'                  => $id,
 				'code'                => $row->code,
 				'title'               => $row->title,
+				'crew_note'           => ($row->crew_note !== null) ? $row->crew_note : '',
+				'ops_note'            => ($row->ops_note !== null) ? $row->ops_note : '',
+				'links'               => $links,
 				'validity_months'     => ($row->validity_months !== null) ? (int) $row->validity_months : 12,
 				'warn_days'           => ($row->warn_days !== null) ? (int) $row->warn_days : null,
 				'show_in_checker'     => ((int) $row->show_in_checker === 1),
