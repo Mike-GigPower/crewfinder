@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.6.0"
+APP_VERSION    = "5.7.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -3648,6 +3648,72 @@ def ss_call_feeds(ss, action, source_call=None, target_calls=None,
     return data, None
 
 
+def ss_call_supervision(ss, action, boss_call=None, child_calls=None,
+                        booking_id=None, confirm=False):
+    """Proxy smartstaff/call-supervision.php (admin session).
+
+      action='set'   — {boss_call, child_calls:[...], confirm}
+                       An edge boss_call -> child_call means whoever is
+                       confirmed on boss_call oversees child_call. It grants
+                       VISIBILITY and AUTHORISATION only: it never books anyone
+                       onto anything and it does not cascade. That is what
+                       call_feeds does, and the two must not be confused.
+                       409 + {needs_confirm, warnings} when the boss call is
+                       not named as one, has no confirmed crew, or a child is
+                       already bossed by a different call; resend with
+                       confirm=True to override.
+      action='clear' — {child_calls:[...]}
+                       Keyed on the CHILD alone. call_supervision is
+                       UNIQUE (child_call), so the child identifies its edge
+                       without naming the boss — unlike feeds, where removal
+                       needs both ends because a call may be fed by many.
+      action='list'  — {booking_id}
+
+    Returns (result, error), matching ss_call_feeds' contract.
+
+    NOTE: a 409 is a real RESULT, not an error — it carries needs_confirm and
+    the warnings list, and the caller re-posts with confirm=True. It is
+    returned as (data, None) and must stay ahead of the generic >=400 branch.
+    """
+    payload = {"action": action}
+    if boss_call is not None:
+        payload["boss_call"] = int(boss_call)
+    if child_calls:
+        payload["child_calls"] = [int(c) for c in child_calls]
+    if booking_id is not None:
+        payload["booking_id"] = int(booking_id)
+    if confirm:
+        payload["confirm"] = True
+
+    url = f"{BASE_URL}/ajax/crew/call-supervision.php"
+    try:
+        resp = ss.post(url, json=payload, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+
+    try:
+        data = resp.json()
+    except Exception:
+        return None, f"HTTP {resp.status_code}: unparseable response"
+
+    # 409 is a real result (needs_confirm), not an error — pass it through
+    # before the generic error branch below.
+    if resp.status_code == 409:
+        return data, None
+
+    if resp.status_code != 200:
+        # call-supervision.php reports a single `error` string on every failure
+        # path; it has no `errors` array, so there is nothing to join here.
+        detail = ""
+        if isinstance(data, dict):
+            detail = data.get("error", "")
+        return None, detail or f"HTTP {resp.status_code}"
+
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
 def ss_update_crew_status(ss, call_id, user_id, status):
     """Set one crew member's status on a call in ONE request via
     update-crew-status.php.
@@ -7043,6 +7109,15 @@ def _bulk_call_to_scrape_shape(r):
         "notes":        r.get("notes", "") or "",
         "booking_name": r.get("booking_name", "") or "",
         "link_group":   r.get("link_group"),
+        # Supervision passthrough. NOTE: get-calls-bulk.php, which feeds this
+        # mapper, does NOT yet emit bossed_by/bosses — only get-booking.php
+        # does (and the booking dialog reads that raw, without this mapper). So
+        # these are 0/[] for now and this is forward-compatibility only; adding
+        # the emission to get-calls-bulk.php is what would light them up. The
+        # `or 0` / `or []` is what keeps a payload predating that from putting
+        # None in front of the client.
+        "bossed_by":    r.get("bossed_by") or 0,
+        "bosses":       r.get("bosses") or [],
         "feeds":        r.get("feeds") or [],
         "fed_by":       r.get("fed_by") or [],
         "likely":             r.get("likely"),
@@ -10267,6 +10342,69 @@ def api_calls_feeds_remove():
         return jsonify({"error": "No feeds to remove"}), 400
     result, err = ss_call_feeds(ss, "remove", source_call=source_call,
                                 target_calls=target_calls)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+
+@app.route("/api/calls/supervision/set", methods=["POST"])
+@require_cohort("admin")
+def api_calls_supervision_set():
+    """Assign a crew boss call to the calls it covers. Proxies
+    call-supervision.php (admin-only). Body:
+    {boss_call, child_calls:[>=1], confirm?}.
+
+    AUTHORISATION ONLY. Whoever is confirmed on boss_call can see and act on
+    the child calls. No crew are booked, no calendar moves, nothing cascades —
+    that is /api/calls/feeds/add. The two endpoints look alike and do entirely
+    different things.
+
+    The endpoint derives booking_id from the calls themselves, so it is not
+    sent. Returns the endpoint's {needs_confirm, warnings} body (with its 409)
+    when the boss call is not named as one, has no confirmed crew, or a child
+    is already bossed by a different call — the client re-posts with
+    confirm:true to override."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body        = request.get_json(force=True) or {}
+    boss_call   = body.get("boss_call")
+    child_calls = [c for c in (body.get("child_calls") or []) if str(c).strip()]
+    if not str(boss_call or "").strip():
+        return jsonify({"error": "Pick the crew boss call"}), 400
+    if not child_calls:
+        return jsonify({"error": "Select at least one call it covers"}), 400
+    result, err = ss_call_supervision(ss, "set", boss_call=boss_call,
+                                      child_calls=child_calls,
+                                      confirm=bool(body.get("confirm")))
+    if err:
+        return jsonify({"error": err}), 502
+    # Preserve the 409 so the client's needs_confirm branch fires.
+    if isinstance(result, dict) and result.get("needs_confirm"):
+        return jsonify(result), 409
+    return jsonify(result)
+
+
+@app.route("/api/calls/supervision/clear", methods=["POST"])
+@require_cohort("admin")
+def api_calls_supervision_clear():
+    """Remove supervision from calls. Proxies call-supervision.php
+    (admin-only). Body: {child_calls:[>=1]}.
+
+    Keyed on the CHILD alone, with no boss_call: UNIQUE (child_call) permits
+    exactly one supervisor, so the child identifies the edge by itself. Feeds
+    removal needs both ends because a call may be fed by many; this does not.
+
+    Clearing a call that was never supervised is not an error — the caller
+    asked for it to be unsupervised and it is."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body        = request.get_json(force=True) or {}
+    child_calls = [c for c in (body.get("child_calls") or []) if str(c).strip()]
+    if not child_calls:
+        return jsonify({"error": "No calls to clear"}), 400
+    result, err = ss_call_supervision(ss, "clear", child_calls=child_calls)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
