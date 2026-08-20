@@ -101,7 +101,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.7.2"
+APP_VERSION    = "5.8.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -261,6 +261,11 @@ RECRUITMENT_SET_STATUS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions
 # a successful send, marks the applicant invited. set-status only relabels — it
 # never emails — so the "Invite" button must use THIS route, not set-status.
 RECRUITMENT_INVITE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-invite"
+# Deliberate resend of a details-form or contract-signing link. Separate from
+# set-status because those emails now dedupe (once-ever for details, keyed on
+# commencement_date for contract) — bouncing a status no longer re-fires them.
+# Per-day dedupe inside the function: a double-click is deduped, not double-sent.
+RECRUITMENT_RESEND_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-resend-email"
 # Same base URL: REVIEWABLE detail for ONE candidate (the expanded panel in the
 # Recruitment tab). Returns an allowlisted set of fields — deliberately NO health
 # data — plus short-lived signed URLs for the headshot/licence files, so the
@@ -4750,6 +4755,57 @@ def api_recruitment_invite():
         return jsonify(r.json()), r.status_code
     except Exception:
         print(f"[recruitment] invite edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+
+
+# The two links that can be deliberately re-sent. Validated here so we never
+# forward junk to the edge function (same discipline as set-status).
+RESENDABLE_KINDS = {"details", "contract"}
+
+
+@app.route("/api/recruitment/resend", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_recruitment_resend():
+    """Resend a candidate's details-form or contract-signing link.
+
+    The two emails moved behind the shared guarded sender, which added dedupe —
+    so the old lever (bounce the status to re-fire the email) no longer works.
+    This is its deliberate replacement.
+
+    Dedupe is per day, Melbourne, inside the edge function: a double-click
+    returns outcome="deduped" and sends nothing. That is a correct result, not
+    an error, and must reach the operator as such.
+
+    Same key discipline as every other recruitment route: GOAT_RECRUITMENT_KEY
+    stays in Python, sent in X-Goat-Service-Key, never seen by the browser."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+
+    data = request.get_json(silent=True) or {}
+    cand_id = str(data.get("candidate_id", "")).strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    kind = str(data.get("kind", "")).strip()
+    if kind not in RESENDABLE_KINDS:
+        return jsonify({"error": "Invalid resend kind"}), 400
+
+    try:
+        r = http.post(
+            RECRUITMENT_RESEND_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json={"candidate_id": cand_id, "kind": kind},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] resend request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    # Forward the edge function's own status + JSON. The 409s carry messages the
+    # operator can act on ("No commencement_date set…"), and the 200 body carries
+    # the outcome — which distinguishes sent from deduped/blocked/failed.
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        print(f"[recruitment] resend edge function returned {r.status_code}")
         return jsonify({"error": "Recruitment service error"}), 502
 
 
