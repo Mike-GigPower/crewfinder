@@ -11690,7 +11690,7 @@ async function openLicenceEdit(id){
     +       '<input id="lic-months" type="number" min="1" value="'+escapeHtml(String(months))+'" style="'+EF_INPUT_STYLE+';width:80px">'
     +       '<span style="font-size:12px;color:var(--text)">months</span>'
     +     '</div>'
-    +     '<div style="font-size:10px;color:var(--muted);padding-top:3px">Expiry is worked out from the certified date, so a certified date becomes required.</div>'
+    +     '<div style="font-size:10px;color:var(--warn);padding-top:3px">Recorded, but <b>not yet applied when a licence is entered</b> — the expiry date is still typed in by hand, and this period is not used to work it out. Recording it now means the changeover needs no re-entry.</div>'
     +   '</div>'
     + '</div>';
 
@@ -11705,7 +11705,8 @@ async function openLicenceEdit(id){
     + efRow('Group',        grpField)
     + efRow('Does this licence expire?', expiryBlock)
     + efRow('',             '<div id="lic-reqcert-row">'
-        + checkbox('lic-reqcert', 'Requires a certified date', mode==='period' ? true : _indFlag(v.require_certified), mode==='period')
+        + checkbox('lic-reqcert', 'Certified date expected', mode==='period' ? true : _indFlag(v.require_certified), mode==='period')
+        + '<div style="font-size:10px;color:var(--warn);padding-left:22px">Recorded, but <b>not yet enforced at entry</b> — a licence of this type still saves without a certified date.</div>'
         + '</div>')
     + efRow('',             checkbox('lic-published', 'Published', isNew ? true : _indFlag(v.published)))
     + efRow('Sort order',   efInput('lic-sort', (v.sort_order != null ? v.sort_order : ''), 'number'))
@@ -11789,7 +11790,14 @@ function _licPreviewMessage(pd, trigger, mode, months){
   var lines = (pd.changes || []).map(function(c){
     return '• '+c.count+' move from '+_licLabel(c.from)+' to '+_licLabel(c.to);
   });
-  if(!lines.length) lines = ['• No crew change status.'];
+  if(!lines.length){
+    // An empty change list means two different things, and conflating them
+    // would let "the period model isn't live yet" read as "this change is safe".
+    lines = (pd.period_derived === false && (mode === 'period' || window._licLoadedMode === 'period'))
+      ? ['• Nobody changes status: the fixed-period model is recorded but not yet',
+         '  applied at entry, so month counts do not move anyone today.']
+      : ['• No crew change status.'];
+  }
   return head+'\n\n'+lines.join('\n')+'\n\nApply this change?';
 }
 
