@@ -74,6 +74,27 @@
 	$LICENCE_WARN_DAYS = 60;
 
 	/*
+	/* IS THE PERIOD MODEL ACTUALLY APPLIED AT ENTRY? Right now: NO.
+	/*
+	/* admin-add-license.php and my-add-license.php store date_expiry exactly as
+	/* typed and never derive it from date_certified + validity_months. Every
+	/* reading surface — the Licences tab, Crew Finder, Crew Hub — scores off the
+	/* recorded date_expiry alone. So a 'period' type behaves identically to a
+	/* 'date' type today; the catalogue states the rule and no write path reads it.
+	/*
+	/* The preview MUST describe the running system, not the declared one. A
+	/* preview that derives would tell the operator that FA holders sit at
+	/* 'unknown' while the Licences tab shows them expired and valid — the numbers
+	/* would be indefensible against the screen next to it.
+	/*
+	/* FLIP THIS TO true in the same release that implements derivation in the two
+	/* add endpoints. It is deliberately one boolean, and it is the only thing that
+	/* has to change here.
+	*/
+
+	$LICENCE_PERIOD_DERIVED_AT_ENTRY = false;
+
+	/*
 	/* One licence row's status, mirroring app.py compliance_status() + the
 	/* expiry_mode model:
 	/*   period -> the effective expiry is date_certified + N months (DERIVED; the
@@ -86,9 +107,18 @@
 	/* is absent from licence_expiry_expected() and therefore expects nothing.
 	*/
 
-	function goat_lic_status($dateExpiry, $dateCertified, $mode, $months, $expects, $warnDays, $now)
+	function goat_lic_status($dateExpiry, $dateCertified, $mode, $months, $expects, $warnDays, $now, $periodDerived)
 	{
 		$eff = null;
+
+		/*
+		/* Until derivation exists at entry, a period type is scored exactly like a
+		/* date type — off the recorded date_expiry. See
+		/* $LICENCE_PERIOD_DERIVED_AT_ENTRY above.
+		*/
+
+		if ($mode === 'period' && !$periodDerived)
+			$mode = 'date';
 
 		if ($mode === 'period')
 		{
@@ -288,8 +318,8 @@
 		{
 			$uid = (int) $row->user_id;
 
-			$old = goat_lic_status($row->date_expiry, $row->date_certified, $oldMode, $oldMonths, $oldExpects, $LICENCE_WARN_DAYS, $now);
-			$new = goat_lic_status($row->date_expiry, $row->date_certified, $propMode, $propMonths, $newExpects, $LICENCE_WARN_DAYS, $now);
+			$old = goat_lic_status($row->date_expiry, $row->date_certified, $oldMode, $oldMonths, $oldExpects, $LICENCE_WARN_DAYS, $now, $LICENCE_PERIOD_DERIVED_AT_ENTRY);
+			$new = goat_lic_status($row->date_expiry, $row->date_certified, $propMode, $propMonths, $newExpects, $LICENCE_WARN_DAYS, $now, $LICENCE_PERIOD_DERIVED_AT_ENTRY);
 
 			if (!isset($bestOld[$uid]) || goat_lic_best_rank($old) < goat_lic_best_rank($bestOld[$uid]))
 				$bestOld[$uid] = $old;
@@ -343,8 +373,11 @@
 		usort($changeList, 'goat_lic_change_cmp');
 
 		echo json_encode(array(
-			'ok'      => true,
-			'preview' => true,
+			'ok'             => true,
+			'preview'        => true,
+			/* Tells the UI that a period change cannot move anybody yet, so it can
+			/* say so rather than presenting an empty change list as "no impact". */
+			'period_derived' => $LICENCE_PERIOD_DERIVED_AT_ENTRY,
 			'code'    => $stored['code'],
 			'name'    => $stored['name'],
 			'holders' => $holders,
