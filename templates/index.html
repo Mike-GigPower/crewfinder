@@ -11523,6 +11523,27 @@ async function openLicenceListModal(){
   await _loadLicenceList();
 }
 
+// The SERVER cache is cleared by _invalidate_licence_catalogue() in app.py on
+// every real write. That is not enough on its own: the BROWSER caches the
+// catalogue too — _licCatalogue (index.html) is set once per page load and
+// never expires, so the Manage Crew dropdown, the add-form helper text and the
+// Crew Finder chips all keep serving the copy fetched when the page opened.
+//
+// Without this, a newly created type doesn't appear until the operator reloads,
+// which reads as "the save didn't take" and is indistinguishable from the
+// server-side staleness the TTL was blamed for.
+function _licCatalogueClientReset(){
+  _licCatalogue = null;
+  _licExpiryExpected = [];
+  // Re-render the Crew Finder chips if that grid is on the page — it renders
+  // from the same fetch, so leaving it alone would strand a deleted or
+  // unpublished code as a clickable chip.
+  var grid = document.getElementById('licences-grid');
+  if(grid && typeof loadLicences === 'function'){
+    try{ loadLicences(); }catch(e){}
+  }
+}
+
 async function _loadLicenceList(){
   try{
     var r = await fetch('/api/admin/licence-list');
@@ -11832,6 +11853,7 @@ async function submitLicenceTypeEdit(id){
       return;
     }
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _licCatalogueClientReset();
     window._licCatFlash = isNew ? 'Licence type created.' : 'Saved.';
     openLicenceListModal();
   }catch(e){
@@ -11887,6 +11909,7 @@ async function doDeleteLicenceType(){
       return;
     }
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _licCatalogueClientReset();
     window._licCatFlash = 'Licence type deleted.';
     openLicenceListModal();
   }catch(e){
@@ -11923,6 +11946,7 @@ async function _licUnpublishInstead(){
     });
     var d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _licCatalogueClientReset();
     window._licCatFlash = 'Unpublished.';
     openLicenceListModal();
   }catch(e){
