@@ -1,6 +1,6 @@
 {
-  "version": "5.9.0",
+  "version": "5.10.0",
   "release_date": "2026-08-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.9.0/TheGOAT.dmg",
-  "release_notes": "Recruitment's Operations, Dashboard and Sessions are now tabs in the navigation bar, each with its own address, and the app remembers which one you were last on."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.10.0/TheGOAT.dmg",
+  "release_notes": "Licence types now come from a database table rather than being hardcoded. Behaviour is unchanged; dropdowns list the most-used types first."
 }
