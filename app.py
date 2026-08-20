@@ -4875,16 +4875,20 @@ def api_recruitment_sessions():
 # convert route).
 RECRUITMENT_CONVERTED_STATUS = "active_crew"
 
-# The canonical licence taxonomy: 30 WorkSafe high-risk work classes plus six
+# The licence taxonomy: 30 WorkSafe high-risk work classes plus six
 # non-HRW additions and the five VicRoads driver classes. `code` is the value
 # stored in user_licenses.type_canonical — display names are presentation only
 # and can be reworded without touching data.
 #
-# This list is one of three copies that must stay in sync: here,
-# website/lib/licences.ts, and admin-add-license.php's $allowedTypes. If it
-# changes, all three move together. Anything NOT in this list — including
-# 'Induction Certificate' — is rejected at both the app and endpoint boundary,
-# so a licence write can never touch an induction row.
+# FALLBACK ONLY as of Phase 1. The SOURCE is SmartStaff's `licence_catalogue`
+# table — read through licence_catalogue(), never by touching this list directly,
+# so the fallback is decided in one place. This copy exists so an unreachable
+# endpoint degrades to yesterday's taxonomy instead of an empty one; Phase 3
+# deletes it, after one full release cycle.
+#
+# Anything NOT in the catalogue — including 'Induction Certificate' — is rejected
+# at both the app and endpoint boundary, so a licence write can never touch an
+# induction row.
 LICENCE_CATALOGUE = [
     # ── WorkSafe high-risk work licences (30) ────────────────────────────────
     {"code": "SB", "name": "Basic scaffolding",                    "group": "Scaffolding"},
@@ -4941,7 +4945,6 @@ LICENCE_GROUP_ORDER = [
     "Rigging", "Scaffolding", "Cranes", "Hoists",
     "Pressure equipment", "Other HRW",
 ]
-_LICENCE_TYPE_CANON = {t.lower(): t for t in LICENCE_TYPE_ALLOWLIST}
 
 # Inbound aliases for convert-B. Gigpower-apply onboarding still emits the OLD
 # free-text licence spellings, so map them to catalogue codes BEFORE the exact
@@ -4967,20 +4970,27 @@ def _canonical_licence_type(t):
     None if it isn't a mappable licence type. Inbound aliases (the retired free-text
     spellings onboarding still sends) are consulted FIRST, then the catalogue's own
     exact-match. Returning the canonical value means the PHP endpoint's exact-match
-    allow-list always agrees with us."""
+    allow-list always agrees with us — both now read the same table.
+
+    An UNPUBLISHED code misses, and that is the point: unpublishing withdraws a
+    code from every entry path, convert-B included."""
     s = str(t or "").strip().lower()
     if s in _LICENCE_INBOUND_ALIASES:
         return _LICENCE_INBOUND_ALIASES[s]
-    return _LICENCE_TYPE_CANON.get(s)
+    return _licence_type_canon().get(s)
 
 
 # ─── LICENCE EXPIRY COMPLIANCE ────────────────────────────────────────────────
 # The Manage Crew -> Licences tab is the first place date_certified / date_expiry
 # are entered, which turns licences into a light compliance tool. LICENCE_TYPES
-# is derived from LICENCE_TYPE_ALLOWLIST (the single canonical list) so the two
-# can never drift.
+# is derived from LICENCE_TYPE_ALLOWLIST so the two can never drift; both are part
+# of the fallback, and live code reads licence_type_allowlist() instead.
 LICENCE_TYPES = tuple(LICENCE_TYPE_ALLOWLIST)
 
+# FALLBACK ONLY — the live equivalent is licence_expiry_expected(), which reads
+# expiry_mode off the table. Kept in step with the seed: a code is expected to
+# expire iff its expiry_mode is not 'none'.
+#
 # v1 decision: chase only the hard-expiry types. A blank expiry on these is a
 # real gap ("unknown"); a blank on the others is fine ("na"). A present date is
 # always scored normally, whatever the type. Keyed on catalogue CODES (not the
@@ -5013,6 +5023,213 @@ def expand_driver_codes(codes):
                 seen.add(t)
                 out.append(t)
     return out
+
+# ─── LICENCE CATALOGUE — THE TABLE ────────────────────────────────────────────
+# Phase 1 of the catalogue migration: SmartStaff's `licence_catalogue` becomes the
+# SOURCE, while the constants above remain the FALLBACK. An unreachable endpoint
+# degrades to yesterday's taxonomy rather than to an EMPTY one — a licence filter
+# with no codes, an add form with no types and a triage grid with nothing to click
+# are each considerably worse than a slightly stale list. Phase 3 retires the
+# constants, after one full release cycle.
+#
+# Cached in memory only, exactly like the induction catalogue: BASE_DIR in a frozen
+# build points inside the app bundle, which can be read-only once notarised, and a
+# taxonomy cache is the wrong place to discover that.
+
+LICENCE_CATALOGUE_TTL_MIN = 15
+_licence_catalogue_cache  = {"data": None, "fetched_at": None, "failed_at": None}
+_licence_catalogue_lock   = threading.Lock()
+
+# The one period type. Mirrored from the seed in
+# smartstaff/MIGRATION-licence-catalogue.sql so the fallback rows carry the SAME
+# expiry model as the table — 36 months is a fact about First Aid, not something
+# to be inferred from LICENCE_EXPIRY_EXPECTED, which only records true/false.
+_LICENCE_FALLBACK_PERIOD_MONTHS = {"FA": 36}
+
+
+def _build_licence_catalogue_fallback():
+    """The constants, in the shape the TABLE returns them.
+
+    One shape for both paths, so no consumer has to know which one it got. The
+    expiry model round-trips exactly: the 10 hard-expiry codes become 'date', FA
+    becomes 'period', everything else 'none' — which is what
+    LICENCE_EXPIRY_EXPECTED already means, expressed in the new vocabulary.
+
+    require_certified is False except on the period type, matching today: no
+    licence type currently demands a certification date."""
+    grp_pos = dict((g, i) for i, g in enumerate(LICENCE_GROUP_ORDER))
+    rows, seen = [], {}
+    for e in LICENCE_CATALOGUE:
+        grp  = e["group"]
+        idx  = seen.get(grp, 0)
+        seen[grp] = idx + 1
+        code   = e["code"]
+        months = _LICENCE_FALLBACK_PERIOD_MONTHS.get(code)
+        if months:
+            mode = "period"
+        elif LICENCE_EXPIRY_EXPECTED.get(code):
+            mode = "date"
+        else:
+            mode = "none"
+        rows.append({
+            "code":              code,
+            "name":              e["name"],
+            "group":             grp,
+            "expiry_mode":       mode,
+            "validity_months":   months,
+            "require_certified": mode == "period",
+            "published":         True,
+            "sort_order":        grp_pos.get(grp, len(LICENCE_GROUP_ORDER)) * 1000 + idx * 10,
+            "notes":             "",
+        })
+    rows.sort(key=lambda r: (r["sort_order"], r["code"]))
+    return rows
+
+
+_LICENCE_CATALOGUE_FALLBACK = _build_licence_catalogue_fallback()
+
+
+def load_licence_catalogue(ss=None):
+    """The licence catalogue rows from SmartStaff, or None if it can't be read.
+
+    Rows pre-sorted by sort_order so group order is deterministic rather than
+    dependent on what MySQL happened to return. Published rows only — the endpoint
+    filters, and unpublishing is what hides a code from the chips and dropdowns.
+
+    Never raises and never returns a partial structure — callers treat None as
+    "use the constants". A failed fetch is negatively cached for the same TTL so a
+    dead endpoint isn't re-hit on every Crew Finder search, and is logged once per
+    window rather than once per call.
+
+    Lifted from load_induction_catalogue(), which has been through production.
+    """
+    now = datetime.now()
+    ttl = LICENCE_CATALOGUE_TTL_MIN * 60
+    with _licence_catalogue_lock:
+        cached  = _licence_catalogue_cache.get("data")
+        fetched = _licence_catalogue_cache.get("fetched_at")
+        failed  = _licence_catalogue_cache.get("failed_at")
+    if cached is not None and fetched is not None and (now - fetched).total_seconds() < ttl:
+        return cached
+    if failed is not None and (now - failed).total_seconds() < ttl:
+        return cached                      # may be None; caller falls back
+    if ss is None:
+        # session.get() raises outside a Flask request context rather than
+        # returning None, so this must be guarded even though every current
+        # caller is inside a route.
+        try:
+            ss = get_ss_session()
+        except Exception:
+            ss = None
+    if not ss:
+        with _licence_catalogue_lock:
+            _licence_catalogue_cache["failed_at"] = now
+        return cached
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/list-licence-catalogue.php", timeout=10)
+        if resp.status_code != 200:
+            raise ValueError(f"HTTP {resp.status_code}")
+        data = resp.json()
+        raw  = data.get("rows")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("no rows in response")
+        rows = []
+        for r in raw:
+            code = str(r.get("code") or "").strip()
+            if not code:
+                continue                   # a nameless row can't be matched or filtered
+            mode = str(r.get("expiry_mode") or "none")
+            if mode not in ("none", "date", "period"):
+                mode = "none"
+            vm = r.get("validity_months")
+            rows.append({
+                "code":              code,
+                "name":              str(r.get("name") or code),
+                # `grp` on the wire (reserved word in MySQL), `group` in here, so
+                # every existing consumer of e["group"] keeps working untouched.
+                "group":             str(r.get("grp") or ""),
+                "expiry_mode":       mode,
+                "validity_months":   int(vm) if vm is not None else None,
+                "require_certified": bool(r.get("require_certified", False)),
+                "published":         bool(r.get("published", True)),
+                "sort_order":        int(r.get("sort_order") or 0),
+                "notes":             str(r.get("notes") or ""),
+            })
+        if not rows:
+            raise ValueError("no usable rows in response")
+        rows.sort(key=lambda x: (x["sort_order"], x["code"]))
+        with _licence_catalogue_lock:
+            _licence_catalogue_cache["data"]       = rows
+            _licence_catalogue_cache["fetched_at"] = now
+            _licence_catalogue_cache["failed_at"]  = None
+        return rows
+    except Exception as e:
+        with _licence_catalogue_lock:
+            _licence_catalogue_cache["failed_at"] = now
+        if failed is None:
+            app.logger.warning(f"licence catalogue fetch failed: {e}")
+        return cached
+
+
+def _invalidate_licence_catalogue():
+    """Drop the cached catalogue so the next read re-fetches from SmartStaff.
+
+    For the Phase 2 editor: without it, an edit wouldn't reach the Crew Finder
+    chips, the entry dropdowns or the triage grid until the 15-minute TTL lapsed.
+    Clears failed_at too so a prior negative-cache window can't suppress the
+    immediate re-fetch. Built now so Phase 2 doesn't have to reopen this block."""
+    with _licence_catalogue_lock:
+        _licence_catalogue_cache["data"]       = None
+        _licence_catalogue_cache["fetched_at"] = None
+        _licence_catalogue_cache["failed_at"]  = None
+
+
+def licence_catalogue():
+    """The catalogue: the table if it can be read, the constants if it can't.
+
+    Every licence consumer goes through here rather than touching
+    LICENCE_CATALOGUE directly, so the fallback is decided in ONE place. Phase 3
+    deletes the fallback and this becomes load-or-empty."""
+    return load_licence_catalogue() or _LICENCE_CATALOGUE_FALLBACK
+
+
+def licence_type_allowlist():
+    """Catalogue codes — the app-side half of the allow-list the three PHP write
+    endpoints enforce. Anything not in here, INCLUDING 'Induction Certificate', is
+    rejected, so a licence write can never touch an induction row."""
+    return [r["code"] for r in licence_catalogue()]
+
+
+def licence_group_order():
+    """Group display order for the triage code grid and the Crew Finder chips.
+
+    Derived from sort_order (group-major in the seed) rather than stored
+    separately: first appearance wins, so a group's position is the position of
+    its first code and the two can never disagree."""
+    out, seen = [], set()
+    for r in licence_catalogue():
+        g = r.get("group") or ""
+        if g and g not in seen:
+            seen.add(g)
+            out.append(g)
+    return out
+
+
+def licence_expiry_expected():
+    """{code: bool} — does a blank expiry on this type mean a real gap?
+
+    'date' and 'period' are both expected-to-expire; only 'none' is not. That is
+    exactly what LICENCE_EXPIRY_EXPECTED encoded, so the compliance surface is
+    unchanged by the switch. A code absent from the catalogue misses the lookup
+    and scores 'na', which is the behaviour untriaged free-text rows already
+    rely on."""
+    return dict((r["code"], r["expiry_mode"] != "none") for r in licence_catalogue())
+
+
+def _licence_type_canon():
+    """{lowercased code: code}, for case-insensitive inbound matching."""
+    return dict((r["code"].lower(), r["code"]) for r in licence_catalogue())
+
 
 LICENCE_WARN_DAYS = 60   # global v1 window (inductions use 14; the helper is parameterised)
 
@@ -5066,9 +5283,16 @@ _LICENCE_NAME_BY_CODE = dict((e["code"], e["name"]) for e in LICENCE_CATALOGUE)
 
 
 def _licence_name(code):
-    """Catalogue display name for a code, falling back to the bare code. A code
-    that has been retired from the catalogue while rows still carry it must render
-    readably rather than raise in the middle of a search."""
+    """Display name for a code: the live catalogue first, then the constants, then
+    the bare code.
+
+    THREE steps, not two. A code that has been UNPUBLISHED is absent from the live
+    catalogue but its rows are still on file and must still render readably — the
+    constants name it. A code retired from both falls back to itself rather than
+    raising in the middle of a search."""
+    for r in licence_catalogue():
+        if r["code"] == code:
+            return r["name"]
     return _LICENCE_NAME_BY_CODE.get(code, code)
 
 
@@ -5083,6 +5307,9 @@ def _licence_best_for(crew_lic, sat_codes, on_date):
     Best is by _LICENCE_BEST_ORDER, tie-broken on the LATER expiry with a NULL
     expiry treated as unbounded. So a renewal filed alongside a lapsed original
     is what they are judged on, and a valid HC beats an expired MR."""
+    # Hoisted: this is called per crew x per requested code across a whole search,
+    # and the map is the same for every one of them.
+    expected = licence_expiry_expected()
     scored = []
     for r in (crew_lic or []):
         code = r.get("code")
@@ -5091,7 +5318,7 @@ def _licence_best_for(crew_lic, sat_codes, on_date):
         exp = _licence_parse_date(r.get("expiry"))
         scored.append((
             compliance_status(exp, on_date, LICENCE_WARN_DAYS,
-                              LICENCE_EXPIRY_EXPECTED.get(code, False)),
+                              expected.get(code, False)),
             exp,
         ))
     if not scored:
@@ -5125,17 +5352,18 @@ def _decorate_licences(licences):
     """Attach a compliance `status` to each licence row from admin-list-licenses
     .php, then sort attention-first. Returns a new list; input rows are copied."""
     today = datetime.now().date()
+    expected_by_code = licence_expiry_expected()
     out = []
     for lic in (licences or []):
         if not isinstance(lic, dict):
             continue
         row = dict(lic)
-        # LICENCE_EXPIRY_EXPECTED is keyed on catalogue codes, so score against
+        # The expiry map is keyed on catalogue codes, so score against
         # type_canonical; fall back to the raw type string for rows not yet triaged
         # (canonical NULL). Without the fallback every untriaged row would miss the
         # lookup and silently score 'na', quietly emptying the compliance surface.
         ltype = row.get("type_canonical") or row.get("type") or ""
-        expected = LICENCE_EXPIRY_EXPECTED.get(ltype, False)
+        expected = expected_by_code.get(ltype, False)
         row["status"] = compliance_status(
             _licence_parse_date(row.get("date_expiry")),
             today, LICENCE_WARN_DAYS, expected)
@@ -12442,27 +12670,31 @@ def ss_licence_holder_counts(ss):
 def api_licences_catalogue():
     """The licence catalogue (code · name · group), its group order, which codes
     carry an expiry, and the live holder count per code — for the Manage Crew licence
-    dropdowns and the Crew Finder licence chips. ON THE WIRE from app.py's
-    LICENCE_CATALOGUE (the single source), never a hardcoded copy in the template.
-    Exposed separately so the Licences tab doesn't have to pull the whole triage
-    queue just to populate a <select>.
+    dropdowns and the Crew Finder licence chips. ON THE WIRE from licence_catalogue()
+    (the table, falling back to the constants), never a hardcoded copy in the
+    template. Exposed separately so the Licences tab doesn't have to pull the whole
+    triage queue just to populate a <select>.
 
-    READ_ALL, matching api_groups: this is the sibling of the group-chip feed, it is
-    constants plus a holder tally, and the PHP behind the tally is goat_can_read_all()
-    gated. (The Crew Finder tab itself is still admin-only — see api_availability.)
+    ADMIN, matching api_availability: both consumers are admin-only surfaces — the
+    Crew Finder tab and the Manage Crew licence CRUD. Not READ_ALL like api_groups,
+    despite being the group-chip feed's sibling: the day Crew Finder opens to
+    Operations this relaxes with it, and the PHP behind it is already
+    goat_can_read_all() gated so nothing else has to move.
 
-    `chips` is the render list: codes with at least one holder, in LICENCE_GROUP_ORDER
-    sequence. A code nobody holds is a chip that can only ever return nothing."""
+    `chips` is the render list: codes with at least one holder, in group order.
+    A code nobody holds is a chip that can only ever return nothing."""
+    cat       = licence_catalogue()
     holders   = ss_licence_holder_counts(get_ss_session())
-    group_pos = dict((g, i) for i, g in enumerate(LICENCE_GROUP_ORDER))
+    group_ord = licence_group_order()
+    group_pos = dict((g, i) for i, g in enumerate(group_ord))
     chips = [e["code"] for e in sorted(
-        (e for e in LICENCE_CATALOGUE if holders.get(e["code"], 0) >= 1),
-        key=lambda e: (group_pos.get(e["group"], len(LICENCE_GROUP_ORDER)),
+        (e for e in cat if holders.get(e["code"], 0) >= 1),
+        key=lambda e: (group_pos.get(e["group"], len(group_ord)),
                        e["name"].lower()))]
     return jsonify({
-        "catalogue":       LICENCE_CATALOGUE,
-        "group_order":     LICENCE_GROUP_ORDER,
-        "expiry_expected": [c for c, v in LICENCE_EXPIRY_EXPECTED.items() if v],
+        "catalogue":       cat,
+        "group_order":     group_ord,
+        "expiry_expected": [c for c, v in licence_expiry_expected().items() if v],
         "holders":         holders,
         "chips":           chips,
     })
@@ -12547,8 +12779,8 @@ def api_licence_triage_queue():
     return jsonify({
         "rows":        rows,
         "total":       len(rows),
-        "catalogue":   LICENCE_CATALOGUE,
-        "group_order": LICENCE_GROUP_ORDER,
+        "catalogue":   licence_catalogue(),
+        "group_order": licence_group_order(),
     })
 
 
@@ -12568,8 +12800,9 @@ def api_licence_triage_save():
         return jsonify({"error": "Invalid licence id"}), 400
     raw = request.form.get("codes") or ""
     codes = [c.strip() for c in raw.split(",") if c.strip()]
+    allowed = licence_type_allowlist()
     for c in codes:
-        if c not in LICENCE_TYPE_ALLOWLIST:
+        if c not in allowed:
             return jsonify({"error": f"Invalid code: {c}"}), 400
     date_exp  = _licence_date_ymd(request.form.get("date_expiry"))
     date_cert = _licence_date_ymd(request.form.get("date_certified"))
