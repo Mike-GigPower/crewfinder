@@ -1,6 +1,6 @@
 {
-  "version": "5.8.0",
+  "version": "5.9.0",
   "release_date": "2026-08-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.8.0/TheGOAT.dmg",
-  "release_notes": "You can now resend a candidate's details form or contract link from their row in Recruitment, and the Recruitment Dashboard and Sessions views scroll properly."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.9.0/TheGOAT.dmg",
+  "release_notes": "Recruitment's Operations, Dashboard and Sessions are now tabs in the navigation bar, each with its own address, and the app remembers which one you were last on."
 }
