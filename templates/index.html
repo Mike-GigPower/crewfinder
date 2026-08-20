@@ -913,6 +913,14 @@ body.cohort-readonly #unavail-add-section{display:none}
 /* ── Recruitment tab (admin/operations — read-only applicant list) ── */
 #tab-recruitment .recruit-wrap{max-width:1100px;margin:0 auto;padding:26px 22px 40px;display:flex;flex-direction:column;min-height:0}
 #recruit-ops-view{display:flex;flex-direction:column;flex:1;min-height:0}
+/* Dashboard and Sessions are siblings of #recruit-ops-view and neither carries its
+   own scroller, so the shared .tab-panel overflow:hidden clipped them with no way
+   to reach the bottom — the v5.7.2 applicant-list bug, in the two views that fix
+   did not cover. Scoped here rather than on .tab-panel, which every tab shares and
+   several rely on to contain their own inner scrollers. applyRecruitView() sets
+   style.display='' on the active pane, so this applies when shown and the inline
+   display:none wins when hidden. */
+#recruit-dash-view,#recruit-sessions-view{flex:1;min-height:0;overflow-y:auto}
 .recruit-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
 .recruit-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin:6px 0 18px}
 .recruit-status{font-family:'Rajdhani',sans-serif;font-size:14px;color:var(--muted);padding:12px 0}
