@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include('licence-catalogue-lib.php');
 
 	/*
 	/* JSON response */
@@ -36,17 +37,28 @@
 	}
 
 	/*
-	/* validate type against the fixed allow-list. Anything else — INCLUDING
+	/* validate type against the catalogue allow-list. Anything else — INCLUDING
 	/* 'Induction Certificate' — is rejected, so a licence write can never touch or
 	/* create an induction row. */
 
-	$allowedTypes = array(
-		'SB', 'SI', 'SA', 'DG', 'RB', 'RI', 'RA', 'BS', 'BA', 'TO', 'ES',
-		'CT', 'CS', 'CD', 'CP', 'CB', 'CV', 'CN', 'C2', 'C6', 'C1', 'C0',
-		'HM', 'HP', 'LF', 'LO', 'WP', 'RS', 'PB', 'TV',
-		'CI', 'WAH', 'EWPSOA', 'FA', 'TC', 'WWCC',
-		'LR', 'MR', 'HR', 'HC', 'MC'
-	);
+	/*
+	/* The allow-list is the PUBLISHED `licence_catalogue` codes, read through
+	/* licence-catalogue-lib.php. It used to be a hardcoded array here, one of
+	/* five copies of the taxonomy.
+	/*
+	/* FALSE means the catalogue could not be read. REJECT the write — an empty
+	/* allow-list would reject everything while looking like a broken form, and
+	/* permitting anything would drop a safety boundary that exists to keep
+	/* licence writes off induction rows.
+	*/
+
+	$allowedTypes = goat_licence_allowed_types();
+
+	if ($allowedTypes === false)
+	{
+		http_response_code(500);
+		die('{"ok":false,"error":"licence catalogue unavailable"}');
+	}
 
 	$type = isset($_POST['type']) ? trim($_POST['type']) : '';
 

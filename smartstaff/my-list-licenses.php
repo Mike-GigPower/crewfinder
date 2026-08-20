@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include('licence-catalogue-lib.php');
 
 	/*
 	/* JSON response */
@@ -83,6 +84,29 @@
 		);
 	}
 
-	echo json_encode(array('ok' => true, 'licences' => $licences));
+	/*
+	/* The catalogue rides along on this response rather than living in a second
+	/* endpoint. Crew Hub needs both halves to render one page — the rows and the
+	/* taxonomy that labels them and drives the add form — and this is the request
+	/* it already makes through lib/licence-data.ts's ssGet. A separate endpoint
+	/* would be a second round trip on every render for data of the same scope.
+	/*
+	/* catalogue_ok distinguishes "the catalogue could not be read" from "the
+	/* catalogue is empty", exactly as licences_ok does in list-crew-bulk.php. On
+	/* false Crew Hub falls back to its own constants: a crew member must still be
+	/* able to SEE their licences when the taxonomy is unavailable, so this can
+	/* never fail the response. The add path is protected separately —
+	/* my-add-license.php rejects the write outright if the catalogue is unreadable.
+	*/
+
+	$catalogue    = goat_licence_catalogue_rows(false);
+	$catalogue_ok = ($catalogue !== false);
+
+	echo json_encode(array(
+		'ok'           => true,
+		'licences'     => $licences,
+		'catalogue'    => $catalogue_ok ? $catalogue : array(),
+		'catalogue_ok' => $catalogue_ok
+	));
 
 ?>
