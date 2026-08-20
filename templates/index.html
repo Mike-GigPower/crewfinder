@@ -911,14 +911,16 @@ body.cohort-readonly #unavail-add-section{display:none}
 .admin-card.is-soon{opacity:.72}
 .admin-card.is-soon:hover{border-color:var(--warn)}
 /* ── Recruitment tab (admin/operations — read-only applicant list) ── */
-#tab-recruitment .recruit-wrap{max-width:1100px;margin:0 auto;padding:26px 22px 40px}
+#tab-recruitment .recruit-wrap{max-width:1100px;margin:0 auto;padding:26px 22px 40px;display:flex;flex-direction:column;min-height:0}
+#recruit-ops-view{display:flex;flex-direction:column;flex:1;min-height:0}
 .recruit-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
 .recruit-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin:6px 0 18px}
 .recruit-status{font-family:'Rajdhani',sans-serif;font-size:14px;color:var(--muted);padding:12px 0}
 .recruit-label{color:var(--accent);font-weight:700;letter-spacing:.03em;margin-right:5px}
 .recruit-empty{color:var(--muted);font-style:italic}
 /* Compact table — one row per applicant, scales to 30+ rows (scrolls if tall) */
-.recruit-table-wrap{border:1px solid var(--border);border-radius:7px;overflow:auto;max-height:70vh}
+.recruit-table-wrap{border:1px solid var(--border);border-radius:7px;overflow:auto;flex:1;min-height:0}
+#recruit-list{flex:1;min-height:0;display:flex;flex-direction:column}
 .recruit-table{width:100%;border-collapse:collapse;font-family:'Rajdhani',sans-serif}
 .recruit-table thead th{position:sticky;top:0;z-index:1;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--surface2);padding:9px 14px;border-bottom:2px solid var(--border);white-space:nowrap}
 .recruit-row{cursor:pointer;border-top:1px solid var(--border)}
