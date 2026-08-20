@@ -47,7 +47,7 @@
 			$where = $includeUnpublished ? '' : ' WHERE `published` = 1';
 
 			$res = mysql_query(
-				"SELECT `code`, `name`, `grp`, `expiry_mode`, `validity_months`,
+				"SELECT `id`, `code`, `name`, `grp`, `expiry_mode`, `validity_months`,
 				        `require_certified`, `published`, `sort_order`, `notes`
 				 FROM `licence_catalogue`" . $where . "
 				 ORDER BY `sort_order` ASC, `code` ASC"
@@ -64,6 +64,10 @@
 			while ($row = mysql_fetch_object($res))
 			{
 				$rows[] = array(
+					/* id is here for the Phase 2 editor, which addresses rows by
+					/* id. Additive: every Phase 1 consumer reads named keys and
+					/* ignores what it doesn't ask for. */
+					'id'                => (int) $row->id,
 					'code'              => $row->code,
 					'name'              => $row->name,
 					'grp'               => $row->grp,
