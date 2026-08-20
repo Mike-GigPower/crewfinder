@@ -2154,6 +2154,13 @@ a.recruit-action{text-decoration:none;display:inline-block}
             <div class="admin-card-desc">Define venue induction validity, links and coverage.</div>
           </div>
         </button>
+        <button class="admin-card" onclick="adminLicenceCatalogue()">
+          <div class="admin-card-icon">🪪</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Manage Licences</div>
+            <div class="admin-card-desc">Define the licence types, how each expires, and what is published.</div>
+          </div>
+        </button>
       </div>
 
       <div class="admin-hub-section">Compliance</div>
@@ -11465,6 +11472,462 @@ async function _indUnpublishInstead(){
   }catch(e){
     if(err) err.textContent = e.message;
     if(btn){ btn.disabled = false; btn.textContent = 'Unpublish + remove from Checker'; }
+  }
+}
+
+
+// ══ Manage Licences — the licence catalogue editor ═══════════════════════════
+// Phase 2: the write path onto `licence_catalogue`, whose read path shipped in
+// v5.10.0. Mirrors Manage Inductions above, including the preview-before-write
+// gate and the guarded delete that offers Unpublish instead.
+//
+// The two changes this editor has to be careful about both LOOK like editing one
+// row and actually rewrite compliance for everyone holding that type:
+//   - unpublishing a code that expects an expiry stops chasing it, silently;
+//   - changing the expiry mode or the period re-dates every holder at once.
+// Both go through the same server-computed preview (§0 of the brief).
+
+let _licCatData = [];    // every catalogue row, published and not
+
+// The wire sends real JSON booleans, but _indFlag also accepts 1/'1' — reused
+// rather than duplicated because it is a generic truthiness read, not an
+// induction-specific one.
+function _licLabel(status){
+  var m = { expired:'Expired', expiring_soon:'Expires soon', valid:'Valid',
+            unknown:'No expiry on file', na:'Held' };
+  return m[status] || status;
+}
+
+// The expiry column, so the mode is readable without opening the row.
+function _licExpiryText(v){
+  if(v.expiry_mode === 'period') return (v.validity_months || 0) + ' months';
+  if(v.expiry_mode === 'date')   return 'On card';
+  return '—';
+}
+
+function adminLicenceCatalogue(){ openLicenceListModal(); }
+
+async function openLicenceListModal(){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Manage Licences';
+  document.getElementById('entity-modal-sub').textContent   = 'Define the licence types, how each expires, and what is published';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-body').innerHTML =
+      '<button class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%;margin-bottom:10px" onclick="openLicenceEdit(\'new\')">+ New licence type</button>'
+    + '<div id="lic-cat-flash"></div>'
+    + '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+    +   '<input id="lic-cat-search" oninput="_renderLicenceList()" placeholder="Search licence types…" style="'+EF_INPUT_STYLE+';flex:1">'
+    + '</div>'
+    + '<div id="lic-cat-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>'
+    + '<div id="lic-cat-rows" style="max-height:48vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  await _loadLicenceList();
+}
+
+async function _loadLicenceList(){
+  try{
+    var r = await fetch('/api/admin/licence-list');
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _licCatData = d.licences || [];
+  }catch(e){
+    var rows = document.getElementById('lic-cat-rows');
+    if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load licence types: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  _renderLicenceList();
+}
+
+function _renderLicenceList(){
+  var box = document.getElementById('lic-cat-search');
+  var q = box ? box.value : '';
+  var needle = q.toLowerCase().trim();
+
+  var rows = _licCatData.slice();
+  if(needle){
+    rows = rows.filter(function(v){
+      return ((v.name||'')+' '+(v.code||'')+' '+(v.grp||'')).toLowerCase().indexOf(needle) >= 0;
+    });
+  }
+  // sort_order is group-major, as seeded — the same order the chips and the
+  // entry dropdowns use, so the list reads the way the rest of the app does.
+  rows.sort(function(a,b){
+    var sa = parseInt(a.sort_order,10) || 0, sb = parseInt(b.sort_order,10) || 0;
+    if(sa !== sb) return sa - sb;
+    return (a.code||'') < (b.code||'') ? -1 : 1;
+  });
+
+  var cnt = document.getElementById('lic-cat-count');
+  if(cnt) cnt.textContent = rows.length + ' of ' + _licCatData.length + ' shown';
+
+  var flash = document.getElementById('lic-cat-flash');
+  if(flash){
+    if(window._licCatFlash){
+      flash.innerHTML = '<div style="border:1px solid var(--accent);border-radius:5px;background:rgba(212,175,55,0.08);color:var(--accent);font-size:12px;padding:8px 11px;margin-bottom:10px">'+escapeHtml(window._licCatFlash)+'</div>';
+      window._licCatFlash = '';
+    } else { flash.innerHTML = ''; }
+  }
+
+  var chip = function(label, warn){
+    var col = warn ? 'var(--muted)' : 'var(--accent)';
+    var bd  = warn ? 'var(--border)' : 'var(--border-gold)';
+    return '<span style="font-size:10px;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 5px;margin-left:6px">'+label+'</span>';
+  };
+
+  var html = rows.length
+    ? rows.map(function(v){
+        var holders = (v.holders != null ? v.holders : 0);
+        var meta = (v.grp||'') + ' · ' + _licExpiryText(v) + ' · ' + holders + ' holder' + (holders===1?'':'s');
+        var chips = _indFlag(v.published) ? '' : chip('Unpublished', true);
+        return '<div onclick="openLicenceEdit(\''+String(v.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
+          + '<div style="width:62px;flex-shrink:0;font-family:\'Share Tech Mono\',monospace;font-size:12px;color:var(--accent)">'+escapeHtml(v.code||'')+'</div>'
+          + '<div style="flex:1;min-width:0">'
+            + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(v.name||'')+chips+'</div>'
+            + '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(meta)+'</div>'
+          + '</div>'
+          + '<span style="color:var(--muted);font-size:14px">›</span>'
+          + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No licence types'+(needle?' match “'+escapeHtml(q)+'”':'')+'.</div>';
+
+  var target = document.getElementById('lic-cat-rows');
+  if(target) target.innerHTML = html;
+}
+
+async function openLicenceEdit(id){
+  openEntityModal();
+  var isNew = (String(id) === 'new');
+  document.getElementById('entity-modal-title').textContent = isNew ? 'New licence type' : 'Edit licence type';
+  document.getElementById('entity-modal-sub').textContent   = '';
+  document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+
+  var v = {};
+  try{
+    if(!isNew){
+      var r = await fetch('/api/admin/licence/'+encodeURIComponent(id));
+      v = await r.json();
+      if(!r.ok || v.error) throw new Error(v.error || ('HTTP '+r.status));
+    }
+    if(!_licCatData.length) await _loadLicenceList();
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load licence type: '+escapeHtml(e.message)+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close', 'openLicenceListModal()');
+    return;
+  }
+
+  window._licEditId      = isNew ? 'new' : String(v.id);
+  window._licEditIsNew   = isNew;
+  window._licEditCode    = v.code || '';
+  window._licEditName    = v.name || '';
+  window._licEditHolders = (v.holders != null ? v.holders : 0);
+  // Loaded values drive the preview gate: only re-check when they actually move.
+  window._licLoadedMode      = isNew ? 'none' : (v.expiry_mode || 'none');
+  window._licLoadedMonths    = isNew ? 0 : (parseInt(v.validity_months,10) || 0);
+  window._licLoadedPublished = isNew ? true : _indFlag(v.published);
+  if(!isNew) document.getElementById('entity-modal-title').textContent = (v.code || '') + ' — ' + (v.name || 'Edit licence type');
+
+  // ---- Code: editable on new (uppercased on input), READ-ONLY on edit ----
+  // Set-once. It is the value stored in user_licenses.type_canonical on every
+  // triaged row; renaming it orphans all of them. Same rule as the induction code.
+  var codeField = isNew
+    ? '<input id="lic-code" type="text" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,\'\')" value="" style="'+EF_INPUT_STYLE+'">'
+      + '<div style="font-size:10px;color:var(--muted)">Letters and digits only. This is what gets stored against every crew licence of this type.</div>'
+    : '<div style="font-size:12px;color:var(--text);padding:7px 0;font-family:\'Share Tech Mono\',monospace">'+escapeHtml(v.code||'')+'</div>'
+      + '<div style="font-size:10px;color:var(--muted)">Code is set when the type is created and can’t be changed — '+window._licEditHolders+' crew hold this licence.</div>';
+
+  // ---- Group: a select over the groups already in the table ----
+  // Free text would hand this editor a group-ordering problem it has no place to
+  // solve: sort_order is group-major, so a new group has no defined position.
+  var groups = [];
+  _licCatData.forEach(function(x){ if(x.grp && groups.indexOf(x.grp) < 0) groups.push(x.grp); });
+  var curGrp = v.grp || (groups.length ? groups[0] : '');
+  var grpField = '<select id="lic-grp" style="'+EF_INPUT_STYLE+'">'
+    + groups.map(function(g){ return '<option value="'+escapeHtml(g)+'"'+(g===curGrp?' selected':'')+'>'+escapeHtml(g)+'</option>'; }).join('')
+    + '</select>';
+
+  // ---- The expiry question, as specified by ops ----
+  // "No" writes expiry_mode='none' and ends. The expiry is recorded as a
+  // DECISION rather than inferred from a blank date — that distinction is the
+  // reason this feature exists.
+  var mode    = isNew ? 'none' : (v.expiry_mode || 'none');
+  var expires = (mode !== 'none');
+  var months  = (parseInt(v.validity_months,10) || '');
+  var radio = function(name, id, label, on){
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);cursor:pointer;padding:3px 0">'
+      + '<input type="radio" name="'+name+'" id="'+id+'"'+(on?' checked':'')+' onchange="_licExpiryToggle()"> '+label+'</label>';
+  };
+  var expiryBlock =
+      radio('lic-expires','lic-expires-no','No',  !expires)
+    + radio('lic-expires','lic-expires-yes','Yes', expires)
+    + '<div id="lic-expiry-how" style="padding:6px 0 0 18px;'+(expires?'':'display:none')+'">'
+    +   '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:3px">How is the expiry known?</div>'
+    +   radio('lic-how','lic-how-date',  'It’s printed on the card', mode==='date')
+    +   radio('lic-how','lic-how-period','Fixed period from issue',  mode==='period')
+    +   '<div id="lic-period-months" style="padding:4px 0 0 18px;'+(mode==='period'?'':'display:none')+'">'
+    +     '<div style="display:flex;gap:8px;align-items:center">'
+    +       '<span style="font-size:12px;color:var(--text)">Valid for</span>'
+    +       '<input id="lic-months" type="number" min="1" value="'+escapeHtml(String(months))+'" style="'+EF_INPUT_STYLE+';width:80px">'
+    +       '<span style="font-size:12px;color:var(--text)">months</span>'
+    +     '</div>'
+    +     '<div style="font-size:10px;color:var(--muted);padding-top:3px">Expiry is worked out from the certified date, so a certified date becomes required.</div>'
+    +   '</div>'
+    + '</div>';
+
+  var checkbox = function(cid, label, on, dis){
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);cursor:pointer;padding-top:7px">'
+      + '<input type="checkbox" id="'+cid+'"'+(on?' checked':'')+(dis?' disabled':'')+'> '+label+'</label>';
+  };
+
+  document.getElementById('entity-modal-body').innerHTML =
+      efRow('Code'+(isNew?'*':''), codeField)
+    + efRow('Name*',        efInput('lic-name', v.name))
+    + efRow('Group',        grpField)
+    + efRow('Does this licence expire?', expiryBlock)
+    + efRow('',             '<div id="lic-reqcert-row">'
+        + checkbox('lic-reqcert', 'Requires a certified date', mode==='period' ? true : _indFlag(v.require_certified), mode==='period')
+        + '</div>')
+    + efRow('',             checkbox('lic-published', 'Published', isNew ? true : _indFlag(v.published)))
+    + efRow('Sort order',   efInput('lic-sort', (v.sort_order != null ? v.sort_order : ''), 'number'))
+    + efRow('Notes',        efTextarea('lic-notes', v.notes))
+    + '<div id="lic-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px;white-space:pre-line"></div>'
+    + (isNew ? '' : '<div id="lic-delete-zone" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">' + _licDeleteBtnHtml() + '</div>');
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Cancel', 'openLicenceListModal()')
+    + entityBtn('Save changes', "submitLicenceTypeEdit('"+String(window._licEditId)+"')", {primary:true, id:'lic-submit'});
+}
+
+// Show/hide the dependent halves of the expiry question, and enforce the
+// period -> require_certified rule in the UI. The PHP enforces it too; this is
+// so the operator sees WHY rather than getting a 400 they can't act on.
+function _licExpiryToggle(){
+  var yes    = document.getElementById('lic-expires-yes');
+  var how    = document.getElementById('lic-expiry-how');
+  var period = document.getElementById('lic-how-period');
+  var pm     = document.getElementById('lic-period-months');
+  var req    = document.getElementById('lic-reqcert');
+  if(how) how.style.display = (yes && yes.checked) ? '' : 'none';
+  var isPeriod = !!(yes && yes.checked && period && period.checked);
+  if(pm) pm.style.display = isPeriod ? '' : 'none';
+  if(req){
+    if(isPeriod){ req.checked = true; req.disabled = true; }
+    else { req.disabled = false; }
+  }
+}
+
+// The mode the form currently describes. One place, so the payload, the preview
+// gate and the confirm wording can never disagree about what is being saved.
+function _licFormMode(){
+  var yes = document.getElementById('lic-expires-yes');
+  if(!(yes && yes.checked)) return 'none';
+  var per = document.getElementById('lic-how-period');
+  return (per && per.checked) ? 'period' : 'date';
+}
+
+function _licCollectPayload(){
+  var val = function(eid){ var el=document.getElementById(eid); return el ? String(el.value).trim() : ''; };
+  var chk = function(eid){ var el=document.getElementById(eid); return (el && el.checked) ? '1' : '0'; };
+  var mode = _licFormMode();
+  var payload = {
+    name:              val('lic-name'),
+    grp:               val('lic-grp'),
+    expiry_mode:       mode,
+    // Non-period modes carry NO period — the endpoint writes NULL regardless,
+    // and sending '' rather than a stale number keeps the two in agreement.
+    validity_months:   (mode === 'period') ? val('lic-months') : '',
+    require_certified: (mode === 'period') ? '1' : chk('lic-reqcert'),
+    published:         chk('lic-published'),
+    sort_order:        val('lic-sort'),
+    notes:             val('lic-notes')
+  };
+  if(window._licEditIsNew) payload.code = val('lic-code');   // set-once, insert only
+  return payload;
+}
+
+// Turn the server's preview into the sentence the operator has to agree with.
+function _licPreviewMessage(pd, trigger, mode, months){
+  var name  = (window._licEditCode||'') + ' — ' + (window._licEditName||'this licence');
+  var head;
+  if(trigger === 'unpublish'){
+    // Deliberately NOT "stops chasing for N crew": chasing only ever applied to
+    // the ones with no expiry on file. The holder count and the chased count are
+    // different numbers and conflating them overstates the damage — verified
+    // against test, where unpublishing HR moves 2 crew but only 1 was chased.
+    var chased = (pd.undated||0);
+    head = 'Unpublishing '+name+' affects '+(pd.holders||0)+' crew holding it.\n'
+         + (chased
+            ? (chased+' currently being chased for a missing expiry '+(chased===1?'goes':'go')+' quiet — '
+               + 'no pill, no prompt, and nobody is told.')
+            : 'None are currently being chased for a missing expiry.');
+  } else {
+    var how = (mode === 'none') ? 'never expiring'
+            : (mode === 'period') ? ('a fixed '+months+'-month period')
+            : 'an expiry printed on the card';
+    head = 'Changing '+name+' to '+how+' affects '+(pd.holders||0)+' crew.';
+  }
+  var lines = (pd.changes || []).map(function(c){
+    return '• '+c.count+' move from '+_licLabel(c.from)+' to '+_licLabel(c.to);
+  });
+  if(!lines.length) lines = ['• No crew change status.'];
+  return head+'\n\n'+lines.join('\n')+'\n\nApply this change?';
+}
+
+async function submitLicenceTypeEdit(id){
+  var err = document.getElementById('lic-error');
+  var btn = document.getElementById('lic-submit');
+  if(err) err.textContent = '';
+  var isNew = (String(id) === 'new');
+
+  var payload = _licCollectPayload();
+  if(!payload.name){ if(err) err.textContent = 'Name is required.'; return; }
+  if(isNew && !payload.code){ if(err) err.textContent = 'Code is required for a new licence type.'; return; }
+  var mode   = payload.expiry_mode;
+  var months = parseInt(payload.validity_months, 10);
+  if(mode === 'period' && (!months || months <= 0)){
+    if(err) err.textContent = 'A fixed-period licence needs a positive number of months.';
+    return;
+  }
+
+  // ---- PREVIEW gate (edit only) ----
+  // Three changes rewrite compliance for every holder, and each is confirmed
+  // against a server-computed impact rather than a guess:
+  //   mode change · period change · unpublishing a code that expects an expiry.
+  if(!isNew){
+    var modeChanged   = (mode !== window._licLoadedMode);
+    var monthsChanged = (mode === 'period' && months !== window._licLoadedMonths);
+    var unpublishing  = (payload.published === '0' && window._licLoadedPublished && window._licLoadedMode !== 'none');
+    if(modeChanged || monthsChanged || unpublishing){
+      var trigger = (unpublishing && !modeChanged && !monthsChanged) ? 'unpublish' : 'mode';
+      if(btn){ btn.disabled = true; btn.textContent = 'Checking…'; }
+      try{
+        var pr = await fetch('/api/admin/licence/'+encodeURIComponent(id), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(Object.assign({}, payload, { preview: '1' }))
+        });
+        var pd = await pr.json();
+        if(!pr.ok || pd.error) throw new Error(pd.error || ('HTTP '+pr.status));
+        if(!window.confirm(_licPreviewMessage(pd, trigger, mode, months))){
+          if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+          return;   // Cancel → abort, nothing written
+        }
+      }catch(e){
+        if(err) err.textContent = 'Preview failed: '+e.message;
+        if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+        return;
+      }
+    }
+  }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/admin/licence/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if(r.status === 409){
+      if(err) err.textContent = (d.error === 'code in use')
+        ? 'That code is already in use — choose another.'
+        : (d.error || 'Conflict — not saved.');
+      if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+      return;
+    }
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._licCatFlash = isNew ? 'Licence type created.' : 'Saved.';
+    openLicenceListModal();
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+  }
+}
+
+// ── Delete: quiet last-resort link → inline confirm → guarded POST ──
+// A 409 in-use is a BLOCK, not a failure: it nudges toward Unpublish, which is
+// reversible and achieves what the operator actually wanted.
+function _licDeleteBtnHtml(){
+  return '<button onclick="deleteLicencePrompt()" style="background:none;border:none;color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer;text-decoration:underline;padding:0">Delete this licence type permanently</button>';
+}
+
+function deleteLicencePrompt(){
+  var zone = document.getElementById('lic-delete-zone');
+  if(!zone) return;
+  zone.innerHTML =
+      '<div style="font-size:12px;color:var(--text);padding:2px 0 8px">Delete <b>'+escapeHtml(window._licEditCode||'')+' — '+escapeHtml(window._licEditName||'this licence type')+'</b>? This can’t be undone. If any crew hold it, unpublishing keeps their records readable instead.</div>'
+    + '<div id="lic-del-error" style="color:var(--conflict);font-size:11px;min-height:14px;padding-bottom:6px;white-space:pre-line"></div>'
+    + '<div id="lic-del-actions" style="display:flex;gap:8px;flex-wrap:wrap">'
+    +   entityBtn('Cancel', 'cancelDeleteLicence()')
+    +   '<button id="lic-del-confirm" onclick="doDeleteLicenceType()" style="background:var(--conflict);border:1px solid var(--conflict);color:#fff;border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer">Confirm delete</button>'
+    + '</div>';
+}
+
+function cancelDeleteLicence(){
+  var zone = document.getElementById('lic-delete-zone');
+  if(zone) zone.innerHTML = _licDeleteBtnHtml();
+}
+
+async function doDeleteLicenceType(){
+  var id  = window._licEditId;
+  var btn = document.getElementById('lic-del-confirm');
+  var err = document.getElementById('lic-del-error');
+  if(err) err.textContent = '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Deleting…'; }
+  try{
+    var r = await fetch('/api/admin/licence/'+encodeURIComponent(id)+'/delete', {method:'POST'});
+    var d = await r.json();
+    // 409 in use: crew rows carry this code. Deleting would orphan every one of
+    // them, so block and offer the reversible action instead.
+    if(r.status === 409){
+      var n = (d.count != null ? d.count : 'Some');
+      if(err) err.textContent = n+' licence records carry this code — deleting would orphan them. Unpublish it instead? It disappears from the chips and the entry dropdowns, and existing records keep their name.';
+      if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+      var acts = document.getElementById('lic-del-actions');
+      if(acts && !document.getElementById('lic-unpublish-instead')){
+        acts.insertAdjacentHTML('beforeend',
+          '<button id="lic-unpublish-instead" onclick="_licUnpublishInstead()" style="background:var(--surface2);border:1px solid var(--border-gold);color:var(--accent);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:pointer">Unpublish instead</button>');
+      }
+      return;
+    }
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._licCatFlash = 'Licence type deleted.';
+    openLicenceListModal();
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Confirm delete'; }
+  }
+}
+
+// The safe alternative to a blocked delete. Goes through the SAME preview gate
+// as a normal unpublish — this is exactly the §0a trap, and reaching it from the
+// delete dialog must not be the way somebody skips the warning.
+async function _licUnpublishInstead(){
+  var id  = window._licEditId;
+  var err = document.getElementById('lic-del-error');
+  var btn = document.getElementById('lic-unpublish-instead');
+  if(btn){ btn.disabled = true; btn.textContent = 'Checking…'; }
+  try{
+    var payload = Object.assign({}, _licCollectPayload(), { published: '0' });
+    if(window._licLoadedMode !== 'none'){
+      var pr = await fetch('/api/admin/licence/'+encodeURIComponent(id), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(Object.assign({}, payload, { preview: '1' }))
+      });
+      var pd = await pr.json();
+      if(!pr.ok || pd.error) throw new Error(pd.error || ('HTTP '+pr.status));
+      if(!window.confirm(_licPreviewMessage(pd, 'unpublish', payload.expiry_mode, 0))){
+        if(btn){ btn.disabled = false; btn.textContent = 'Unpublish instead'; }
+        return;
+      }
+    }
+    if(btn) btn.textContent = 'Updating…';
+    var r = await fetch('/api/admin/licence/'+encodeURIComponent(id), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    window._licCatFlash = 'Unpublished.';
+    openLicenceListModal();
+  }catch(e){
+    if(err) err.textContent = e.message;
+    if(btn){ btn.disabled = false; btn.textContent = 'Unpublish instead'; }
   }
 }
 
