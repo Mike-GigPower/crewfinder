@@ -1,6 +1,6 @@
 {
-  "version": "5.7.2",
+  "version": "5.8.0",
   "release_date": "2026-08-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.7.2/TheGOAT.dmg",
-  "release_notes": "The Crew Finder filters panel, the Recruitment applicant list and the admin access dialog now scroll instead of running off the bottom of the window."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.8.0/TheGOAT.dmg",
+  "release_notes": "You can now resend a candidate's details form or contract link from their row in Recruitment, and the Recruitment Dashboard and Sessions views scroll properly."
 }
