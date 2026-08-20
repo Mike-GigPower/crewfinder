@@ -1,6 +1,6 @@
 {
-  "version": "5.7.1",
-  "release_date": "2026-08-19",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.7.1/TheGOAT.dmg",
-  "release_notes": "Staff entry points and loading docks can now be labelled as their own link type in Manage Inductions, rather than sitting alongside venue maps."
+  "version": "5.7.2",
+  "release_date": "2026-08-20",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.7.2/TheGOAT.dmg",
+  "release_notes": "The Crew Finder filters panel, the Recruitment applicant list and the admin access dialog now scroll instead of running off the bottom of the window."
 }
