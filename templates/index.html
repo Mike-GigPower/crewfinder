@@ -6489,6 +6489,47 @@ async function recruitSetStatus(id, status, btn){
   }
 }
 
+// Resend outcomes all arrive as HTTP 200 — the outcome string is the result, not
+// the status code. "deduped" in particular is a correct outcome (the per-day key
+// did its job) and must not be reported as a failure.
+//
+// Deliberately does NOT call loadRecruitment(): a resend changes no candidate
+// state, so a refetch would flash the whole table for nothing. Because nothing
+// rebuilds, the button re-enables on EVERY path including success — otherwise it
+// would be a dead control until the operator collapsed and reopened the row.
+async function recruitResend(id, kind, btn){
+  var label = (kind === 'contract') ? 'contract' : 'details form';
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch('/api/recruitment/resend', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({candidate_id: id, kind: kind})
+    });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert(r.status === 403
+        ? 'You do not have access to resend applicant emails.'
+        : (body.error || 'Could not resend. Please try again.'));
+      if(btn) btn.disabled = false;
+      return;
+    }
+    if(body.outcome === 'sent'){
+      alert('Sent — their ' + label + ' link is on its way.');
+    } else if(body.outcome === 'deduped'){
+      alert('Already resent today. Try again tomorrow if it still has not arrived —\n'
+        + 'if the first one did not land, the address or their spam filter is the likely cause.');
+    } else if(body.outcome === 'blocked'){
+      alert('Blocked — email sending is currently switched off (EMAIL_LIVE).');
+    } else {
+      alert('The send failed. The reason is recorded against this applicant in the email log.');
+    }
+  }catch(e){
+    alert('Could not resend. Please try again.');
+  }
+  if(btn) btn.disabled = false;
+}
+
 // Ops enter the commencement date DAY-FIRST (DD-MM-YYYY). Everything downstream —
 // storage, the edge function, the contract merge — stays ISO, so we convert at the
 // boundary. recruitDmyToIso returns "YYYY-MM-DD" or null if it isn't a real
@@ -6882,6 +6923,33 @@ function keypayButton(c){
   else                tip = 'Sent to Employment Hero, but the employee ID is missing — needs backfill';
   return '<button class="recruit-action" disabled title="' + escapeHtml(tip) + '" '
     + 'style="opacity:.45;cursor:not-allowed">Complete KeyPay setup</button>';
+}
+
+// Deliberate resend of the details-form / contract link. Shown only where the
+// link would actually work: details needs a token, contract additionally needs a
+// commencement_date (without one, /contract renders "not ready yet"). Hidden
+// rather than disabled when unavailable — a disabled button invites a click and
+// explains nothing, and unlike keypayButton's case there is no useful diagnosis
+// to offer beyond "not applicable at this stage".
+function recruitResendButtons(c){
+  if(!c) return '';
+  // Read-only stages: nothing to chase.
+  if(c.status === 'withdrawn' || c.status === 'not_suitable') return '';
+  var id = recruitEsc(String(c.id));
+  var out = '';
+  // Details link: offered once they've attended, since that is when it is sent.
+  var detailsStages = ['attended', 'details_submitted', 'sent_to_eh',
+                       'all_docs_received', 'active_crew'];
+  if(detailsStages.indexOf(c.status) !== -1){
+    out += '<button class="recruit-action" onclick="recruitResend(\'' + id + '\',\'details\',this)" '
+        +  'title="Email this applicant their details-form link again">Resend details form</button>';
+  }
+  // Contract link: only once a commencement date exists.
+  if((c.status === 'sent_to_eh' || c.status === 'all_docs_received') && c.commencement_date){
+    out += '<button class="recruit-action" onclick="recruitResend(\'' + id + '\',\'contract\',this)" '
+        +  'title="Email this applicant their contract-signing link again">Resend contract</button>';
+  }
+  return out;
 }
 
 // Fill the shared entity-modal panes in one call.
@@ -7733,7 +7801,11 @@ function renderRecruitRow(c, i){
           : '';
       })()
     : '';
-  const allActions = convertBtn + keypayBtn + actions + activeCrewNote + waitingNote;
+  // Deliberate resend of the details-form / contract link. After the pipeline
+  // moves, before the read-only notes: secondary to the pipeline actions, not
+  // competing with them.
+  const resendBtns = recruitResendButtons(c);
+  const allActions = convertBtn + keypayBtn + actions + resendBtns + activeCrewNote + waitingNote;
 
   // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
   const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
