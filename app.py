@@ -11966,6 +11966,194 @@ def api_admin_delete_induction(cat_id):
     return jsonify(data), status
 
 
+# ── Manage Licences (the licence catalogue editor) ────────────────────────────
+# Phase 2 of the catalogue migration: the write path onto `licence_catalogue`,
+# whose read path shipped in v5.10.0. Mirrors the Manage Inductions routes above
+# field for field, including the preview branch and the guarded delete.
+
+
+def ss_licence_catalogue_all(ss):
+    """EVERY catalogue row including unpublished, via list-licence-catalogue.php
+    ?all=1. Returns (rows, error).
+
+    Deliberately NOT load_licence_catalogue(): that one is the READ path — it
+    caches for 15 minutes and returns published rows only. An editor that can't
+    see an unpublished row can't re-publish it, and an editor reading a cache
+    would show the operator their own last edit as though it hadn't saved."""
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/list-licence-catalogue.php?all=1", timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        data = resp.json()
+    except Exception:
+        return None, (resp.text or "")[:200] or f"HTTP {resp.status_code}"
+    if resp.status_code != 200 or not data.get("ok"):
+        return None, data.get("error") or f"HTTP {resp.status_code}"
+    return data.get("rows") or [], None
+
+
+def ss_save_licence_catalogue(ss, payload):
+    """Insert / update / preview via save-licence-catalogue.php (form-encoded, so
+    the endpoint's $_POST reads it). Returns (data, status, error): a transport
+    failure sets error (data None, status 502); otherwise the PHP's JSON body and
+    status propagate verbatim, so a 200 write, a 200 preview, a 409 code-in-use
+    and a 400 invariant violation all reach the caller intact rather than
+    collapsing into a generic error string."""
+    url = f"{BASE_URL}/ajax/crew/save-licence-catalogue.php"
+    try:
+        resp = ss.post(url, data=dict(payload or {}), timeout=60)
+    except Exception as e:
+        return None, 502, f"request failed: {e}"
+    try:
+        data = resp.json()
+    except Exception:
+        detail = (resp.text or "")[:200]
+        return None, (resp.status_code if resp.status_code >= 400 else 502), (detail or f"HTTP {resp.status_code}")
+    return data, resp.status_code, None
+
+
+def ss_delete_licence_catalogue(ss, lic_id):
+    """Guarded delete via delete-licence-catalogue.php. Returns (data, status,
+    error): the 409 in-use guard ({"error":"in use","count":N}) must reach the UI
+    as a block offering Unpublish, so the PHP status and parsed body are
+    forwarded verbatim rather than flattened."""
+    url = f"{BASE_URL}/ajax/crew/delete-licence-catalogue.php"
+    try:
+        resp = ss.post(url, data={"id": int(lic_id)}, timeout=60)
+    except Exception as e:
+        return None, 502, f"request failed: {e}"
+    try:
+        data = resp.json()
+    except Exception:
+        detail = (resp.text or "")[:200]
+        return None, (resp.status_code if resp.status_code >= 400 else 502), (detail or f"HTTP {resp.status_code}")
+    return data, resp.status_code, None
+
+
+@app.route("/api/admin/licence-list")
+@require_cohort("admin")
+def api_admin_licence_catalogue_list():
+    """Catalogue list for the Manage Licences UI: every row, published or not,
+    each with a `holders` count so the list shows what is actually in use.
+
+    The count comes from list-licences.php via ss_licence_holder_counts — the
+    same tally the Crew Finder chips use — rather than a second count query. A
+    code with no holders is the only kind that can be deleted, so this number is
+    also what decides whether Delete or Unpublish is the real option."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    rows, err = ss_licence_catalogue_all(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    # Holder counts are advisory: a failed tally must not empty the editor, so
+    # ss_licence_holder_counts already degrades to {} and every row reads 0.
+    holders = ss_licence_holder_counts(ss)
+    for r in rows:
+        r["holders"] = int(holders.get(r.get("code"), 0))
+    return jsonify({"licences": rows})
+
+
+@app.route("/api/admin/licence/<lic_id>")
+@require_cohort("admin")
+def api_admin_get_licence_catalogue(lic_id):
+    """One catalogue row's detail, to pre-fill the admin edit form. There is no
+    separate PHP read endpoint — filter the list for this id, exactly as the
+    induction route does."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        want = int(lic_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad id"}), 400
+    rows, err = ss_licence_catalogue_all(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    holders = ss_licence_holder_counts(ss)
+    for r in rows:
+        if int(r.get("id") or 0) == want:
+            r["holders"] = int(holders.get(r.get("code"), 0))
+            return jsonify(r)
+    return jsonify({"error": "not found"}), 404
+
+
+@app.route("/api/admin/licence/<lic_id>", methods=["POST"])
+@require_cohort("admin")
+def api_admin_save_licence_catalogue(lic_id):
+    """Insert / update / preview one catalogue row. lic_id == "new" -> id=0
+    (insert). Forwards save-licence-catalogue.php's JSON and status straight
+    through, so a 409 (code in use), a 400 (invariant violation) and a 200
+    preview all reach the browser intact — wrapping them in a 502 is the failure
+    mode that makes an actionable conflict look like an outage.
+
+    On a real 200 write (NOT a preview), invalidate the catalogue cache. Without
+    it the edit doesn't reach the Crew Finder chips, the Manage Crew dropdowns,
+    the triage grid or Crew Hub until the 15-minute TTL lapses, and it reads to
+    the operator as a save that didn't take."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(silent=True)
+    src  = body if isinstance(body, dict) else request.form
+
+    fields = ("code", "name", "grp", "expiry_mode", "validity_months",
+              "require_certified", "published", "sort_order", "notes", "preview")
+    payload = {}
+    for k in fields:
+        if k not in src:
+            continue
+        v = src.get(k)
+        if v is None:
+            continue
+        # Booleans arrive as real bools on the JSON path and as '1'/'0' strings
+        # from a form. The PHP compares against the STRING '1', so normalise here
+        # rather than teaching the endpoint two shapes.
+        if isinstance(v, bool):
+            v = "1" if v else "0"
+        payload[k] = v
+
+    if str(lic_id) == "new":
+        payload["id"] = 0
+    else:
+        try:
+            payload["id"] = int(lic_id)
+        except (TypeError, ValueError):
+            return jsonify({"error": "bad id"}), 400
+
+    data, status, err = ss_save_licence_catalogue(ss, payload)
+    if err:
+        return jsonify({"error": err}), status
+    is_preview = str(payload.get("preview", "")).strip().lower() in ("1", "true", "on")
+    if status == 200 and not is_preview:
+        _invalidate_licence_catalogue()
+    return jsonify(data), status
+
+
+@app.route("/api/admin/licence/<lic_id>/delete", methods=["POST"])
+@require_cohort("admin")
+def api_admin_delete_licence_catalogue(lic_id):
+    """Guarded delete of one catalogue row. Forwards delete-licence-
+    catalogue.php's JSON and status, so a 409 in-use ({"error":"in use",
+    "count":N}) reaches the UI as a block offering Unpublish instead of a 502.
+    On a 200 success, invalidate the catalogue cache."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        lid = int(lic_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad id"}), 400
+    data, status, err = ss_delete_licence_catalogue(ss, lid)
+    if err:
+        return jsonify({"error": err}), status
+    if status == 200:
+        _invalidate_licence_catalogue()
+    return jsonify(data), status
+
+
 # ── Manage Customers ─────────────────────────────────────────────────────────
 # Same authored-endpoint pattern as venues. customers is a standalone table
 # (no relationships): list-customers.php (browse), get-customer.php (read one,
