@@ -1,6 +1,6 @@
 {
-  "version": "5.11.0",
+  "version": "5.11.1",
   "release_date": "2026-08-21",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.11.0/TheGOAT.dmg",
-  "release_notes": "New Manage Licences screen under Administration → Records. Add, edit and remove licence types, and record whether each one expires."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.11.1/TheGOAT.dmg",
+  "release_notes": "Licences that never expire now show a green Held marker instead of a blank, which read as though the expiry hadn't been recorded."
 }
