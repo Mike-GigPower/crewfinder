@@ -384,6 +384,13 @@
 		echo json_encode(array(
 			'ok'             => true,
 			'preview'        => true,
+			/*
+			/* Revision marker. Bumped whenever this file changes, so an upload can
+			/* be confirmed in ONE request rather than inferred from whether the
+			/* numbers look right — which cannot tell "not uploaded" apart from
+			/* "uploaded and wrong". Three cycles were lost to exactly that.
+			*/
+			'rev'            => 'undated-rows-2026-08-21',
 			/* Tells the UI that a period change cannot move anybody yet, so it can
 			/* say so rather than presenting an empty change list as "no impact". */
 			'period_derived' => $LICENCE_PERIOD_DERIVED_AT_ENTRY,
