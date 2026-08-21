@@ -13239,6 +13239,7 @@ function closeEntityModal(){
   // would drop the outcome screen. Applies to the ✕, backdrop click and global Esc.
   if(window._keypay && window._keypay.writing) return;
   document.getElementById('entity-modal').style.display = 'none';
+  goatHarryStop();
 }
 
 // Ops detail window owns Esc only when it is the topmost modal. Registered
@@ -13643,9 +13644,104 @@ function entityBtn(label, onclick, opts){
   return '<button '+idAttr+' '+dis+' '+title+' onclick="'+(onclick||'')+'" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:7px 12px;font-family:\'Share Tech Mono\',monospace;font-size:11px;cursor:'+cursor+';opacity:'+opacity+';'+accent+'">'+label+'</button>';
 }
 
+// ── EASTER EGG: HARRY ────────────────────────────────────────────────────────
+// Fires when a booking named for a certain pop act is opened. Deliberately
+// matches on booking_name ONLY — venue and notes are free text an operator
+// could trip by accident. Substring matching is safe here because the needle is
+// long and distinctive; this is not the licence-code situation where a two-char
+// code collides with venue strings.
+//
+// Both the melons and the mute chip attach OUTSIDE #entity-modal-body and
+// #entity-modal-sub. Every dialog rewrites those two within a microsecond of
+// opening (loading placeholder first, then the real render), so anything parked
+// inside them is gone before it is ever seen.
+//
+// Muting is per-operator through goatPrefs, so one person turning it off does
+// not turn it off for everyone sharing a machine.
+var _harryLastAt = 0;    // epoch ms of last play — 8s cooldown, shared by both dialogs
+
+function goatHarryCheck(bookingName){
+  if(!bookingName) return;
+  if(String(bookingName).toLowerCase().indexOf('harry styles') === -1) return;
+  if(!goatPrefs.get('easterEgg', 'harry', true)) return;
+  var now = Date.now();
+  if(now - _harryLastAt < 8000) return;    // reopened too soon after a save
+  _harryLastAt = now;
+  var a = document.getElementById('goat-harry');
+  if(a){ a.volume = 0.45; a.currentTime = 0; a.play().catch(function(){}); }
+  goatHarryMelons();
+  goatHarryChip();
+}
+
+// Six watermelons drifting up over the modal. Fixed-position and parented to the
+// overlay, not the modal body — the body is replaced twice on every open. Each
+// one removes itself on completion so nothing accumulates across repeat opens.
+function goatHarryMelons(){
+  var overlay = document.getElementById('entity-modal');
+  var body    = document.getElementById('entity-modal-body');
+  if(!overlay || !body || !body.parentNode) return;
+  var r = body.parentNode.getBoundingClientRect();   // the 560px panel
+  if(!r.width) return;                               // modal not laid out yet
+  var leftBase = r.left, wide = r.width, floor = window.innerHeight - r.bottom + 8;
+  for(var i = 0; i < 6; i++){
+    (function(n){
+      var s = document.createElement('div');
+      s.textContent = '🍉';
+      s.style.cssText = 'position:fixed;pointer-events:none;z-index:10;font-size:26px;opacity:0;'
+        + 'left:' + Math.round(leftBase + wide * (0.08 + n * 0.16)) + 'px;'
+        + 'bottom:' + Math.round(floor) + 'px;'
+        + 'transition:transform 2.4s ease-out, opacity 0.5s ease-out';
+      overlay.appendChild(s);
+      setTimeout(function(){
+        s.style.opacity   = '1';
+        s.style.transform = 'translateY(-220px) rotate(' + (n % 2 ? 25 : -25) + 'deg)';
+      }, n * 90);
+      setTimeout(function(){ s.style.opacity = '0'; }, 1900 + n * 90);
+      setTimeout(function(){ if(s.parentNode) s.parentNode.removeChild(s); }, 2600 + n * 90);
+    })(i);
+  }
+}
+
+// The off switch. Only ever visible while the egg is firing, which is the only
+// moment anyone would want it. Sits in the header block beside the subtitle
+// rather than inside #entity-modal-sub, whose textContent the dialog render
+// overwrites a moment later.
+function goatHarryChip(){
+  var sub = document.getElementById('entity-modal-sub');
+  if(!sub || !sub.parentNode || document.getElementById('harry-mute')) return;
+  var b = document.createElement('span');
+  b.id = 'harry-mute';
+  b.textContent = '🍉';
+  b.title = 'Turn this off';
+  b.style.cssText = 'display:inline-block;margin-top:3px;font-size:11px;cursor:pointer;'
+    + "font-family:'Share Tech Mono',monospace;color:var(--muted)";
+  b.onclick = function(){
+    goatPrefs.set('easterEgg', 'harry', false);
+    var a = document.getElementById('goat-harry');
+    if(a){ a.pause(); a.currentTime = 0; }
+    b.textContent = '(muted)';
+    b.style.cursor = 'default';
+    b.onclick = null;
+  };
+  sub.parentNode.appendChild(b);
+  setTimeout(function(){ if(b.parentNode) b.parentNode.removeChild(b); }, 6000);
+}
+
+// Tie the egg to the modal's lifecycle. Without this the chip's 6s timer can
+// outlive the dialog that spawned it and reappear over an unrelated booking,
+// where clicking it would mute the egg from a dialog that never fired it.
+function goatHarryStop(){
+  var a = document.getElementById('goat-harry');
+  if(a){ a.pause(); a.currentTime = 0; }
+  var b = document.getElementById('harry-mute');
+  if(b && b.parentNode) b.parentNode.removeChild(b);
+}
+
 async function openCallDialog(bookingId, callId){
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Call';
+  var _hb = window._bookingIndex[bookingId];
+  if(_hb) goatHarryCheck(_hb.name);
   document.getElementById('entity-modal-sub').textContent = 'Call #'+callId+' · Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading call…</div>';
   document.getElementById('entity-modal-actions').innerHTML = '';
@@ -14784,6 +14880,7 @@ async function openBookingDialog(bookingId){
   _bkSupMode  = false; _bkSupBoss = null; _bkSupSel  = {};
   const cached = window._bookingIndex[bookingId];
   document.getElementById('entity-modal-title').textContent = cached ? cached.name : 'Booking';
+  if(cached) goatHarryCheck(cached.name);
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading booking…</div>';
   document.getElementById('entity-modal-actions').innerHTML = '';
@@ -19285,6 +19382,7 @@ function applyGoldRows(){
     <audio id="goat-bray" src="/static/goat-bray.mp3" preload="auto"></audio>
     <audio id="cha-ching" src="/static/cha-ching.mp3" preload="auto"></audio>
     <audio id="goat-fanfare" src="/static/fanfare.mp3" preload="auto"></audio>
+    <audio id="goat-harry" src="/static/harry.mp3" preload="auto"></audio>
     <img src="/static/eating-goat.png" alt="🐐"
          style="max-width:100%;max-height:90vh;object-fit:contain">
     <div style="position:absolute;bottom:40px;font-family:'Bebas Neue',sans-serif;
