@@ -314,6 +314,19 @@
 		$bestOld = array();
 		$bestNew = array();
 
+		/*
+		/* Chasing happens PER ROW: the Licences tab prints a pill for every row, so
+		/* a crew member with one dated LF and one undated LF is being chased for
+		/* the undated one — even though their BEST status is 'valid' and the Crew
+		/* Finder badge shows them as fine.
+		/*
+		/* Deriving `undated` from the best status hides exactly those people, which
+		/* is the population the §0a confirm exists to warn about. Tracked
+		/* separately, off the rows.
+		*/
+
+		$chasedOld = array();
+
 		while ($row = mysql_fetch_object($res))
 		{
 			$uid = (int) $row->user_id;
@@ -326,25 +339,21 @@
 
 			if (!isset($bestNew[$uid]) || goat_lic_best_rank($new) < goat_lic_best_rank($bestNew[$uid]))
 				$bestNew[$uid] = $new;
+
+			if ($old === 'unknown')
+				$chasedOld[$uid] = true;
 		}
 
 		$holders = count($bestOld);
 
 		/*
-		/* `undated` is who is being CHASED right now — crew whose current best
-		/* status is 'unknown'. Deliberately not "rows with no date": a crew member
-		/* holding one dated row and one blank one is not being chased, and on an
-		/* unpublish it is the chased ones who go quiet. This is the number the
-		/* §0a confirm quotes, so it has to mean exactly that.
+		/* `undated` is who is being CHASED right now — crew with AT LEAST ONE row
+		/* currently scoring 'unknown'. Row-based, not best-based: see $chasedOld.
+		/* This is the number the §0a confirm quotes, so it has to be the number of
+		/* people who actually stop being asked for a date.
 		*/
 
-		$undated = 0;
-
-		foreach ($bestOld as $uid => $old)
-		{
-			if ($old === 'unknown')
-				$undated++;
-		}
+		$undated = count($chasedOld);
 
 		$fromCounts = array();
 		$toCounts   = array();
