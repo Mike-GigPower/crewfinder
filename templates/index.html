@@ -3947,14 +3947,15 @@ function inductionWarnHtml(crew){
 // nothing about which one. Styling comes from the Manage Crew licence tab via
 // _LIC_STATUS_META rather than new classes.
 //
-// 'na' gets an explicit green "Held" rather than licPill's blank. On the Licences
-// tab a blank is fine — it sits in a list of every licence. Here every pill answers
-// a filter the operator ticked, so a missing pill would read as missing data.
+// The fallback is fail-safe, not cosmetic: this runs once per row, so throwing on
+// an unrecognised status would take out the whole results table. Grey plus the raw
+// status can't be wrong about what it describes \u2014 unlike a default label, which
+// would state a compliance position the server never sent.
 function licenceBadgeHtml(crew){
   const sum=crew.licence_summary||[];
   if(!sum.length) return '';
   return sum.map(function(e){
-    const m=_LIC_STATUS_META[e.status] || ['Held','#1f8f4e'];
+    const m=_LIC_STATUS_META[e.status] || [e.status, '#555'];
     return '<span style="margin-left:4px" title="'+escapeHtml(e.name+' \u2014 '+m[0])+'">'
          + licPillHtml(e.code+' '+m[0], m[1])+'</span>';
   }).join('');
@@ -10077,14 +10078,17 @@ var _LIC_STATUS_META = {
   expired:      ['Expired',            '#ef4444'],
   expiring_soon:['Expires soon',       '#f59e0b'],
   valid:        ['Valid',              '#1f8f4e'],
-  unknown:      ['No expiry on file',  '#555']
+  unknown:      ['No expiry on file',  '#555'],
+  na:           ['Held',               '#1f8f4e']
 };
 function licPillHtml(label, colour){
   return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+colour+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(label)+'</span>';
 }
 function licPill(s){
   var m = _LIC_STATUS_META[s];
-  if(!m) return '';   // 'na' \u2014 a type that never expires; no pill
+  // Every status the server can return is in the table above, 'na' included.
+  // Blank is reached only by a row with no status at all \u2014 nothing to say.
+  if(!m) return '';
   return licPillHtml(m[0], m[1]);
 }
 
@@ -10118,6 +10122,7 @@ async function ceLoadLicences(id){
   if(counts.expiring_soon) summary.push(counts.expiring_soon+' expiring soon');
   if(counts.unknown)       summary.push(counts.unknown+' no expiry on file');
   if(counts.valid)         summary.push(counts.valid+' valid');
+  if(counts.na)            summary.push(counts.na+' held');
 
   var rows = lics.length
     ? lics.map(function(l){
@@ -11492,10 +11497,13 @@ let _licCatData = [];    // every catalogue row, published and not
 // The wire sends real JSON booleans, but _indFlag also accepts 1/'1' — reused
 // rather than duplicated because it is a generic truthiness read, not an
 // induction-specific one.
+
+// Reads _LIC_STATUS_META so the preview names a status exactly as the pill does.
+// The bare-status fallback stays: from/to come off the wire, and echoing an
+// unrecognised value beats a blank in a sentence about who is affected.
 function _licLabel(status){
-  var m = { expired:'Expired', expiring_soon:'Expires soon', valid:'Valid',
-            unknown:'No expiry on file', na:'Held' };
-  return m[status] || status;
+  var m = _LIC_STATUS_META[status];
+  return m ? m[0] : status;
 }
 
 // The expiry column, so the mode is readable without opening the row.
@@ -11779,7 +11787,7 @@ function _licPreviewMessage(pd, trigger, mode, months){
     head = 'Unpublishing '+name+' affects '+(pd.holders||0)+' crew holding it.\n'
          + (chased
             ? (chased+' currently being chased for a missing expiry '+(chased===1?'goes':'go')+' quiet — '
-               + 'no pill, no prompt, and nobody is told.')
+               + 'the pill turns green \u201cHeld\u201d, no prompt, and nobody is told.')
             : 'None are currently being chased for a missing expiry.');
   } else {
     var how = (mode === 'none') ? 'never expiring'
