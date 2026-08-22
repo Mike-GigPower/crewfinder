@@ -1044,6 +1044,11 @@ body.cohort-readonly #unavail-add-section{display:none}
    "Submitted ✓" and teal "EH ✓" so the row shows exactly which signals are in. */
 .recruit-contract{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:#a371f7;border:1px solid #a371f7;background:rgba(163,113,247,0.10);white-space:nowrap}
 .recruit-contract-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:#a371f7;letter-spacing:.02em}
+/* "📝 3 notes · last note 2 days ago" — the ops-notes line on the collapsed row.
+   Muted like the stage-age label and deliberately NEVER amber: var(--warn) is the
+   ageing signal, and a second urgency colour on the same row cancels the first
+   out. Renders only when note_count > 0 (see recruitNotesBadge). */
+.recruit-notes-age{display:block;margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.02em}
 /* "Working visa" row chip — at-a-glance flag that this applicant holds a working
    visa (so ops knows work rights need a VEVO check before convert). Amber/warn,
    distinct from the status pills and the ✓ badges. Non-PII: just the category. */
@@ -1115,6 +1120,27 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .recruit-health-a.flag{color:var(--accent2)}
 .recruit-health-label{color:var(--text)}
 .recruit-health-detail{margin:5px 0 0 46px;padding-left:10px;border-left:2px solid var(--accent2);color:var(--muted);white-space:pre-wrap;line-height:1.4}
+/* Ops notes — thread + always-visible composer in the expanded panel. FULL WIDTH
+   on purpose: NOT another .recruit-detail-grid column. That grid already overflows
+   its container on narrower windows (Address collides with Emergency contact), and
+   adding a column would make a live layout bug worse. Notes are sentences, not
+   field values, so the body gets prose line-height and pre-wrap for the operator's
+   own line breaks; entries are separated by a subtle divider, not a box each. */
+.recruit-notes{margin-top:4px}
+.recruit-note{padding:8px 0;border-top:1px solid var(--border)}
+.recruit-note:first-child{border-top:none}
+.recruit-note-body{font-family:'Rajdhani',sans-serif;font-size:13.5px;color:var(--text);line-height:1.55;white-space:pre-wrap}
+.recruit-note-meta{margin-top:3px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.02em}
+/* "→ crew record" pill — shown ONLY on notes with carry_to_crew true. There is
+   deliberately no "not carried" counterpart: false is the default and the common
+   case, so marking it would put noise on almost every note. */
+.recruit-note-carry{display:inline-block;margin-left:7px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:1px 7px;border-radius:20px;color:var(--accent);border:1px solid var(--accent);background:var(--accent-bg);white-space:nowrap}
+.recruit-note-compose{margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)}
+.recruit-note-input{width:100%;box-sizing:border-box;min-height:58px;resize:vertical;font-family:'Rajdhani',sans-serif;font-size:13.5px;line-height:1.5;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 9px}
+.recruit-note-input:focus{outline:none;border-color:var(--accent)}
+.recruit-note-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:7px}
+.recruit-note-carrylbl{display:flex;align-items:center;gap:6px;font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);cursor:pointer}
+.recruit-note-err{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--warn)}
 /* Action buttons row — sits inside the expanded detail panel */
 .recruit-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
 .recruit-action{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;padding:5px 11px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .12s}
@@ -7622,6 +7648,26 @@ function recruitContractSignedAge(c){
     : `Signed ${days} days ago`;
   return `<span class="recruit-contract-age">${text}</span>`;
 }
+// Muted "📝 3 notes · last note 2 days ago" line for the collapsed row. note_count
+// and latest_note_at come from the recruitment-candidates feed (v35), derived from
+// candidate_note_rollup(). THREE states, and they are not interchangeable:
+//   null -> the rollup failed; we do NOT know. Render nothing.
+//   0    -> no notes. Render nothing.
+//   >0   -> show the count and how stale the newest note is.
+// Never render "0 notes" for null: that is a claim we cannot support. Same
+// whole-day computation as every other age line (recruitDaysSince). Display only.
+function recruitNotesBadge(c){
+  if(c == null || c.note_count == null) return '';
+  const n = Number(c.note_count) || 0;
+  if(n <= 0) return '';
+  const days = recruitDaysSince(c.latest_note_at);
+  const when = (days === null) ? ''
+    : (days === 0) ? ' · last note today'
+    : (days === 1) ? ' · last note 1 day ago'
+    : ` · last note ${days} days ago`;
+  const label = (n === 1) ? '1 note' : `${n} notes`;
+  return `<span class="recruit-notes-age" title="Ops notes">📝 ${label}${when}</span>`;
+}
 // Amber "Working visa" chip for an applicant whose work_eligibility.status is
 // "working_visa" (a non-PII boolean the list feed derives as c.working_visa). Flags
 // at a glance that work rights must be checked via VEVO before convert. '' for
@@ -7823,7 +7869,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}${c.is_test ? ' <span title="Test fixture — badged, not hidden (decision 19)" style="font-size:8px;letter-spacing:.5px;background:var(--border-gold,#8a6d1a);color:#000;padding:1px 4px;border-radius:3px;vertical-align:middle;text-transform:uppercase;font-weight:700">Test</span>' : ''}<span class="rc-chevron">▾</span></td>
-      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}${flags}</td>
+      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}<span id="recruit-notes-badge-${i}">${recruitNotesBadge(c)}</span>${flags}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
@@ -7892,6 +7938,11 @@ async function recruitLoadDetail(i){
     const d = await r.json();
     if(host.__loadToken !== token) return;
     host.innerHTML = recruitRenderDetail(d, i);
+    // Ops notes arrive with the rest of the panel rather than behind a click:
+    // unlike health, there is nothing sensitive to keep un-fetched. Fired here
+    // (not inside recruitNotesSection) because that function only builds a
+    // string — its elements don't exist until this assignment.
+    if(d && d.id) recruitLoadNotes(i, String(d.id));
   }catch(err){
     if(host.__loadToken !== token) return;
     host.innerHTML = '<div class="recruit-xdetail-error">Could not load details (network error).'
@@ -7928,7 +7979,7 @@ function recruitRenderDetail(d, i){
     <div class="recruit-xsection">Licences</div>
     ${recruitLicences(d.licences)}
     <div class="recruit-xsection">Inductions</div>
-    ${recruitInductions(d.inductions)}${recruitWorkEligibilitySection(d, i)}${recruitHealthSection(d, i)}`;
+    ${recruitInductions(d.inductions)}${recruitNotesSection(d, i)}${recruitWorkEligibilitySection(d, i)}${recruitHealthSection(d, i)}`;
 }
 
 // Work Eligibility section. The STATUS line (Citizen/PR vs Working visa) and the
@@ -8092,6 +8143,165 @@ async function recruitMarkVevoVerified(i, id, verify){
   }catch(err){
     const host = document.getElementById('recruit-vevo-body-line-' + i);
     if(host) host.innerHTML = '<div class="recruit-xdetail-error">Could not update VEVO status: ' + recruitEsc(err.message) + '</div>';
+  }
+}
+
+// ── OPS NOTES (thread + always-visible composer) ─────────────────────────
+// Notes are ops working material — who called, what was said, why someone was
+// parked. Admin AND operations read and write them, so unlike the health and
+// work-eligibility sections there is NO cohort gate here: the Recruitment tab is
+// already admin/operations only, and both proxy routes gate again server-side.
+
+// The section: heading, thread host, composer. Returns '' with no candidate id
+// (same guard as recruitHealthSection). The thread is fetched by recruitLoadNotes
+// as soon as the panel renders — see the call in recruitLoadDetail.
+function recruitNotesSection(d, i){
+  const id = recruitEsc((d && d.id) || '');
+  if(!id) return '';
+  // The carry-to-crew checkbox has NO `checked` attribute, and that is the whole
+  // point: carry_to_crew is opt-in (decision 2a). This is the fourth layer that
+  // default passes through — column default, edge function !!, app.py bool(),
+  // and now the DOM — and any one of them defaulting the other way inverts a
+  // decision about what lands permanently on an employee's record.
+  return `
+    <div class="recruit-xsection">Notes</div>
+    <div class="recruit-notes">
+      <div class="recruit-notes-body" id="recruit-notes-body-${i}">
+        <div class="recruit-xdetail-loading">Loading notes…</div>
+      </div>
+      <div class="recruit-note-compose">
+        <textarea class="recruit-note-input" id="recruit-note-input-${i}"
+          placeholder="Add a note — what happened, what's next…"></textarea>
+        <div class="recruit-note-controls">
+          <label class="recruit-note-carrylbl" title="Only takes effect at conversion: the note is copied onto their crew record when this applicant is converted to crew. Nothing is copied while they are still an applicant.">
+            <input type="checkbox" id="recruit-note-carry-${i}">
+            Copy to crew record when converted
+          </label>
+          <button class="recruit-action" id="recruit-note-save-${i}"
+            onclick="recruitAddNote(${i}, '${id}')">Save note</button>
+          <span class="recruit-note-err" id="recruit-note-err-${i}"></span>
+        </div>
+      </div>
+    </div>`;
+}
+
+// Fetch one candidate's note thread. Mirrors recruitLoadDetail, INCLUDING the
+// __loadToken race guard: the operator can collapse and re-open faster than a
+// response returns, and a stale thread overwriting a fresh one is exactly what
+// that guard exists to prevent. An empty array is the normal case for most
+// candidates — not an error — and renders like every other empty section.
+//
+// One difference from recruitLoadDetail, and it matters: its host element
+// (#recruit-xdetail-N) lives in the row markup and survives every toggle, so a
+// token on it is enough. OURS is rebuilt from scratch each time the panel
+// re-renders, so a superseded call is holding a DETACHED element whose token
+// still matches its own. isConnected is the guard that actually catches that —
+// without it a stale response would quietly write back a stale note count.
+async function recruitLoadNotes(i, id){
+  const host = document.getElementById('recruit-notes-body-' + i);
+  if(!host) return;
+  if(!id){ host.innerHTML = ''; return; }
+  host.innerHTML = '<div class="recruit-xdetail-loading">Loading notes…</div>';
+  const token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  const retry = ` <button class="recruit-action" onclick="recruitLoadNotes(${i}, '${recruitEsc(id)}')">Retry</button>`;
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/notes',
+      { headers: { 'Accept': 'application/json' } });
+    if(host.__loadToken !== token || !host.isConnected) return;   // superseded
+    if(!r.ok){
+      let msg = 'Could not load notes.';
+      try{ const e = await r.json(); if(e && e.error) msg = e.error; }catch(_){}
+      host.innerHTML = '<div class="recruit-xdetail-error">' + recruitEsc(msg) + retry + '</div>';
+      return;
+    }
+    const list = await r.json();
+    if(host.__loadToken !== token || !host.isConnected) return;
+    host.innerHTML = recruitRenderNotes(list);
+    recruitSyncNotesBadge(i, id, list);
+  }catch(err){
+    if(host.__loadToken !== token || !host.isConnected) return;
+    host.innerHTML = '<div class="recruit-xdetail-error">Could not load notes (network error).'
+      + retry + '</div>';
+  }
+}
+
+// Keep the collapsed row's 📝 line honest once the thread is in hand. The thread
+// we just fetched IS the count, so we take it (and the newest timestamp) straight
+// from the list rather than incrementing the feed's number: note_count can be null
+// (the rollup failed), and incrementing an unknown would invent a count we can't
+// support. Also writes back to _recruitRows so a later re-render agrees with the
+// DOM — matched by id, because `i` indexes the visible pile, not the full list.
+function recruitSyncNotesBadge(i, id, list){
+  if(!Array.isArray(list)) return;
+  const c = _recruitRows.find(x => String(x.id) === String(id));
+  if(!c) return;
+  c.note_count = list.length;
+  const last = list.length ? list[list.length - 1] : null;
+  c.latest_note_at = (last && last.created_at) || null;
+  const slot = document.getElementById('recruit-notes-badge-' + i);
+  if(slot) slot.innerHTML = recruitNotesBadge(c);
+}
+
+// Render the thread oldest-first — the endpoint already orders it, so we do NOT
+// re-sort. Empty renders the same italic placeholder as Licences and Inductions.
+function recruitRenderNotes(list){
+  if(!Array.isArray(list) || list.length === 0)
+    return '<div class="recruit-empty">No notes yet.</div>';
+  return list.map(n => {
+    n = n || {};
+    // recruitEsc is MANDATORY here. This is the first free text in the Recruitment
+    // tab typed by an OPERATOR rather than arriving from the application form, and
+    // it goes straight into innerHTML. Newlines are preserved by white-space:
+    // pre-wrap on .recruit-note-body — no <br> substitution, which would mean
+    // putting markup back into text we just escaped.
+    const body = recruitEsc(n.body == null ? '' : n.body);
+    const who  = recruitEsc(n.author_name || 'Unknown');
+    const when = n.created_at ? recruitDate(n.created_at) : '—';
+    // Only shown when true; false is the default and the common case, so a
+    // "not carried" marker would be noise on nearly every note.
+    const carry = n.carry_to_crew
+      ? '<span class="recruit-note-carry" title="Will be copied onto the crew record when this applicant is converted">→ crew record</span>'
+      : '';
+    return `<div class="recruit-note"><div class="recruit-note-body">${body}</div>`
+      + `<div class="recruit-note-meta">${who} · ${when}${carry}</div></div>`;
+  }).join('');
+}
+
+// Append one note. The body and the checkbox are the ONLY things we send:
+// authorship is stamped server-side from the session, and anything we sent for it
+// would be ignored — so the UI never pretends to supply it.
+async function recruitAddNote(i, id){
+  const box  = document.getElementById('recruit-note-input-' + i);
+  const tick = document.getElementById('recruit-note-carry-' + i);
+  const btn  = document.getElementById('recruit-note-save-' + i);
+  const err  = document.getElementById('recruit-note-err-' + i);
+  if(!box) return;
+  if(err) err.textContent = '';
+  const body = String(box.value || '').trim();
+  // The server 400s on a blank note anyway; stopping here is just kinder than a
+  // round trip that comes back as an error.
+  if(!body){ if(err) err.textContent = 'Type a note first.'; box.focus(); return; }
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/notes', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ body: body, carry_to_crew: !!(tick && tick.checked) })
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || (d && d.error)) throw new Error((d && d.error) || ('HTTP ' + r.status));
+    box.value = '';
+    // Back to UNCHECKED after every save. Carry-to-crew is per-note and opt-in;
+    // leaving it ticked would silently carry the next note too.
+    if(tick) tick.checked = false;
+    // Re-read the thread (which also refreshes the row's 📝 line via
+    // recruitSyncNotesBadge — no list re-fetch).
+    recruitLoadNotes(i, id);
+  }catch(e){
+    // Leave what they typed in the box and re-enable below, so nothing is lost.
+    if(err) err.textContent = e.message || 'Could not save that note.';
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = 'Save note'; }
   }
 }
 

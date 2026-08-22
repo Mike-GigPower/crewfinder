@@ -284,6 +284,11 @@ RECRUITMENT_CANDIDATE_WORK_ELIGIBILITY_URL = "https://ihyvwhquycsxhmhulzmu.supab
 # candidate. ADMIN-ONLY proxy route (verifying work rights requires the visa data
 # that only admins can see). Writes the separate vevo_check column.
 RECRUITMENT_VEVO_VERIFY_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-vevo-verify"
+# Same base URL: the ops NOTE THREAD for one candidate. GET ?id= returns the
+# thread oldest-first; POST appends one note. Deliberately NOT part of
+# set-status — that function fires EH self-onboarding and two candidate-facing
+# emails off status transitions, and a note write has no business on that path.
+RECRUITMENT_CANDIDATE_NOTES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-notes"
 # Same base URL: the whole recruitment dashboard as one JSON object (gauges, funnel,
 # age bucket, target). Takes optional year/age_band query params. ADMIN-ONLY proxy
 # route (decision 18) — the edge function only proves the caller is THE GOAT and has
@@ -4647,6 +4652,139 @@ def api_recruitment_vevo_verify(cand_id):
         return jsonify(r.json())
     except Exception:
         return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/notes", methods=["GET"])
+@require_cohort("admin", "operations")
+def api_recruitment_candidate_notes(cand_id):
+    """The ops NOTE THREAD for ONE applicant, oldest-first.
+
+    Same auth + key pattern as the candidate-detail route above, and the SAME
+    gate — admin/operations, not admin-only. Notes are ops working material (who
+    called, what they said, why they were parked), not sensitive personal data
+    like health or work-eligibility, so operations must be able to read them.
+
+    GOAT_RECRUITMENT_KEY stays in Python and goes to the edge function in the
+    X-Goat-Service-Key header; the browser only ever sends us the candidate id in
+    the URL. We pass the thread straight through with no reshaping.
+
+    A candidate with no notes yet comes back as [] with 200. That is the normal
+    empty case, not an error."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    try:
+        r = http.get(
+            RECRUITMENT_CANDIDATE_NOTES_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            params={"id": cand_id},
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] candidate-notes request failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code == 404:
+        return jsonify({"error": "Applicant not found"}), 404
+    if r.status_code != 200:
+        print(f"[recruitment] candidate-notes edge function returned {r.status_code}")
+        return jsonify({"error": "Recruitment service error"}), 502
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"error": "Bad response from recruitment service"}), 502
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/notes", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_recruitment_candidate_note_add(cand_id):
+    """Append ONE note to an applicant's thread. Append-only — there is no edit
+    or delete route, by design.
+
+    Same gate as the read above (admin/operations). The browser sends only
+    { body, carry_to_crew? } — everything else is built here.
+
+    AUTHORSHIP IS STAMPED SERVER-SIDE, exactly like vevo-verify's verified_by:
+    we read the operator out of the session and IGNORE any author_name or
+    author_user_id the client tried to send. That is why the outbound payload is
+    assembled field by field below rather than forwarding request.get_json() —
+    forwarding the raw body would let the browser forge an author.
+
+    We key the author on whoami's user_id, NOT the EIN: a live admin whoami
+    returns ein "0", a shared placeholder that would collapse Mike, Rich, Monty
+    and Joe into one indistinguishable author (the same reasoning
+    current_pref_key() documents). vevo-verify falls back to ein for its display
+    string, which is harmless for a name and wrong for a join key, so that
+    fallback is deliberately not copied here.
+
+    A user_id of "0" (or 0, or missing) is treated as unknown and sent as "",
+    which the edge function stores as null — same guard current_pref_key() uses
+    at line ~647, so a placeholder id can never become a shared author key. We
+    stop there and do NOT take that function's username-hash fallback: a stable
+    synthetic id is right for preferences that must survive forever, but for
+    authorship a null id beside a correct author_name is the honest record, and
+    it keeps _ss_creds out of a route that has no other business with it.
+
+    carry_to_crew is opt-in: bool() of a missing key is False, which preserves
+    the default through the proxy. Do not "helpfully" default it to True.
+
+    The edge function returns 201 on success and distinguishes 400 (empty / too
+    long) from 404 (no such candidate); we surface those rather than flattening
+    everything to 502, so the panel can tell "your note was empty" apart from
+    "the service is down"."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+
+    data = request.get_json(silent=True) or {}
+    body_text = str(data.get("body") or "").strip()
+    # Catch a blank note here so an accidental empty save never leaves the app.
+    if not body_text:
+        return jsonify({"error": "Note can't be empty"}), 400
+
+    # Identity is set server-side from the session, never trusted from the client.
+    ident = current_identity() or {}
+    author_name = str(ident.get("name") or "").strip() or "Unknown"
+    raw_uid = ident.get("user_id")
+    author_user_id = "" if raw_uid in (None, "", 0, "0") else str(raw_uid).strip()
+
+    payload = {
+        "id":             cand_id,
+        "body":           body_text,
+        "carry_to_crew":  bool(data.get("carry_to_crew")),
+        "author_name":    author_name,
+        "author_user_id": author_user_id,
+    }
+    try:
+        r = http.post(
+            RECRUITMENT_CANDIDATE_NOTES_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json=payload,
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[recruitment] candidate-notes write failed: {e}")
+        return jsonify({"error": "Recruitment service unavailable"}), 502
+    if r.status_code in (200, 201):
+        try:
+            return jsonify(r.json()), 201
+        except Exception:
+            return jsonify({"error": "Bad response from recruitment service"}), 502
+    if r.status_code == 404:
+        return jsonify({"error": "Applicant not found"}), 404
+    if r.status_code == 400:
+        try:
+            upstream = r.json()
+        except Exception:
+            upstream = {}
+        if not isinstance(upstream, dict):
+            upstream = {}
+        return jsonify({"error": upstream.get("error") or "That note couldn't be saved."}), 400
+    print(f"[recruitment] candidate-notes write returned {r.status_code}")
+    return jsonify({"error": "Recruitment service error"}), 502
 
 
 @app.route("/api/recruitment/set-status", methods=["POST"])
