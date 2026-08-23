@@ -91,6 +91,28 @@ def save_config(data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+def _anthropic_api_key():
+    """Resolve the Anthropic key without ever raising.
+
+    Environment wins. config.json is read defensively: a null value makes
+    .strip() an AttributeError and a malformed file makes load_config() a
+    JSONDecodeError, and either escapes as Flask's HTML 500 — which the GOAT
+    drawer renders as a bare 'Comms issue — 500' with no diagnosable message,
+    because it prints `err.error || resp.status` and there is no JSON body to
+    read an error from. Returns '' when unresolvable; callers guard on that.
+
+    Deliberately NOT fixed by hardening load_config() itself: that backs
+    save_config() too, and swallowing a corrupt file there would let a save
+    overwrite a recoverable config with defaults.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key.strip()
+    try:
+        return str(load_config().get("anthropic_api_key") or "").strip()
+    except Exception:
+        return ""
+
 # Load Anthropic API key from config if not already in environment
 if not os.environ.get("ANTHROPIC_API_KEY"):
     try:
@@ -8666,7 +8688,7 @@ def api_crew_finder_ask():
     venues = [str(v) for v in (vocab.get("venues") or [])][:250]
 
     import anthropic as _anthropic, json as _json
-    _api_key = os.environ.get("ANTHROPIC_API_KEY") or load_config().get("anthropic_api_key", "").strip()
+    _api_key = _anthropic_api_key()
     if not _api_key:
         return jsonify({"error": "AI is not configured"}), 500
 
@@ -9604,7 +9626,11 @@ def api_goat():
     _goat_histories[sid] = messages[-GOAT_MAX_HISTORY:]
 
     import anthropic as _anthropic
-    _api_key = os.environ.get("ANTHROPIC_API_KEY") or load_config().get("anthropic_api_key","").strip()
+    _api_key = _anthropic_api_key()
+    # Mirrors /api/crew-finder/ask. The helper can now return '', and a readable
+    # message beats letting an empty key reach the SDK.
+    if not _api_key:
+        return jsonify({"error": "AI is not configured"}), 500
     try:
         client = _anthropic.Anthropic(api_key=_api_key)
     except Exception as e:
