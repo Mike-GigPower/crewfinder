@@ -58,7 +58,8 @@ VENUE_CACHE_FILE = os.path.join(BASE_DIR, "venue_cache.json")  # venue geo, rebu
 # FORECAST_CACHE_FILE and UNAVAIL_CACHE_FILE removed in 3.4.5 (live reads).
 UNAVAIL_TIMES_FILE         = os.path.join(BASE_DIR, "unavail_times.json")
 # FORECAST_CACHE_MAX_AGE_HRS and UNAVAIL_CACHE_MAX_AGE_HRS removed in 3.4.5.
-BASE_URL    = "https://smartstaffsolutions.com"
+PROD_BASE_URL = "https://smartstaffsolutions.com"
+BASE_URL      = PROD_BASE_URL
 # Allow pointing at a duplicate/staging SmartStaff for testing without editing
 # code: set "base_url" in config.json. Falls back to production above.
 try:
@@ -102,7 +103,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.12.0"
+APP_VERSION    = "5.13.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4064,7 +4065,12 @@ _import_progress = {}  # tracks active import progress
 def index():
     if not session.get("sid") or not get_ss_session():
         return redirect(url_for("login"))
-    return render_template("index.html")
+    # env_url / env_is_prod drive the amber TEST strip in index.html. Rendered
+    # server-side on purpose: a fetch-based strip disappears exactly when
+    # something is already wrong, and this one must be impossible to lose.
+    return render_template("index.html",
+                           env_url=BASE_URL,
+                           env_is_prod=(BASE_URL == PROD_BASE_URL))
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -7213,10 +7219,22 @@ def api_cache_status():
             age_str = f"{hours:.1f} hours ago"
         except Exception:
             pass
+    # profiles is a CREW count, so on the empty-inductions failure it still reads
+    # a reassuring green "Roster: 391" while every induction surface reports
+    # nothing. induction_records is the denominator that makes that visible.
+    # The isinstance check is deliberate: SmartStaff encodes an empty PHP array as
+    # a JSON list, and caches written by v4.17.0 hold [] rather than {} for crew
+    # with no inductions (see induction_status_for_venue's own guard).
+    induction_records = 0
+    for e in cache.values():
+        ind = e.get("inductions") or {}
+        if isinstance(ind, (dict, list)):
+            induction_records += len(ind)
     return jsonify({
-        "fresh":    is_fresh,
-        "profiles": len(cache),
-        "age":      age_str,
+        "fresh":             is_fresh,
+        "profiles":          len(cache),
+        "induction_records": induction_records,
+        "age":               age_str,
     })
 
 @app.route("/api/cache/refresh", methods=["POST"])
@@ -9218,9 +9236,17 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
 
     elif tool_name == "get_inductions":
         try:
-            cache, _ = load_cache()
+            cache, fresh = load_cache()
             venue_filter = tool_input.get("venue_filter", "").lower()
             summary = {"compliant": [], "expiring": [], "expired": [], "incomplete": []}
+            # Two counters, deliberately. records_total counts every record the
+            # cache holds, BEFORE the venue filter — that is what the zero-guard
+            # below tests. records_considered counts what survived the filter and
+            # is what gets reported. Guarding on the post-filter count would turn
+            # "nobody holds a record at that venue" (a true answer) into a false
+            # data-failure alarm.
+            records_total      = 0
+            records_considered = 0
             # Use the SAME expiry computation as the Induction Checker page
             # (/api/inductions -> _compute_induction_status), so the GOAT and the
             # page can never disagree. The raw cached status is only Complete/
@@ -9232,8 +9258,10 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
                 inductions   = info.get("inductions", {})
                 venue_status = _compute_induction_status(inductions)
                 for venue_name, vs in venue_status.items():
+                    records_total += 1
                     if venue_filter and venue_filter not in venue_name.lower():
                         continue
+                    records_considered += 1
                     status = vs.get("status", "")
                     entry = {"name": info.get("name",""), "venue": venue_name}
                     if status == "Complete":
@@ -9244,15 +9272,48 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
                         summary["expired"].append(entry)
                     else:
                         summary["incomplete"].append(entry)
-            # Return counts + first few of each
-            return _json.dumps({
-                "compliant_count":  len(summary["compliant"]),
-                "expiring_count":   len(summary["expiring"]),
-                "expired_count":    len(summary["expired"]),
-                "incomplete_count": len(summary["incomplete"]),
-                "expiring_sample":  summary["expiring"][:5],
-                "expired_sample":   summary["expired"][:5],
-            })
+
+            # Refuse rather than answer. Zero problems is the GOOD answer for a
+            # compliance tool, so a total read failure and a perfect compliance
+            # record produce identical output — and the model renders the failure
+            # as "you're good to go". Reachable three ways: no cache file, a cache
+            # whose crew all carry inductions:{} (the list-crew-bulk.php silent
+            # query-failure path), or a cache that holds no induction records at
+            # all. Tests input volume ONLY — never the four output counts, which
+            # are legitimately zero on a clean dataset.
+            if records_total == 0:
+                return _json.dumps({"error":
+                    "Crew cache holds no induction records, so compliance cannot be assessed. "
+                    "This is a data-read failure, NOT a clean compliance result — do not "
+                    "report it as one. Refresh the roster (the cache badge in the header) "
+                    "and ask again."})
+
+            # Return counts + denominators + first few of each. Staleness is
+            # flagged, never refused: stale data is still data, and refusing would
+            # break the tool every time a cache aged past CACHE_MAX_AGE_HRS.
+            out = {
+                "compliant_count":    len(summary["compliant"]),
+                "expiring_count":     len(summary["expiring"]),
+                "expired_count":      len(summary["expired"]),
+                "incomplete_count":   len(summary["incomplete"]),
+                "crew_considered":    len(cache),
+                "records_considered": records_considered,
+                "stale":              (not fresh),
+                "expiring_sample":    summary["expiring"][:5],
+                "expired_sample":     summary["expired"][:5],
+                # ASCII only, matching the note in check_assignment_inductions:
+                # this is a JSON payload read by a model, not screen text.
+                "note": ("Counts are induction RECORDS (crew x venue), not crew members - one "
+                         "person can hold several, so these totals must never be described as a "
+                         "number of crew. Any percentage is over records_considered. Samples are "
+                         "capped at 5 and are illustrative only, never representative."),
+            }
+            # Records exist, but none matched the filter. The four zeros are true;
+            # this flag makes the model say "no records at that venue" rather than
+            # "no problems at that venue".
+            if records_considered == 0:
+                out["filter_matched_nothing"] = True
+            return _json.dumps(out)
         except Exception as e:
             return f"Error fetching inductions: {e}"
 
