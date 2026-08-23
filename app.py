@@ -13,6 +13,7 @@ import re
 import io
 import math
 import hashlib
+import unicodedata
 import types
 import difflib
 import threading
@@ -6101,6 +6102,156 @@ def _recruit_worked_before(feed_row, detail):
     return False
 
 
+# Composed-notes cap for users.notes. NOT a storage limit — the column is `text`
+# (65,535). It is the Crew Finder hover card, which renders notes in full and
+# stops being readable long before the column fills.
+CREW_NOTES_MAX = 4000
+CREW_NOTES_ELIDED = "[... older notes not carried]"
+
+# Zero-width joiners/spaces and the BOM. Stripped FIRST (see _crew_notes_safe):
+# they are invisible in every editor, so they survive review and then land in a
+# latin1 column as mojibake or "?".
+_CREW_NOTES_ZERO_WIDTH = ("\u200b", "\u200c", "\u200d", "\ufeff")
+
+# Smart punctuation -> ASCII. Ops paste from iMessage, Word and Notes, all of
+# which produce these by default, so this is the common case and not an edge one.
+_CREW_NOTES_FOLD = (
+    ("\u2018", "'"), ("\u2019", "'"), ("\u201a", "'"), ("\u201b", "'"),
+    ("\u201c", '"'), ("\u201d", '"'), ("\u201e", '"'),
+    ("\u2013", "-"), ("\u2014", "-"), ("\u2212", "-"),
+    ("\u2026", "..."),
+    ("\u00a0", " "), ("\u2007", " "), ("\u202f", " "),
+)
+
+
+def _crew_notes_safe(text):
+    """Fold ops-note prose into something users.notes can hold losslessly.
+
+    THREE separate hazards, all verified against production on 23 Aug 2026:
+
+    1. ANGLE BRACKETS.  add-crew.php runs FILTER_SANITIZE_STRING, which strips
+       tags via strip_tags() semantics: an unclosed '<' eats EVERYTHING after it,
+       not just the tag. A note reading "worked <5 shifts\nRe: FB\n..." arrives
+       as "worked " — the rest is gone, silently. Observed on test record 8844.
+       FILTER_FLAG_NO_ENCODE_QUOTES does NOT fix this; it only stops quote
+       encoding. So we must never send a '<' at all.
+    2. NON-ASCII.  users.notes is latin1_swedish_ci and the estate holds two
+       encodings already (raw UTF-8 in some rows, true cp1252 in others). Folding
+       to ASCII is correct under every hypothesis about the connection charset,
+       because bytes < 0x80 are identical in latin1, cp1252 and UTF-8.
+    3. SMART PUNCTUATION.  Ops paste from iMessage, Word and Notes, all of which
+       produce curly quotes, em-dashes and zero-width spaces as a matter of course.
+
+    The ORDER below is load-bearing — see the numbered comments."""
+    s = str(text or "")
+    # 1. Zero-width, BOM and stray control characters out FIRST, before any other
+    #    step can smear them into a word or turn them into '?'. \n, \r and \t are
+    #    kept here on purpose; step 5 normalises those.
+    s = "".join(
+        ch for ch in s
+        if ch in ("\n", "\r", "\t")
+        or (32 <= ord(ch) != 127 and ch not in _CREW_NOTES_ZERO_WIDTH)
+    )
+    # 2. Smart punctuation -> its ASCII equivalent, while we still know what it
+    #    meant. Left to step 4 the NFKD fold would simply delete most of it.
+    for bad, good in _CREW_NOTES_FOLD:
+        s = s.replace(bad, good)
+    # 3. Angle brackets -> parentheses. NOT deletion: "worked (5 shifts" reads
+    #    oddly, but "worked 5 shifts" INVERTS the meaning, and losing a '<'
+    #    silently is exactly how the add-crew.php truncation hid for years.
+    s = s.replace("<", "(").replace(">", ")")
+    # 4. Whatever non-ASCII is left. NFKD first so accents DECOMPOSE — 'e' plus a
+    #    dropped combining mark — rather than the whole character vanishing.
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    # 5. Whitespace: normalise line endings, tabs to spaces, and collapse runs of
+    #    blank lines so a pasted note doesn't push the rest off the hover card.
+    s = s.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def _recruit_note_date(iso):
+    """'23 Aug 2026' from an ISO timestamp; '' if missing or unparseable. Date
+    only — the time of day is noise on a crew record read months later."""
+    try:
+        return datetime.strptime(str(iso or "")[:10], "%Y-%m-%d").strftime("%d %b %Y")
+    except Exception:
+        return ""
+
+
+def _recruit_compose_notes(ref, notes_list):
+    """users.notes for a converting candidate: the provenance line plus the ops
+    notes that were ticked to carry, sanitised as one string.
+
+    PROVENANCE FIRST, ALWAYS. It is the only guaranteed content and the only part
+    that is useful months later when nobody remembers the reference — so it must
+    survive even when every note is dropped for length. Putting it last would put
+    it first in line for truncation.
+
+    THE carry_to_crew FILTER IS NOT OPTIONAL. Notes are opt-in (decision 2a) and
+    this is the FIFTH and last layer that default passes through: column default,
+    edge function !!, app.py bool(), the DOM checkbox, and here. An unticked note
+    must never reach a permanent employee record.
+
+    Sanitising happens ONCE, on the composed string — not per note — so a fold
+    that changes length (\u2026 -> "...") can't push the result past the cap
+    after the fitting is done."""
+    prov = f"Converted from recruitment application {ref}."
+
+    blocks = []
+    for n in (notes_list or []):
+        if not isinstance(n, dict) or not n.get("carry_to_crew"):
+            continue
+        body = str(n.get("body") or "").strip()
+        if not body:
+            continue
+        who  = str(n.get("author_name") or "").strip() or "Unknown"
+        when = _recruit_note_date(n.get("created_at"))
+        blocks.append((f"{when} {who}: {body}" if when else f"{who}: {body}"))
+
+    # Fit to CREW_NOTES_MAX by dropping whole notes from the OLDEST end, never
+    # mid-note, re-composing and re-sanitising each time (the cap has to hold
+    # against the sanitised string, which is the one that actually gets stored).
+    # Oldest-first is what the elision marker claims, and it keeps the notes most
+    # relevant to a new crew record — the recent ones.
+    dropped = 0
+    while True:
+        parts = [prov]
+        if dropped:
+            parts.append(CREW_NOTES_ELIDED)
+        parts.extend(blocks[dropped:])
+        out = _crew_notes_safe("\n\n".join(parts))
+        if len(out) <= CREW_NOTES_MAX or dropped >= len(blocks):
+            break
+        dropped += 1
+    # Only reachable if the provenance line alone somehow exceeds the cap.
+    return out if len(out) <= CREW_NOTES_MAX else out[:CREW_NOTES_MAX].strip()
+
+
+def _recruit_fetch_notes(cand_id):
+    """Fetch ONE candidate's ops note thread (oldest first) straight from the edge
+    function, exactly like _recruit_fetch_detail. Returns (list, error).
+
+    Callers treat this as BEST-EFFORT — see the comment at the convert call site."""
+    if not GOAT_RECRUITMENT_KEY:
+        return [], "Recruitment key not configured"
+    try:
+        r = http.get(RECRUITMENT_CANDIDATE_NOTES_URL,
+                     headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                     params={"id": cand_id}, timeout=15)
+    except Exception as e:
+        print(f"[recruitment] convert notes request failed: {e}")
+        return [], "Recruitment service unavailable"
+    if r.status_code != 200:
+        print(f"[recruitment] convert notes returned {r.status_code}")
+        return [], "Recruitment service error"
+    try:
+        body = r.json()
+    except Exception:
+        return [], "Bad response from recruitment service"
+    return (body if isinstance(body, list) else []), None
+
+
 def _recruit_convert_context(cand_id):
     """Assemble everything the convert flow needs for ONE candidate:
     (feed_row, detail, error). error is a short code: 'not_found', 'not_eh'
@@ -6160,6 +6311,17 @@ def api_recruitment_convert_preview(cand_id):
                                  f"duplicates: {cerr}"}), 502
     email_matches, name_matches = _recruit_crew_matches(crew, first, last, email)
 
+    # The ops notes that would be carried across, composed exactly as convert will
+    # compose them, so the modal shows the REAL string rather than a description of
+    # it. Best-effort for the same reason as the convert call site: a notes outage
+    # must not stop ops previewing a conversion.
+    ref = feed_row.get("reference") or cand_id
+    notes_list, nerr = _recruit_fetch_notes(cand_id)
+    if nerr:
+        print(f"[recruitment] convert-preview notes fetch failed ({nerr}) — "
+              "previewing the provenance line only")
+        notes_list = []
+
     # "What will be sent" — the exact mapping ss_create_crew will use (minus the
     # auto-assigned ein/username/password/active/rating). Shown read-only.
     will_send = {
@@ -6174,6 +6336,7 @@ def api_recruitment_convert_preview(cand_id):
         "postcode":          detail.get("postcode") or "",
         "emergency_contact": detail.get("emergency_name") or "",
         "emergency_phone":   detail.get("emergency_phone") or "",
+        "notes":             _recruit_compose_notes(ref, notes_list),
     }
     # Work-rights signal for the Convert warning. Non-PII only: whether this is a
     # working-visa applicant (from the shared detail feed's work_eligibility.status)
@@ -6266,8 +6429,20 @@ def api_recruitment_convert(cand_id):
                         "needs_ack": True}), 409
 
     # 4. Map candidate -> crew fields (NO paygrade/tax — SmartStaff defaults stand,
-    #    matching the manual process). A short provenance note aids traceability.
+    #    matching the manual process). notes = the provenance line plus whichever
+    #    ops notes were ticked to carry.
+    #
+    #    THE NOTES FETCH IS BEST-EFFORT, DELIBERATELY. By this point the duplicate
+    #    guard has passed and an EIN is about to be assigned, so aborting here over
+    #    a note would strand the candidate mid-flow for a cosmetic reason. A missing
+    #    note is recoverable through Manage Crew; a half-converted candidate is not.
+    #    So: log it, send the provenance line alone, carry on.
     ref = feed_row.get("reference") or cand_id
+    notes_list, nerr = _recruit_fetch_notes(cand_id)
+    if nerr:
+        print(f"[recruitment] convert notes fetch failed ({nerr}) — "
+              "sending the provenance line only")
+        notes_list = []
     data = {
         "firstname":         first,
         "lastname":          last,
@@ -6280,7 +6455,7 @@ def api_recruitment_convert(cand_id):
         "postcode":          detail.get("postcode") or "",
         "emergency_contact": detail.get("emergency_name") or "",
         "emergency_phone":   detail.get("emergency_phone") or "",
-        "notes":             f"Converted from recruitment application {ref}.",
+        "notes":             _recruit_compose_notes(ref, notes_list),
         "groups":            [],
     }
 

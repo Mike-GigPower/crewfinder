@@ -6743,6 +6743,13 @@ function recruitConvertRender(p){
       '<div class="rc-conv-send" style="padding-top:6px">'
     + line('Email', ws.email) + line('Mobile', ws.mobile) + line('Date of birth', ws.dob)
     + line('Address', addr)
+    // Notes is the ONE field here that ops can still change before converting, and
+    // it lands permanently on the crew record with no edit or delete path — so it
+    // is shown in full, exactly as the server composed it, rather than summarised.
+    // pre-wrap because the composed string is multi-line by construction.
+    + '<div style="padding-top:4px"><b>Notes:</b>'
+    +   '<div style="white-space:pre-wrap;font-size:11px;line-height:1.45;margin-top:2px">'
+    +   escapeHtml(ws.notes || '—') + '</div></div>'
     + '<div><b>Headshot:</b> ' + (p.headshot_present ? 'will be attached' : 'none on file') + '</div>'
     + '<div style="padding-top:4px;color:var(--muted)">EIN, username, active, rating and paygrade are set automatically. No pay/tax fields are sent.</div>'
     + '</div>';
