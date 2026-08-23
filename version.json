@@ -1,6 +1,6 @@
 {
-  "version": "5.11.1",
-  "release_date": "2026-08-21",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.11.1/TheGOAT.dmg",
-  "release_notes": "Licences that never expire now show a green Held marker instead of a blank, which read as though the expiry hadn't been recorded."
+  "version": "5.12.0",
+  "release_date": "2026-08-23",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.12.0/TheGOAT.dmg",
+  "release_notes": "Add notes against a candidate during recruitment, and tick the ones worth keeping to carry them onto the crew record when they're converted. Crew with apostrophes in their names are now findable by their real surname."
 }
