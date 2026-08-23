@@ -385,6 +385,14 @@ tr.skipped{opacity:.6}
 .update-banner a{color:var(--accent);font-weight:600;text-decoration:none;font-family:'Rajdhani',sans-serif}
 .update-banner a:hover{text-decoration:underline}
 .update-banner-close{margin-left:auto;background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;line-height:1;padding:0}
+/* Not dismissible, by design. The update banner has a close button; this must
+   not — a strip that can be dismissed will be, and the next screenshot is
+   untrustworthy again. flex-shrink:0 matches .update-banner: the nav column is
+   a flex container and without it the strip collapses on a short viewport. */
+.env-strip{background:#3a2a00;border-bottom:1px solid var(--accent);padding:5px 20px;
+           font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;
+           letter-spacing:.08em;text-transform:uppercase;color:var(--accent);
+           text-align:center;flex-shrink:0}
 .tab-bar{display:flex;gap:0;padding:0;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;min-width:0}
 /* The inner scroller is the ONE horizontal scroll container. Its native
    scrollbar is hidden on purpose — the chevrons are the affordance, and on
@@ -1338,6 +1346,9 @@ a.recruit-action{text-decoration:none;display:inline-block}
     <a href="/logout" class="btn-logout">Sign out</a>
   </div>
 </nav>
+{% if not env_is_prod %}
+<div class="env-strip">&#9888; TEST &mdash; {{ env_url }}</div>
+{% endif %}
 <div class="update-banner" id="update-banner">
   <span>⚡ THE GOAT <span id="update-version"></span> is available</span>
   <span id="update-notes" style="color:var(--muted)"></span>
@@ -19153,8 +19164,20 @@ async function loadCacheStatus(){
     if(!resp.ok)return;
     const data=await resp.json();
     const badge=document.getElementById('cache-badge');
-    if(data.fresh){badge.textContent='Roster: '+data.profiles+' ('+data.age+')';badge.classList.add('fresh')}
-    else{badge.textContent='Roster stale ('+data.age+') — click to refresh';badge.classList.remove('fresh')}
+    // profiles is a crew count, so a cache full of empty inductions still reads
+    // a reassuring green "Roster: 391" while every induction surface reports
+    // nothing. The middle branch drops the 'fresh' class on purpose — the visual
+    // reassurance has to go away, not just the words.
+    if(data.fresh && data.induction_records>0){
+      badge.textContent='Roster: '+data.profiles+' ('+data.age+')';
+      badge.classList.add('fresh');
+    } else if(data.fresh){
+      badge.textContent='Roster: '+data.profiles+' — no induction data, click to refresh';
+      badge.classList.remove('fresh');
+    } else {
+      badge.textContent='Roster stale ('+data.age+') — click to refresh';
+      badge.classList.remove('fresh');
+    }
   }catch(e){}
 }
 
