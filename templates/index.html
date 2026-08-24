@@ -18630,6 +18630,22 @@ function perfSeries(d, custId, unit){
       // secured_revenue is still in the payload and still exact; it is simply
       // not drawn as a second series.
       twoLine:  (U === 'hours'),
+      // THE SERIES STOPS AT THE LAST WEEK THAT HAS ANYTHING BOOKED.
+      //
+      // The window is a fixed 60 days, so its last weeks are routinely empty —
+      // nothing has been sold into them YET. Drawn as zeroes they become a flat
+      // line running along the axis to the right edge, which reads as "no work"
+      // when the truth is "not booked yet". Those are opposite statements about
+      // the business and the chart must not confuse them.
+      //
+      // Trimmed on `calls`, not on the drawn value: a week can carry real work
+      // and still price at zero if every call in it is unpriced, and cutting
+      // that week would hide the work rather than the emptiness.
+      drawn:    (function(){
+                  let last = -1;
+                  for(let j = 0; j < fw.length; j++){ if((fw[j].calls || 0) > 0) last = j; }
+                  return last + 1;
+                })(),
       partial:  !!((d.forward || {}).first_week_partial),
       asAt:     (d.forward || {}).as_at || null,
       card:     fp.rate_card || {},
@@ -18660,7 +18676,11 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
   const uid   = 'perfhatch' + (++_perfSvgSeq);
 
   const fwd = s.fwd || null;
+  // m is every forward week — it sets the x pitch, because the axis is TIME and
+  // week 7 must sit at week 7 whether or not anything is booked into it.
+  // mD is how many of them carry work and therefore get a line drawn.
   const m   = fwd ? fwd.keys.length : 0;
+  const mD  = fwd ? Math.min(fwd.drawn || 0, m) : 0;
 
   let max = 0;
   for(let i = 0; i < n; i++){
@@ -18672,8 +18692,8 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
   // it better. A second y-scale would make the shape readable and the comparison
   // dishonest. The tooltip and the FORWARD BOOK card below carry the magnitude;
   // the chart carries the shape.
-  for(let j = 0; j < m; j++){
-    max = Math.max(max, fwd.required[j] || 0, fwd.ordered[j] || 0, fwd.secured[j] || 0);
+  for(let j = 0; j < mD; j++){
+    max = Math.max(max, fwd.required[j] || 0, fwd.secured[j] || 0);
   }
   const top = perfNiceMax(max);
   const X = function(i){ return padL + (plotW * i / (n - 1)); };
@@ -18734,7 +18754,7 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
 
   let fwdArt = '';
 
-  if(!m){
+  if(!m || !mD){
     // Explicitly empty, never drawn as zero — an empty book and a book we could
     // not price are different things and must not share a picture.
     const cx  = (fwdX + fwdW / 2).toFixed(1);
@@ -18757,11 +18777,11 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
     // drawn first and the solid secured line sits on top of it.
     const pathOf = function(arr){
       let p = '';
-      for(let j = 0; j < m; j++){ p += (j ? ' L' : 'M') + FX(j).toFixed(1) + ' ' + Y(arr[j]).toFixed(1); }
+      for(let j = 0; j < mD; j++){ p += (j ? ' L' : 'M') + FX(j).toFixed(1) + ' ' + Y(arr[j]).toFixed(1); }
       return p;
     };
     const areaOf = function(arr){
-      return pathOf(arr) + ' L' + FX(m - 1).toFixed(1) + ' ' + baseY + ' L' + FX(0).toFixed(1) + ' ' + baseY + ' Z';
+      return pathOf(arr) + ' L' + FX(mD - 1).toFixed(1) + ' ' + baseY + ' L' + FX(0).toFixed(1) + ' ' + baseY + ' Z';
     };
 
     if(fwd.twoLine){
@@ -18777,7 +18797,7 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
       // Weeks carrying unfilled seats, hatched under the line. Vertical stripes,
       // deliberately NOT the 45° hatch the delivered-not-yet-invoiced band uses:
       // two different facts must not share a texture.
-      for(let j = 0; j < m; j++){
+      for(let j = 0; j < mD; j++){
         if(!(fwd.unfilled[j] > 0)) continue;
         const cx0 = Math.max(fwdX, FX(j) - fwdStep / 2);
         const cx1 = Math.min(W - padR, FX(j) + fwdStep / 2);
@@ -18796,7 +18816,7 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
     if(!fwd.twoLine){
       // A marker sitting ON the line for each short week. The hatch carries the
       // week at a glance; the dot survives a column too narrow to show texture.
-      for(let j = 0; j < m; j++){
+      for(let j = 0; j < mD; j++){
         if(!(fwd.unfilled[j] > 0)) continue;
         fwdArt += '<circle cx="' + FX(j).toFixed(1) + '" cy="' + Y(fwd.required[j]).toFixed(1)
                +  '" r="3" fill="#d4af37" stroke="var(--surface)" stroke-width="1"/>';
@@ -18804,9 +18824,36 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
     }
 
     // hover targets — every figure behind a forward week, including the gap
+    // The unbooked tail, called what it is. The window is a fixed 60 days, so its
+    // far weeks are empty because nothing has been SOLD into them yet — not
+    // because no work exists. Drawn as zeroes that reads as a collapse; left
+    // blank with a label it reads as a pipeline that has not filled up.
+    if(mD < m){
+      const tx0 = FX(mD - 1);
+      const tx1 = Math.min(W - padR, fwdX + fwdW);
+      if(tx1 - tx0 >= 46){
+        const tcx = ((tx0 + tx1) / 2).toFixed(1);
+        fwdArt += '<text class="perf-fwd-lbl" x="' + tcx + '" y="' + (padT + plotH / 2 - 7) + '" text-anchor="middle">'
+               +    '<tspan x="' + tcx + '" dy="0">not yet</tspan>'
+               +    '<tspan x="' + tcx + '" dy="14">booked</tspan>'
+               +  '</text>';
+      }
+    }
+
     for(let j = 0; j < m; j++){
       const short = fwd.unfilled[j] || 0;
-      let tip = perfWeekLabel(fwd.keys[j]) + '  ·  on the books'
+      let tip;
+      if(j >= mD){
+        // An empty week is a fact about the BOOK, not about the week.
+        tip = perfWeekLabel(fwd.keys[j]) + '\nnothing booked into this week yet';
+        const fxE = Math.max(fwdX, FX(j) - fwdStep / 2);
+        const fwE = Math.max(0, Math.min(FX(j) + fwdStep / 2, W - padR) - fxE);
+        fwdArt += '<rect class="perf-hit" x="' + fxE.toFixed(1) + '" y="' + padT
+               +  '" width="' + fwE.toFixed(1) + '" height="' + plotH + '">'
+               +  '<title>' + escapeHtml(tip) + '</title></rect>';
+        continue;
+      }
+      tip = perfWeekLabel(fwd.keys[j]) + '  ·  on the books'
         + (j === 0 && fwd.partial ? '\n(part week — from today)' : '')
         + '\nrequired   ' + fmtFull(fwd.required[j]) + '  (will be invoiced)'
         // The secured figure is shown in HOURS mode only. In dollars, printing it
@@ -18842,8 +18889,11 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
 
   const aria = 'Weekly ' + perfUnitLabel(s.unit) + ', ' + perfWeekLabel(s.labels[0]) + ' to ' + perfWeekLabel(s.labels[n - 1])
              + ', this year against last year'
-             + (m ? ', followed by ' + m + ' weeks on the books as at today, drawn as required against secured.'
-                 : '.');
+             + (mD ? ', followed by ' + mD + ' week' + (mD === 1 ? '' : 's') + ' on the books as at today'
+                   + (fwd.twoLine ? ', drawn as required against secured' : ', drawn as required, with unfilled weeks marked')
+                   + (mD < m ? ', and ' + (m - mD) + ' later week' + ((m - mD) === 1 ? '' : 's') + ' with nothing booked yet' : '')
+                   + '.'
+                  : '.');
 
   return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + escapeHtml(aria) + '">'
     + '<defs><pattern id="' + uid + '" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
@@ -18999,16 +19049,17 @@ function perfWeeklyCard(d){
     return '<span class="perf-unit' + (on ? ' on' : '') + '" role="button" tabindex="0"'
       + ' aria-pressed="' + (on ? 'true' : 'false') + '"'
       + ' aria-label="Show weekly ' + escapeHtml(perfUnitLabel(u)) + '"'
-      + ' onclick="perfSetUnit(' + JSON.stringify(u) + ')"'
-      + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();perfSetUnit(' + JSON.stringify(u) + ');}"'
+      + ' data-perf-unit="' + escapeHtml(u) + '"'
       + '>' + escapeHtml(lbl) + '</span>';
   };
 
   let head = '<div class="perf-card-head">'
     + '<span class="perf-card-title">WEEKLY ' + (unit === 'hours' ? 'HOURS' : 'REVENUE') + '</span>'
-    + '<span class="perf-card-sub">' + escapeHtml(who) + ' · invoiced by event date, this year against last</span>';
+    + '<span class="perf-card-sub">' + escapeHtml(who) + ' · invoiced '
+    +   (unit === 'hours' ? 'hours' : 'revenue')
+    +   ' by event date, this year against last</span>';
   if(custId != null){
-    head += '<span class="perf-back" onclick="perfSelectCustomer(null)" style="margin-left:auto">← all customers</span>';
+    head += '<span class="perf-back" data-perf-cust="" role="button" tabindex="0" style="margin-left:auto">← all customers</span>';
   }
   head += '<span class="perf-units" style="margin-left:' + (custId != null ? '10px' : 'auto') + '">'
        +    unitBtn('revenue', '$') + unitBtn('hours', 'hours')
@@ -19123,8 +19174,13 @@ function perfForwardCard(d){
     + '</div>';
 
   // Per week, because a total over 60 days hides which week is empty.
-  let rows = '';
+  // Weeks with nothing booked are LEFT OUT rather than shown as a row of zeroes,
+  // for the same reason the chart stops its line: a zero row reads as "no work
+  // that week" when it means "nothing sold into it yet". The count is stated
+  // under the table instead.
+  let rows = '', emptyWeeks = 0;
   weeks.forEach(function(w){
+    if(!(w.calls > 0)){ emptyWeeks++; return; }
     const sh = w.unfilled_seats || 0;
     const un = (w.unpriced_calls || 0) + (w.error_calls || 0);
     // The shortfall's KIND, per week. Same gap, opposite response.
@@ -19150,7 +19206,14 @@ function perfForwardCard(d){
     + '<th style="text-align:right">Unfilled</th><th>Why</th>'
     + '<th style="text-align:right">Offers sent</th>'
     + '<th style="text-align:right">Hours</th><th style="text-align:right">Revenue</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + (emptyWeeks
+        ? '<div class="perf-note">' + perfNum(emptyWeeks) + ' later week'
+          + (emptyWeeks === 1 ? '' : 's') + ' in the window '
+          + (emptyWeeks === 1 ? 'has' : 'have') + ' <b>nothing booked yet</b> and '
+          + (emptyWeeks === 1 ? 'is' : 'are') + ' omitted above — the book fills up as calls are entered, '
+          + 'so an empty far week is the pipeline, not a gap in the work.</div>'
+        : '');
 
   let notes = '<div class="perf-note"><b>On the books, as at ' + escapeHtml(String(f.as_at || 'today'))
     + '</b> — the next ' + perfNum(f.days || 0) + ' days, not a forecast. Both figures are priced at list rates: '
@@ -19265,8 +19328,8 @@ function perfCustomerCard(d){
     const pct = perfPct(sg.value, total);
     const tip = sg.name + '\n' + perfMoneyFull(sg.revenue) + '  ·  ' + perfNum(sg.hours) + ' hours'
               + '\n' + pct.toFixed(1) + '% of ' + perfUnitLabel(unit);
-    bar += '<rect data-cust="' + escapeHtml(String(sg.id)) + '" x="' + x.toFixed(2) + '" y="0" width="' + Math.max(0, w).toFixed(2) + '" height="' + H + '"'
-        +  ' fill="' + sg.color + '" onclick="perfSelectCustomer(' + JSON.stringify(String(sg.id)) + ')">'
+    bar += '<rect data-cust="' + escapeHtml(String(sg.id)) + '" data-perf-cust="' + escapeHtml(String(sg.id)) + '" x="' + x.toFixed(2) + '" y="0" width="' + Math.max(0, w).toFixed(2) + '" height="' + H + '"'
+        +  ' fill="' + sg.color + '">'
         +  '<title>' + escapeHtml(tip) + '</title></rect>';
     // Only label a segment wide enough to hold the text — never a clipped number.
     if(w >= 46) bar += '<text class="perf-stack-lbl" x="' + (x + w / 2).toFixed(2) + '" y="' + (H / 2 + 4) + '" text-anchor="middle">' + pct.toFixed(0) + '%</text>';
@@ -19275,7 +19338,7 @@ function perfCustomerCard(d){
 
   const legs = segs.map(function(sg){
     const on = (_perfCustomer != null && String(_perfCustomer) === String(sg.id));
-    return '<div class="perf-leg' + (on ? ' on' : '') + '" onclick="perfSelectCustomer(' + JSON.stringify(String(sg.id)) + ')">'
+    return '<div class="perf-leg' + (on ? ' on' : '') + '" data-perf-cust="' + escapeHtml(String(sg.id)) + '" role="button" tabindex="0">'
       + '<span class="perf-leg-sw" style="background:' + sg.color + '"></span>'
       + '<span class="perf-leg-lb" title="' + escapeHtml(sg.name) + '">' + escapeHtml(sg.name) + '</span>'
       + '<span class="perf-leg-pc">' + perfPct(sg.value, total).toFixed(1) + '%</span>'
@@ -19311,7 +19374,7 @@ function perfYieldCard(d){
   const unranked = rows.filter(function(r){ return r.hours <  PERF_RANK_MIN_HOURS; }).sort(function(a, b){ return b.revenue - a.revenue; });
 
   const tr = function(r, rank){
-    return '<tr class="clickable' + (rank ? '' : ' unranked') + '" onclick="perfSelectCustomer(' + JSON.stringify(String(r.id)) + ')">'
+    return '<tr class="clickable' + (rank ? '' : ' unranked') + '" data-perf-cust="' + escapeHtml(String(r.id)) + '">'
       + '<td class="rank">' + (rank ? rank : '—') + '</td>'
       + '<td class="perf-sw-cell"><span class="perf-sw" style="background:' + r.color + '"></span></td>'
       + '<td>' + escapeHtml(r.name) + '</td>'
@@ -19343,6 +19406,64 @@ function perfYieldCard(d){
     + 'not per customer, so equipment hire sits inside these rates. The crew-only figure in the headline row above excludes it.</div>'
     + '</div>';
 }
+
+// ── event binding ───────────────────────────────────────────────────────────
+// EVERY performance control is bound HERE, in the script block, and never as an
+// inline on* attribute.
+//
+// WHY, CONCRETELY. An inline handler is a separate script parsed by the HTML
+// attribute parser, so `node --check` over this block cannot see it and neither
+// can any lint we run. Release 1 shipped three drill-through controls built as
+//
+//     onclick="perfSelectCustomer(' + JSON.stringify(String(id)) + ')"
+//
+// and JSON.stringify emits DOUBLE quotes, which close the double-quoted
+// attribute early. The browser parsed the handler as the truncated text
+// `perfSelectCustomer(` and threw "Unexpected end of input" on every click, so
+// the customer drill-through never worked from the stack bar, the legend or the
+// yield table. The syntax check passed the whole time, because the broken code
+// was never in the block it checked.
+//
+// Delegation on `document` rather than a listener per element: renderPerformance
+// replaces #perf-body's innerHTML on every state change, which would discard
+// per-element listeners and re-bind them dozens of times. One listener, attached
+// once, survives every re-render.
+(function(){
+  if(window._perfControlsBound) return;
+  window._perfControlsBound = true;
+
+  const target = function(ev){
+    const el = ev.target;
+    // Element.closest exists on SVG elements too, which matters: the customer
+    // stack's click targets are <rect>s.
+    return (el && el.closest) ? el.closest('[data-perf-unit],[data-perf-cust]') : null;
+  };
+
+  const fire = function(t){
+    if(t.hasAttribute('data-perf-unit')){
+      perfSetUnit(t.getAttribute('data-perf-unit'));
+      return;
+    }
+    // An empty data-perf-cust is the "back to all customers" control. Empty
+    // string, not absent — absent would mean "not a control at all".
+    const id = t.getAttribute('data-perf-cust');
+    perfSelectCustomer(id === '' ? null : id);
+  };
+
+  document.addEventListener('click', function(ev){
+    const t = target(ev);
+    if(t) fire(t);
+  });
+
+  // Keyboard parity for the controls that are not natively focusable.
+  document.addEventListener('keydown', function(ev){
+    if(ev.key !== 'Enter' && ev.key !== ' ') return;
+    const t = target(ev);
+    if(!t || !t.hasAttribute('tabindex')) return;
+    ev.preventDefault();
+    fire(t);
+  });
+})();
 
 function perfSelectCustomer(id){
   _perfCustomer = (id == null || String(id) === String(_perfCustomer)) ? null : id;
