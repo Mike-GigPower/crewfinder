@@ -18682,8 +18682,18 @@ function perfWeeklyCard(d){
   const custId = _perfCustomer;
   const s      = perfSeries(d, custId);
   const dq     = d.data_quality || {};
-  const rows   = dq.uninvoiced_crew_rows || 0;
-  const nightPct = rows > 0 ? Math.round(100 * (dq.uninvoiced_night_rows || 0) / rows) : null;
+
+  // The night share of the uninvoiced band, derived from HOURS rather than
+  // rows. Rows were the right figure while the band priced everything at the
+  // day rate and the question was "how many rows are understated"; now that the
+  // hours are split and priced, the question is how much of the money the night
+  // rate is carrying, and a row that is 1 night hour in 10 is not the same
+  // exposure as one that is 10 in 10.
+  const unvNightHrs = dq.uninvoiced_night_hours || 0;
+  const unvDayHrs   = dq.uninvoiced_day_hours || 0;
+  const unvHrs      = unvNightHrs + unvDayHrs;
+  const nightPct    = unvHrs > 0 ? Math.round(100 * unvNightHrs / unvHrs) : null;
+  const noRateRows  = dq.missing_night_rate_rows || 0;
 
   let who = 'All customers';
   if(custId === '__other__') who = 'All other customers';
@@ -18705,9 +18715,16 @@ function perfWeeklyCard(d){
 
   if(s.hasUnv){
     note += '<div class="perf-note">The hatched band is <b>work delivered but not yet invoiced</b>. It is not a shortfall — its width is the billing lag. '
-      + 'It <b>understates</b>: '
-      + (nightPct != null ? nightPct + '% of those rows carry night hours' : 'many of those rows carry night hours')
-      + ', and they are priced at the day rate because SmartStaff\'s night boundary is not available to this endpoint.</div>';
+      + 'Its hours are actuals off the crew sheet; its money is an <b>estimate</b>, each hour priced at that crew member\'s own day or night charge-out, split at 08:00 / 20:00'
+      + (nightPct != null ? ' — ' + nightPct + '% of those hours are night hours' : '')
+      + '.';
+    if(noRateRows > 0){
+      note += ' ' + noRateRows + ' row' + (noRateRows === 1 ? '' : 's')
+        + ' carr' + (noRateRows === 1 ? 'ies' : 'y') + ' no night rate and '
+        + (noRateRows === 1 ? 'is' : 'are') + ' still priced at the day rate throughout, which understates '
+        + (noRateRows === 1 ? 'it' : 'them') + '.';
+    }
+    note += '</div>';
   } else {
     note += '<div class="perf-note">Invoiced revenue only. The delivered-not-yet-invoiced band is <b>not attributed to customers</b> by the endpoint, so it is absent here rather than shown as zero.</div>';
   }
