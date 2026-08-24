@@ -8165,6 +8165,83 @@ def api_ops_induction_exceptions():
     return jsonify(data)
 
 
+def fetch_performance(ss, weeks):
+    """GM Performance — the whole dashboard's data, via get-performance.php
+    (goat_can_read_all()-gated). Returns the endpoint's own dict — the weekly
+    series, the customer ranking, the roll-up, the totals and the data_quality
+    counters — passed through untouched.
+
+    ONE request only: get-performance.php sits behind the same per-session PHP
+    file lock get-calls-bulk.php does, so a second concurrent /ajax/crew/ call on
+    the same session would hang. No thread pool, no parallel fetch, ever. This is
+    also why the endpoint returns every series in one response instead of three.
+
+    `weeks` is forwarded verbatim and NOT range-checked here. The PHP clamps it to
+    1-104 and owns the default, so a second clamp in Python would be a second
+    implementation of the same rule — the exact drift this workstream has rejected
+    three times. It is URL-encoded (correct URL construction, not validation) so a
+    hand-typed value cannot smuggle extra query parameters into the call. Omitted
+    entirely when the client sends nothing, so the default window lives in exactly
+    one place.
+
+    Returns (data, error). On any failure data is None and error is a short
+    message; the caller soft-fails to an 'unavailable' tab."""
+    from html import unescape
+    from urllib.parse import quote
+    qs  = f"?weeks={quote(str(weeks), safe='')}" if weeks is not None else ""
+    url = f"{BASE_URL}/ajax/crew/get-performance.php{qs}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    # SmartStaff stores customer names HTML-encoded and the endpoint passes them
+    # through raw — "St Jerome&#39;s Laneway Pty Ltd" is a real row. This is the
+    # ONLY free-text field in the payload; every other value is numeric or a week
+    # key, and none of them are touched here.
+    for c in data.get("customers", []):
+        if c.get("name") is not None:
+            c["name"] = unescape(c["name"])
+    return data, None
+
+
+@app.route("/api/performance", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_performance():
+    """GM Performance tab — a thin proxy over get-performance.php. The endpoint
+    computes every series, the top-8 customer ranking, the 'All other' roll-up and
+    the totals in one pass; we pass them straight through so no two numbers on the
+    screen can disagree with each other or with the server. NOTHING is recomputed
+    here.
+
+    Dual-gated exactly like the ops lanes: @require_cohort(*READ_ALL_COHORTS)
+    mirrors goat_can_read_all(), so the browser session alone authorises this — no
+    X-Goat-Service-Key. Soft-fails with HTTP 200 {"unavailable": true} so the tab
+    renders 'unavailable' and never takes the rest of the page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Forwarded as-is; the PHP clamps 1-104 and owns the default. Deliberately no
+    # default supplied here — see fetch_performance.
+    weeks = request.args.get("weeks")
+
+    data, err = fetch_performance(ss, weeks)
+    if err is not None:
+        app.logger.warning(f"[performance] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
+
 @app.route("/api/schedule")
 @require_cohort(*READ_ALL_COHORTS)
 def api_schedule():
