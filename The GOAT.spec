@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import copy_metadata
 
 datas = [('templates', 'templates'), ('static', 'static')]
-hiddenimports = ['AppKit', 'PyObjCTools', 'openpyxl', 'googleapiclient', 'googleapiclient.discovery', 'google.auth', 'google.auth.transport.requests', 'google.oauth2', 'google.oauth2.credentials', 'timesheet_common', 'timesheet_import', 'timesheet_generate', 'timesheet_gsheet', 'timesheet_gsheet_read']
+hiddenimports = ['AppKit', 'PyObjCTools', 'openpyxl', 'googleapiclient', 'googleapiclient.discovery', 'google.auth', 'google.auth.transport.requests', 'google.oauth2', 'google.oauth2.credentials', 'timesheet_common', 'timesheet_import', 'timesheet_generate', 'timesheet_gsheet', 'timesheet_gsheet_read', 'estimator_calc']
 datas += copy_metadata('google-api-python-client')
 hiddenimports += collect_submodules('googleapiclient')
 hiddenimports += collect_submodules('google.auth')

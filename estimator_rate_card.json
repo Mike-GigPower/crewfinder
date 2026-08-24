@@ -1,0 +1,73 @@
+{
+  "_note": [
+    "VENDORED RATE CARD — the Estimator's live pricing card, copied into THE GOAT.",
+    "",
+    "WHY THIS FILE EXISTS",
+    "  calc_line() needs `rates`, `dayStart`, `nightStart` and `minBillableHours`, and",
+    "  THE GOAT cannot reach the Estimator's Supabase project. This is a CAPTURE, not a",
+    "  second source of truth: the Estimator's `rate_cards` and `app_settings` tables own",
+    "  these numbers and this file is a dated snapshot of them.",
+    "",
+    "  It is NOT config.ts's `defaultConfig`. That is the stale pre-July card (Standard",
+    "  Crew at 60.10/76.20/93.60) and pricing forward work from it would under-quote by",
+    "  4.6-14.5%. These are the live values (Standard Crew 63.00/79.90/99.95).",
+    "",
+    "STALENESS IS VISIBLE, NOT IMPLICIT",
+    "  `captured_at` is reported through /api/performance and drawn on the chart key, so a",
+    "  card that has not been refreshed since a known rate rise is obvious to the reader",
+    "  rather than depending on someone remembering to check. The forward view is a",
+    "  projection, so a card a few weeks stale is acceptable in a way a historical figure",
+    "  never would be — but it has to be legible.",
+    "",
+    "HOW TO REFRESH",
+    "  Re-run the §6 probe against the Estimator project (jtsxnqfudaqxuqinhkut):",
+    "    select role_name, day_rate, night_rate, sunday_rate, public_holiday_rate,",
+    "           ot_8_day_rate, ot_10_day_rate, effective_from, sort_order, is_active",
+    "      from rate_cards order by is_active desc, sort_order, effective_from;",
+    "  then move `captured_at` and `source.rate_cards_last_change` with it.",
+    "",
+    "COLUMN MAPPING — from serverConfig.ts loadAppConfigServer(), not inferred",
+    "  over8  = ot_8_day_rate     over10 = ot_10_day_rate",
+    "  The ot_8_night_rate / ot_10_night_rate columns exist and are DELIBERATELY UNUSED:",
+    "  calc.ts prices an overtime hour at max(over8, night, sunday, publicHoliday), so the",
+    "  night OT column would be double-counting the night rate it already maxes against.",
+    "",
+    "PUBLIC HOLIDAYS ARE NOT HERE, ON PURPOSE",
+    "  They come from SmartStaff's own per-call `is_pubhol` / `is_pubhol_tomorrow` flags,",
+    "  which is the list operations actually maintains. Vendoring the Estimator's",
+    "  `public_holidays` table would be a second list to drift."
+  ],
+
+  "captured_at": "2026-08-24",
+
+  "source": {
+    "supabase_project": "Estimator (jtsxnqfudaqxuqinhkut)",
+    "rate_cards_last_change": "2026-08-21T02:31:55Z",
+    "app_settings_last_change": "2026-04-24T02:09:53Z",
+    "rows_total": 12,
+    "rows_active": 10
+  },
+
+  "settings": {
+    "dayStart": "08:00",
+    "nightStart": "20:00",
+    "minBillableHours": 4,
+    "gstRate": 0.1
+  },
+
+  "rates": [
+    { "role": "Standard Crew",        "day": 63.00,  "night": 79.90,  "sunday": 99.95,  "publicHoliday": 99.95,  "over8": 79.90,  "over10": 99.95,  "effectiveFrom": "2000-01-01", "sortOrder": 10,  "isActive": true },
+    { "role": "Show Crew",            "day": 84.50,  "night": 84.50,  "sunday": 98.10,  "publicHoliday": 98.10,  "over8": 84.50,  "over10": 84.50,  "effectiveFrom": "2000-01-01", "sortOrder": 20,  "isActive": true },
+    { "role": "Crew Boss",            "day": 89.95,  "night": 105.30, "sunday": 109.40, "publicHoliday": 109.40, "over8": 105.30, "over10": 109.40, "effectiveFrom": "2000-01-01", "sortOrder": 30,  "isActive": true },
+    { "role": "Fork/Truck/EWP",       "day": 69.50,  "night": 89.60,  "sunday": 106.80, "publicHoliday": 106.80, "over8": 89.60,  "over10": 106.80, "effectiveFrom": "2000-01-01", "sortOrder": 40,  "isActive": true },
+    { "role": "Steel Hand",           "day": 69.50,  "night": 89.60,  "sunday": 106.80, "publicHoliday": 106.80, "over8": 89.60,  "over10": 106.80, "effectiveFrom": "2000-01-01", "sortOrder": 50,  "isActive": true },
+    { "role": "Crown Hand",           "day": 68.00,  "night": 89.60,  "sunday": 106.80, "publicHoliday": 106.80, "over8": 89.60,  "over10": 106.80, "effectiveFrom": "2000-01-01", "sortOrder": 60,  "isActive": true },
+    { "role": "Truck with Driver",    "day": 150.00, "night": 175.00, "sunday": 200.00, "publicHoliday": 200.00, "over8": 175.00, "over10": 200.00, "effectiveFrom": "2000-01-01", "sortOrder": 80,  "isActive": true },
+    { "role": "Broadcast Rate",       "day": 264.80, "night": 264.80, "sunday": 264.80, "publicHoliday": 264.80, "over8": 264.80, "over10": 264.80, "effectiveFrom": "2000-01-01", "sortOrder": 90,  "isActive": true },
+    { "role": "Tele/Heavy Plant/SPH", "day": 90.60,  "night": 97.20,  "sunday": 118.90, "publicHoliday": 118.90, "over8": 97.20,  "over10": 118.90, "effectiveFrom": "2000-01-01", "sortOrder": 100, "isActive": true },
+    { "role": "Seamstress",           "day": 90.60,  "night": 90.60,  "sunday": 106.80, "publicHoliday": 106.80, "over8": 90.60,  "over10": 90.60,  "effectiveFrom": "2000-01-01", "sortOrder": 110, "isActive": true },
+
+    { "role": "Wardrobe",             "day": 90.60,  "night": 90.60,  "sunday": 106.80, "publicHoliday": 106.80, "over8": 90.60,  "over10": 90.60,  "effectiveFrom": "2000-01-01", "sortOrder": 100, "isActive": false },
+    { "role": "test",                 "day": 100.00, "night": 100.00, "sunday": 100.00, "publicHoliday": 100.00, "over8": 100.00, "over10": 100.00, "effectiveFrom": "2000-01-01", "sortOrder": 100, "isActive": false }
+  ]
+}

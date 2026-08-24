@@ -96,6 +96,16 @@ if [ ! -f "au_postcodes.json" ]; then
 fi
 echo "▶ Bundling au_postcodes.json..."
 cp au_postcodes.json "dist/${APP_NAME}.app/Contents/MacOS/au_postcodes.json"
+# Bundle the vendored Estimator rate card beside the executable (BASE_DIR). The
+# GM Performance forward view prices the book from this file; without it the
+# forward zone soft-fails to "unavailable" while the historical view still draws,
+# so the failure is quiet — hence the hard abort here rather than a warning.
+if [ ! -f "estimator_rate_card.json" ]; then
+  echo "✗ estimator_rate_card.json not found in repo root — forward revenue would not price. Aborting."
+  exit 1
+fi
+echo "▶ Bundling estimator_rate_card.json..."
+cp estimator_rate_card.json "dist/${APP_NAME}.app/Contents/MacOS/estimator_rate_card.json"
 # Bundle the crew master template beside the executable (BASE_DIR) too — the
 # offline Excel timesheet generator clones its Master tab from here.
 if [ ! -f "crew_master_template.xlsx" ]; then

@@ -24,6 +24,15 @@ from flask import Flask, jsonify, request, render_template, session, redirect, u
 from bs4 import BeautifulSoup
 import requests as http
 
+# The Estimator's labour pricing engine, ported (estimator_calc.py). Imported at
+# TOP LEVEL on purpose: this is the first thing in the app to import it, and a
+# lazy import inside the pricing function would leave PyInstaller's import graph
+# unable to see it, so the module would be missing from the DMG while working
+# perfectly from source. That is the 3.4.x distance-search failure shape exactly.
+# 'estimator_calc' is also listed in The GOAT.spec's hiddenimports as a belt to
+# this brace.
+from estimator_calc import calc_line, resolve_smartstaff_call_name, MODE_DURATION
+
 app = Flask(__name__)
 app.secret_key = "crewfinder-gigpower-2026-internal"
 
@@ -8205,13 +8214,416 @@ def fetch_performance(ss, weeks):
     if "error" in data:
         return None, data["error"]
     # SmartStaff stores customer names HTML-encoded and the endpoint passes them
-    # through raw — "St Jerome&#39;s Laneway Pty Ltd" is a real row. This is the
-    # ONLY free-text field in the payload; every other value is numeric or a week
-    # key, and none of them are touched here.
+    # through raw — "St Jerome&#39;s Laneway Pty Ltd" is a real row. Release 2's
+    # forward block adds two more free-text fields (a call's customer_name and its
+    # call_name), so this is no longer the only one; everything else in the payload
+    # is numeric or a week key and none of it is touched here.
     for c in data.get("customers", []):
         if c.get("name") is not None:
             c["name"] = unescape(c["name"])
+    fwd = data.get("forward")
+    if isinstance(fwd, dict):
+        for c in (fwd.get("calls") or []):
+            for fld in ("customer_name", "call_name"):
+                if c.get(fld) is not None:
+                    c[fld] = unescape(c[fld])
     return data, None
+
+
+# ─── FORWARD BOOK PRICING ─────────────────────────────────────────────────────
+# The book, as at today, priced at LIST RATES through the same engine the
+# Estimator quotes from (estimator_calc.calc_line).
+#
+# THERE ARE NO CUSTOMER DISCOUNT RATES. An earlier reading inferred negotiated
+# per-customer pricing from rate variation inside one description label; that was
+# wrong, and confirmed wrong by Mike on 24 Aug 2026. `paygrades` has NO
+# VERSIONING, so a line created before the 1 July 2026 rate change carries that
+# day's rate forever — five of the fourteen anomalous rates match the pre-July
+# card exactly, including Standard Crew over8 at 76.20 and Crew Boss over10 at
+# 107.00. The variation was TIME, not customer. So the learned-rate ladder, its
+# fallback rungs and the per-customer discount factor are all withdrawn, and
+# forward revenue is list rates with the Estimator's own effective-dating (which
+# is what get_rate_row is for) handling any future re-card.
+#
+# `rate_row` is therefore left unset on every calc_line call below: that argument
+# existed for the ladder that no longer exists, and get_rate_row resolves by shift
+# date, which is correct.
+FORWARD_RATE_CARD_FILE = os.path.join(BASE_DIR, "estimator_rate_card.json")
+
+_fwd_card_lock = threading.Lock()
+_fwd_card      = None          # {"cfg": {...}, "captured_at": "...", "source": {...}}
+
+
+def load_forward_rate_card():
+    """Read, validate and cache the vendored Estimator rate card.
+
+    Returns (card, error). `card["cfg"]` is a calc_line config with `rates`,
+    `dayStart`, `nightStart` and `minBillableHours`; `publicHolidays` is left
+    EMPTY here and filled per call from SmartStaff's own flags — see
+    price_forward_book.
+
+    EVERY FIELD IS VALIDATED RATHER THAN DEFAULTED, because the engine's own
+    fallbacks are silent and each one moves money: _split_epoch falls back to
+    08:00/20:00 and calc_line falls back to a minimum of 0 hours. A card missing
+    minBillableHours would therefore under-bill every short call with no error
+    raised, which is precisely the failure mode this workstream keeps rejecting.
+    A card we cannot trust prices NOTHING and says so."""
+    global _fwd_card
+    with _fwd_card_lock:
+        if _fwd_card is not None:
+            return _fwd_card, None
+
+        try:
+            with io.open(FORWARD_RATE_CARD_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as e:
+            return None, f"rate card unreadable ({FORWARD_RATE_CARD_FILE}): {e}"
+
+        if not isinstance(raw, dict):
+            return None, "rate card is not an object"
+
+        # is_active mirrors serverConfig.ts loadAppConfigServer, which reads
+        # rate_cards with .eq("is_active", true). The capture keeps the inactive
+        # rows so the file is an auditable snapshot of the table; the filter is
+        # here, in one place, matching the Estimator.
+        rates = [r for r in (raw.get("rates") or []) if r.get("isActive")]
+        if not rates:
+            return None, "rate card carries no active rows"
+
+        settings = raw.get("settings") or {}
+        missing  = [k for k in ("dayStart", "nightStart", "minBillableHours")
+                    if settings.get(k) in (None, "")]
+        if missing:
+            return None, "rate card settings missing: " + ", ".join(missing)
+
+        try:
+            min_billable = float(settings["minBillableHours"])
+        except (TypeError, ValueError):
+            return None, "rate card minBillableHours is not a number"
+
+        cfg = {
+            "rates":            rates,
+            "dayStart":         settings["dayStart"],
+            "nightStart":       settings["nightStart"],
+            "minBillableHours": min_billable,
+            "publicHolidays":   [],
+        }
+
+        _fwd_card = {
+            "cfg":         cfg,
+            "captured_at": raw.get("captured_at"),
+            "source":      raw.get("source") or {},
+            "roles":       len(rates),
+        }
+        return _fwd_card, None
+
+
+def price_forward_book(fwd):
+    """Price the forward book and aggregate it to ISO weeks.
+
+    Takes get-performance.php's `forward` block (raw rows, one per call) and
+    returns the dict that goes back under `forward.priced`.
+
+    TWO SERIES, NOT THREE — AND `ordered` IS NOT ONE OF THEM
+      required   what the customer is charged for, filled or not — the billing
+                 basis, and the only one priced
+      confirmed  seats somebody has accepted
+
+      required - confirmed is UNFILLED SEATS, and that is the actionable gap.
+
+      An earlier model had `required - ordered` as "seats nobody has been
+      approached for" and called it the most actionable figure in the design. It
+      was wrong. `ordered` counts OFFERS SENT, not seats offered, and you offer
+      to more people than you need: on the live book it EXCEEDS `required` on 37
+      of 70 calls — one call asks 56 people to fill 4 seats. required - ordered
+      is usually negative and means nothing.
+
+    `ordered` IS THE DIAGNOSTIC THAT SPLITS THE SHORTFALL. It is carried through
+    for the tooltip and the summary card, because it separates two situations
+    that look identical on the chart and need opposite responses:
+
+      ordered >= required  ->  HARD TO FILL. Everyone has been asked and the
+                               seats are still open. A supply problem.
+      ordered <  required  ->  NOT STARTED.  Nobody has picked the task up yet.
+                               An ops task, and the cheaper one to fix.
+
+    Revenue is priced on the REQUIRED basis only. confirmed needs no price of its
+    own: it is a subset of the same seats.
+
+    THE FOUR-HOUR MINIMUM APPLIES FORWARD and calc_line handles it, so
+    billableHours can exceed est_length. Both are reported.
+
+    CALL NAMES ARE RESOLVED BY FOUR RULES, not by exact match — SmartStaff's call
+    name is free text where the Estimator's is a dropdown. See
+    resolve_smartstaff_call_name. Rule 3 (the prefix) is a heuristic and is
+    counted separately so the share of the book resting on it stays visible."""
+    card, err = load_forward_rate_card()
+    if err is not None:
+        return {"unavailable": True, "error": err}
+
+    base_cfg = card["cfg"]
+    keys     = list(fwd.get("week_keys") or [])
+    calls    = list(fwd.get("calls") or [])
+
+    acc = {}
+    for k in keys:
+        acc[k] = {
+            "required_hours":  0.0,
+            "ordered_hours":   0.0,
+            "secured_hours":   0.0,
+            "billable_hours":  0.0,
+            "revenue":         0.0,
+            "secured_revenue": 0.0,
+            "required_seats":  0,
+            "ordered_seats":   0,
+            "confirmed_seats": 0,
+            "unfilled_seats":  0,
+            "short_calls":     0,
+            "hard_to_fill":    0,
+            "not_started":     0,
+            "calls":           0,
+            "unpriced_calls":  0,
+            "error_calls":     0,
+        }
+
+    unmapped_names    = {}
+    unpriced_calls    = 0
+    unpriced_seats    = 0
+    priced_calls      = 0
+    error_calls       = 0
+    below_min_calls   = 0
+    error_samples     = []
+    unbucketed        = 0
+    zero_length_calls = 0
+    zero_length_seats = 0
+    prefix_resolved   = 0
+    prefix_ambiguous  = 0
+    ambiguous_names   = {}
+
+    for c in calls:
+        key = c.get("week_key")
+        if key not in acc:
+            unbucketed += 1
+            continue
+
+        w        = acc[key]
+        required = int(c.get("required") or 0)
+        ordered  = int(c.get("ordered") or 0)
+        confirm  = int(c.get("confirmed") or 0)
+        est      = float(c.get("est_length") or 0.0)
+
+        # A zero-length call is NOT crew time. "Broadcast Allowance" is a flat
+        # charge against the booking, billed irrespective of hours — a billing
+        # line wearing a call's shape. Priced through calc_line it would become a
+        # four-hour minimum starting at midnight, which is wrong twice over: it
+        # invents hours nobody works and prices them at night rates. Its revenue
+        # is real but it is not an hours-based projection, so it is out of this
+        # release's scope entirely — excluded from the seats and the hours too,
+        # not just from the pricing, or the hour series would carry a call that
+        # has no hours.
+        if est <= 0:
+            zero_length_calls += 1
+            zero_length_seats += required
+            continue
+
+        w["calls"]           += 1
+        w["required_seats"]  += required
+        w["ordered_seats"]   += ordered
+        w["confirmed_seats"] += confirm
+        w["required_hours"]  += required * est
+        w["ordered_hours"]   += ordered * est
+        w["secured_hours"]   += confirm * est
+
+        # The shortfall, and which KIND of shortfall it is. Floored per call:
+        # a call with more confirmed than required is over-filled, not negatively
+        # unfilled, and must not net off another call's genuine shortage.
+        short = required - confirm
+        if short > 0:
+            w["unfilled_seats"] += short
+            w["short_calls"]    += 1
+            if ordered >= required:
+                w["hard_to_fill"] += 1
+            else:
+                w["not_started"] += 1
+
+        res_name = resolve_smartstaff_call_name(c.get("call_name"))
+        role     = res_name["role"]
+
+        if res_name["rule"] == "prefix":
+            prefix_resolved += 1
+            if res_name["ambiguous"]:
+                prefix_ambiguous += 1
+                nm = str(c.get("call_name") or "")
+                ambiguous_names[nm] = ambiguous_names.get(nm, 0) + 1
+
+        if role is None:
+            unpriced_calls      += 1
+            unpriced_seats      += required
+            w["unpriced_calls"] += 1
+            name = str(c.get("call_name") or "")
+            unmapped_names[name] = unmapped_names.get(name, 0) + 1
+            continue
+
+        # publicHolidays is built PER CALL from SmartStaff's own flags rather than
+        # from a vendored copy of the Estimator's public_holidays table: one less
+        # list to drift, and SmartStaff's is the one operations maintains.
+        # is_pubhol_tomorrow carries the FOLLOWING date, so a load-out crossing
+        # midnight into a holiday takes the penalty on the correct segment —
+        # calc_line already prices per-segment by date.
+        holidays = []
+        if c.get("is_pubhol"):
+            holidays.append({"date": c.get("date_iso")})
+        if c.get("is_pubhol_tomorrow") and c.get("next_date_iso"):
+            holidays.append({"date": c.get("next_date_iso")})
+
+        cfg = dict(base_cfg)
+        cfg["publicHolidays"] = holidays
+
+        try:
+            res = calc_line({
+                "id":            c.get("call_id"),
+                "role":          role,
+                "qty":           required,
+                "shiftDate":     c.get("date_iso"),
+                "startTime":     c.get("start_time"),
+                "durationHours": est,
+            }, cfg, MODE_DURATION)
+        except Exception as e:
+            # One call that cannot be priced is counted and skipped. It must not
+            # cost the other 400 their revenue, and it must not take the
+            # historical view down with it.
+            error_calls      += 1
+            w["error_calls"] += 1
+            if len(error_samples) < 5:
+                error_samples.append(f"call {c.get('call_id')}: {e}")
+            continue
+
+        if not res.get("ok"):
+            error_calls      += 1
+            w["error_calls"] += 1
+            if len(error_samples) < 5:
+                msgs = res.get("errors") or ["unknown"]
+                error_samples.append(f"call {c.get('call_id')}: {msgs[0]}")
+            continue
+
+        if res.get("advisories"):
+            below_min_calls += 1
+
+        priced_calls        += 1
+        w["revenue"]        += res.get("costExGst") or 0.0
+        w["billable_hours"] += required * (res.get("billableHours") or 0.0)
+
+        # The SECURED value — the same seats, at the same rates, with qty set to
+        # what has actually been accepted. calc_line is linear in qty (it rounds
+        # once, with qty already applied), so this is the engine's own arithmetic
+        # rather than a proportion inferred from the required figure. Re-run
+        # rather than scaled, so the rounding matches what calc_line would say if
+        # asked directly.
+        #
+        # THIS IS NOT REVENUE AT RISK. `required` is charged whether the seat is
+        # filled or not, so the gap between the two lines is a STAFFING gap, not
+        # money the business is about to lose. The card says so in words.
+        if confirm >= required:
+            w["secured_revenue"] += res.get("costExGst") or 0.0
+        elif confirm > 0:
+            try:
+                res_c = calc_line({
+                    "id":            c.get("call_id"),
+                    "role":          role,
+                    "qty":           confirm,
+                    "shiftDate":     c.get("date_iso"),
+                    "startTime":     c.get("start_time"),
+                    "durationHours": est,
+                }, cfg, MODE_DURATION)
+                if res_c.get("ok"):
+                    w["secured_revenue"] += res_c.get("costExGst") or 0.0
+            except Exception:
+                pass          # the required figure still stands; secured under-reports
+
+    weeks = []
+    for k in keys:
+        w = acc[k]
+        weeks.append({
+            "key":             k,
+            "required_hours":  round(w["required_hours"], 2),
+            # Carried for the tooltip and the card, NOT drawn as a line: offers
+            # sent is not a seat count and does not belong on the same axis.
+            "ordered_hours":   round(w["ordered_hours"], 2),
+            "secured_hours":   round(w["secured_hours"], 2),
+            "billable_hours":  round(w["billable_hours"], 2),
+            "revenue":         round(w["revenue"], 2),
+            "secured_revenue": round(w["secured_revenue"], 2),
+            "required_seats":  w["required_seats"],
+            "ordered_seats":   w["ordered_seats"],
+            "confirmed_seats": w["confirmed_seats"],
+            "unfilled_seats":  w["unfilled_seats"],
+            "short_calls":     w["short_calls"],
+            "hard_to_fill":    w["hard_to_fill"],
+            "not_started":     w["not_started"],
+            "calls":           w["calls"],
+            # Both reasons a week's revenue can understate its hours, per week:
+            # a call name no rule resolves, and a call the engine refused. A week
+            # showing hours against no revenue must never be read as a real zero.
+            "unpriced_calls":  w["unpriced_calls"],
+            "error_calls":     w["error_calls"],
+        })
+
+    def tot(field):
+        return sum(w[field] for w in weeks)
+
+    totals = {
+        "revenue":         round(tot("revenue"), 2),
+        "secured_revenue": round(tot("secured_revenue"), 2),
+        "required_hours":  round(tot("required_hours"), 2),
+        "ordered_hours":   round(tot("ordered_hours"), 2),
+        "secured_hours":   round(tot("secured_hours"), 2),
+        "billable_hours":  round(tot("billable_hours"), 2),
+        "required_seats":  tot("required_seats"),
+        "ordered_seats":   tot("ordered_seats"),
+        "confirmed_seats": tot("confirmed_seats"),
+        # The gap Rich and Monty can act on, and the split that says HOW.
+        "unfilled_seats":  tot("unfilled_seats"),
+        "short_calls":     tot("short_calls"),
+        "hard_to_fill":    tot("hard_to_fill"),
+        "not_started":     tot("not_started"),
+        "calls":           tot("calls"),
+    }
+
+    # Ordered by frequency so the first entry is the mapping worth adding first.
+    top_unmapped  = sorted(unmapped_names.items(),  key=lambda kv: (-kv[1], kv[0]))[:10]
+    top_ambiguous = sorted(ambiguous_names.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+
+    return {
+        "rate_card": {
+            "captured_at":            card.get("captured_at"),
+            "roles":                  card.get("roles"),
+            "rate_cards_last_change": (card.get("source") or {}).get("rate_cards_last_change"),
+        },
+        "weeks":  weeks,
+        "totals": totals,
+        "data_quality": {
+            "forward_priced_calls":    priced_calls,
+            # Decision 4: reported, never quoted at Standard Crew. With the four
+            # rules in place this is a real canary again rather than a permanent
+            # ~12% floor, so any non-zero value is worth reading.
+            "forward_unmapped_calls":  unpriced_calls,
+            "forward_unmapped_seats":  unpriced_seats,
+            "forward_unmapped_names":  [{"call_name": n, "calls": v} for n, v in top_unmapped],
+            # How much of the book rests on the prefix heuristic, and how much of
+            # THAT is a genuine coin-toss between two different roles.
+            "forward_prefix_resolved":  prefix_resolved,
+            "forward_prefix_ambiguous": prefix_ambiguous,
+            "forward_prefix_ambiguous_names": [{"call_name": n, "calls": v} for n, v in top_ambiguous],
+            # Flat charges billed irrespective of hours — excluded, not priced.
+            "forward_zero_length_calls": zero_length_calls,
+            "forward_zero_length_seats": zero_length_seats,
+            "forward_price_errors":    error_calls,
+            "forward_price_error_samples": error_samples,
+            "forward_below_minimum":   below_min_calls,
+            "forward_unbucketed_priced": unbucketed,
+        },
+    }
+
 
 
 @app.route("/api/performance", methods=["GET"])
@@ -8239,6 +8651,20 @@ def api_performance():
     if err is not None:
         app.logger.warning(f"[performance] unavailable: {err}")
         return jsonify({"unavailable": True, "error": err})
+
+    # Forward pricing is the ONE thing on this route that is computed rather than
+    # passed through, and it is fenced off accordingly. A failure here — an
+    # unreadable rate card, a missing zoneinfo inside the bundle, a shape change
+    # in the endpoint's forward block — must cost the forward view only. The
+    # historical series is measured data and has to keep drawing.
+    fwd = data.get("forward")
+    if isinstance(fwd, dict):
+        try:
+            fwd["priced"] = price_forward_book(fwd)
+        except Exception as e:
+            app.logger.warning(f"[performance] forward pricing failed: {e}")
+            fwd["priced"] = {"unavailable": True, "error": str(e)}
+
     return jsonify(data)
 
 
