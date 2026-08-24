@@ -1363,6 +1363,15 @@ a.recruit-action{text-decoration:none;display:inline-block}
 /* Drill-through */
 .perf-back{display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--accent);border-radius:14px;font-size:11px;font-family:'Share Tech Mono',monospace;color:var(--accent);padding:3px 12px;cursor:pointer}
 .perf-back:hover{background:var(--accent-bg)}
+/* Units toggle — segmented control on the weekly card. Sits in the same visual
+   family as .perf-back; the active segment carries aria-pressed="true" as well as
+   the styling, so which unit is showing is not conveyed by colour alone. */
+.perf-units{display:inline-flex;border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.perf-unit{font-size:11px;font-family:'Share Tech Mono',monospace;color:var(--muted);padding:3px 12px;cursor:pointer;user-select:none;background:transparent}
+.perf-unit + .perf-unit{border-left:1px solid var(--border)}
+.perf-unit:hover{background:var(--surface2);color:var(--text)}
+.perf-unit.on{background:var(--accent-bg);color:var(--accent)}
+.perf-unit:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 /* Yield table */
 .perf-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .perf-tbl th{text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
@@ -18395,6 +18404,34 @@ let _perfData     = null;
 let _perfCustomer = null;   // drill-through target: customer id, '__other__', or null
 let _perfSvgSeq   = 0;      // unique <pattern> ids — two charts sharing one id collide
 
+// The weekly chart's unit. Joe's request: the same shape read as money or as
+// hours. Persisted through goatPrefs like the nav's last-tab memory, so it does
+// not have to be re-picked every launch.
+//
+// A third position — $/hr by week — was proposed and NOT built: the two-way
+// switch is what was asked for. perfSeries() takes the unit as an argument
+// rather than reading this global, so adding the ratio later is a third branch
+// in one function and no rework anywhere else.
+let _perfUnit = (goatPrefs.get('perf', 'unit', 'revenue') === 'hours') ? 'hours' : 'revenue';
+
+function perfSetUnit(u){
+  const next = (u === 'hours') ? 'hours' : 'revenue';
+  if(next === _perfUnit) return;
+  _perfUnit = next;
+  goatPrefs.set('perf', 'unit', next);
+  renderPerformance();
+}
+
+// Axis / tooltip formatters, chosen by unit. Passed INTO the chart rather than
+// called inside it, so the chart never has to know which unit it is drawing.
+function perfUnitFmt(unit){
+  return (unit === 'hours') ? function(v){ return perfNum(v) + 'h'; } : perfMoney;
+}
+function perfUnitFmtFull(unit){
+  return (unit === 'hours') ? function(v){ return perfNum(v) + ' hours'; } : perfMoneyFull;
+}
+function perfUnitLabel(unit){ return (unit === 'hours') ? 'hours' : 'revenue'; }
+
 const PERF_COLORS = ['#d4af37','#e31e24','#9d8cd4','#f97316','#4ea8de',
                      '#48bb78','#ed64a6','#38b2ac'];
 const PERF_OTHER_COLOR = '#5a5a5a';
@@ -18494,12 +18531,15 @@ function perfSplitWeeks(d){
 // custId null -> whole business (invoiced + the uninvoiced band).
 // A customer id -> that customer's invoiced revenue only; the uninvoiced band is
 // not attributed to customers by the endpoint, so it is absent rather than zero.
-function perfSeries(d, custId){
+function perfSeries(d, custId, unit){
+  // 'revenue' | 'hours'. The ONLY place in this file a unit is picked — every
+  // other function is handed the series and a formatter and stays unit-blind.
+  const U    = (unit === 'hours') ? 'hours' : 'revenue';
   const sp   = perfSplitWeeks(d);
   const n    = Math.min(sp.cur.length, sp.prev.length);
   const cur  = sp.cur.slice(sp.cur.length - n);
   const prev = sp.prev.slice(sp.prev.length - n);
-  const out  = { labels: [], inv: [], unv: [], prev: [], hasUnv: (custId == null) };
+  const out  = { labels: [], inv: [], unv: [], prev: [], hasUnv: (custId == null), unit: U };
 
   let src = null;
   if(custId != null){
@@ -18508,18 +18548,93 @@ function perfSeries(d, custId){
         : ((d.customers || []).filter(function(c){ return String(c.id) === String(custId); })[0] || {});
   }
   const pick = function(w){
-    if(custId == null) return (w.invoiced && w.invoiced.revenue) || 0;
+    if(custId == null) return (w.invoiced && w.invoiced[U]) || 0;
     const wk = (src.weeks || {})[w.key];
-    return (wk && wk.revenue) || 0;
+    return (wk && wk[U]) || 0;
+  };
+  // The uninvoiced band's two keys are deliberately named differently by the
+  // endpoint — `hours` are actuals off the crew sheet, `estimated_revenue` is an
+  // estimate — precisely so a client cannot add it to invoiced revenue by
+  // accident. That distinction is why this is not just band[U].
+  const pickUnv = function(w){
+    if(custId != null) return 0;
+    const b = w.uninvoiced || {};
+    return (U === 'hours' ? b.hours : b.estimated_revenue) || 0;
   };
 
   for(let i = 0; i < n; i++){
     out.labels.push(cur[i].key);
     out.inv.push(pick(cur[i]));
-    out.unv.push(custId == null ? ((cur[i].uninvoiced && cur[i].uninvoiced.estimated_revenue) || 0) : 0);
+    out.unv.push(pickUnv(cur[i]));
     out.prev.push(pick(prev[i]));
     out.prevLabels = out.prevLabels || [];
     out.prevLabels.push(prev[i].key);
+  }
+
+  // ── the forward book ──────────────────────────────────────────────────────
+  // Whole-business only, and absent rather than zero for a single customer —
+  // the same rule and the same reason as the uninvoiced band: the endpoint does
+  // not attribute the priced book to customers, so there is nothing honest to
+  // draw on a customer's chart.
+  //
+  // TWO LINES, IN BOTH UNITS — required and secured.
+  //
+  // `ordered` IS NOT A LINE. It counts OFFERS SENT, not seats offered, and you
+  // offer to more people than you need: on the live book it exceeds `required`
+  // on 37 of 70 calls, one asking 56 people to fill 4 seats. Drawn as a third
+  // line it would sit above the billing basis and read as over-selling. It is
+  // carried here as a DIAGNOSTIC instead, because it is what tells a shortfall
+  // that nobody has started on from one that cannot be filled.
+  const fp = (d.forward && d.forward.priced) || null;
+  // An empty book and a book we could not price are DIFFERENT facts and must not
+  // share an empty state — one is "no work sold yet", the other is "this number
+  // is missing and you cannot see that it is".
+  out.fwdUnavailable = (custId == null) && (!fp || !!fp.unavailable);
+  if(custId == null && fp && !fp.unavailable && (fp.weeks || []).length){
+    const fw = fp.weeks;
+    out.fwd = {
+      keys:     fw.map(function(w){ return w.key; }),
+      required: fw.map(function(w){ return (U === 'hours' ? w.required_hours : w.revenue) || 0; }),
+      // Unit-matched so the value is never wrong for the mode it is read in, but
+      // only DRAWN when twoLine is true (hours). secured_revenue is the same
+      // engine call with qty set to what has been accepted — exact, not a
+      // proportion — and is deliberately not put on screen in dollars.
+      secured:  fw.map(function(w){ return (U === 'hours' ? w.secured_hours : w.secured_revenue) || 0; }),
+      // Diagnostics — tooltip and card only, never drawn.
+      ordered:  fw.map(function(w){ return w.ordered_hours || 0; }),
+      reqSeats: fw.map(function(w){ return w.required_seats || 0; }),
+      ordSeats: fw.map(function(w){ return w.ordered_seats || 0; }),
+      conSeats: fw.map(function(w){ return w.confirmed_seats || 0; }),
+      unfilled: fw.map(function(w){ return w.unfilled_seats || 0; }),
+      hardFill: fw.map(function(w){ return w.hard_to_fill || 0; }),
+      notStart: fw.map(function(w){ return w.not_started || 0; }),
+      unpriced: fw.map(function(w){ return (w.unpriced_calls || 0) + (w.error_calls || 0); }),
+      calls:    fw.map(function(w){ return w.calls || 0; }),
+      // TWO LINES IN HOURS ONLY.
+      //
+      // In hours the gap between required and secured is REAL: those hours have
+      // no people attached yet. In dollars it is not. `required` bills whether
+      // the seat is filled or not, so a dollar-denominated gap between two lines
+      // would read as money at risk — a reader sees $X required against $Y
+      // secured and infers the difference is in danger. It cannot be: it is
+      // invoiced either way.
+      //
+      // This is the same failure the "forecast" label has. A downward slope
+      // reads as a collapsing quarter no matter what the caption says, which is
+      // why the forward curve is called "on the books" instead of being
+      // explained away in a note. The shape wins over the caption, so the shape
+      // has to be right. In revenue mode the chart therefore draws ONE line —
+      // every dollar drawn is a dollar that will be invoiced — and marks the
+      // staffing shortfall ON that line rather than beside it.
+      //
+      // secured_revenue is still in the payload and still exact; it is simply
+      // not drawn as a second series.
+      twoLine:  (U === 'hours'),
+      partial:  !!((d.forward || {}).first_week_partial),
+      asAt:     (d.forward || {}).as_at || null,
+      card:     fp.rate_card || {},
+      dq:       fp.data_quality || {}
+    };
   }
   return out;
 }
@@ -18528,20 +18643,37 @@ function perfSeries(d, custId){
 // Stacked area: invoiced solid, the delivered-not-invoiced band hatched on top.
 // Last year is a thin unfilled line on the same x positions, so week 12 sits
 // above week 12 rather than above a date.
-function perfWeeklyChartSvg(s){
+function perfWeeklyChartSvg(s, fmt, fmtFull){
   const n = s.labels.length;
   if(n < 2) return '<div class="ops-lane-status">Not enough weeks to chart.</div>';
 
+  // The formatters are passed IN rather than picked here: this function draws a
+  // series and never has to know whether it is money or hours.
+  fmt     = fmt     || perfMoney;
+  fmtFull = fmtFull || perfMoneyFull;
+
   const W = 1000, H = 300, padL = 64, padR = 12, padT = 16, padB = 36;
-  const fwdW  = 138;                       // Release 1: reserved, empty-stated
+  const fwdW  = 138;                       // the forward zone, reserved in Release 1
   const plotW = W - padL - padR - fwdW;
   const plotH = H - padT - padB;
   const baseY = padT + plotH;
   const uid   = 'perfhatch' + (++_perfSvgSeq);
 
+  const fwd = s.fwd || null;
+  const m   = fwd ? fwd.keys.length : 0;
+
   let max = 0;
   for(let i = 0; i < n; i++){
     max = Math.max(max, (s.inv[i] || 0) + (s.unv[i] || 0), s.prev[i] || 0);
+  }
+  // The forward book shares this axis deliberately. It is ordinary-sized beside a
+  // $700k tour week, so the forward zone will often look nearly flat — that is a
+  // true statement about the relative magnitudes and it is not fixed by drawing
+  // it better. A second y-scale would make the shape readable and the comparison
+  // dishonest. The tooltip and the FORWARD BOOK card below carry the magnitude;
+  // the chart carries the shape.
+  for(let j = 0; j < m; j++){
+    max = Math.max(max, fwd.required[j] || 0, fwd.ordered[j] || 0, fwd.secured[j] || 0);
   }
   const top = perfNiceMax(max);
   const X = function(i){ return padL + (plotW * i / (n - 1)); };
@@ -18552,7 +18684,7 @@ function perfWeeklyChartSvg(s){
   for(let t = 0; t <= 4; t++){
     const v = top * t / 4, y = Y(v);
     grid += '<line class="perf-grid" x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + y.toFixed(1) + '"/>'
-          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + perfMoney(v) + '</text>';
+          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + fmt(v) + '</text>';
   }
 
   // x axis: one label per month, never closer than 4 weeks apart
@@ -18582,30 +18714,147 @@ function perfWeeklyChartSvg(s){
   let hits = '';
   for(let i = 0; i < n; i++){
     const tip = perfWeekLabel(s.labels[i])
-      + '\ninvoiced   ' + perfMoneyFull(s.inv[i])
-      + (s.hasUnv ? '\nnot yet invoiced  ' + perfMoneyFull(s.unv[i]) : '')
-      + '\nsame week last year  ' + perfMoneyFull(s.prev[i]);
-    hits += '<rect class="perf-hit" x="' + (X(i) - step / 2).toFixed(1) + '" y="' + padT + '" width="' + step.toFixed(1) + '" height="' + plotH + '">'
+      + '\ninvoiced   ' + fmtFull(s.inv[i])
+      + (s.hasUnv ? '\nnot yet invoiced  ' + fmtFull(s.unv[i]) : '')
+      + '\nsame week last year  ' + fmtFull(s.prev[i]);
+    // Clamped at the divider. The last historical hit is centred ON the boundary,
+    // so at full width its right half lies inside the forward zone and — being
+    // drawn after it — would swallow the first forward week's tooltip.
+    const hx = X(i) - step / 2;
+    const hw = Math.max(0, Math.min(step, (padL + plotW) - hx));
+    hits += '<rect class="perf-hit" x="' + hx.toFixed(1) + '" y="' + padT + '" width="' + hw.toFixed(1) + '" height="' + plotH + '">'
           + '<title>' + escapeHtml(tip) + '</title></rect>';
   }
 
-  // forward zone — reserved and explicitly empty, never drawn as zero
-  const fwdX = padL + plotW;
-  const fwd = '<rect x="' + fwdX.toFixed(1) + '" y="' + padT + '" width="' + fwdW + '" height="' + plotH + '" fill="rgba(255,255,255,0.015)"/>'
-    + '<line x1="' + fwdX.toFixed(1) + '" y1="' + padT + '" x2="' + fwdX.toFixed(1) + '" y2="' + baseY + '" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 4"/>'
-    + '<text class="perf-fwd-lbl" x="' + (fwdX + fwdW / 2).toFixed(1) + '" y="' + (padT + plotH / 2 - 16) + '" text-anchor="middle">'
-    +   '<tspan x="' + (fwdX + fwdW / 2).toFixed(1) + '" dy="0">forward view</tspan>'
-    +   '<tspan x="' + (fwdX + fwdW / 2).toFixed(1) + '" dy="14">arriving in the</tspan>'
-    +   '<tspan x="' + (fwdX + fwdW / 2).toFixed(1) + '" dy="14">next release</tspan>'
-    + '</text>';
+  // ── the forward zone ──────────────────────────────────────────────────────
+  // The dashed divider stays: it is the line between measured and projected.
+  const fwdX  = padL + plotW;
+  const fwdBg = '<rect x="' + fwdX.toFixed(1) + '" y="' + padT + '" width="' + fwdW + '" height="' + plotH + '" fill="rgba(255,255,255,0.015)"/>'
+    + '<line x1="' + fwdX.toFixed(1) + '" y1="' + padT + '" x2="' + fwdX.toFixed(1) + '" y2="' + baseY + '" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 4"/>';
 
-  const aria = 'Weekly revenue, ' + perfWeekLabel(s.labels[0]) + ' to ' + perfWeekLabel(s.labels[n - 1])
-             + ', this year against last year.';
+  let fwdArt = '';
+
+  if(!m){
+    // Explicitly empty, never drawn as zero — an empty book and a book we could
+    // not price are different things and must not share a picture.
+    const cx  = (fwdX + fwdW / 2).toFixed(1);
+    const why = s.fwdUnavailable ? ['forward book', 'could not', 'be priced']
+                                          : ['nothing', 'on the books', 'yet'];
+    fwdArt = '<text class="perf-fwd-lbl" x="' + cx + '" y="' + (padT + plotH / 2 - 16) + '" text-anchor="middle">'
+      + '<tspan x="' + cx + '" dy="0">' + why[0] + '</tspan>'
+      + '<tspan x="' + cx + '" dy="14">' + why[1] + '</tspan>'
+      + '<tspan x="' + cx + '" dy="14">' + why[2] + '</tspan>'
+      + '</text>';
+  } else {
+    // Forward weeks sit on the SAME weekly pitch as the history where they fit,
+    // so the book reads as a continuation of the same clock rather than as a
+    // separate chart squeezed in beside it. Clamped so a long book stays inside
+    // the reserved zone.
+    const fwdStep = Math.min(step, fwdW / m);
+    const FX      = function(j){ return fwdX + fwdStep * (j + 1); };
+
+    // Nested, not stacked: required >= ordered >= confirmed, so the widest is
+    // drawn first and the solid secured line sits on top of it.
+    const pathOf = function(arr){
+      let p = '';
+      for(let j = 0; j < m; j++){ p += (j ? ' L' : 'M') + FX(j).toFixed(1) + ' ' + Y(arr[j]).toFixed(1); }
+      return p;
+    };
+    const areaOf = function(arr){
+      return pathOf(arr) + ' L' + FX(m - 1).toFixed(1) + ' ' + baseY + ' L' + FX(0).toFixed(1) + ' ' + baseY + ' Z';
+    };
+
+    if(fwd.twoLine){
+      // HOURS — two lines, and the gap between them is the honest picture: those
+      // hours genuinely have nobody attached yet.
+      fwdArt += '<path d="' + areaOf(fwd.secured) + '" fill="rgba(212,175,55,0.30)" stroke="none"/>'
+             +  '<path d="' + pathOf(fwd.secured) + '" fill="none" stroke="#d4af37" stroke-width="2"/>';
+    } else {
+      // REVENUE — one line, filled, so every dollar drawn is a dollar that will
+      // be invoiced. The shortfall is marked ON the line, never denominated.
+      fwdArt += '<path d="' + areaOf(fwd.required) + '" fill="rgba(212,175,55,0.16)" stroke="none"/>';
+
+      // Weeks carrying unfilled seats, hatched under the line. Vertical stripes,
+      // deliberately NOT the 45° hatch the delivered-not-yet-invoiced band uses:
+      // two different facts must not share a texture.
+      for(let j = 0; j < m; j++){
+        if(!(fwd.unfilled[j] > 0)) continue;
+        const cx0 = Math.max(fwdX, FX(j) - fwdStep / 2);
+        const cx1 = Math.min(W - padR, FX(j) + fwdStep / 2);
+        const cy  = Y(fwd.required[j]);
+        if(cx1 <= cx0 || baseY - cy <= 0) continue;
+        fwdArt += '<rect x="' + cx0.toFixed(1) + '" y="' + cy.toFixed(1)
+               +  '" width="' + (cx1 - cx0).toFixed(1) + '" height="' + (baseY - cy).toFixed(1)
+               +  '" fill="url(#' + uid + 'short)"/>';
+      }
+    }
+
+    // required — outlined, the charged basis. Dashed so a projection can never be
+    // mistaken for the measured series, which is solid throughout.
+    fwdArt += '<path d="' + pathOf(fwd.required) + '" fill="none" stroke="#d4af37" stroke-width="1.6" stroke-dasharray="4 3"/>';
+
+    if(!fwd.twoLine){
+      // A marker sitting ON the line for each short week. The hatch carries the
+      // week at a glance; the dot survives a column too narrow to show texture.
+      for(let j = 0; j < m; j++){
+        if(!(fwd.unfilled[j] > 0)) continue;
+        fwdArt += '<circle cx="' + FX(j).toFixed(1) + '" cy="' + Y(fwd.required[j]).toFixed(1)
+               +  '" r="3" fill="#d4af37" stroke="var(--surface)" stroke-width="1"/>';
+      }
+    }
+
+    // hover targets — every figure behind a forward week, including the gap
+    for(let j = 0; j < m; j++){
+      const short = fwd.unfilled[j] || 0;
+      let tip = perfWeekLabel(fwd.keys[j]) + '  ·  on the books'
+        + (j === 0 && fwd.partial ? '\n(part week — from today)' : '')
+        + '\nrequired   ' + fmtFull(fwd.required[j]) + '  (will be invoiced)'
+        // The secured figure is shown in HOURS mode only. In dollars, printing it
+        // beside required just moves the misleading subtraction from the chart
+        // into the hover — the seat counts below say the same thing without
+        // denominating a staffing gap in money it cannot cost.
+        + (fwd.twoLine ? '\nsecured    ' + fmtFull(fwd.secured[j]) : '')
+        + '\n' + perfNum(fwd.reqSeats[j]) + ' required · ' + perfNum(fwd.conSeats[j]) + ' confirmed'
+        + '\n' + perfNum(fwd.ordSeats[j]) + ' offers sent';
+      if(short > 0){
+        // The two shortfalls that look identical on the chart and need opposite
+        // responses. Which one it is depends entirely on `ordered`.
+        const bits = [];
+        if(fwd.hardFill[j]) bits.push(perfNum(fwd.hardFill[j]) + ' hard to fill');
+        if(fwd.notStart[j]) bits.push(perfNum(fwd.notStart[j]) + ' not started');
+        tip += '\n' + perfNum(short) + ' seat' + (short === 1 ? '' : 's') + ' unfilled'
+            +  (bits.length ? '  (' + bits.join(', ') + ')' : '');
+      }
+      tip += (fwd.unpriced[j] ? '\n' + perfNum(fwd.unpriced[j]) + ' call'
+                + (fwd.unpriced[j] === 1 ? '' : 's') + ' unpriced — revenue understated' : '');
+      // Clamped to the canvas at both ends: at the divider so it does not reach
+      // back over the measured series, and at the right edge so the last week's
+      // target does not run off the viewBox.
+      const fx = Math.max(fwdX, FX(j) - fwdStep / 2);
+      const fw2 = Math.max(0, Math.min(FX(j) + fwdStep / 2, W - padR) - fx);
+      fwdArt += '<rect class="perf-hit" x="' + fx.toFixed(1) + '" y="' + padT
+             +  '" width="' + fw2.toFixed(1) + '" height="' + plotH + '">'
+             +  '<title>' + escapeHtml(tip) + '</title></rect>';
+    }
+  }
+
+  const fwdSvg = fwdBg + fwdArt;
+
+  const aria = 'Weekly ' + perfUnitLabel(s.unit) + ', ' + perfWeekLabel(s.labels[0]) + ' to ' + perfWeekLabel(s.labels[n - 1])
+             + ', this year against last year'
+             + (m ? ', followed by ' + m + ' weeks on the books as at today, drawn as required against secured.'
+                 : '.');
 
   return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + escapeHtml(aria) + '">'
     + '<defs><pattern id="' + uid + '" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
     +   '<rect width="7" height="7" fill="rgba(212,175,55,0.05)"/>'
     +   '<line x1="0" y1="0" x2="0" y2="7" stroke="#d4af37" stroke-width="2" opacity="0.5"/>'
+    + '</pattern>'
+    // Unfilled seats. VERTICAL, where the uninvoiced band's hatch is 45° — two
+    // different facts must not share a texture on one chart.
+    + '<pattern id="' + uid + 'short" width="5" height="5" patternUnits="userSpaceOnUse">'
+    +   '<rect width="5" height="5" fill="rgba(212,175,55,0.04)"/>'
+    +   '<line x1="0" y1="0" x2="0" y2="5" stroke="#d4af37" stroke-width="1.4" opacity="0.40"/>'
     + '</pattern></defs>'
     + grid
     + '<path d="' + invArea + '" fill="rgba(212,175,55,0.22)" stroke="none"/>'
@@ -18613,18 +18862,58 @@ function perfWeeklyChartSvg(s){
     + '<path d="' + invTop + '" fill="none" stroke="#d4af37" stroke-width="2"/>'
     + '<path d="' + prevLine + '" fill="none" stroke="var(--muted)" stroke-width="1.4" stroke-dasharray="5 4"/>'
     + '<line class="perf-grid" x1="' + padL + '" y1="' + baseY + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + baseY + '"/>'
-    + xlab + fwd + hits
+    + xlab + fwdSvg + hits
     + '</svg>';
 }
 
-function perfChartKey(hasUnv){
+function perfChartKey(s){
+  const hasUnv = s.hasUnv;
+  const fwd    = s.fwd || null;
+
   let k = '<div class="perf-key">'
     + '<span class="perf-key-i"><span class="perf-key-sw" style="background:rgba(212,175,55,0.35);border:1px solid #d4af37"></span>invoiced, by event date</span>';
   if(hasUnv){
     k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:repeating-linear-gradient(45deg,#d4af37 0 2px,transparent 2px 5px)"></span>delivered, not yet invoiced</span>';
   }
-  k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,var(--muted) 0 5px,transparent 5px 9px,var(--muted) 9px 14px);height:2px"></span>same weeks, last year</span>'
-    + '</div>';
+  k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,var(--muted) 0 5px,transparent 5px 9px,var(--muted) 9px 14px);height:2px"></span>same weeks, last year</span>';
+
+  if(fwd){
+    k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,#d4af37 0 4px,transparent 4px 7px,#d4af37 7px 11px);height:2px"></span>required — on the books, as at today</span>';
+    if(fwd.twoLine){
+      k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:rgba(212,175,55,0.30);border:1px solid #d4af37"></span>secured — crew confirmed</span>';
+    } else {
+      k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:repeating-linear-gradient(90deg,#d4af37 0 1.5px,transparent 1.5px 5px)"></span>weeks with seats still unfilled</span>';
+    }
+  }
+  k += '</div>';
+
+  // The rate card's capture date and the unpriced count go BESIDE the forward
+  // figures, not in a comment somewhere. A card that has not been refreshed since
+  // a rate rise should be obvious to the reader rather than depending on somebody
+  // remembering to check, and revenue drawn from an incomplete set of calls must
+  // say so where the number is.
+  if(fwd){
+    const card     = fwd.card || {};
+    const dq       = fwd.dq || {};
+    const unmapped = dq.forward_unmapped_calls || 0;
+    const errs     = dq.forward_price_errors || 0;
+
+    let sub = 'Forward revenue is priced at <b>list rates</b>';
+    if(card.captured_at){
+      sub += ' from a rate card captured <b>' + escapeHtml(String(card.captured_at)) + '</b>';
+    }
+    sub += '. There are no customer discount rates.';
+
+    if(unmapped || errs){
+      const parts = [];
+      if(unmapped) parts.push(perfNum(unmapped) + ' with a call name that maps to no rate-card role');
+      if(errs)     parts.push(perfNum(errs) + ' the pricing engine refused');
+      sub += ' <b>' + perfNum(unmapped + errs) + ' call' + ((unmapped + errs) === 1 ? '' : 's')
+          +  ' could not be priced</b> — ' + parts.join(', ')
+          +  '. Their hours are counted; their revenue is not, so the forward revenue line is understated.';
+    }
+    k += '<div class="perf-note">' + sub + '</div>';
+  }
   return k;
 }
 
@@ -18633,7 +18922,7 @@ function renderPerformance(){
   const body = document.getElementById('perf-body');
   const d    = _perfData;
   if(!body || !d) return;
-  body.innerHTML = perfHeadlines(d) + perfWeeklyCard(d) + perfCustomerCard(d) + perfYieldCard(d);
+  body.innerHTML = perfHeadlines(d) + perfWeeklyCard(d) + perfForwardCard(d) + perfCustomerCard(d) + perfYieldCard(d);
 }
 
 // Window equipment, summed off the weekly series — the only place the payload
@@ -18680,7 +18969,8 @@ function perfHeadlines(d){
 
 function perfWeeklyCard(d){
   const custId = _perfCustomer;
-  const s      = perfSeries(d, custId);
+  const unit   = _perfUnit;
+  const s      = perfSeries(d, custId, unit);
   const dq     = d.data_quality || {};
 
   // The night share of the uninvoiced band, derived from HOURS rather than
@@ -18693,7 +18983,7 @@ function perfWeeklyCard(d){
   const unvDayHrs   = dq.uninvoiced_day_hours || 0;
   const unvHrs      = unvNightHrs + unvDayHrs;
   const nightPct    = unvHrs > 0 ? Math.round(100 * unvNightHrs / unvHrs) : null;
-  const noRateRows  = dq.missing_night_rate_rows || 0;
+  let   noRateRows  = dq.missing_night_rate_rows || 0;   // night-rate caveat is a MONEY caveat; zeroed in hours
 
   let who = 'All customers';
   if(custId === '__other__') who = 'All other customers';
@@ -18702,22 +18992,46 @@ function perfWeeklyCard(d){
     who = c ? c.name : 'Customer';
   }
 
+  // Joe's units switch. aria-pressed carries which unit is active, so the control
+  // states it rather than relying on the styling alone.
+  const unitBtn = function(u, lbl){
+    const on = (unit === u);
+    return '<span class="perf-unit' + (on ? ' on' : '') + '" role="button" tabindex="0"'
+      + ' aria-pressed="' + (on ? 'true' : 'false') + '"'
+      + ' aria-label="Show weekly ' + escapeHtml(perfUnitLabel(u)) + '"'
+      + ' onclick="perfSetUnit(' + JSON.stringify(u) + ')"'
+      + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();perfSetUnit(' + JSON.stringify(u) + ');}"'
+      + '>' + escapeHtml(lbl) + '</span>';
+  };
+
   let head = '<div class="perf-card-head">'
-    + '<span class="perf-card-title">WEEKLY REVENUE</span>'
+    + '<span class="perf-card-title">WEEKLY ' + (unit === 'hours' ? 'HOURS' : 'REVENUE') + '</span>'
     + '<span class="perf-card-sub">' + escapeHtml(who) + ' · invoiced by event date, this year against last</span>';
   if(custId != null){
     head += '<span class="perf-back" onclick="perfSelectCustomer(null)" style="margin-left:auto">← all customers</span>';
   }
-  head += '</div>';
+  head += '<span class="perf-units" style="margin-left:' + (custId != null ? '10px' : 'auto') + '">'
+       +    unitBtn('revenue', '$') + unitBtn('hours', 'hours')
+       +  '</span>'
+       +  '</div>';
 
-  let note = '<div class="perf-note"><b>Invoiced revenue, by event date.</b> It will not match a monthly Xero figure, '
-    + 'deliberately — revenue is attributed to when the work happened, not when it was billed, so it sits on the same clock as the hours.</div>';
+  // The unit changes what the caveats ARE, not just their wording: in hours the
+  // uninvoiced band stops being an estimate at all, because its hours are actuals
+  // off the crew sheet and only its money was ever modelled.
+  let note = (unit === 'hours')
+    ? '<div class="perf-note"><b>Invoiced hours, by event date.</b> Hours are attributed to when the work happened, '
+      + 'not when it was billed. Equipment hire lines carry hours here too — the crew-only figure is in the headline row above.</div>'
+    : '<div class="perf-note"><b>Invoiced revenue, by event date.</b> It will not match a monthly Xero figure, '
+      + 'deliberately — revenue is attributed to when the work happened, not when it was billed, so it sits on the same clock as the hours.</div>';
 
   if(s.hasUnv){
-    note += '<div class="perf-note">The hatched band is <b>work delivered but not yet invoiced</b>. It is not a shortfall — its width is the billing lag. '
-      + 'Its hours are actuals off the crew sheet; its money is an <b>estimate</b>, each hour priced at that crew member\'s own day or night charge-out, split at 08:00 / 20:00'
-      + (nightPct != null ? ' — ' + nightPct + '% of those hours are night hours' : '')
-      + '.';
+    note += '<div class="perf-note">The hatched band is <b>work delivered but not yet invoiced</b>. It is not a shortfall — its width is the billing lag. ';
+    note += (unit === 'hours')
+      ? 'In hours it is <b>measured, not estimated</b>: these are actuals off the crew sheet. Only its money is an estimate, which is why the two carry different keys in the payload.'
+      : 'Its hours are actuals off the crew sheet; its money is an <b>estimate</b>, each hour priced at that crew member\'s own day or night charge-out, split at 08:00 / 20:00'
+        + (nightPct != null ? ' — ' + nightPct + '% of those hours are night hours' : '')
+        + '.';
+    if(unit === 'hours'){ noRateRows = 0; }
     if(noRateRows > 0){
       note += ' ' + noRateRows + ' row' + (noRateRows === 1 ? '' : 's')
         + ' carr' + (noRateRows === 1 ? 'ies' : 'y') + ' no night rate and '
@@ -18729,7 +19043,192 @@ function perfWeeklyCard(d){
     note += '<div class="perf-note">Invoiced revenue only. The delivered-not-yet-invoiced band is <b>not attributed to customers</b> by the endpoint, so it is absent here rather than shown as zero.</div>';
   }
 
-  return '<div class="perf-card">' + head + perfWeeklyChartSvg(s) + perfChartKey(s.hasUnv) + note + '</div>';
+  // The forward book's own explanation sits with the chart, because the label is
+  // load-bearing: the curve always slopes toward zero at the far edge, since calls
+  // are entered as they are booked. That is the pipeline, not a collapsing
+  // quarter, and it is why this is never called a forecast.
+  if(s.fwd){
+    note += '<div class="perf-note">Right of the dashed line is <b>on the books, as at '
+      + escapeHtml(String(s.fwd.asAt || 'today')) + '</b> — not a forecast. It slopes down at the far edge because '
+      + 'calls are entered as they are booked, so the last weeks are simply less full yet, not weaker.'
+      + (s.fwd.partial ? ' The first forward week is a <b>part week</b>, running from today rather than from its Monday.' : '')
+      + (s.fwd.twoLine
+          ? ' <b>Required</b> is what the customer is charged for, filled or not; <b>secured</b> is what crew have accepted. '
+            + 'The gap between them is <b>unfilled seats</b> — hours with nobody attached to them yet.'
+          : ' Every dollar here is a dollar that will be <b>invoiced</b>: required is charged whether the seat is filled or not, '
+            + 'so there is deliberately no second money line to read a gap against. The hatched weeks still have '
+            + '<b>seats unfilled</b> — a staffing problem, which costs no revenue. Switch to hours to see the size of it.')
+      + '</div>';
+  }
+
+  return '<div class="perf-card">' + head + perfWeeklyChartSvg(s, perfUnitFmt(unit), perfUnitFmtFull(unit))
+       + perfChartKey(s) + note + '</div>';
+}
+
+// ── the forward book ────────────────────────────────────────────────────────
+// §5.3's other half. The chart shares one y-axis with the history, which is
+// honest and which also means a normal forward week is a few pixels tall beside
+// a $700k tour week. So the chart carries the SHAPE and this card carries the
+// MAGNITUDE, as numbers, where nothing has to be read off a pixel.
+//
+// The three seat states are the point of it. required - ordered is seats nobody
+// has been approached for, which is the most actionable figure on this screen and
+// appears nowhere else in the business.
+function perfForwardCard(d){
+  const f  = d.forward || null;
+  const fp = (f && f.priced) || null;
+  if(!f) return '';
+
+  if(!fp || fp.unavailable){
+    return '<div class="perf-card">'
+      + '<div class="perf-card-head"><span class="perf-card-title">THE FORWARD BOOK</span>'
+      +   '<span class="perf-card-sub">on the books, as at ' + escapeHtml(String(f.as_at || 'today')) + '</span></div>'
+      + '<div class="ops-lane-status">Could not be priced'
+      + ((fp && fp.error) ? ' — ' + escapeHtml(String(fp.error)) : '')
+      + '. The historical view above is unaffected.</div></div>';
+  }
+
+  const t     = fp.totals || {};
+  const dq    = fp.data_quality || {};
+  const fdq   = f.data_quality || {};
+  const card  = fp.rate_card || {};
+  const weeks = fp.weeks || [];
+  const short = t.unfilled_seats || 0;
+
+  const tile = function(val, lbl, sub, accent){
+    return '<div class="perf-head">'
+      + '<div class="perf-head-val' + (accent ? ' accent' : '') + '">' + val + '</div>'
+      + '<div class="perf-head-lbl">' + escapeHtml(lbl) + '</div>'
+      + (sub ? '<div class="perf-head-sub">' + sub + '</div>' : '')
+      + '</div>';
+  };
+
+  const heads = '<div class="perf-heads">'
+    + tile(perfMoney(t.revenue), 'forward revenue',
+           'required seats, list rates'
+           + (card.captured_at ? ' · <span style="white-space:nowrap">card ' + escapeHtml(String(card.captured_at)) + '</span>' : ''), true)
+    + tile(perfNum(t.required_hours) + '<span style="font-size:12px;color:var(--muted)">h</span>', 'required hours',
+           perfNum(t.billable_hours) + 'h billable after the minimum')
+    // Secured is stated in HOURS and SEATS, never in dollars — the same reason the
+    // chart draws one money line. `secured_revenue` is exact and stays in the
+    // payload, but putting it beside forward revenue here would invite the very
+    // subtraction the chart was changed to prevent: the difference is a staffing
+    // gap and costs nothing, because required is invoiced either way.
+    + tile(perfNum(t.secured_hours) + '<span style="font-size:12px;color:var(--muted)">h</span>', 'secured hours',
+           'hours with crew confirmed')
+    + tile(perfNum(t.required_seats), 'seats required',
+           perfNum(t.confirmed_seats) + ' confirmed · ' + perfNum(t.ordered_seats) + ' offers sent')
+    + tile(perfNum(short), 'seats unfilled',
+           perfNum(t.short_calls) + ' call' + ((t.short_calls === 1) ? '' : 's') + ' short')
+    + '</div>';
+
+  // Per week, because a total over 60 days hides which week is empty.
+  let rows = '';
+  weeks.forEach(function(w){
+    const sh = w.unfilled_seats || 0;
+    const un = (w.unpriced_calls || 0) + (w.error_calls || 0);
+    // The shortfall's KIND, per week. Same gap, opposite response.
+    const kind = [];
+    if(w.hard_to_fill) kind.push(perfNum(w.hard_to_fill) + ' hard to fill');
+    if(w.not_started)  kind.push(perfNum(w.not_started) + ' not started');
+    rows += '<tr>'
+      + '<td>' + escapeHtml(perfWeekLabel(w.key)) + '</td>'
+      + '<td class="num">' + perfNum(w.calls) + '</td>'
+      + '<td class="num">' + perfNum(w.required_seats) + '</td>'
+      + '<td class="num">' + perfNum(w.confirmed_seats) + '</td>'
+      + '<td class="num">' + (sh > 0 ? '<b>' + perfNum(sh) + '</b>' : '—') + '</td>'
+      + '<td>' + (kind.length ? '<span style="color:var(--muted)">' + escapeHtml(kind.join(' · ')) + '</span>' : '') + '</td>'
+      + '<td class="num">' + perfNum(w.ordered_seats) + '</td>'
+      + '<td class="num">' + perfNum(w.required_hours) + '</td>'
+      + '<td class="num">' + perfMoney(w.revenue) + (un ? ' <span title="' + perfNum(un) + ' unpriced">*</span>' : '') + '</td>'
+      + '</tr>';
+  });
+
+  const tbl = '<table class="perf-tbl"><thead><tr>'
+    + '<th>Week</th><th style="text-align:right">Calls</th>'
+    + '<th style="text-align:right">Required</th><th style="text-align:right">Confirmed</th>'
+    + '<th style="text-align:right">Unfilled</th><th>Why</th>'
+    + '<th style="text-align:right">Offers sent</th>'
+    + '<th style="text-align:right">Hours</th><th style="text-align:right">Revenue</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+
+  let notes = '<div class="perf-note"><b>On the books, as at ' + escapeHtml(String(f.as_at || 'today'))
+    + '</b> — the next ' + perfNum(f.days || 0) + ' days, not a forecast. Both figures are priced at list rates: '
+    + '<b>required</b> is what the customer is charged for whether the seat is filled or not, and <b>secured</b> is the '
+    + 'same seats at the same rates with only the confirmed ones counted.</div>';
+
+  if(short > 0){
+    notes += '<div class="perf-note"><b>' + perfNum(short) + ' seat' + (short === 1 ? '' : 's')
+      + ' unfilled across ' + perfNum(t.short_calls) + ' call' + ((t.short_calls === 1) ? '' : 's') + '.</b> '
+      + 'This is a <b>staffing</b> gap, not lost revenue — required is charged either way. '
+      + 'Two kinds, and they need opposite responses: '
+      + '<b>' + perfNum(t.hard_to_fill) + ' hard to fill</b> — everyone has been asked and the seats are still open, which is a supply problem; '
+      + '<b>' + perfNum(t.not_started) + ' not started</b> — fewer offers have gone out than there are seats, which is an ops task nobody has picked up. '
+      + 'The two look identical on the chart; only the offers-sent count separates them.</div>';
+  }
+
+  const caveats = [];
+  if(dq.forward_unmapped_calls){
+    const names = (dq.forward_unmapped_names || []).map(function(u){
+      return escapeHtml(String(u.call_name || '(blank)')) + ' ×' + perfNum(u.calls);
+    }).join(', ');
+    caveats.push('<b>' + perfNum(dq.forward_unmapped_calls) + ' call'
+      + (dq.forward_unmapped_calls === 1 ? '' : 's') + ' unpriced</b> — the call name maps to no rate-card role'
+      + (names ? ' (' + names + ')' : '')
+      + '. Never priced at Standard Crew as a fallback, so the revenue above is understated rather than wrong.');
+  }
+  if(dq.forward_price_errors){
+    caveats.push(perfNum(dq.forward_price_errors) + ' call'
+      + (dq.forward_price_errors === 1 ? '' : 's') + ' the pricing engine refused (usually a missing start time).');
+  }
+  if(fdq.forward_cancelled_calls){
+    caveats.push(perfNum(fdq.forward_cancelled_calls) + ' cancelled call'
+      + (fdq.forward_cancelled_calls === 1 ? '' : 's') + ' excluded (' + perfNum(fdq.forward_cancelled_seats)
+      + ' seats). Cancellation is marked in free text, so this count is the canary for that convention changing.');
+  }
+  if(dq.forward_prefix_resolved){
+    const amb = dq.forward_prefix_ambiguous || 0;
+    let c = perfNum(dq.forward_prefix_resolved) + ' call'
+      + (dq.forward_prefix_resolved === 1 ? '' : 's') + ' priced from the <b>prefix</b> of the call name '
+      + '(everything before the first “-” or “/”), because SmartStaff\'s call name is free text where the Estimator\'s is a dropdown.';
+    if(amb){
+      const names = (dq.forward_prefix_ambiguous_names || []).map(function(u){
+        return escapeHtml(String(u.call_name || '(blank)')) + ' ×' + perfNum(u.calls);
+      }).join(', ');
+      c += ' <b>' + perfNum(amb) + ' of those are ambiguous</b> — the head and the tail resolve to different roles'
+        + (names ? ' (' + names + ')' : '')
+        + ', and the head is taken, which is the higher rate. If that count grows, a combined-call naming convention is spreading and is quietly inflating this figure.';
+    }
+    caveats.push(c);
+  }
+  if(dq.forward_zero_length_calls){
+    caveats.push(perfNum(dq.forward_zero_length_calls) + ' zero-length call'
+      + (dq.forward_zero_length_calls === 1 ? '' : 's') + ' excluded ('
+      + perfNum(dq.forward_zero_length_seats) + ' seat' + (dq.forward_zero_length_seats === 1 ? '' : 's')
+      + ') — flat charges billed irrespective of hours, such as a broadcast allowance. Their revenue is real but is not an hours-based projection, so it is out of scope here.');
+  }
+  if(fdq.forward_qty_inversions){
+    caveats.push(perfNum(fdq.forward_qty_inversions) + ' call'
+      + (fdq.forward_qty_inversions === 1 ? '' : 's') + ' where offers sent exceed the seats required. '
+      + 'That is <b>normal</b> — you ask more people than you need — and is why offers sent is a diagnostic here rather than a line on the chart.');
+  }
+  if(fdq.forward_gap_calls){
+    caveats.push(perfNum(fdq.forward_gap_calls) + ' call'
+      + (fdq.forward_gap_calls === 1 ? '' : 's') + ' earlier this week sit in neither view: the history ends at the '
+      + 'last complete week and the book starts today.');
+  }
+  if(caveats.length){
+    notes += '<div class="perf-note">' + caveats.join(' ') + '</div>';
+  }
+
+  return '<div class="perf-card">'
+    + '<div class="perf-card-head">'
+    +   '<span class="perf-card-title">THE FORWARD BOOK</span>'
+    +   '<span class="perf-card-sub">' + escapeHtml(String(f.from || '')) + ' → ' + escapeHtml(String(f.to || ''))
+    +   ' · required against secured</span>'
+    + '</div>'
+    + heads + tbl + notes
+    + '</div>';
 }
 
 // ── customer stack ──────────────────────────────────────────────────────────
@@ -18738,25 +19237,34 @@ function perfWeeklyCard(d){
 // smallest segments are only a few pixels wide and could never hold a label.
 // Both are click targets — every number on this screen reaches the weeks behind it.
 function perfCustomerCard(d){
+  // Follows the weekly chart's unit: concentration by revenue and concentration
+  // by hours are different shapes, and a reader who has switched the chart to
+  // hours is asking about the hours. perfYieldCard deliberately does NOT follow —
+  // it is already a ratio of the two and has no unit to switch.
+  const unit  = _perfUnit;
+  const val   = function(c){ return ((unit === 'hours' ? c.hours : c.revenue) || 0); };
+  const fmt   = perfUnitFmt(unit);
   const cust  = (d.customers || []).slice();
   const other = d.other || {};
   const segs  = cust.map(function(c, i){
-    return { id: c.id, name: c.name, revenue: c.revenue || 0, hours: c.hours || 0, color: PERF_COLORS[i % PERF_COLORS.length] };
+    return { id: c.id, name: c.name, value: val(c), revenue: c.revenue || 0, hours: c.hours || 0, color: PERF_COLORS[i % PERF_COLORS.length] };
   });
   if((other.revenue || 0) !== 0 || (other.customer_count || 0) > 0){
     segs.push({ id: '__other__',
                 name: 'All other (' + perfNum(other.customer_count) + ' customers)',
-                revenue: other.revenue || 0, hours: other.hours || 0, color: PERF_OTHER_COLOR });
+                value: val(other), revenue: other.revenue || 0, hours: other.hours || 0, color: PERF_OTHER_COLOR });
   }
-  const total = segs.reduce(function(a, s){ return a + s.revenue; }, 0);
-  if(total <= 0) return '<div class="perf-card"><div class="ops-lane-status">No invoiced revenue in this window.</div></div>';
+  const total = segs.reduce(function(a, s){ return a + s.value; }, 0);
+  if(total <= 0) return '<div class="perf-card"><div class="ops-lane-status">No invoiced '
+    + (unit === 'hours' ? 'hours' : 'revenue') + ' in this window.</div></div>';
 
   const W = 1000, H = 34;
   let x = 0, bar = '';
   segs.forEach(function(sg){
-    const w   = (sg.revenue / total) * W;
-    const pct = perfPct(sg.revenue, total);
-    const tip = sg.name + '\n' + perfMoneyFull(sg.revenue) + '  ·  ' + pct.toFixed(1) + '%\n' + perfNum(sg.hours) + ' hours';
+    const w   = (sg.value / total) * W;
+    const pct = perfPct(sg.value, total);
+    const tip = sg.name + '\n' + perfMoneyFull(sg.revenue) + '  ·  ' + perfNum(sg.hours) + ' hours'
+              + '\n' + pct.toFixed(1) + '% of ' + perfUnitLabel(unit);
     bar += '<rect data-cust="' + escapeHtml(String(sg.id)) + '" x="' + x.toFixed(2) + '" y="0" width="' + Math.max(0, w).toFixed(2) + '" height="' + H + '"'
         +  ' fill="' + sg.color + '" onclick="perfSelectCustomer(' + JSON.stringify(String(sg.id)) + ')">'
         +  '<title>' + escapeHtml(tip) + '</title></rect>';
@@ -18770,18 +19278,19 @@ function perfCustomerCard(d){
     return '<div class="perf-leg' + (on ? ' on' : '') + '" onclick="perfSelectCustomer(' + JSON.stringify(String(sg.id)) + ')">'
       + '<span class="perf-leg-sw" style="background:' + sg.color + '"></span>'
       + '<span class="perf-leg-lb" title="' + escapeHtml(sg.name) + '">' + escapeHtml(sg.name) + '</span>'
-      + '<span class="perf-leg-pc">' + perfPct(sg.revenue, total).toFixed(1) + '%</span>'
-      + '<span class="perf-leg-ct">' + perfMoney(sg.revenue) + '</span>'
+      + '<span class="perf-leg-pc">' + perfPct(sg.value, total).toFixed(1) + '%</span>'
+      + '<span class="perf-leg-ct">' + fmt(sg.value) + '</span>'
       + '</div>';
   }).join('');
 
   return '<div class="perf-card">'
     + '<div class="perf-card-head">'
     +   '<span class="perf-card-title">CUSTOMER CONCENTRATION</span>'
-    +   '<span class="perf-card-sub">share of invoiced revenue in the window — click any customer for its own weekly chart</span>'
+    +   '<span class="perf-card-sub">share of invoiced ' + (unit === 'hours' ? 'hours' : 'revenue')
+    +   ' in the window — click any customer for its own weekly chart</span>'
     + '</div>'
     + '<svg class="perf-stack" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img"'
-    +   ' aria-label="Revenue share by customer, top 8 and the remainder">' + bar + '</svg>'
+    +   ' aria-label="' + escapeHtml((unit === 'hours' ? 'Hours' : 'Revenue') + ' share by customer, top 8 and the remainder') + '">' + bar + '</svg>'
     + '<div class="perf-legs">' + legs + '</div>'
     + '</div>';
 }
