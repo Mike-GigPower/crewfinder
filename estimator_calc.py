@@ -16,6 +16,11 @@ PUBLIC SURFACE
     calc_line(line, cfg, mode, rate_row)     — one labour line
     calc_quote_totals(quote, cfg, mode)      — every line plus non-labour
     role_for_call_name(call_name)            — call name -> rate-card role
+    resolve_smartstaff_call_name(name)       — the same, for SmartStaff's FREE-TEXT
+                                               call names: exact, then the
+                                               SmartStaff-only extras, then the
+                                               prefix before the first "-" or "/".
+                                               NO calc.ts equivalent.
 
 TWO CLOCKS, ONE ALGORITHM  (BRIEF Decision 1)
 
@@ -265,8 +270,11 @@ def parse_time_hhmm(t):
         sees, and it does not.
 
       * the numeric fallback reads a decimal fraction of a DAY, so "0.5" is
-        12:00 and a bare "8" is 00:00 (8 % 1 === 0), not 08:00. Harmless, but
-        reproduced, or the port would reject input the Estimator prices.
+        12:00. A bare integer is REJECTED. It used to fall through
+        `8 % 1 === 0` to 00:00, so a start time of "8" priced a full shift from
+        midnight at night rates — a ~27% over-quote that raised no validation
+        error because the parse succeeded. Fixed in calc.ts on 24 Aug 2026 and
+        matched here the same day. "0" is still 00:00: zero IS a day-fraction.
     """
     raw = ("" if t is None else str(t)).strip()
 
@@ -283,8 +291,10 @@ def parse_time_hhmm(t):
     if as_num is None or not math.isfinite(as_num):
         return None
 
-    frac = as_num if (0 <= as_num < 1) else _js_mod(as_num, 1.0)
-    total_minutes = _js_round(frac * 24 * 60)
+    if not (0 <= as_num < 1):
+        return None                     # a bare integer is not a day-fraction
+
+    total_minutes = _js_round(as_num * 24 * 60)
     h = _js_mod(math.floor(total_minutes / 60.0), 24)
     m = _js_mod(total_minutes, 60)
 
@@ -492,6 +502,115 @@ def role_for_call_name(call_name):
     if not call_name:
         return None
     return CALL_NAME_TO_ROLE.get(call_name)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SmartStaff-side call names
+#
+# EVERYTHING BELOW THIS LINE HAS NO EQUIVALENT IN calc.ts OR types.ts.
+#
+# CALL_NAME_TO_ROLE above is a VERBATIM copy of types.ts and must stay one: that
+# fidelity is the only thing that lets the two implementations be diffed. So the
+# SmartStaff-only names live in their own dict and the resolver below layers them
+# on rather than merging them in.
+#
+# The Estimator constrains its Call Name to a dropdown. SmartStaff does not — the
+# field is free text, and operations uses it to say what the call actually is
+# ("Load In - Loaders/Pushers", "Show Call / Load Out"). Exact matching alone
+# prices 61% of the live forward book's hours. The four rules below reach 100%.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# SmartStaff free-text call names that no Estimator dropdown entry produces.
+# Confirmed with Mike, 24 Aug 2026. Kept OUT of CALL_NAME_TO_ROLE so that map
+# stays a verbatim copy of types.ts and the two can still be diffed.
+SMARTSTAFF_EXTRA_CALL_NAMES = {
+    "Robo Spot":       "Show Crew",
+    "Tech Rehearsal":  "Show Crew",
+    "Dress Rehearsal": "Show Crew",
+}
+
+# The separators operations uses to qualify a call name. Split on the FIRST one.
+_SMARTSTAFF_SEPARATORS = ("-", "/")
+
+
+def _resolve_exact(name):
+    """Rules 1 and 2, in order: the types.ts map, then the SmartStaff extras."""
+    if not name:
+        return None
+    return CALL_NAME_TO_ROLE.get(name) or SMARTSTAFF_EXTRA_CALL_NAMES.get(name)
+
+
+def _split_on_first_separator(name):
+    """
+    ("Load In", "Loaders/Pushers") for "Load In - Loaders/Pushers".
+
+    Whitespace around the separator is trimmed — both "Show Call/Load Out" and
+    "Show Call / Load Out" occur in the live data. Returns (None, None) when the
+    name carries no separator.
+    """
+    if not name:
+        return (None, None)
+    cuts = [name.find(sep) for sep in _SMARTSTAFF_SEPARATORS]
+    cuts = [i for i in cuts if i > 0]
+    if not cuts:
+        return (None, None)
+    at = min(cuts)
+    return (name[:at].strip(), name[at + 1:].strip())
+
+
+def resolve_smartstaff_call_name(call_name):
+    """
+    Resolve a SmartStaff free-text call name to a rate-card role.
+
+    Returns {"role": str|None, "rule": "exact"|"extra"|"prefix"|None,
+             "ambiguous": bool}.
+
+    FOUR RULES, IN ORDER
+      1. exact match against CALL_NAME_TO_ROLE          49 of 70 live calls
+      2. exact match against SMARTSTAFF_EXTRA_CALL_NAMES
+      3. the PREFIX — everything before the first "-" or "/" — re-resolved
+         through 1 then 2                                17 calls, 38% of hours
+      4. never fall back. Unmapped is reported, not defaulted (Decision 4).
+
+    RULE 3 IS A HEURISTIC AND SAYS SO. Taking the head of "Show Call/Load Out"
+    resolves to Show Crew at 84.50 where the tail would give Load Out at 63.00.
+    It picks the higher of the two. Four seats on the live book, so the exposure
+    is trivial today — but it is a guess wearing a rule's clothes, so it is
+    counted separately (`rule == "prefix"`) rather than blending into the exact
+    matches.
+
+    `ambiguous` is True only when the head and the tail BOTH resolve and resolve
+    to DIFFERENT roles — the case where the guess is actually load-bearing. A
+    tail that resolves to nothing ("Loaders/Pushers") is not ambiguous: there was
+    only ever one candidate. If the ambiguous count grows, a combined-call naming
+    convention is spreading and the higher-rate head is quietly inflating the
+    forward figure.
+    """
+    if not call_name:
+        return {"role": None, "rule": None, "ambiguous": False}
+
+    name = str(call_name).strip()
+
+    role = CALL_NAME_TO_ROLE.get(name)
+    if role:
+        return {"role": role, "rule": "exact", "ambiguous": False}
+
+    role = SMARTSTAFF_EXTRA_CALL_NAMES.get(name)
+    if role:
+        return {"role": role, "rule": "extra", "ambiguous": False}
+
+    head, tail = _split_on_first_separator(name)
+    if head:
+        head_role = _resolve_exact(head)
+        if head_role:
+            tail_role = _resolve_exact(tail)
+            return {
+                "role": head_role,
+                "rule": "prefix",
+                "ambiguous": bool(tail_role) and tail_role != head_role,
+            }
+
+    return {"role": None, "rule": None, "ambiguous": False}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

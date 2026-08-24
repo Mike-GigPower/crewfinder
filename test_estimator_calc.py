@@ -440,9 +440,18 @@ class ParseTimeTests(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertEqual(r["breakdown"]["baseDayHrs"], 8.0)   # noon to 20:00
 
-    def test_bare_integer_is_midnight_not_that_hour(self):
-        """Number("8") % 1 === 0, so "8" is 00:00. Surprising, and reproduced."""
-        self.assertEqual(ec.parse_time_hhmm("8"), (0, 0))
+    def test_bare_integer_is_rejected(self):
+        """
+        "8" used to reach 00:00 via `8 % 1 === 0` and price a shift from
+        midnight at night rates. calc.ts now requires a true day-fraction, so a
+        bare integer is null there and None here.
+        """
+        self.assertIsNone(ec.parse_time_hhmm("8"))
+        self.assertIsNone(ec.parse_time_hhmm("16"))
+
+    def test_zero_is_still_midnight(self):
+        """Zero satisfies 0 <= n < 1, so it survives the tightened guard."""
+        self.assertEqual(ec.parse_time_hhmm("0"), (0, 0))
 
     def test_single_digit_hour_is_rejected(self):
         """The regex wants a two-digit hour and Number("8:00") is NaN."""
@@ -553,6 +562,83 @@ class CallNameTests(unittest.TestCase):
 
     def test_the_map_is_still_the_twenty_from_types_ts(self):
         self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 20)
+
+
+class SmartStaffCallNameTests(unittest.TestCase):
+    """
+    The four-rule resolver for SmartStaff's FREE-TEXT call names. No calc.ts
+    equivalent — the Estimator constrains its Call Name to a dropdown and
+    SmartStaff does not.
+    """
+
+    def r(self, name):
+        return ec.resolve_smartstaff_call_name(name)
+
+    def test_rule_1_exact_still_wins_and_is_labelled(self):
+        got = self.r("Load In")
+        self.assertEqual(got["role"], "Standard Crew")
+        self.assertEqual(got["rule"], "exact")
+        self.assertFalse(got["ambiguous"])
+
+    def test_rule_2_the_smartstaff_only_names(self):
+        for name in ("Robo Spot", "Tech Rehearsal", "Dress Rehearsal"):
+            got = self.r(name)
+            self.assertEqual(got["role"], "Show Crew", name)
+            self.assertEqual(got["rule"], "extra", name)
+
+    def test_rule_3_prefix_before_a_dash(self):
+        got = self.r("Load In - Loaders/Pushers")
+        self.assertEqual(got["role"], "Standard Crew")
+        self.assertEqual(got["rule"], "prefix")
+        self.assertFalse(got["ambiguous"])
+
+    def test_rule_3_prefix_before_a_slash_spaced_and_unspaced(self):
+        """Both forms occur live; the separator's whitespace is trimmed."""
+        for name in ("Show Call / Load Out", "Show Call/Load Out"):
+            got = self.r(name)
+            self.assertEqual(got["role"], "Show Crew", name)
+            self.assertEqual(got["rule"], "prefix", name)
+
+    def test_ambiguous_only_when_both_halves_resolve_differently(self):
+        """
+        "Show Call/Load Out" is Show Crew at 84.50 by the head and Standard Crew
+        at 63.00 by the tail. The resolver takes the head — the HIGHER — so the
+        case is flagged rather than blended into the exact matches.
+        """
+        self.assertTrue(self.r("Show Call/Load Out")["ambiguous"])
+
+    def test_an_unresolvable_tail_is_not_ambiguous(self):
+        """One candidate is not a conflict — "Loaders/Pushers" is not a role."""
+        self.assertFalse(self.r("Load In - Loaders/Pushers")["ambiguous"])
+        self.assertFalse(self.r("Load In - VX/Auto")["ambiguous"])
+
+    def test_rule_4_never_falls_back(self):
+        for name in ("GC Spot", "Traffic", "Broadcast Allowance"):
+            got = self.r(name)
+            self.assertIsNone(got["role"], name)
+            self.assertIsNone(got["rule"], name)
+
+    def test_blank(self):
+        for name in ("", None, "   "):
+            self.assertIsNone(self.r(name)["role"])
+
+    def test_a_leading_separator_is_not_a_prefix(self):
+        """find() > 0, so "- Load In" has no head to resolve and stays unmapped."""
+        self.assertIsNone(self.r("- Load In")["role"])
+
+    def test_the_extras_are_kept_out_of_the_types_ts_map(self):
+        """
+        The whole point of §1.1: CALL_NAME_TO_ROLE stays a verbatim copy of
+        types.ts so the two implementations can still be diffed.
+        """
+        self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 20)
+        for name in ec.SMARTSTAFF_EXTRA_CALL_NAMES:
+            self.assertNotIn(name, ec.CALL_NAME_TO_ROLE)
+
+    def test_role_for_call_name_is_unchanged_by_any_of_this(self):
+        """The verbatim port must not learn the SmartStaff names."""
+        self.assertIsNone(ec.role_for_call_name("Robo Spot"))
+        self.assertIsNone(ec.role_for_call_name("Load In - Loaders/Pushers"))
 
 
 class QuoteTotalTests(unittest.TestCase):
