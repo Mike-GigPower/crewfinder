@@ -1,6 +1,6 @@
 {
-  "version": "5.14.1",
+  "version": "5.15.0",
   "release_date": "2026-08-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.14.1/TheGOAT.dmg",
-  "release_notes": "The 'not yet invoiced' band on Performance now prices night hours at the night rate instead of the day rate."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.15.0/TheGOAT.dmg",
+  "release_notes": "Performance now shows the next 60 days: what's booked, what has crew on it, and where the gaps are. The chart also switches between dollars and hours."
 }
