@@ -1,6 +1,6 @@
 {
-  "version": "5.13.0",
+  "version": "5.14.0",
   "release_date": "2026-08-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.13.0/TheGOAT.dmg",
-  "release_notes": "THE GOAT now warns you when it's pointed at a test server. ASK THE GOAT will no longer tell you inductions are all clear when it can't actually read them."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.14.0/TheGOAT.dmg",
+  "release_notes": "A new Performance view under Today: weekly hours and revenue against the same period last year, broken down by customer. Work delivered but not yet invoiced now shows as its own band."
 }
