@@ -1315,6 +1315,69 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-ack-err{font-size:11px;color:var(--accent2)}
 .ops-row.ops-row--static{cursor:default}
 .ops-row.ops-row--static:hover{border-color:var(--border)}
+/* ── PERFORMANCE TAB (GM Performance, Release 1) ────────────────────────────
+   Panel/toolbar mirror .ops-* so the two Today views feel like one screen. The
+   charts are hand-rolled SVG (see recruit-age-chart) — no charting library and
+   no CDN, because THE GOAT runs in a WKWebView and must work offline. */
+.perf-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.perf-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.perf-asat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.perf-body{flex:1;min-height:0;padding:14px 16px;overflow-y:auto;width:100%;max-width:1700px;margin:0 auto}
+.perf-card{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:12px 14px;margin-bottom:12px}
+.perf-card-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.perf-card-title{font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:.06em;color:var(--accent)}
+.perf-card-sub{font-size:11px;color:var(--muted)}
+.perf-note{font-size:11px;color:var(--muted);line-height:1.5;margin-top:8px}
+.perf-note b{color:var(--text);font-weight:600}
+/* Headline row */
+.perf-heads{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.perf-head{flex:1 1 160px;border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px 14px}
+.perf-head-val{font-family:'Share Tech Mono',monospace;font-size:22px;color:var(--text);line-height:1.2}
+.perf-head-val.accent{color:var(--accent)}
+.perf-head-lbl{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-top:4px}
+.perf-head-sub{font-size:11px;color:var(--muted);margin-top:3px}
+/* Charts */
+.perf-chart{width:100%;display:block}
+.perf-ax{fill:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px}
+.perf-grid{stroke:var(--border);stroke-width:1}
+.perf-fwd-lbl{fill:var(--muted);font-family:'Rajdhani',sans-serif;font-size:11px}
+.perf-hit{fill:transparent;cursor:default}
+.perf-hit:hover{fill:rgba(212,175,55,0.07)}
+/* Chart key */
+.perf-key{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:11px;color:var(--muted)}
+.perf-key-i{display:flex;align-items:center;gap:6px}
+.perf-key-sw{width:14px;height:10px;border-radius:2px;flex-shrink:0;display:inline-block}
+/* Customer stack */
+.perf-stack{width:100%;display:block;margin-bottom:4px}
+.perf-stack rect[data-cust]{cursor:pointer}
+.perf-stack rect[data-cust]:hover{opacity:.78}
+.perf-stack-lbl{fill:#0b0b0b;font-family:'Share Tech Mono',monospace;font-size:11px;pointer-events:none}
+.perf-legs{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:2px 14px;margin-top:8px}
+.perf-leg{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer;font-size:12px;color:var(--text)}
+.perf-leg:hover{background:var(--surface2)}
+.perf-leg.on{background:var(--accent-bg);outline:1px solid var(--border)}
+.perf-leg-sw{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.perf-leg-lb{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.perf-leg-pc{font-family:'Share Tech Mono',monospace;color:var(--muted);font-size:11px;min-width:38px;text-align:right}
+.perf-leg-ct{font-family:'Share Tech Mono',monospace;color:var(--text);min-width:58px;text-align:right}
+/* Drill-through */
+.perf-back{display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--accent);border-radius:14px;font-size:11px;font-family:'Share Tech Mono',monospace;color:var(--accent);padding:3px 12px;cursor:pointer}
+.perf-back:hover{background:var(--accent-bg)}
+/* Yield table */
+.perf-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.perf-tbl th{text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+.perf-tbl td{padding:6px 8px;border-bottom:1px solid var(--border);color:var(--text)}
+.perf-tbl tr:last-child td{border-bottom:none}
+.perf-tbl tr.clickable{cursor:pointer}
+.perf-tbl tr.clickable:hover td{background:var(--surface2)}
+.perf-tbl .num{font-family:'Share Tech Mono',monospace;text-align:right;white-space:nowrap}
+.perf-tbl .rank{font-family:'Share Tech Mono',monospace;color:var(--muted);width:30px;text-align:right}
+.perf-tbl .yield{font-family:'Share Tech Mono',monospace;text-align:right;color:var(--accent);white-space:nowrap}
+.perf-tbl tr.unranked td{color:var(--muted)}
+.perf-tbl tr.unranked .yield{color:var(--muted)}
+.perf-tbl-sep td{padding:7px 8px 4px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)}
+.perf-sw-cell{width:14px}
+.perf-sw{width:9px;height:9px;border-radius:2px;display:inline-block}
 </style>
 </head>
 <body>
@@ -1372,7 +1435,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
 
 <div class="subtab-bar" id="subtab-bar">
   <div class="subtab-group" id="subtab-today">
-    <button class="tab-btn" id="tab-btn-ops" onclick="switchTab('ops')">Today</button>
+    <button class="tab-btn" id="tab-btn-ops"         onclick="switchTab('ops')">Today</button>
+    <button class="tab-btn" id="tab-btn-performance" onclick="switchTab('performance')">Performance</button>
   </div>
   <div class="subtab-group" id="subtab-bookings">
     <button class="tab-btn active" id="tab-btn-schedule"     onclick="switchTab('schedule')">Schedule</button>
@@ -1554,6 +1618,20 @@ a.recruit-action{text-decoration:none;display:inline-block}
         <button class="btn" onclick="loadOps(true)" style="margin-left:auto">⟳ Refresh</button>
       </div>
       <div class="ops-lanes" id="ops-lanes">
+        <div class="ops-lane-status">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PERFORMANCE TAB (GM Performance, Release 1) ── -->
+  <div class="tab-panel" id="tab-performance">
+    <div class="perf-panel">
+      <div class="perf-toolbar">
+        <span class="section-label" style="margin:0">PERFORMANCE</span>
+        <span class="perf-asat" id="perf-asat">as at —:—</span>
+        <button class="btn" onclick="loadPerformance(true)" style="margin-left:auto">⟳ Refresh</button>
+      </div>
+      <div class="perf-body" id="perf-body">
         <div class="ops-lane-status">Loading…</div>
       </div>
     </div>
@@ -4578,7 +4656,7 @@ async function sendSMS(){
 // My Status is deliberately NOT here — it moved to the identity nav, so
 // groupOfTab('my-status') returns null and it sits outside the group structure.
 const TAB_GROUPS = {
-  today:       ['ops'],
+  today:       ['ops', 'performance'],
   bookings:    ['schedule', 'crew-finder', 'all-bookings', 'import'],
   crew:        ['forecast', 'induction-checker', 'crew-records'],
   recruitment: ['recruitment', 'recruitment-dashboard', 'recruitment-sessions'],
@@ -4633,6 +4711,7 @@ function switchTab(tab){
     p.classList.toggle('active', p.id==='tab-'+tab);
   });
   if(tab==='ops') loadOps();
+  if(tab==='performance') loadPerformance();
   if(tab==='induction-checker' && !_indData) loadInductions();
   if(tab==='import'){ loadImportHistory(); initManualBooking(); }
   if(tab==='forecast') initForecast();
@@ -18297,6 +18376,455 @@ function opsExpiringCard(o){
     +   '</div>'
     + '</div>';
 }
+
+// ── PERFORMANCE TAB (GM Performance, Release 1) ─────────────────────────────
+// One fetch, one payload. /api/performance proxies get-performance.php, which
+// computes every series, the top-8 ranking, the 'All other' roll-up and the
+// totals in a single pass — so this file FORMATS AND DRAWS, and recomputes
+// nothing the server already decided.
+//
+// Two figures are derived here, both from numbers the payload returns and both
+// labelled in the UI as derived: the crew-only revenue-per-hour (window
+// equipment summed off the weekly series, which is the only place the split is
+// carried) and the night-hours share of the uninvoiced band.
+//
+// Charts are hand-rolled SVG in the recruit-age-chart idiom. No charting
+// library and no CDN — THE GOAT runs in a WKWebView, and a CDN chart library is
+// a blank panel the moment the machine is offline.
+let _perfData     = null;
+let _perfCustomer = null;   // drill-through target: customer id, '__other__', or null
+let _perfSvgSeq   = 0;      // unique <pattern> ids — two charts sharing one id collide
+
+const PERF_COLORS = ['#d4af37','#e31e24','#9d8cd4','#f97316','#4ea8de',
+                     '#48bb78','#ed64a6','#38b2ac'];
+const PERF_OTHER_COLOR = '#5a5a5a';
+const PERF_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+// Below this many hours in the window a customer is NOT ranked on yield: a
+// handful of hours makes $/hr swing wildly and a league table implies a
+// precision the sample does not have (design §8.5).
+const PERF_RANK_MIN_HOURS = 1000;
+
+async function loadPerformance(force){
+  if(_perfData && !force){ renderPerformance(); return; }
+  const body = document.getElementById('perf-body');
+  if(body) body.innerHTML = '<div class="ops-lane-status">Loading…</div>';
+  setPerfAsAt(null);
+  try{
+    const resp = await fetch('/api/performance');
+    const data = await resp.json();
+    // Soft-fail is the endpoint's own contract: HTTP 200 {"unavailable":true}.
+    // A 401/403 arrives as {error}. Either way the tab says so and the rest of
+    // the app is untouched.
+    if(data && data.unavailable){ renderPerfUnavailable(data.error || 'the performance endpoint did not answer'); return; }
+    if(!resp.ok || (data && data.error)){ renderPerfUnavailable((data && data.error) || ('HTTP ' + resp.status)); return; }
+    _perfData     = data;
+    _perfCustomer = null;
+    setPerfAsAt(data.generated_at);
+    renderPerformance();
+  }catch(e){
+    renderPerfUnavailable((e && e.message) || 'load failed');
+  }
+}
+
+function renderPerfUnavailable(msg){
+  const body = document.getElementById('perf-body');
+  if(body) body.innerHTML = '<div class="ops-unavail">Performance is unavailable — ' + escapeHtml(String(msg)) + '</div>';
+}
+
+function setPerfAsAt(iso){
+  const el = document.getElementById('perf-asat');
+  if(!el) return;
+  let hhmm;
+  if(iso && typeof iso === 'string' && iso.indexOf('T') > 0 && iso.length >= 16){
+    hhmm = iso.slice(11, 16);            // server snapshot (Melbourne) — the truthful "as at"
+  } else {
+    const n = new Date();
+    hhmm = String(n.getHours()).padStart(2,'0') + ':' + String(n.getMinutes()).padStart(2,'0');
+  }
+  el.textContent = 'as at ' + hhmm;
+}
+
+// ── formatting ──────────────────────────────────────────────────────────────
+function perfMoney(v){
+  const a = Math.abs(v || 0);
+  if(a >= 1e6) return '$' + ((v||0)/1e6).toFixed(2) + 'm';
+  if(a >= 1e3) return '$' + Math.round((v||0)/1e3) + 'k';
+  return '$' + Math.round(v || 0);
+}
+function perfMoneyFull(v){ return '$' + Math.round(v || 0).toLocaleString('en-AU'); }
+function perfNum(v, dp){ return Number(v || 0).toLocaleString('en-AU', {minimumFractionDigits: dp||0, maximumFractionDigits: dp||0}); }
+function perfPct(part, whole){ return whole > 0 ? (100 * part / whole) : 0; }
+
+// A "nice" axis top, so gridlines land on values a human would pick.
+function perfNiceMax(v){
+  if(!(v > 0)) return 1;
+  const mag   = Math.pow(10, Math.floor(Math.log10(v)));
+  const steps = [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10];
+  for(let i = 0; i < steps.length; i++){ if(mag * steps[i] >= v) return mag * steps[i]; }
+  return mag * 10;
+}
+
+// "2026-W33" -> the Date of that ISO week's Monday. Jan 4 is always in ISO week
+// 1, which is the whole trick. Local-time Date, used only to read a month name.
+function perfIsoWeekMonday(key){
+  const m = /^(\d{4})-W(\d{1,2})$/.exec(String(key || ''));
+  if(!m) return null;
+  const year = +m[1], week = +m[2];
+  const jan4 = new Date(year, 0, 4);
+  const dow  = (jan4.getDay() + 6) % 7;             // 0 = Monday
+  return new Date(year, 0, 4 - dow + (week - 1) * 7);
+}
+function perfWeekLabel(key){
+  const d = perfIsoWeekMonday(key);
+  if(!d) return String(key || '');
+  return d.getDate() + ' ' + PERF_MONTHS[d.getMonth()] + ' ' + d.getFullYear();
+}
+
+// ── series assembly ─────────────────────────────────────────────────────────
+// The payload is 2N weeks: the first N are the comparison window, the last N the
+// requested one. in_window is the server's own flag — the split is never
+// re-derived from dates here.
+function perfSplitWeeks(d){
+  const all  = (d && d.weeks) || [];
+  const cur  = all.filter(function(w){ return w.in_window === 1; });
+  const prev = all.filter(function(w){ return w.in_window !== 1; });
+  return { cur: cur, prev: prev };
+}
+
+// custId null -> whole business (invoiced + the uninvoiced band).
+// A customer id -> that customer's invoiced revenue only; the uninvoiced band is
+// not attributed to customers by the endpoint, so it is absent rather than zero.
+function perfSeries(d, custId){
+  const sp   = perfSplitWeeks(d);
+  const n    = Math.min(sp.cur.length, sp.prev.length);
+  const cur  = sp.cur.slice(sp.cur.length - n);
+  const prev = sp.prev.slice(sp.prev.length - n);
+  const out  = { labels: [], inv: [], unv: [], prev: [], hasUnv: (custId == null) };
+
+  let src = null;
+  if(custId != null){
+    src = (custId === '__other__')
+        ? (d.other || {})
+        : ((d.customers || []).filter(function(c){ return String(c.id) === String(custId); })[0] || {});
+  }
+  const pick = function(w){
+    if(custId == null) return (w.invoiced && w.invoiced.revenue) || 0;
+    const wk = (src.weeks || {})[w.key];
+    return (wk && wk.revenue) || 0;
+  };
+
+  for(let i = 0; i < n; i++){
+    out.labels.push(cur[i].key);
+    out.inv.push(pick(cur[i]));
+    out.unv.push(custId == null ? ((cur[i].uninvoiced && cur[i].uninvoiced.estimated_revenue) || 0) : 0);
+    out.prev.push(pick(prev[i]));
+    out.prevLabels = out.prevLabels || [];
+    out.prevLabels.push(prev[i].key);
+  }
+  return out;
+}
+
+// ── the weekly chart ────────────────────────────────────────────────────────
+// Stacked area: invoiced solid, the delivered-not-invoiced band hatched on top.
+// Last year is a thin unfilled line on the same x positions, so week 12 sits
+// above week 12 rather than above a date.
+function perfWeeklyChartSvg(s){
+  const n = s.labels.length;
+  if(n < 2) return '<div class="ops-lane-status">Not enough weeks to chart.</div>';
+
+  const W = 1000, H = 300, padL = 64, padR = 12, padT = 16, padB = 36;
+  const fwdW  = 138;                       // Release 1: reserved, empty-stated
+  const plotW = W - padL - padR - fwdW;
+  const plotH = H - padT - padB;
+  const baseY = padT + plotH;
+  const uid   = 'perfhatch' + (++_perfSvgSeq);
+
+  let max = 0;
+  for(let i = 0; i < n; i++){
+    max = Math.max(max, (s.inv[i] || 0) + (s.unv[i] || 0), s.prev[i] || 0);
+  }
+  const top = perfNiceMax(max);
+  const X = function(i){ return padL + (plotW * i / (n - 1)); };
+  const Y = function(v){ return baseY - (plotH * ((v || 0) / top)); };
+
+  // gridlines + y axis
+  let grid = '';
+  for(let t = 0; t <= 4; t++){
+    const v = top * t / 4, y = Y(v);
+    grid += '<line class="perf-grid" x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + y.toFixed(1) + '"/>'
+          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + perfMoney(v) + '</text>';
+  }
+
+  // x axis: one label per month, never closer than 4 weeks apart
+  let xlab = '', lastMonth = -1, lastAt = -99;
+  for(let i = 0; i < n; i++){
+    const d = perfIsoWeekMonday(s.labels[i]);
+    if(!d) continue;
+    if(d.getMonth() !== lastMonth && (i - lastAt) >= 4){
+      lastMonth = d.getMonth(); lastAt = i;
+      const txt = PERF_MONTHS[d.getMonth()] + (d.getMonth() === 0 ? " '" + String(d.getFullYear()).slice(2) : '');
+      xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (baseY + 15) + '" text-anchor="middle">' + txt + '</text>';
+    }
+  }
+
+  // areas
+  let invTop = '', unvTop = '', unvBack = '', prevLine = '';
+  for(let i = 0; i < n; i++){
+    invTop  += (i ? ' L' : 'M') + X(i).toFixed(1) + ' ' + Y(s.inv[i]).toFixed(1);
+    unvTop  += (i ? ' L' : 'M') + X(i).toFixed(1) + ' ' + Y((s.inv[i] || 0) + (s.unv[i] || 0)).toFixed(1);
+    prevLine += (i ? ' L' : 'M') + X(i).toFixed(1) + ' ' + Y(s.prev[i]).toFixed(1);
+  }
+  for(let i = n - 1; i >= 0; i--){ unvBack += ' L' + X(i).toFixed(1) + ' ' + Y(s.inv[i]).toFixed(1); }
+  const invArea = invTop + ' L' + X(n - 1).toFixed(1) + ' ' + baseY + ' L' + X(0).toFixed(1) + ' ' + baseY + ' Z';
+
+  // per-week hover targets — the whole payload for one week, in a native tooltip
+  const step = plotW / (n - 1);
+  let hits = '';
+  for(let i = 0; i < n; i++){
+    const tip = perfWeekLabel(s.labels[i])
+      + '\ninvoiced   ' + perfMoneyFull(s.inv[i])
+      + (s.hasUnv ? '\nnot yet invoiced  ' + perfMoneyFull(s.unv[i]) : '')
+      + '\nsame week last year  ' + perfMoneyFull(s.prev[i]);
+    hits += '<rect class="perf-hit" x="' + (X(i) - step / 2).toFixed(1) + '" y="' + padT + '" width="' + step.toFixed(1) + '" height="' + plotH + '">'
+          + '<title>' + escapeHtml(tip) + '</title></rect>';
+  }
+
+  // forward zone — reserved and explicitly empty, never drawn as zero
+  const fwdX = padL + plotW;
+  const fwd = '<rect x="' + fwdX.toFixed(1) + '" y="' + padT + '" width="' + fwdW + '" height="' + plotH + '" fill="rgba(255,255,255,0.015)"/>'
+    + '<line x1="' + fwdX.toFixed(1) + '" y1="' + padT + '" x2="' + fwdX.toFixed(1) + '" y2="' + baseY + '" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 4"/>'
+    + '<text class="perf-fwd-lbl" x="' + (fwdX + fwdW / 2).toFixed(1) + '" y="' + (padT + plotH / 2 - 16) + '" text-anchor="middle">'
+    +   '<tspan x="' + (fwdX + fwdW / 2).toFixed(1) + '" dy="0">forward view</tspan>'
+    +   '<tspan x="' + (fwdX + fwdW / 2).toFixed(1) + '" dy="14">arriving in the</tspan>'
+    +   '<tspan x="' + (fwdX + fwdW / 2).toFixed(1) + '" dy="14">next release</tspan>'
+    + '</text>';
+
+  const aria = 'Weekly revenue, ' + perfWeekLabel(s.labels[0]) + ' to ' + perfWeekLabel(s.labels[n - 1])
+             + ', this year against last year.';
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + escapeHtml(aria) + '">'
+    + '<defs><pattern id="' + uid + '" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+    +   '<rect width="7" height="7" fill="rgba(212,175,55,0.05)"/>'
+    +   '<line x1="0" y1="0" x2="0" y2="7" stroke="#d4af37" stroke-width="2" opacity="0.5"/>'
+    + '</pattern></defs>'
+    + grid
+    + '<path d="' + invArea + '" fill="rgba(212,175,55,0.22)" stroke="none"/>'
+    + (s.hasUnv ? '<path d="' + (unvTop + unvBack + ' Z') + '" fill="url(#' + uid + ')" stroke="none"/>' : '')
+    + '<path d="' + invTop + '" fill="none" stroke="#d4af37" stroke-width="2"/>'
+    + '<path d="' + prevLine + '" fill="none" stroke="var(--muted)" stroke-width="1.4" stroke-dasharray="5 4"/>'
+    + '<line class="perf-grid" x1="' + padL + '" y1="' + baseY + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + baseY + '"/>'
+    + xlab + fwd + hits
+    + '</svg>';
+}
+
+function perfChartKey(hasUnv){
+  let k = '<div class="perf-key">'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:rgba(212,175,55,0.35);border:1px solid #d4af37"></span>invoiced, by event date</span>';
+  if(hasUnv){
+    k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:repeating-linear-gradient(45deg,#d4af37 0 2px,transparent 2px 5px)"></span>delivered, not yet invoiced</span>';
+  }
+  k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,var(--muted) 0 5px,transparent 5px 9px,var(--muted) 9px 14px);height:2px"></span>same weeks, last year</span>'
+    + '</div>';
+  return k;
+}
+
+// ── render ──────────────────────────────────────────────────────────────────
+function renderPerformance(){
+  const body = document.getElementById('perf-body');
+  const d    = _perfData;
+  if(!body || !d) return;
+  body.innerHTML = perfHeadlines(d) + perfWeeklyCard(d) + perfCustomerCard(d) + perfYieldCard(d);
+}
+
+// Window equipment, summed off the weekly series — the only place the payload
+// carries the split. Derived here and labelled as derived; the endpoint owns
+// every other number on this screen.
+function perfWindowEquipment(d){
+  const sp = perfSplitWeeks(d);
+  let rev = 0, hrs = 0;
+  sp.cur.forEach(function(w){
+    rev += (w.invoiced && w.invoiced.equipment_revenue) || 0;
+    hrs += (w.invoiced && w.invoiced.equipment_hours)   || 0;
+  });
+  return { revenue: rev, hours: hrs };
+}
+
+function perfHeadlines(d){
+  const t    = d.totals || {};
+  const win  = d.window || {};
+  const top1 = (d.customers || [])[0] || null;
+  const share = top1 ? perfPct(top1.revenue, t.revenue) : 0;
+  const eq   = perfWindowEquipment(d);
+  const crewHours = Math.max(0, (t.hours || 0) - eq.hours);
+  const crewRev   = (t.revenue || 0) - eq.revenue;
+  const yieldAll  = crewHours > 0 ? crewRev / crewHours : 0;
+
+  const card = function(val, lbl, sub, accent){
+    return '<div class="perf-head">'
+      + '<div class="perf-head-val' + (accent ? ' accent' : '') + '">' + val + '</div>'
+      + '<div class="perf-head-lbl">' + escapeHtml(lbl) + '</div>'
+      + (sub ? '<div class="perf-head-sub">' + sub + '</div>' : '')
+      + '</div>';
+  };
+
+  return '<div class="perf-heads">'
+    + card(perfMoney(t.revenue), 'invoiced revenue', escapeHtml(String(win.from || '')) + ' → ' + escapeHtml(String(win.to || '')), true)
+    + card(perfNum(t.hours), 'hours', perfNum(crewHours) + ' crew · ' + perfNum(eq.hours) + ' equipment')
+    + card(perfNum(t.bookings), 'bookings', perfNum(t.customer_count) + ' customers')
+    + card(top1 ? share.toFixed(1) + '%' : '—', 'top customer share',
+           top1 ? escapeHtml(top1.name) : '')
+    + card(perfMoney(yieldAll) + '<span style="font-size:12px;color:var(--muted)">/hr</span>', 'crew revenue per hour',
+           'equipment excluded')
+    + '</div>';
+}
+
+function perfWeeklyCard(d){
+  const custId = _perfCustomer;
+  const s      = perfSeries(d, custId);
+  const dq     = d.data_quality || {};
+  const rows   = dq.uninvoiced_crew_rows || 0;
+  const nightPct = rows > 0 ? Math.round(100 * (dq.uninvoiced_night_rows || 0) / rows) : null;
+
+  let who = 'All customers';
+  if(custId === '__other__') who = 'All other customers';
+  else if(custId != null){
+    const c = (d.customers || []).filter(function(x){ return String(x.id) === String(custId); })[0];
+    who = c ? c.name : 'Customer';
+  }
+
+  let head = '<div class="perf-card-head">'
+    + '<span class="perf-card-title">WEEKLY REVENUE</span>'
+    + '<span class="perf-card-sub">' + escapeHtml(who) + ' · invoiced by event date, this year against last</span>';
+  if(custId != null){
+    head += '<span class="perf-back" onclick="perfSelectCustomer(null)" style="margin-left:auto">← all customers</span>';
+  }
+  head += '</div>';
+
+  let note = '<div class="perf-note"><b>Invoiced revenue, by event date.</b> It will not match a monthly Xero figure, '
+    + 'deliberately — revenue is attributed to when the work happened, not when it was billed, so it sits on the same clock as the hours.</div>';
+
+  if(s.hasUnv){
+    note += '<div class="perf-note">The hatched band is <b>work delivered but not yet invoiced</b>. It is not a shortfall — its width is the billing lag. '
+      + 'It <b>understates</b>: '
+      + (nightPct != null ? nightPct + '% of those rows carry night hours' : 'many of those rows carry night hours')
+      + ', and they are priced at the day rate because SmartStaff\'s night boundary is not available to this endpoint.</div>';
+  } else {
+    note += '<div class="perf-note">Invoiced revenue only. The delivered-not-yet-invoiced band is <b>not attributed to customers</b> by the endpoint, so it is absent here rather than shown as zero.</div>';
+  }
+
+  return '<div class="perf-card">' + head + perfWeeklyChartSvg(s) + perfChartKey(s.hasUnv) + note + '</div>';
+}
+
+// ── customer stack ──────────────────────────────────────────────────────────
+// Top 8 + the roll-up. The bar is the shape of the concentration at a glance;
+// the legend beneath carries every number, because at Live Nation's ~32% the
+// smallest segments are only a few pixels wide and could never hold a label.
+// Both are click targets — every number on this screen reaches the weeks behind it.
+function perfCustomerCard(d){
+  const cust  = (d.customers || []).slice();
+  const other = d.other || {};
+  const segs  = cust.map(function(c, i){
+    return { id: c.id, name: c.name, revenue: c.revenue || 0, hours: c.hours || 0, color: PERF_COLORS[i % PERF_COLORS.length] };
+  });
+  if((other.revenue || 0) !== 0 || (other.customer_count || 0) > 0){
+    segs.push({ id: '__other__',
+                name: 'All other (' + perfNum(other.customer_count) + ' customers)',
+                revenue: other.revenue || 0, hours: other.hours || 0, color: PERF_OTHER_COLOR });
+  }
+  const total = segs.reduce(function(a, s){ return a + s.revenue; }, 0);
+  if(total <= 0) return '<div class="perf-card"><div class="ops-lane-status">No invoiced revenue in this window.</div></div>';
+
+  const W = 1000, H = 34;
+  let x = 0, bar = '';
+  segs.forEach(function(sg){
+    const w   = (sg.revenue / total) * W;
+    const pct = perfPct(sg.revenue, total);
+    const tip = sg.name + '\n' + perfMoneyFull(sg.revenue) + '  ·  ' + pct.toFixed(1) + '%\n' + perfNum(sg.hours) + ' hours';
+    bar += '<rect data-cust="' + escapeHtml(String(sg.id)) + '" x="' + x.toFixed(2) + '" y="0" width="' + Math.max(0, w).toFixed(2) + '" height="' + H + '"'
+        +  ' fill="' + sg.color + '" onclick="perfSelectCustomer(' + JSON.stringify(String(sg.id)) + ')">'
+        +  '<title>' + escapeHtml(tip) + '</title></rect>';
+    // Only label a segment wide enough to hold the text — never a clipped number.
+    if(w >= 46) bar += '<text class="perf-stack-lbl" x="' + (x + w / 2).toFixed(2) + '" y="' + (H / 2 + 4) + '" text-anchor="middle">' + pct.toFixed(0) + '%</text>';
+    x += w;
+  });
+
+  const legs = segs.map(function(sg){
+    const on = (_perfCustomer != null && String(_perfCustomer) === String(sg.id));
+    return '<div class="perf-leg' + (on ? ' on' : '') + '" onclick="perfSelectCustomer(' + JSON.stringify(String(sg.id)) + ')">'
+      + '<span class="perf-leg-sw" style="background:' + sg.color + '"></span>'
+      + '<span class="perf-leg-lb" title="' + escapeHtml(sg.name) + '">' + escapeHtml(sg.name) + '</span>'
+      + '<span class="perf-leg-pc">' + perfPct(sg.revenue, total).toFixed(1) + '%</span>'
+      + '<span class="perf-leg-ct">' + perfMoney(sg.revenue) + '</span>'
+      + '</div>';
+  }).join('');
+
+  return '<div class="perf-card">'
+    + '<div class="perf-card-head">'
+    +   '<span class="perf-card-title">CUSTOMER CONCENTRATION</span>'
+    +   '<span class="perf-card-sub">share of invoiced revenue in the window — click any customer for its own weekly chart</span>'
+    + '</div>'
+    + '<svg class="perf-stack" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img"'
+    +   ' aria-label="Revenue share by customer, top 8 and the remainder">' + bar + '</svg>'
+    + '<div class="perf-legs">' + legs + '</div>'
+    + '</div>';
+}
+
+// ── yield table ─────────────────────────────────────────────────────────────
+function perfYieldCard(d){
+  const other = d.other || {};
+  const rows  = (d.customers || []).map(function(c, i){
+    return { id: c.id, name: c.name, revenue: c.revenue || 0, hours: c.hours || 0, color: PERF_COLORS[i % PERF_COLORS.length] };
+  });
+  if((other.revenue || 0) !== 0 || (other.hours || 0) !== 0){
+    rows.push({ id: '__other__', name: 'All other (' + perfNum(other.customer_count) + ' customers)',
+                revenue: other.revenue || 0, hours: other.hours || 0, color: PERF_OTHER_COLOR });
+  }
+  rows.forEach(function(r){ r.yield = r.hours > 0 ? r.revenue / r.hours : 0; });
+
+  const ranked   = rows.filter(function(r){ return r.hours >= PERF_RANK_MIN_HOURS; }).sort(function(a, b){ return b.yield - a.yield; });
+  const unranked = rows.filter(function(r){ return r.hours <  PERF_RANK_MIN_HOURS; }).sort(function(a, b){ return b.revenue - a.revenue; });
+
+  const tr = function(r, rank){
+    return '<tr class="clickable' + (rank ? '' : ' unranked') + '" onclick="perfSelectCustomer(' + JSON.stringify(String(r.id)) + ')">'
+      + '<td class="rank">' + (rank ? rank : '—') + '</td>'
+      + '<td class="perf-sw-cell"><span class="perf-sw" style="background:' + r.color + '"></span></td>'
+      + '<td>' + escapeHtml(r.name) + '</td>'
+      + '<td class="yield">' + perfMoney(r.yield) + '/hr</td>'
+      + '<td class="num">' + perfNum(r.hours) + ' hrs</td>'
+      + '<td class="num">' + perfMoney(r.revenue) + '</td>'
+      + '</tr>';
+  };
+
+  let tbody = ranked.map(function(r, i){ return tr(r, i + 1); }).join('');
+  if(unranked.length){
+    tbody += '<tr class="perf-tbl-sep"><td colspan="6">Not ranked — under '
+      + perfNum(PERF_RANK_MIN_HOURS) + ' hours in the window, so $/hr is too volatile to rank on</td></tr>'
+      + unranked.map(function(r){ return tr(r, null); }).join('');
+  }
+
+  return '<div class="perf-card">'
+    + '<div class="perf-card-head">'
+    +   '<span class="perf-card-title">REVENUE PER HOUR</span>'
+    +   '<span class="perf-card-sub">hours shown beside every figure — a rate means nothing without the sample behind it</span>'
+    + '</div>'
+    + '<table class="perf-tbl"><thead><tr>'
+    +   '<th class="rank">#</th><th></th><th>Customer</th>'
+    +   '<th style="text-align:right">Revenue / hour</th>'
+    +   '<th style="text-align:right">Hours</th>'
+    +   '<th style="text-align:right">Revenue</th>'
+    + '</tr></thead><tbody>' + tbody + '</tbody></table>'
+    + '<div class="perf-note">Per-customer figures are <b>all-in</b>: the endpoint carries the equipment split on the weekly series only, '
+    + 'not per customer, so equipment hire sits inside these rates. The crew-only figure in the headline row above excludes it.</div>'
+    + '</div>';
+}
+
+function perfSelectCustomer(id){
+  _perfCustomer = (id == null || String(id) === String(_perfCustomer)) ? null : id;
+  renderPerformance();
+  const body = document.getElementById('perf-body');
+  if(body) body.scrollTop = 0;
+}
+
 
 function setSchedFilter(f){
   _schedFilter = f;
