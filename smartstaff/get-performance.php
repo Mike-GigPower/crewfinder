@@ -111,6 +111,35 @@
 	$GOAT_PERF_EXCLUDED_CREW_STATUS = array(6, 8);
 
 	/*
+	/* call_crew_map.status that counts as SECURED on a forward call — a crew
+	/* member assigned to the date. Deliberately a WHITELIST of one, where the
+	/* uninvoiced band above uses a blacklist (NOT IN 6,8) and says why: there,
+	/* times are already keyed and the work demonstrably happened, so a stale
+	/* status is the likely reading. Here nothing has happened yet, so "offered"
+	/* and "confirmed" are genuinely different states and only one is secured.
+	*/
+	$GOAT_PERF_FORWARD_CONFIRMED_STATUS = 5;
+
+	/* How far the forward book looks ahead, in days. */
+	$GOAT_PERF_FORWARD_DAYS = 60;
+
+	/*
+	/* Cancelled calls are marked in FREE TEXT — 'Fork - CANCELLED', 'Load In -
+	/* CANCELLED'. There is no structured flag on calls or bookings. Matching a
+	/* convention is fragile, so the match is a tunable and every row it removes
+	/* is COUNTED (forward_cancelled_calls / _seats): if the convention shifts,
+	/* the count moves and that is visible, where a silent zero would not be.
+	/*
+	/* The match is a SUBSTRING, so it would also remove a call legitimately named
+	/* for a cancellation — a 'Cancellation Fee' line is real billable revenue
+	/* under the standard terms. That is the second reason the seats are counted
+	/* and not just the calls: a cancellation-fee call carries seats, so if this
+	/* figure grows past the handful of genuinely-cancelled calls (4 calls / 10
+	/* seats on 24 Aug 2026), the match is eating revenue and needs narrowing.
+	*/
+	$GOAT_PERF_FORWARD_CANCEL_MATCH = 'CANCEL';
+
+	/*
 	/* The day/night boundary, in seconds from midnight — 08:00 and 20:00.
 	/*
 	/* HARDCODED HERE, DELIBERATELY, AND THAT IS THE WEAK POINT OF THIS SPLIT.
@@ -296,6 +325,61 @@
 
 	/* Index of the first bucket inside the REQUESTED window. */
 	$req_first = $weeks;
+
+
+	/* ──────────────────────────────────────────────────────────────────────────
+	/* Forward window — the book, as at today
+	/*
+	/* Runs from TODAY (not from the historical series' right-hand edge) for
+	/* $GOAT_PERF_FORWARD_DAYS days, half-open at both ends like the SQL below.
+	/*
+	/* THE TWO SERIES DO NOT ABUT, AND THE GAP IS REPORTED RATHER THAN HIDDEN.
+	/* The historical series stops at the last COMPLETE week (last Sunday) because
+	/* a part-week bucket draws a cliff. The forward book starts today. So on any
+	/* day except a Monday, the days from Monday-of-this-week up to today are in
+	/* NEITHER series: too late to be forward work, too recent to be a complete
+	/* week. That is 0 days on a Monday and 6 on a Sunday.
+	/*
+	/* This was written on a Monday, when the gap is empty and every check passes.
+	/* Rather than leave it to be discovered on a Wednesday, query 5 reads from
+	/* MONDAY of the current week and routes the pre-today rows into their own
+	/* counters (forward_gap_*) instead of into the forward weeks. The series stays
+	/* honest — no already-delivered day is priced as "on the books" — and the size
+	/* of the seam is a number on the response instead of an assumption.
+	/* ────────────────────────────────────────────────────────────────────────── */
+
+	$fwd_start = $today;                       /* today, 00:00 — the book's edge */
+	$fwd_end   = strtotime('+' . (int) $GOAT_PERF_FORWARD_DAYS . ' days', $fwd_start);
+
+	/* Read-from boundary: Monday of the current week, so the seam is measurable. */
+	$fwd_read_start = $this_week_start;
+
+	/* Dense, ordered forward bucket list, same zero-fill reasoning as above: a
+	   quiet week in the book is a real signal and must not be drawn as continuity.
+	   Walked from the week containing today to the week containing the last day in
+	   the window, with strtotime() rather than 604800-second steps. */
+	$fwd_week_keys  = array();
+	$fwd_week_index = array();
+
+	$fwd_cursor = $this_week_start;
+
+	/* Monday of the week holding the LAST day in the window. $fwd_end is half-open,
+	   so the last day is $fwd_end - 1. Guarded against '-0 days' the same way
+	   $this_week_start is above, rather than relying on it. */
+	$fwd_last_day  = strtotime('today', $fwd_end - 1);
+	$fwd_last_dow  = (int) date('N', $fwd_last_day);
+	$fwd_last_week = ($fwd_last_dow > 1)
+	               ? strtotime('-' . ($fwd_last_dow - 1) . ' days', $fwd_last_day)
+	               : $fwd_last_day;
+
+	while ($fwd_cursor <= $fwd_last_week)
+	{
+		$key                  = goat_perf_week_key($fwd_cursor);
+		$idx                  = count($fwd_week_keys);
+		$fwd_week_keys[$idx]  = $key;
+		$fwd_week_index[$key] = $idx;
+		$fwd_cursor           = strtotime('+1 week', $fwd_cursor);
+	}
 
 
 	/* ──────────────────────────────────────────────────────────────────────────
@@ -857,6 +941,158 @@
 
 
 	/* ──────────────────────────────────────────────────────────────────────────
+	/* Query 5 — the forward book
+	/*
+	/* Calls on the books from today out to +$GOAT_PERF_FORWARD_DAYS days, with the
+	/* three seat states that matter, returned as RAW ROWS. Nothing is aggregated
+	/* and nothing is priced here: pricing is calc_line()'s job in app.py, against
+	/* the same engine the Estimator quotes from. PHP's job is the query, the clock
+	/* and the exclusions.
+	/*
+	/* THREE SEAT STATES, AND THE GAP THAT MATTERS
+	/*
+	/*   required   what the customer is CHARGED for, filled or not
+	/*   ordered    seats that have been offered to somebody
+	/*   confirmed  call_crew_map rows at status 5 — somebody has said yes
+	/*
+	/* required - ordered is therefore seats NOBODY HAS BEEN APPROACHED FOR. That
+	/* is the actionable figure and it appears on no other surface.
+	/*
+	/* calls.booked IS NOT USED, and that deserves saying because it is the
+	/* obvious-looking answer: it is 0 on all 38,350 rows of the table, ever —
+	/* verified across the whole table, not a sample. It is a dead column.
+	/*
+	/* required >= ordered >= confirmed SHOULD hold. Where it does not, something
+	/* is being tracked outside the expected flow, so the inversions are counted
+	/* rather than clamped — a clamp would make the actionable gap read as zero on
+	/* exactly the rows worth looking at.
+	/*
+	/* bookings.status is NOT filtered, same as every query above.
+	/* ────────────────────────────────────────────────────────────────────────── */
+
+	$fwd_rows = array();
+
+	$dq_fwd_cancelled_calls = 0;
+	$dq_fwd_cancelled_seats = 0;
+	$dq_fwd_gap_calls       = 0;
+	$dq_fwd_gap_seats       = 0;
+	$dq_fwd_unbucketed      = 0;
+	$dq_fwd_inversions      = 0;
+	$dq_fwd_no_times        = 0;
+	$dq_fwd_no_customer     = 0;
+
+	$sql_fwd = "
+		SELECT
+			c.id                  AS call_id,
+			c.call_name           AS call_name,
+			c.start_date          AS start_date,
+			c.start_time          AS start_time,
+			c.est_length          AS est_length,
+			c.required            AS required,
+			c.ordered             AS ordered,
+			c.is_pubhol           AS is_pubhol,
+			c.is_pubhol_tomorrow  AS is_pubhol_tomorrow,
+			b.customerID          AS customer_id,
+			cu.customer_name      AS customer_name,
+			(SELECT COUNT(*) FROM call_crew_map ccm
+			  WHERE ccm.callID = c.id
+			    AND ccm.status = " . (int) $GOAT_PERF_FORWARD_CONFIRMED_STATUS . ") AS confirmed
+		FROM calls c
+		JOIN bookings b        ON b.id = c.bookingID
+		LEFT JOIN customers cu ON cu.id = b.customerID
+		WHERE c.start_date > 0
+		  AND c.start_date >= " . (int) $fwd_read_start . "
+		  AND c.start_date <  " . (int) $fwd_end . "
+		  AND b.hidden = 0
+		ORDER BY c.start_date, c.id
+	";
+
+	$res_fwd = mysql_query($sql_fwd);
+
+	if ($res_fwd === false)
+		goat_json_error(500, 'forward book query failed: ' . mysql_error());
+
+	while ($row = mysql_fetch_object($res_fwd))
+	{
+		$ts       = (int) $row->start_date;
+		$required = (int) $row->required;
+		$ordered  = (int) $row->ordered;
+		$confirm  = (int) $row->confirmed;
+
+		/* Cancelled — free-text match, counted on the way out (see the tunable). */
+		if (stripos((string) $row->call_name, $GOAT_PERF_FORWARD_CANCEL_MATCH) !== false)
+		{
+			$dq_fwd_cancelled_calls++;
+			$dq_fwd_cancelled_seats += $required;
+			continue;
+		}
+
+		/* The Monday-to-today seam. Read, sized, and NOT put in the series. */
+		if ($ts < $fwd_start)
+		{
+			$dq_fwd_gap_calls++;
+			$dq_fwd_gap_seats += $required;
+			continue;
+		}
+
+		$key = goat_perf_week_key($ts);
+
+		if (!isset($fwd_week_index[$key]))
+		{
+			$dq_fwd_unbucketed++;
+			continue;
+		}
+
+		if ($required < $ordered || $ordered < $confirm)
+			$dq_fwd_inversions++;
+
+		/*
+		/* '00:00:00' is AMBIGUOUS on a `time` column — it is both "never set" and
+		/* a genuine midnight start, and nothing distinguishes them. The row is
+		/* still passed through and still priced; this counter only SIZES the
+		/* ambiguity. Read it as "calls whose start time may be a default", not as
+		/* an error count, and do not filter on it.
+		*/
+		$start_time = trim((string) $row->start_time);
+
+		if ($start_time === '' || $start_time === '00:00:00')
+			$dq_fwd_no_times++;
+
+		if ($row->customer_id === null || (int) $row->customer_id === 0)
+			$dq_fwd_no_customer++;
+
+		/*
+		/* date_iso and next_date_iso are computed HERE, in PHP, for the same reason
+		/* the week keys are: one clock. app.py would otherwise re-derive a local
+		/* date from a unix timestamp in its own timezone, and a disagreement would
+		/* move a call across a day boundary — which is where the Sunday and public
+		/* holiday penalty rates live, so it would move money, not just a label.
+		/*
+		/* next_date_iso exists for is_pubhol_tomorrow: a load-out crossing midnight
+		/* into a holiday takes the penalty on the FOLLOWING date, and calc_line
+		/* already prices per-segment by date, so the flag needs the date it refers
+		/* to rather than a boolean the caller has to re-date.
+		*/
+		$fwd_rows[] = array(
+			'call_id'            => (int) $row->call_id,
+			'call_name'          => (string) $row->call_name,
+			'week_key'           => $key,
+			'date_iso'           => date('Y-m-d', $ts),
+			'next_date_iso'      => date('Y-m-d', strtotime('+1 day', $ts)),
+			'start_time'         => $start_time,
+			'est_length'         => (float) $row->est_length,
+			'required'           => $required,
+			'ordered'            => $ordered,
+			'confirmed'          => $confirm,
+			'is_pubhol'          => ((int) $row->is_pubhol) ? 1 : 0,
+			'is_pubhol_tomorrow' => ((int) $row->is_pubhol_tomorrow) ? 1 : 0,
+			'customer_id'        => (int) $row->customer_id,
+			'customer_name'      => (string) $row->customer_name
+		);
+	}
+
+
+	/* ──────────────────────────────────────────────────────────────────────────
 	/* Customer ranking — top N by revenue over the REQUESTED window, remainder
 	/* rolled up.
 	/*
@@ -996,6 +1232,53 @@
 		'weeks'     => $weeks_out,
 		'customers' => $top,
 		'other'     => $other,
+		/*
+		/* THE BOOK, AS AT TODAY — raw rows, deliberately unpriced.
+		/*
+		/* `as_at` is the label the chart must carry. The forward curve always slopes
+		/* toward zero at the far edge because calls are entered as they are booked,
+		/* not because a quarter is collapsing. It is a pipeline, never a forecast.
+		/*
+		/* forward_unmapped_calls is NOT counted here, and that is a deliberate
+		/* divergence from BRIEF §3. Counting it needs the twenty-entry Call Name ->
+		/* role map, which lives in estimator_calc.py. Copying it into PHP would put
+		/* two copies of one mapping in two languages with nothing enforcing that
+		/* they agree — the exact fault this file already flags as the weak point of
+		/* its own hardcoded 08:00/20:00 boundary. app.py holds the map, does the
+		/* pricing, and counts what it could not price; the count still reaches the
+		/* client, one implementation further upstream.
+		*/
+		'forward' => array(
+			'as_at'     => date('Y-m-d'),
+			'days'      => (int) $GOAT_PERF_FORWARD_DAYS,
+			'from'      => count($fwd_week_keys) ? $fwd_week_keys[0] : null,
+			'to'        => count($fwd_week_keys) ? $fwd_week_keys[count($fwd_week_keys) - 1] : null,
+			'week_keys' => array_values($fwd_week_keys),
+			/* The first forward bucket is a PART week whenever today is not a Monday:
+			   its key names the whole week, but only today onward is in it. The client
+			   must label it, or the book's first column reads as a quiet week rather
+			   than as a week already half spent. */
+			'first_week_partial' => ($fwd_start > $fwd_read_start) ? 1 : 0,
+			'calls'     => $fwd_rows,
+			'data_quality' => array(
+				'forward_calls'            => count($fwd_rows),
+				/* free-text 'CANCELLED' matches removed above — the canary for the
+				   convention changing, so a move in this figure is the signal */
+				'forward_cancelled_calls'  => $dq_fwd_cancelled_calls,
+				'forward_cancelled_seats'  => $dq_fwd_cancelled_seats,
+				/* the Monday-to-today seam: calls this week already past, in neither
+				   the historical series nor the book. 0 on a Monday, up to 6 days'
+				   worth on a Sunday. */
+				'forward_gap_calls'        => $dq_fwd_gap_calls,
+				'forward_gap_seats'        => $dq_fwd_gap_seats,
+				'forward_gap_days'         => (int) round(($fwd_start - $fwd_read_start) / 86400),
+				/* required >= ordered >= confirmed violated — counted, never clamped */
+				'forward_qty_inversions'   => $dq_fwd_inversions,
+				'forward_no_start_time'    => $dq_fwd_no_times,
+				'forward_no_customer'      => $dq_fwd_no_customer,
+				'forward_unbucketed_calls' => $dq_fwd_unbucketed
+			)
+		),
 		'data_quality' => array(
 			/* named by the brief */
 			'malformed_breaks'              => $dq_malformed_breaks,
