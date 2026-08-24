@@ -49,6 +49,7 @@ pyinstaller \
   --hidden-import timesheet_generate \
   --hidden-import timesheet_gsheet \
   --hidden-import timesheet_gsheet_read \
+  --hidden-import estimator_calc \
   dock_launcher.py
 
 if [ ! -d "$BUNDLE" ]; then
