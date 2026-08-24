@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include('perf-split-lib.php');
 
 	/*
 	/* JSON response */
@@ -108,6 +109,24 @@
 
 	/* call_crew_map.status values that never represent delivered work. */
 	$GOAT_PERF_EXCLUDED_CREW_STATUS = array(6, 8);
+
+	/*
+	/* The day/night boundary, in seconds from midnight — 08:00 and 20:00.
+	/*
+	/* HARDCODED HERE, DELIBERATELY, AND THAT IS THE WEAK POINT OF THIS SPLIT.
+	/* The boundary's home is the Estimator's Supabase app_settings (dayStart,
+	/* nightStart), which this box cannot reach. Two copies of one number now
+	/* exist and nothing enforces that they agree.
+	/*
+	/* What does enforce it is estimator_split_fixtures.json in THE GOAT repo:
+	/* the same table drives test_estimator_calc.py against the Python engine and
+	/* test-perf-split.php against goat_perf_split_day_night() in perf-split-lib.php.
+	/* If the
+	/* boundary moves in app_settings, the fixtures move with it and this file
+	/* fails its own test rather than quietly disagreeing with every quote.
+	*/
+	$GOAT_PERF_DAY_START_SEC   = 8 * 3600;
+	$GOAT_PERF_NIGHT_START_SEC = 20 * 3600;
 
 
 	/* ──────────────────────────────────────────────────────────────────────────
@@ -316,6 +335,11 @@
 	$dq_night_flagged_rows       = 0;
 	$dq_ambiguous_off_rows       = 0;
 	$dq_uninvoiced_non_confirmed = 0;
+	$dq_split_guard_rows         = 0;
+	$dq_break_carry_rows         = 0;
+	$dq_missing_night_rate_rows  = 0;
+	$dq_unv_day_hours            = 0.0;
+	$dq_unv_night_hours          = 0.0;
 
 	$call_invoices = array();                  /* callID => set of invoiceID */
 	$call_bookings = array();                  /* callID => set of bookingID */
@@ -620,14 +644,27 @@
 	/* callchargeout / callchargeout_night live on call_crew_map, copied from the
 	/* paygrade at save time — they are PER CREW MEMBER, not per call.
 	/*
-	/* The day/night split is NOT applied to this estimate. The boundary is known
-	/* (08:00 / 20:00 — the Estimator's app_settings, corroborated by invoice
-	/* 34501 splitting one crew block at 08:00), but no rule for it exists in this
-	/* repo, and a modelled figure sitting beside a measured one is worse than a
-	/* conservative one. Applying the day rate throughout UNDERSTATES any call with
-	/* night hours — a systematic, one-directional bias, which the client must
-	/* label. uninvoiced_night_rows sizes it. Release 2 implements the split for
-	/* forward segmentation and can revisit this band then.
+	/* THE DAY/NIGHT SPLIT IS NOW APPLIED. v5.14.0 shipped this band with the day
+	/* chargeout across every hour and said why: the 08:00 / 20:00 boundary was
+	/* known (the Estimator's app_settings, corroborated by invoice 34501
+	/* splitting one crew block at 08:00) but no RULE for it existed in this repo,
+	/* and a modelled figure beside a measured one is worse than a conservative
+	/* one. The rule now exists — goat_perf_split_day_night() above, ported from
+	/* the same calc.ts the Estimator prices from and tested against the same
+	/* fixture table — so the conservative reading is no longer the honest one.
+	/* It was understating every call with night hours, one-directionally.
+	/*
+	/* Hours are unchanged: the split only decides which of the two rates each
+	/* hour earns. day_hours + night_hours always equals billable_hours, so
+	/* `hours` reconciles with v5.14.0 to the second and only `estimated_revenue`
+	/* moves. It moves UP, and it is still an estimate.
+	/*
+	/* Breaks come off the period they were keyed against — `break` from the day
+	/* side, `break_night` from the night side, which is what the column names
+	/* say they are. A break longer than its own period's hours (a night break on
+	/* a call with no night hours, or a mis-key) carries its residue to the other
+	/* side rather than being dropped, so the total still reconciles, and
+	/* break_carry_rows counts every time that happens.
 	/* ────────────────────────────────────────────────────────────────────────── */
 
 	$excluded_status = implode(',', array_map('intval', $GOAT_PERF_EXCLUDED_CREW_STATUS));
@@ -723,18 +760,69 @@
 		$billable_hours = $worked / 3600.0;
 
 		/*
-		/* Estimated revenue. The day/night SPLIT is not modelled: nothing in this
-		/* codebase carries SmartStaff's night boundary rule, and inventing one
-		/* would put a made-up number next to a measured one. The day chargeout is
-		/* applied throughout, which UNDER-states any call with night hours. Rows
-		/* carrying a night signal are counted so the size of that understatement
-		/* is visible rather than assumed.
+		/* Estimated revenue, day hours at the day chargeout and night hours at
+		/* the night one. Both rates live on call_crew_map, copied from the
+		/* paygrade at save time, so they are PER CREW MEMBER and no lookup is
+		/* needed.
 		*/
 		$rate       = (double) $row->chargeout;
 		$rate_night = (double) $row->chargeout_night;
 
 		if (($brkn !== null && $brkn > 0) || $rate_night > $rate)
 			$dq_night_flagged_rows++;
+
+		/*
+		/* A row with no night rate keyed. Pricing its night hours at zero would
+		/* be far worse than v5.14.0's day-rate-throughout — it would DELETE
+		/* revenue rather than understate it — so the day rate stands in, which
+		/* is exactly what this band did before the split, and the row is counted.
+		*/
+		if ($rate_night <= 0.0)
+		{
+			$rate_night = $rate;
+			$dq_missing_night_rate_rows++;
+		}
+
+		$split = goat_perf_split_day_night(
+			$on, $off, $GOAT_PERF_DAY_START_SEC, $GOAT_PERF_NIGHT_START_SEC);
+
+		if ($split === null)
+		{
+			$dq_split_guard_rows++;
+			continue;                          /* dropped, not truncated */
+		}
+
+		$day_hours   = 0.0;
+		$night_hours = 0.0;
+
+		for ($si = 0; $si < count($split); $si++)
+		{
+			$day_hours   += $split[$si]['day_hrs'];
+			$night_hours += $split[$si]['night_hrs'];
+		}
+
+		/* Breaks off their own period; residue carried, never dropped. */
+		if ($brk !== null)
+			$day_hours -= $brk / 3600.0;
+		if ($brkn !== null)
+			$night_hours -= $brkn / 3600.0;
+
+		if ($day_hours < 0.0)
+		{
+			$night_hours += $day_hours;
+			$day_hours    = 0.0;
+			$dq_break_carry_rows++;
+		}
+
+		if ($night_hours < 0.0)
+		{
+			$day_hours  += $night_hours;
+			$night_hours = 0.0;
+			$dq_break_carry_rows++;
+		}
+
+		if ($day_hours < 0.0)
+			$day_hours = 0.0;                  /* worked > 0 makes this unreachable */
 
 		$ts  = (int) $row->start_date;
 		$key = goat_perf_week_key($ts);
@@ -748,7 +836,10 @@
 		$idx = $week_index[$key];
 
 		$wk[$idx]['unv_hours']   += $billable_hours;
-		$wk[$idx]['unv_revenue'] += $billable_hours * $rate;
+		$wk[$idx]['unv_revenue'] += ($day_hours * $rate) + ($night_hours * $rate_night);
+
+		$dq_unv_day_hours   += $day_hours;
+		$dq_unv_night_hours += $night_hours;
 
 		$dq_uninvoiced_rows++;
 
@@ -921,6 +1012,13 @@
 			'rate80_non_equipment_lines'    => $dq_rate80_non_equip,
 			'uninvoiced_crew_rows'          => $dq_uninvoiced_rows,
 			'uninvoiced_night_rows'         => $dq_night_flagged_rows,
+			/* the size of the correction the split just made: these two sum to
+			   the uninvoiced `hours` across every week in the response */
+			'uninvoiced_day_hours'          => round($dq_unv_day_hours, 2),
+			'uninvoiced_night_hours'        => round($dq_unv_night_hours, 2),
+			'missing_night_rate_rows'       => $dq_missing_night_rate_rows,
+			'break_carry_rows'              => $dq_break_carry_rows,
+			'split_guard_rows'              => $dq_split_guard_rows,
 			'ambiguous_off_rows'            => $dq_ambiguous_off_rows,
 			'uninvoiced_non_confirmed_rows' => $dq_uninvoiced_non_confirmed,
 			'unbucketed_lines'              => $dq_unbucketed_lines,
