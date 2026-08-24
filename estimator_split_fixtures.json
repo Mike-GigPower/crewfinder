@@ -1,0 +1,162 @@
+{
+  "_comment": [
+    "Day/night splitter fixture table — the ONE thing the Python engine and the",
+    "PHP uninvoiced band both implement, and therefore the one place they can",
+    "drift. Both run this table (BRIEF Decision 3): test_estimator_calc.py in",
+    "Python, smartstaff/test-perf-split.php in PHP on the SmartStaff box.",
+    "",
+    "Each case gives the span twice: as local wall-clock datetimes (Python) and",
+    "as seconds from midnight of startDate (PHP, which never builds a datetime).",
+    "The Python harness asserts the two encodings describe the same span, so",
+    "they cannot drift apart either.",
+    "",
+    "expected rows are [dayOffset, dayHrs, nightHrs], one row per SEGMENT in",
+    "emission order — a date appears twice when a span crosses one of its own",
+    "boundaries. dayOffset is whole days from startDate.",
+    "",
+    "mode 'duration' cases are absolute-time (Australia/Melbourne) and are",
+    "Python-only: the PHP band prices wall-clock times off a crew sheet and has",
+    "no timezone. The PHP harness reports how many rows it skipped for this",
+    "reason rather than passing silently on a subset."
+  ],
+  "cases": [
+    {
+      "name": "s9-base-tier: the acceptance call's first 8 hours",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-20",
+      "start": "2026-06-20 16:00", "end": "2026-06-21 00:00",
+      "startSec": 57600, "endSec": 86400,
+      "expected": [[0, 4.0, 0.0], [0, 0.0, 4.0]]
+    },
+    {
+      "name": "starts exactly at dayStart — 08:00 is not its own next boundary",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-15",
+      "start": "2026-06-15 08:00", "end": "2026-06-15 20:00",
+      "startSec": 28800, "endSec": 72000,
+      "expected": [[0, 12.0, 0.0]]
+    },
+    {
+      "name": "starts exactly at nightStart",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-15",
+      "start": "2026-06-15 20:00", "end": "2026-06-16 08:00",
+      "startSec": 72000, "endSec": 115200,
+      "expected": [[0, 0.0, 4.0], [1, 0.0, 8.0]]
+    },
+    {
+      "name": "overnight load-out finishing after dayStart",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-20",
+      "start": "2026-06-20 22:00", "end": "2026-06-21 10:00",
+      "startSec": 79200, "endSec": 122400,
+      "expected": [[0, 0.0, 2.0], [1, 0.0, 8.0], [1, 2.0, 0.0]]
+    },
+    {
+      "name": "sub-hour segments either side of nightStart",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-20",
+      "start": "2026-06-20 19:30", "end": "2026-06-20 20:15",
+      "startSec": 70200, "endSec": 72900,
+      "expected": [[0, 0.5, 0.0], [0, 0.0, 0.25]]
+    },
+    {
+      "name": "zero-length span",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-20",
+      "start": "2026-06-20 12:00", "end": "2026-06-20 12:00",
+      "startSec": 43200, "endSec": 43200,
+      "expected": []
+    },
+    {
+      "name": "end before start",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-20",
+      "start": "2026-06-20 12:00", "end": "2026-06-20 11:00",
+      "startSec": 43200, "endSec": 39600,
+      "expected": []
+    },
+    {
+      "name": "non-default boundaries — 06:00/18:00 from app_settings",
+      "mode": "wallclock",
+      "dayStartSec": 21600, "nightStartSec": 64800,
+      "startDate": "2026-06-20",
+      "start": "2026-06-20 05:00", "end": "2026-06-20 19:00",
+      "startSec": 18000, "endSec": 68400,
+      "expected": [[0, 0.0, 1.0], [0, 12.0, 0.0], [0, 0.0, 1.0]]
+    },
+    {
+      "name": "two full calendar days from midnight",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-20",
+      "start": "2026-06-20 00:00", "end": "2026-06-22 00:00",
+      "startSec": 0, "endSec": 172800,
+      "expected": [
+        [0, 0.0, 8.0], [0, 12.0, 0.0], [0, 0.0, 4.0],
+        [1, 0.0, 8.0], [1, 12.0, 0.0], [1, 0.0, 4.0]
+      ]
+    },
+    {
+      "name": "inside the day window, no boundary crossed",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-15",
+      "start": "2026-06-15 09:00", "end": "2026-06-15 17:00",
+      "startSec": 32400, "endSec": 61200,
+      "expected": [[0, 8.0, 0.0]]
+    },
+    {
+      "name": "starts at midnight, ends before dayStart",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-06-15",
+      "start": "2026-06-15 00:00", "end": "2026-06-15 06:00",
+      "startSec": 0, "endSec": 21600,
+      "expected": [[0, 0.0, 6.0]]
+    },
+    {
+      "name": "DST October, wallclock — the sheet says 22:00 to 09:00, eleven hours",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-10-03",
+      "start": "2026-10-03 22:00", "end": "2026-10-04 09:00",
+      "startSec": 79200, "endSec": 118800,
+      "expected": [[0, 0.0, 2.0], [1, 0.0, 8.0], [1, 1.0, 0.0]]
+    },
+    {
+      "name": "DST October, duration — eleven real hours end at 10:00, and 00:00-08:00 is seven of them",
+      "mode": "duration",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-10-03",
+      "start": "2026-10-03 22:00", "end": "2026-10-04 10:00",
+      "startSec": null, "endSec": null,
+      "expected": [[0, 0.0, 2.0], [1, 0.0, 7.0], [1, 2.0, 0.0]]
+    },
+    {
+      "name": "DST April, wallclock — the sheet says 22:00 to 09:00, eleven hours",
+      "mode": "wallclock",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-04-04",
+      "start": "2026-04-04 22:00", "end": "2026-04-05 09:00",
+      "startSec": 79200, "endSec": 118800,
+      "expected": [[0, 0.0, 2.0], [1, 0.0, 8.0], [1, 1.0, 0.0]]
+    },
+    {
+      "name": "DST April, duration — eleven real hours end at 08:00, and 00:00-08:00 is nine of them",
+      "mode": "duration",
+      "dayStartSec": 28800, "nightStartSec": 72000,
+      "startDate": "2026-04-04",
+      "start": "2026-04-04 22:00", "end": "2026-04-05 08:00",
+      "startSec": null, "endSec": null,
+      "expected": [[0, 0.0, 2.0], [1, 0.0, 9.0]]
+    }
+  ]
+}
