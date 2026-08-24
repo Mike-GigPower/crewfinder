@@ -1372,6 +1372,11 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .perf-unit:hover{background:var(--surface2);color:var(--text)}
 .perf-unit.on{background:var(--accent-bg);color:var(--accent)}
 .perf-unit:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+/* Disclosure for the forward book's provenance notes. */
+.perf-fold-t{display:inline-block;margin-top:6px;font-size:11px;font-family:'Share Tech Mono',monospace;color:var(--muted);cursor:pointer;user-select:none}
+.perf-fold-t:hover{color:var(--accent)}
+.perf-fold-t:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.perf-fold[hidden]{display:none}
 /* Yield table */
 .perf-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .perf-tbl th{text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
@@ -18435,6 +18440,100 @@ function perfUnitLabel(unit){ return (unit === 'hours') ? 'hours' : 'revenue'; }
 const PERF_COLORS = ['#d4af37','#e31e24','#9d8cd4','#f97316','#4ea8de',
                      '#48bb78','#ed64a6','#38b2ac'];
 const PERF_OTHER_COLOR = '#5a5a5a';
+// Hatch strokes are a FIXED LIGHT LINE, deliberately independent of the accent.
+//
+// Both hatches used to be drawn in the accent colour at low alpha over a fill of
+// the same accent — a tint of the fill rather than a texture on it, which is why
+// they measured 1.4-3.1 against their own ground and mostly failed 3:1.
+// Decoupling the texture from the hue is the fix: white reads as an applied
+// texture over a tinted area, and its contrast no longer depends on which
+// customer happens to be selected.
+//
+// 0.50 rather than the 0.4337 where the worst case first clears 3:1. The binding
+// case is gold's 45° band against the invoiced fill — gold is the lightest
+// accent, so its fill is the lightest backdrop the white line ever sits beside —
+// and at 0.45 that case lands on 3.16, a margin of 0.16 on a 2px antialiased
+// stroke whose edge pixels blend toward the backdrop. 0.50 puts the same case at
+// 3.69 and every other at 3.8+, still translucent rather than a solid white rule.
+const PERF_HATCH_STROKE  = '#ffffff';
+const PERF_HATCH_OPACITY = 0.50;
+// ── customer colour ─────────────────────────────────────────────────────────
+// A customer's colour is keyed to its ID, not to its position in the ranking.
+//
+// WHY THIS CHANGED. Both cards used to colour by rank — PERF_COLORS[i] over
+// d.customers, which the endpoint returns ordered by revenue. So a customer's
+// colour was a function of where it happened to sit that day: Live Nation
+// slipping from first to second turned it from gold to red, and simply changing
+// the window re-ranked everyone and repainted the whole chart. Nothing was
+// wrong on screen, but nothing was stable either, and the drill-through recolour
+// below would have inherited that: the chart would take "the customer's colour"
+// from a value that means "currently ranked third".
+//
+// Keying on the id removes rank from the input entirely. What remains is a
+// dependence on the SET of ids present: with eight slots and eight customers a
+// hash will sometimes collide, and the loser takes the next free slot. That is
+// resolved by iterating ids in sorted order — never in rank order — so the
+// assignment is identical for the same set of customers no matter how they are
+// ranked. A colour can therefore still move when the top-eight MEMBERSHIP
+// changes, which is a real but much rarer event than a reorder, and it cannot be
+// designed away with fewer colours than customers.
+function _perfHashId(str){
+  // FNV-1a, 32-bit. Chosen for being short and stable across browsers; nothing
+  // here is security-sensitive.
+  let h = 0x811c9dc5;
+  const s = String(str == null ? '' : str);
+  for(let i = 0; i < s.length; i++){
+    h ^= s.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h >>> 0;
+}
+
+// id -> colour, for every customer in the payload plus the roll-up.
+function perfColorMap(d){
+  const ids = (d.customers || []).map(function(c){ return String(c.id); });
+  const map = {};
+  const taken = {};
+
+  // Sorted, so the result depends on WHICH customers are present and never on
+  // their order. Numeric ids compare numerically so the order is the obvious one.
+  const ordered = ids.slice().sort(function(a, b){
+    const na = Number(a), nb = Number(b);
+    if(isFinite(na) && isFinite(nb) && na !== nb) return na - nb;
+    return a < b ? -1 : (a > b ? 1 : 0);
+  });
+
+  ordered.forEach(function(id){
+    const n = PERF_COLORS.length;
+    let slot = _perfHashId(id) % n;
+    for(let k = 0; k < n && taken[slot]; k++){ slot = (slot + 1) % n; }
+    taken[slot] = true;
+    map[id] = PERF_COLORS[slot];
+  });
+
+  // The roll-up is not a customer and never takes a customer's colour.
+  map['__other__'] = PERF_OTHER_COLOR;
+  return map;
+}
+
+// The accent the weekly chart draws in: a customer's own colour on drill-through,
+// gold for the whole business.
+function perfAccent(d, custId){
+  if(custId == null) return '#d4af37';
+  const m = perfColorMap(d);
+  return m[String(custId)] || '#d4af37';
+}
+
+// '#d4af37' + 0.22 -> 'rgba(212,175,55,0.22)'. The chart's fills are all alpha
+// over the card surface, so they have to be built rather than named.
+function perfRgba(hex, a){
+  let h = String(hex || '').replace('#', '');
+  if(h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  const n = parseInt(h, 16);
+  if(!isFinite(n)) return 'rgba(212,175,55,' + a + ')';
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
 const PERF_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 // Below this many hours in the window a customer is NOT ranked on yield: a
 // handful of hours makes $/hr swing wildly and a league table implies a
@@ -18590,6 +18689,12 @@ function perfSeries(d, custId, unit){
   // share an empty state — one is "no work sold yet", the other is "this number
   // is missing and you cannot see that it is".
   out.fwdUnavailable = (custId == null) && (!fp || !!fp.unavailable);
+  // A THIRD empty state, distinct from the other two. On drill-through there is
+  // no forward series because the endpoint does not attribute the book to
+  // customers — exactly as with the uninvoiced band. Saying "nothing on the
+  // books yet" there would be a false statement about that customer's pipeline,
+  // not a missing number.
+  out.fwdNotAttributed = (custId != null);
   if(custId == null && fp && !fp.unavailable && (fp.weeks || []).length){
     const fw = fp.weeks;
     out.fwd = {
@@ -18659,7 +18764,7 @@ function perfSeries(d, custId, unit){
 // Stacked area: invoiced solid, the delivered-not-invoiced band hatched on top.
 // Last year is a thin unfilled line on the same x positions, so week 12 sits
 // above week 12 rather than above a date.
-function perfWeeklyChartSvg(s, fmt, fmtFull){
+function perfWeeklyChartSvg(s, fmt, fmtFull, accent){
   const n = s.labels.length;
   if(n < 2) return '<div class="ops-lane-status">Not enough weeks to chart.</div>';
 
@@ -18667,6 +18772,10 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
   // series and never has to know whether it is money or hours.
   fmt     = fmt     || perfMoney;
   fmtFull = fmtFull || perfMoneyFull;
+  // Gold for the whole business, the customer's own stack colour on
+  // drill-through. Last year's line is deliberately NOT accented — it stays grey
+  // so the comparison never competes with the series being compared.
+  accent  = accent  || '#d4af37';
 
   const W = 1000, H = 300, padL = 64, padR = 12, padT = 16, padB = 36;
   const fwdW  = 138;                       // the forward zone, reserved in Release 1
@@ -18758,8 +18867,9 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
     // Explicitly empty, never drawn as zero — an empty book and a book we could
     // not price are different things and must not share a picture.
     const cx  = (fwdX + fwdW / 2).toFixed(1);
-    const why = s.fwdUnavailable ? ['forward book', 'could not', 'be priced']
-                                          : ['nothing', 'on the books', 'yet'];
+    const why = s.fwdNotAttributed ? ['forward book', 'is not split', 'by customer']
+                : (s.fwdUnavailable ? ['forward book', 'could not', 'be priced']
+                                    : ['nothing', 'on the books', 'yet']);
     fwdArt = '<text class="perf-fwd-lbl" x="' + cx + '" y="' + (padT + plotH / 2 - 16) + '" text-anchor="middle">'
       + '<tspan x="' + cx + '" dy="0">' + why[0] + '</tspan>'
       + '<tspan x="' + cx + '" dy="14">' + why[1] + '</tspan>'
@@ -18787,12 +18897,12 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
     if(fwd.twoLine){
       // HOURS — two lines, and the gap between them is the honest picture: those
       // hours genuinely have nobody attached yet.
-      fwdArt += '<path d="' + areaOf(fwd.secured) + '" fill="rgba(212,175,55,0.30)" stroke="none"/>'
-             +  '<path d="' + pathOf(fwd.secured) + '" fill="none" stroke="#d4af37" stroke-width="2"/>';
+      fwdArt += '<path d="' + areaOf(fwd.secured) + '" fill="' + perfRgba(accent, 0.30) + '" stroke="none"/>'
+             +  '<path d="' + pathOf(fwd.secured) + '" fill="none" stroke="' + accent + '" stroke-width="2"/>';
     } else {
       // REVENUE — one line, filled, so every dollar drawn is a dollar that will
       // be invoiced. The shortfall is marked ON the line, never denominated.
-      fwdArt += '<path d="' + areaOf(fwd.required) + '" fill="rgba(212,175,55,0.16)" stroke="none"/>';
+      fwdArt += '<path d="' + areaOf(fwd.required) + '" fill="' + perfRgba(accent, 0.16) + '" stroke="none"/>';
 
       // Weeks carrying unfilled seats, hatched under the line. Vertical stripes,
       // deliberately NOT the 45° hatch the delivered-not-yet-invoiced band uses:
@@ -18811,7 +18921,7 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
 
     // required — outlined, the charged basis. Dashed so a projection can never be
     // mistaken for the measured series, which is solid throughout.
-    fwdArt += '<path d="' + pathOf(fwd.required) + '" fill="none" stroke="#d4af37" stroke-width="1.6" stroke-dasharray="4 3"/>';
+    fwdArt += '<path d="' + pathOf(fwd.required) + '" fill="none" stroke="' + accent + '" stroke-width="1.6" stroke-dasharray="4 3"/>';
 
     if(!fwd.twoLine){
       // A marker sitting ON the line for each short week. The hatch carries the
@@ -18819,7 +18929,7 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
       for(let j = 0; j < mD; j++){
         if(!(fwd.unfilled[j] > 0)) continue;
         fwdArt += '<circle cx="' + FX(j).toFixed(1) + '" cy="' + Y(fwd.required[j]).toFixed(1)
-               +  '" r="3" fill="#d4af37" stroke="var(--surface)" stroke-width="1"/>';
+               +  '" r="3" fill="' + accent + '" stroke="var(--surface)" stroke-width="1"/>';
       }
     }
 
@@ -18897,42 +19007,44 @@ function perfWeeklyChartSvg(s, fmt, fmtFull){
 
   return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + escapeHtml(aria) + '">'
     + '<defs><pattern id="' + uid + '" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
-    +   '<rect width="7" height="7" fill="rgba(212,175,55,0.05)"/>'
-    +   '<line x1="0" y1="0" x2="0" y2="7" stroke="#d4af37" stroke-width="2" opacity="0.5"/>'
+    +   '<rect width="7" height="7" fill="' + perfRgba(accent, 0.05) + '"/>'
+    +   '<line x1="0" y1="0" x2="0" y2="7" stroke="' + PERF_HATCH_STROKE + '" stroke-width="2" stroke-opacity="' + PERF_HATCH_OPACITY + '"/>'
     + '</pattern>'
     // Unfilled seats. VERTICAL, where the uninvoiced band's hatch is 45° — two
     // different facts must not share a texture on one chart.
     + '<pattern id="' + uid + 'short" width="5" height="5" patternUnits="userSpaceOnUse">'
-    +   '<rect width="5" height="5" fill="rgba(212,175,55,0.04)"/>'
-    +   '<line x1="0" y1="0" x2="0" y2="5" stroke="#d4af37" stroke-width="1.4" opacity="0.40"/>'
+    +   '<rect width="5" height="5" fill="' + perfRgba(accent, 0.04) + '"/>'
+    +   '<line x1="0" y1="0" x2="0" y2="5" stroke="' + PERF_HATCH_STROKE + '" stroke-width="1.4" stroke-opacity="' + PERF_HATCH_OPACITY + '"/>'
     + '</pattern></defs>'
     + grid
-    + '<path d="' + invArea + '" fill="rgba(212,175,55,0.22)" stroke="none"/>'
+    + '<path d="' + invArea + '" fill="' + perfRgba(accent, 0.22) + '" stroke="none"/>'
     + (s.hasUnv ? '<path d="' + (unvTop + unvBack + ' Z') + '" fill="url(#' + uid + ')" stroke="none"/>' : '')
-    + '<path d="' + invTop + '" fill="none" stroke="#d4af37" stroke-width="2"/>'
+    + '<path d="' + invTop + '" fill="none" stroke="' + accent + '" stroke-width="2"/>'
     + '<path d="' + prevLine + '" fill="none" stroke="var(--muted)" stroke-width="1.4" stroke-dasharray="5 4"/>'
     + '<line class="perf-grid" x1="' + padL + '" y1="' + baseY + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + baseY + '"/>'
     + xlab + fwdSvg + hits
     + '</svg>';
 }
 
-function perfChartKey(s){
+function perfChartKey(s, accent){
   const hasUnv = s.hasUnv;
   const fwd    = s.fwd || null;
+  // The key describes the chart, so it follows the chart's accent.
+  accent = accent || '#d4af37';
 
   let k = '<div class="perf-key">'
-    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:rgba(212,175,55,0.35);border:1px solid #d4af37"></span>invoiced, by event date</span>';
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + perfRgba(accent, 0.35) + ';border:1px solid ' + accent + '"></span>invoiced, by event date</span>';
   if(hasUnv){
-    k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:repeating-linear-gradient(45deg,#d4af37 0 2px,transparent 2px 5px)"></span>delivered, not yet invoiced</span>';
+    k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + perfRgba(accent, 0.10) + ';background-image:repeating-linear-gradient(45deg,rgba(255,255,255,' + PERF_HATCH_OPACITY + ') 0 2px,transparent 2px 5px)"></span>delivered, not yet invoiced</span>';
   }
   k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,var(--muted) 0 5px,transparent 5px 9px,var(--muted) 9px 14px);height:2px"></span>same weeks, last year</span>';
 
   if(fwd){
-    k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,#d4af37 0 4px,transparent 4px 7px,#d4af37 7px 11px);height:2px"></span>required — on the books, as at today</span>';
+    k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,' + accent + ' 0 4px,transparent 4px 7px,' + accent + ' 7px 11px);height:2px"></span>required — on the books, as at today</span>';
     if(fwd.twoLine){
-      k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:rgba(212,175,55,0.30);border:1px solid #d4af37"></span>secured — crew confirmed</span>';
+      k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + perfRgba(accent, 0.30) + ';border:1px solid ' + accent + '"></span>secured — crew confirmed</span>';
     } else {
-      k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:repeating-linear-gradient(90deg,#d4af37 0 1.5px,transparent 1.5px 5px)"></span>weeks with seats still unfilled</span>';
+      k += '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + perfRgba(accent, 0.16) + ';background-image:repeating-linear-gradient(90deg,rgba(255,255,255,' + PERF_HATCH_OPACITY + ') 0 1.5px,transparent 1.5px 5px)"></span>weeks with seats still unfilled</span>';
     }
   }
   k += '</div>';
@@ -19020,6 +19132,7 @@ function perfHeadlines(d){
 function perfWeeklyCard(d){
   const custId = _perfCustomer;
   const unit   = _perfUnit;
+  const accent = perfAccent(d, custId);
   const s      = perfSeries(d, custId, unit);
   const dq     = d.data_quality || {};
 
@@ -19091,7 +19204,9 @@ function perfWeeklyCard(d){
     }
     note += '</div>';
   } else {
-    note += '<div class="perf-note">Invoiced revenue only. The delivered-not-yet-invoiced band is <b>not attributed to customers</b> by the endpoint, so it is absent here rather than shown as zero.</div>';
+    note += '<div class="perf-note">Invoiced ' + (unit === 'hours' ? 'hours' : 'revenue') + ' only. '
+      + 'The delivered-not-yet-invoiced band and <b>the forward book</b> are <b>not attributed to customers</b> by the endpoint, '
+      + 'so both are absent here rather than shown as zero — the empty forward zone is not a claim that this customer has nothing booked.</div>';
   }
 
   // The forward book's own explanation sits with the chart, because the label is
@@ -19112,8 +19227,9 @@ function perfWeeklyCard(d){
       + '</div>';
   }
 
-  return '<div class="perf-card">' + head + perfWeeklyChartSvg(s, perfUnitFmt(unit), perfUnitFmtFull(unit))
-       + perfChartKey(s) + note + '</div>';
+  return '<div class="perf-card">' + head
+       + perfWeeklyChartSvg(s, perfUnitFmt(unit), perfUnitFmtFull(unit), accent)
+       + perfChartKey(s, accent) + note + '</div>';
 }
 
 // ── the forward book ────────────────────────────────────────────────────────
@@ -19230,7 +19346,19 @@ function perfForwardCard(d){
       + 'The two look identical on the chart; only the offers-sent count separates them.</div>';
   }
 
-  const caveats = [];
+  // TWO GROUPS, SPLIT AT "cancelled calls excluded".
+  //
+  // The first two caveats say the revenue figure above is UNDERSTATED — a call
+  // nobody could price, a call the engine refused. Those change how the number
+  // should be read, so they stay on screen. Everything from the cancelled-call
+  // count onward explains how the figures are BUILT: real provenance, worth
+  // having, but not something to re-read every time the panel is opened. That
+  // group folds.
+  //
+  // On the live book both leading caveats are zero, so what actually collapses
+  // begins at "cancelled calls excluded" — which is the boundary as specified.
+  const caveats = [];      // always visible
+  const foldable = [];     // behind the disclosure
   if(dq.forward_unmapped_calls){
     const names = (dq.forward_unmapped_names || []).map(function(u){
       return escapeHtml(String(u.call_name || '(blank)')) + ' ×' + perfNum(u.calls);
@@ -19245,7 +19373,7 @@ function perfForwardCard(d){
       + (dq.forward_price_errors === 1 ? '' : 's') + ' the pricing engine refused (usually a missing start time).');
   }
   if(fdq.forward_cancelled_calls){
-    caveats.push(perfNum(fdq.forward_cancelled_calls) + ' cancelled call'
+    foldable.push(perfNum(fdq.forward_cancelled_calls) + ' cancelled call'
       + (fdq.forward_cancelled_calls === 1 ? '' : 's') + ' excluded (' + perfNum(fdq.forward_cancelled_seats)
       + ' seats). Cancellation is marked in free text, so this count is the canary for that convention changing.');
   }
@@ -19262,26 +19390,41 @@ function perfForwardCard(d){
         + (names ? ' (' + names + ')' : '')
         + ', and the head is taken, which is the higher rate. If that count grows, a combined-call naming convention is spreading and is quietly inflating this figure.';
     }
-    caveats.push(c);
+    foldable.push(c);
   }
   if(dq.forward_zero_length_calls){
-    caveats.push(perfNum(dq.forward_zero_length_calls) + ' zero-length call'
+    foldable.push(perfNum(dq.forward_zero_length_calls) + ' zero-length call'
       + (dq.forward_zero_length_calls === 1 ? '' : 's') + ' excluded ('
       + perfNum(dq.forward_zero_length_seats) + ' seat' + (dq.forward_zero_length_seats === 1 ? '' : 's')
       + ') — flat charges billed irrespective of hours, such as a broadcast allowance. Their revenue is real but is not an hours-based projection, so it is out of scope here.');
   }
   if(fdq.forward_qty_inversions){
-    caveats.push(perfNum(fdq.forward_qty_inversions) + ' call'
+    foldable.push(perfNum(fdq.forward_qty_inversions) + ' call'
       + (fdq.forward_qty_inversions === 1 ? '' : 's') + ' where offers sent exceed the seats required. '
       + 'That is <b>normal</b> — you ask more people than you need — and is why offers sent is a diagnostic here rather than a line on the chart.');
   }
   if(fdq.forward_gap_calls){
-    caveats.push(perfNum(fdq.forward_gap_calls) + ' call'
+    foldable.push(perfNum(fdq.forward_gap_calls) + ' call'
       + (fdq.forward_gap_calls === 1 ? '' : 's') + ' earlier this week sit in neither view: the history ends at the '
       + 'last complete week and the book starts today.');
   }
   if(caveats.length){
     notes += '<div class="perf-note">' + caveats.join(' ') + '</div>';
+  }
+
+  if(foldable.length){
+    // Closed by default and remembered per operator, like the units toggle. The
+    // control is a real button: role, tabindex and aria-expanded, so it is not
+    // conveyed by the triangle alone.
+    const open = !!goatPrefs.get('perf', 'fold:forwardNotes', false);
+    notes += '<div class="perf-fold-t" data-perf-fold="forwardNotes" role="button" tabindex="0"'
+          +    ' aria-expanded="' + (open ? 'true' : 'false') + '">'
+          +    (open ? '▾' : '▸') + ' ' + perfNum(foldable.length) + ' note'
+          +    (foldable.length === 1 ? '' : 's') + ' on how these figures are built'
+          +  '</div>'
+          +  '<div class="perf-fold"' + (open ? '' : ' hidden') + '>'
+          +    '<div class="perf-note">' + foldable.join(' ') + '</div>'
+          +  '</div>';
   }
 
   return '<div class="perf-card">'
@@ -19309,8 +19452,9 @@ function perfCustomerCard(d){
   const fmt   = perfUnitFmt(unit);
   const cust  = (d.customers || []).slice();
   const other = d.other || {};
+  const cmap  = perfColorMap(d);
   const segs  = cust.map(function(c, i){
-    return { id: c.id, name: c.name, value: val(c), revenue: c.revenue || 0, hours: c.hours || 0, color: PERF_COLORS[i % PERF_COLORS.length] };
+    return { id: c.id, name: c.name, value: val(c), revenue: c.revenue || 0, hours: c.hours || 0, color: cmap[String(c.id)] };
   });
   if((other.revenue || 0) !== 0 || (other.customer_count || 0) > 0){
     segs.push({ id: '__other__',
@@ -19361,8 +19505,9 @@ function perfCustomerCard(d){
 // ── yield table ─────────────────────────────────────────────────────────────
 function perfYieldCard(d){
   const other = d.other || {};
+  const cmap  = perfColorMap(d);
   const rows  = (d.customers || []).map(function(c, i){
-    return { id: c.id, name: c.name, revenue: c.revenue || 0, hours: c.hours || 0, color: PERF_COLORS[i % PERF_COLORS.length] };
+    return { id: c.id, name: c.name, revenue: c.revenue || 0, hours: c.hours || 0, color: cmap[String(c.id)] };
   });
   if((other.revenue || 0) !== 0 || (other.hours || 0) !== 0){
     rows.push({ id: '__other__', name: 'All other (' + perfNum(other.customer_count) + ' customers)',
@@ -19436,12 +19581,16 @@ function perfYieldCard(d){
     const el = ev.target;
     // Element.closest exists on SVG elements too, which matters: the customer
     // stack's click targets are <rect>s.
-    return (el && el.closest) ? el.closest('[data-perf-unit],[data-perf-cust]') : null;
+    return (el && el.closest) ? el.closest('[data-perf-unit],[data-perf-cust],[data-perf-fold]') : null;
   };
 
   const fire = function(t){
     if(t.hasAttribute('data-perf-unit')){
       perfSetUnit(t.getAttribute('data-perf-unit'));
+      return;
+    }
+    if(t.hasAttribute('data-perf-fold')){
+      perfToggleFold(t.getAttribute('data-perf-fold'));
       return;
     }
     // An empty data-perf-cust is the "back to all customers" control. Empty
@@ -19464,6 +19613,13 @@ function perfYieldCard(d){
     fire(t);
   });
 })();
+
+// Disclosure state, per operator, remembered like the units toggle.
+function perfToggleFold(name){
+  const key = 'fold:' + name;
+  goatPrefs.set('perf', key, !goatPrefs.get('perf', key, false));
+  renderPerformance();
+}
 
 function perfSelectCustomer(id){
   _perfCustomer = (id == null || String(id) === String(_perfCustomer)) ? null : id;
