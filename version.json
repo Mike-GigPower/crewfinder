@@ -1,6 +1,6 @@
 {
-  "version": "5.14.0",
+  "version": "5.14.1",
   "release_date": "2026-08-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.14.0/TheGOAT.dmg",
-  "release_notes": "A new Performance view under Today: weekly hours and revenue against the same period last year, broken down by customer. Work delivered but not yet invoiced now shows as its own band."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.14.1/TheGOAT.dmg",
+  "release_notes": "The 'not yet invoiced' band on Performance now prices night hours at the night rate instead of the day rate."
 }
