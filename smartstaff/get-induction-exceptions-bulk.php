@@ -52,6 +52,17 @@
 		return $a['expiry'] - $b['expiry'];
 	}
 
+	/* venue segments: biggest first, then label A-Z. The label tie-break is not
+	/* cosmetic — without it two venues on the same count swap places between
+	/* refreshes and the donut visibly reshuffles for no reason. */
+	function goat_venue_seg_cmp($a, $b)
+	{
+		$d = $b['value'] - $a['value'];
+		if ($d !== 0)
+			return $d;
+		return strcasecmp($a['label'], $b['label']);
+	}
+
 	/*
 	/* AUTH — the dual gate, copied verbatim from get-pending-acks-bulk.php.
 	*/
@@ -365,6 +376,7 @@
 	/* and that group's label/validity. Group key: "crew:cN" for a catalogue group,
 	/* "crew:vN" for an ungrouped venue. */
 	$grp = array();
+	$grp_lb = array();
 	while ($row = mysql_fetch_object($res_b))
 	{
 		$crew  = (int) $row->user_id;
@@ -374,11 +386,13 @@
 		if ($catId !== null)
 		{
 			$gk    = $crew . ':c' . $catId;
-			$label = ($row->cat_title !== null && $row->cat_title !== '') ? $row->cat_title : $row->venue_name;
+			$vkey  = 'c' . $catId;
+			$label = ($row->cat_title !== null && trim($row->cat_title) !== '') ? $row->cat_title : $row->venue_name;
 		}
 		else
 		{
 			$gk    = $crew . ':v' . ((int) $row->venue_id);
+			$vkey  = 'v' . ((int) $row->venue_id);
 			$label = $row->venue_name;
 		}
 
@@ -396,12 +410,23 @@
 				'ein'           => ($row->ein === null ? null : (string) $row->ein),
 				'name'          => $crew_name,
 				'venue_label'   => $label,
+				'venue_key'     => $vkey,
 				'complete_date' => $cd,
 				'validity'      => ($row->validity_months !== null) ? (int) $row->validity_months : 12,
 				'warn'          => ($row->warn_days !== null) ? (int) $row->warn_days : 14,
 			);
 		}
+
+		/* Label is chosen independently of the complete_date winner: always the
+		/* alphabetically first label seen for this $gk. Without this the label
+		/* rides on whichever row happened to win on date, which for a 'c' key
+		/* spanning several venues is arbitrary and flips with row order. */
+		if (!isset($grp_lb[$gk]) || strcasecmp($label, $grp_lb[$gk]) < 0)
+			$grp_lb[$gk] = $label;
 	}
+
+	foreach ($grp_lb as $lb_k => $lb_v)
+		$grp[$lb_k]['venue_label'] = $lb_v;
 
 	/* Second collapse: gather each crew member's expiring groups. Filter to
 	/* expiring-soon (strictly future, inside the warn window) as we go. */
@@ -424,7 +449,7 @@
 				'groups'  => array(),
 			);
 		}
-		$per_crew[$uid]['groups'][] = array('label' => $g['venue_label'], 'expiry' => $expiry);
+		$per_crew[$uid]['groups'][] = array('label' => $g['venue_label'], 'key' => $g['venue_key'], 'expiry' => $expiry);
 	}
 
 	/* One row per crew member. Everything derives from the SOONEST expiry: sort,
@@ -432,16 +457,38 @@
 	/* sum(lead) == total (each crew member falls in exactly one bucket). */
 	$rows_b  = array();
 	$cb_lead = array('under48' => 0, 'from48to168' => 0, 'over168' => 0);
+	$cb_venue_ct = array();
+	$cb_venue_lb = array();
 
 	foreach ($per_crew as $pc)
 	{
 		usort($pc['groups'], 'goat_group_expiry_cmp');     /* soonest expiry first */
 
-		$soonest = $pc['groups'][0]['expiry'];
-		$venues  = array();
-		$ng      = count($pc['groups']);
+		$soonest    = $pc['groups'][0]['expiry'];
+		$venues     = array();
+		$venue_keys = array();
+		$ng         = count($pc['groups']);
+		/* ONE pass builds both arrays, so venues and venue_keys are parallel by
+		/* construction rather than by care. The tally rides along. */
 		for ($gi = 0; $gi < $ng; $gi++)
-			$venues[] = $pc['groups'][$gi]['label'];
+		{
+			$g_label = $pc['groups'][$gi]['label'];
+			$g_key   = $pc['groups'][$gi]['key'];
+
+			$venues[]     = $g_label;
+			$venue_keys[] = $g_key;
+
+			if (!isset($cb_venue_ct[$g_key]))
+				$cb_venue_ct[$g_key] = 0;
+			$cb_venue_ct[$g_key]++;
+
+			/* NOT last-write-wins. A 'c' key spans several venues, and when cat_title
+			/* is empty the label falls back to that venue's own name — so one key can
+			/* legitimately arrive carrying different labels. Keep the alphabetically
+			/* first one so the segment label does not depend on row order. */
+			if (!isset($cb_venue_lb[$g_key]) || strcasecmp($g_label, $cb_venue_lb[$g_key]) < 0)
+				$cb_venue_lb[$g_key] = $g_label;
+		}
 
 		$days_left = (int) (($soonest - $now_unix) / 86400);   /* >= 0 here */
 
@@ -459,12 +506,77 @@
 			'ein'                => $pc['ein'],
 			'name'               => $pc['name'],
 			'venues'             => $venues,          /* soonest-expiry first */
+			'venue_keys'         => $venue_keys,      /* parallel to venues */
 			'soonest_expiry_iso' => date('Y-m-d\TH:i:s', $soonest),
 			'days_left'          => $days_left,
 			'lead_bucket'        => $lead_bucket,
 			'venue_count'        => $ng,
 			'_expiry'            => $soonest,   /* internal sort key, stripped below */
 		);
+	}
+
+	/* Venue spread — crew x venue PAIRS, so this deliberately does NOT sum to
+	/* count($rows_b). One crew member with two expiring groups is two pairs.
+	/* sum(venue) == venue_pairs == sum(rows[].venue_count). */
+	$venue_all = array();
+	foreach ($cb_venue_ct as $vk => $vn)
+	{
+		$venue_all[] = array(
+			'key'   => $vk,
+			'label' => $cb_venue_lb[$vk],
+			'value' => $vn,
+		);
+	}
+	usort($venue_all, 'goat_venue_seg_cmp');
+
+	/* Top 5 plus a rolled-up remainder — but only when the tail holds 2 or more.
+	/* A rolled-up "All other (1 venue)" is worse than simply drawing six.
+	/* Every segment carries a keys array, singles included, so the client has ONE
+	/* filter rule (does this row's venue_keys intersect this segment's keys) with
+	/* no special case for __other__. */
+	$VENUE_TOP  = 5;
+	$venue_segs = array();
+	$venue_pairs = 0;
+	$n_v = count($venue_all);
+	if ($n_v > $VENUE_TOP + 1)
+	{
+		for ($vi = 0; $vi < $VENUE_TOP; $vi++)
+		{
+			$venue_segs[] = array(
+				'key'   => $venue_all[$vi]['key'],
+				'label' => $venue_all[$vi]['label'],
+				'value' => $venue_all[$vi]['value'],
+				'keys'  => array($venue_all[$vi]['key']),
+			);
+			$venue_pairs += $venue_all[$vi]['value'];
+		}
+		$ot_val  = 0;
+		$ot_keys = array();
+		for ($vi = $VENUE_TOP; $vi < $n_v; $vi++)
+		{
+			$ot_val   += $venue_all[$vi]['value'];
+			$ot_keys[] = $venue_all[$vi]['key'];
+		}
+		$venue_pairs += $ot_val;
+		$venue_segs[] = array(
+			'key'   => '__other__',
+			'label' => 'All other (' . count($ot_keys) . ' venues)',
+			'value' => $ot_val,
+			'keys'  => $ot_keys,
+		);
+	}
+	else
+	{
+		for ($vi = 0; $vi < $n_v; $vi++)
+		{
+			$venue_segs[] = array(
+				'key'   => $venue_all[$vi]['key'],
+				'label' => $venue_all[$vi]['label'],
+				'value' => $venue_all[$vi]['value'],
+				'keys'  => array($venue_all[$vi]['key']),
+			);
+			$venue_pairs += $venue_all[$vi]['value'];
+		}
 	}
 
 	/* soonest expiry first */
@@ -476,7 +588,13 @@
 		unset($rows_b[$bi]['_expiry']);
 
 	/* Both blocks' identities hold by construction: every emitted row increments
-	/* exactly one tag in each group, and total = count(rows). */
+	/* exactly one tag in each group, and total = count(rows).
+	/*
+	/* expiring.counts.venue is the ONE exception, and it is not a bug: it counts
+	/* crew x venue PAIRS, not crew, so sum(counts.venue[].value) deliberately does
+	/* NOT equal counts.total. It equals counts.venue_pairs, which in turn equals
+	/* sum(rows[].venue_count). A crew member expiring at two venues is two pairs
+	/* and one row. Do not "fix" it to match total. */
 	echo json_encode(array(
 		'generated_at' => date('Y-m-d\TH:i:s'),
 		'window'       => array('start' => $start_raw, 'end' => $end_raw),
@@ -490,8 +608,14 @@
 		),
 		'expiring'     => array(
 			'counts' => array(
-				'total' => $n_b,
-				'lead'  => $cb_lead,
+				'total'       => $n_b,
+				'lead'        => $cb_lead,
+				'venue_pairs' => $venue_pairs,
+				/* Belt and braces: $venue_segs is built by append and is already
+				/* sequential, so this is a no-op today. Kept because a future edit
+				/* that unsets a segment would otherwise encode as a JSON object and
+				/* silently cost the client the ranking. */
+				'venue'       => array_values($venue_segs),
 			),
 			'rows'   => array_values($rows_b),
 		),
