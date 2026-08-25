@@ -1392,6 +1392,48 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .perf-tbl-sep td{padding:7px 8px 4px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)}
 .perf-sw-cell{width:14px}
 .perf-sw{width:9px;height:9px;border-radius:2px;display:inline-block}
+
+/* ── Chart 1 · KPI tiles ─────────────────────────────────────────────────────
+   The 52-week sparkline sits BEHIND the tile rather than beside it, which is
+   what makes a trend free: it costs no layout at all. The tile's own content is
+   lifted onto .perf-head-in so it stays above the graphic. */
+.perf-head{position:relative;overflow:hidden}
+.perf-head-in{position:relative;z-index:1}
+.perf-head--muted{opacity:.5;flex:0 1 200px}
+.perf-head-u{font-size:12px;color:var(--muted)}
+.perf-spark{position:absolute;left:0;right:0;bottom:0;height:42px;opacity:.30;pointer-events:none;z-index:0}
+.perf-spark svg{width:100%;height:100%;display:block}
+.perf-tile-delta{display:flex;align-items:baseline;gap:6px;font-family:'Share Tech Mono',monospace;font-size:11px;margin-top:4px}
+.perf-tile-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;align-self:center}
+.perf-tile-vs{color:var(--muted)}
+
+/* Charts 2 and 3 stay SIDE BY SIDE. The waterfall says what kind of change, the
+   slope says whose; split across rows the connection between them is lost. They
+   stack only when there is genuinely no width for two. */
+.perf-row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;margin-bottom:12px}
+.perf-row2 > .perf-card{margin-bottom:0}
+@media (max-width:1100px){.perf-row2{grid-template-columns:1fr}}
+
+/* The two facts that never fold, because each changes how a number should be
+   READ rather than explaining how it was built. */
+.perf-basis{display:flex;flex-wrap:wrap;gap:6px 22px;font-size:11px;color:var(--muted);line-height:1.5;margin:-2px 2px 12px}
+.perf-basis span{flex:1 1 320px}
+.perf-basis b{color:var(--text);font-weight:600}
+
+/* One computed sentence under a chart — the finding, not the method. Templated
+   at render from the payload, never a written-down number. */
+.perf-cap{font-size:12px;color:var(--text);line-height:1.5;margin-top:8px}
+.perf-cap b{font-family:'Share Tech Mono',monospace;font-weight:400}
+
+/* Shared marks for the slope, the scatter and the bullets. */
+.perf-mark{cursor:pointer}
+.perf-mark:hover{opacity:.75!important}
+.perf-mark:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.perf-lbl{fill:var(--text);font-family:'Rajdhani',sans-serif;font-size:11px}
+.perf-lbl-mut{fill:var(--muted);font-family:'Share Tech Mono',monospace;font-size:10px}
+.perf-lead{stroke:var(--border);stroke-width:1}
+.perf-quad{fill:rgba(227,30,36,0.05)}
+.perf-quad-lbl{fill:var(--muted);font-family:'Rajdhani',sans-serif;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
 </style>
 </head>
 <body>
@@ -18472,6 +18514,23 @@ let _perfSvgSeq   = 0;      // unique <pattern> ids — two charts sharing one i
 // in one function and no rework anywhere else.
 let _perfUnit = (goatPrefs.get('perf', 'unit', 'revenue') === 'hours') ? 'hours' : 'revenue';
 
+// Chart 7's x domain. 'ytd' is the DEFAULT and the reason is legibility, not
+// preference: drawn across all 52 weeks, eight elapsed weeks of a $491k start
+// against a $8.9m year-end target put the whole pacing question — the vertical
+// distance the chart exists to show — inside about one percent of the plot
+// height, in the bottom-left corner. The full-year curve is what justifies the
+// target's SHAPE, which is a question worth asking once; "am I behind today" is
+// asked every visit. So the every-visit question gets the default view and the
+// once question gets a click, which is the same call the folds make.
+let _perfFyRange = (goatPrefs.get('perf', 'fyrange', 'ytd') === 'full') ? 'full' : 'ytd';
+function perfSetFyRange(r){
+  const next = (r === 'full') ? 'full' : 'ytd';
+  if(next === _perfFyRange) return;
+  _perfFyRange = next;
+  goatPrefs.set('perf', 'fyrange', next);
+  renderPerformance();
+}
+
 function perfSetUnit(u){
   const next = (u === 'hours') ? 'hours' : 'revenue';
   if(next === _perfUnit) return;
@@ -19132,12 +19191,896 @@ function perfChartKey(s, accent){
   return k;
 }
 
+// ── signals ─────────────────────────────────────────────────────────────────
+// THRESHOLDS AS DATA, NOT CONDITIONALS.
+//
+// Every judgement this screen makes about the business lives here and nowhere
+// else: 95% filled is fine, $75/hr is good, a top-three share above 55% is
+// dangerous. These are opinions about live events staffing, not measurements of
+// it, and they are the ONLY part of this tab that is safe to hardcode — the
+// figures themselves are re-read from the endpoint on every open.
+//
+// They are also the part that must survive January's ECharts migration
+// untouched. Every render function below is expected to be replaced; if a
+// threshold were spelled `if (v < 0.9) red` inside one of them it would be
+// rewritten from memory by whoever ports the chart, and the business's
+// judgement would quietly become that person's.
+//
+//   dir 'up'   higher is better — v >= good -> good, v >= watch -> watch, else bad
+//   dir 'down' lower  is better — v <= good -> good, v <= watch -> watch, else bad
+const PERF_SIGNALS = {
+  revenueYoY:    { dir: 'up',   good:  2, watch:  -5 },   // % against the same 52 weeks last year
+  hoursYoY:      { dir: 'up',   good:  2, watch:  -5 },   // %
+  yieldYoY:      { dir: 'up',   good:  3, watch:  -1 },   // %
+  top3Share:     { dir: 'down', good: 40, watch:  55 },   // % of window revenue in the top three
+  customerYoY:   { dir: 'up',   good:  5, watch: -10 },   // % — one customer against last year
+  customerYield: { dir: 'up',   good: 75, watch:  70 },   // dollars per hour
+  fillRate:      { dir: 'up',   good: 95, watch:  90 },   // % of required seats confirmed
+  // % against the TARGET CURVE AT THE SAME WEEK — never against the year-end
+  // total. Measured the other way, every week before November reads red.
+  fyPacing:      { dir: 'up',   good:  0, watch: -10 }
+};
+
+// Literal hexes rather than CSS custom properties, and deliberately so: these
+// are used as SVG presentation attributes (fill=, stroke=) as well as in inline
+// styles, and var() inside an SVG attribute is not dependable in the WKWebView
+// this ships in. Same idiom as OPS_LEAD_COLORS.
+const PERF_SIGNAL_COLORS = { good: '#10b981', watch: '#f59e0b', bad: '#e31e24', none: '#666666' };
+
+// The two kinds of unfilled seat, on the bullet chart. These encode KIND, not
+// severity, so they deliberately do NOT come from the signal palette: 'watch'
+// amber sits a few degrees off the gold confirmed bar it extends, and at a
+// twelve-pixel segment the two became one shape. Blue reads as queued work and
+// cannot be confused with gold at any width. The week's actual severity is
+// carried by the fill percentage beside it, which is signal-coloured.
+const PERF_SHORTFALL_COLORS = { hard: '#e31e24', cold: '#4ea8de' };
+
+// 'good' | 'watch' | 'bad' | 'none'. 'none' is returned for a value that does
+// not exist — a customer with no prior year has no direction of travel, and
+// must not be coloured as though it were doing badly.
+function perfSignal(key, v){
+  const s = PERF_SIGNALS[key];
+  if(!s || v == null || !isFinite(v)) return 'none';
+  if(s.dir === 'down') return (v <= s.good) ? 'good' : ((v <= s.watch) ? 'watch' : 'bad');
+  return (v >= s.good) ? 'good' : ((v >= s.watch) ? 'watch' : 'bad');
+}
+function perfSignalColor(key, v){ return PERF_SIGNAL_COLORS[perfSignal(key, v)]; }
+
+// ── year on year ────────────────────────────────────────────────────────────
+// Percentage change, or null when there is no base to change from. A customer
+// that billed nothing last year has not grown by infinity, it has APPEARED, and
+// every caller renders that as "new" rather than as a number.
+function perfDeltaPct(now, was){
+  if(!(Math.abs(was) > 0)) return null;
+  return 100 * ((now - was) / was);
+}
+function perfDeltaText(p){
+  if(p == null) return 'new';
+  return (p >= 0 ? '▲ ' : '▼ ') + Math.abs(p).toFixed(1) + '%';
+}
+
+// Last year's totals, summed off the weekly series.
+//
+// THE PAYLOAD IS ASYMMETRIC AND THAT ASYMMETRY IS THE WHOLE TRICK.
+// get-performance.php guards every entry in `totals` with $in_request
+// (:657), so that block is the REQUESTED WINDOW ONLY. But `weeks[]` carries the
+// full 2N span with the server's own in_window flag (:1201), and
+// `customers[].weeks{}` is filled across the full span while the ranking is
+// computed on the window alone (:647). So the comparison year is summable on
+// this side without a second query and without re-implementing the window rule.
+//
+// Trimmed to the shorter of the two exactly as perfSeries does, so the years are
+// always compared over the same NUMBER of weeks even if the payload ever stops
+// being symmetric.
+function perfPriorTotals(d){
+  const sp = perfSplitWeeks(d);
+  const n  = Math.min(sp.cur.length, sp.prev.length);
+  const sum = function(arr){
+    let revenue = 0, hours = 0, equipment_revenue = 0, equipment_hours = 0;
+    arr.forEach(function(w){
+      const iv = w.invoiced || {};
+      revenue           += iv.revenue           || 0;
+      hours             += iv.hours             || 0;
+      equipment_revenue += iv.equipment_revenue || 0;
+      equipment_hours   += iv.equipment_hours   || 0;
+    });
+    return { revenue: revenue, hours: hours,
+             equipment_revenue: equipment_revenue, equipment_hours: equipment_hours };
+  };
+  return {
+    weeks: n,
+    prev:  sum(sp.prev.slice(sp.prev.length - n)),
+    cur:   sum(sp.cur.slice(sp.cur.length - n))
+  };
+}
+
+// Per-customer, this year against last — the input to the slope chart.
+//
+// `c.revenue` and `c.hours` are the server's own window figures and are used as
+// given. Last year is summed here from `c.weeks{}` over the comparison week
+// keys, for the reason set out in perfPriorTotals.
+//
+// THE RANKING IS THIS YEAR'S, AND THAT IS A REAL LIMIT. A customer that was
+// large last year and has since collapsed is inside `other`, not in
+// `customers[]`, so these rows CANNOT be read as "last year's top eight". What
+// they can be read as is a complete partition of both years' revenue, because
+// top-8 + other is the entire business in each year — nothing is missing, it is
+// only bucketed differently on the left-hand side than a true prior-year ranking
+// would bucket it. The chart's own note says so.
+function perfCustomerYoY(d){
+  const sp    = perfSplitWeeks(d);
+  const n     = Math.min(sp.cur.length, sp.prev.length);
+  const pkeys = sp.prev.slice(sp.prev.length - n).map(function(w){ return w.key; });
+  const cmap  = perfColorMap(d);
+  const rows  = [];
+
+  const add = function(c, id, name, color){
+    const wk = c.weeks || {};
+    let pr = 0, ph = 0;
+    pkeys.forEach(function(k){
+      const v = wk[k];
+      if(!v) return;
+      pr += v.revenue || 0;
+      ph += v.hours   || 0;
+    });
+    const rev = c.revenue || 0, hrs = c.hours || 0;
+    rows.push({
+      id: id, name: name, color: color,
+      revenue: rev, hours: hrs,
+      prevRevenue: pr, prevHours: ph,
+      delta: rev - pr,
+      pct:   perfDeltaPct(rev, pr),
+      yield: hrs > 0 ? rev / hrs : 0
+    });
+  };
+
+  (d.customers || []).forEach(function(c){ add(c, c.id, c.name, cmap[String(c.id)]); });
+
+  const o = d.other || {};
+  if((o.revenue || 0) !== 0 || (o.hours || 0) !== 0){
+    add(o, '__other__', 'All other (' + perfNum(o.customer_count) + ' customers)', PERF_OTHER_COLOR);
+  }
+  return rows;
+}
+
+// ── disclosure ──────────────────────────────────────────────────────────────
+// ONE fold idiom for the whole tab.
+//
+// The rule for this pass: the screen is PREDOMINANTLY GRAPHICAL. Every line of
+// explanation here is worth reading once and is dead space on every visit after
+// that, so all of it sits behind a control that remembers whether it was opened
+// (goatPrefs, per operator, exactly like the units toggle).
+//
+// TWO THINGS DELIBERATELY DO NOT FOLD, and they are both in perfBasisStrip():
+// that revenue is labour only and attributed to the event date, and that no
+// margin figure exists. Neither explains how a number was built — each one
+// changes how the number above it should be READ, and a reader who has collapsed
+// the notes must still not be able to mistake this for a P&L.
+function perfFold(name, label, bodyHtml){
+  if(!bodyHtml) return '';
+  const open = !!goatPrefs.get('perf', 'fold:' + name, false);
+  return '<div class="perf-fold-t" data-perf-fold="' + escapeHtml(String(name)) + '" role="button" tabindex="0"'
+    +      ' aria-expanded="' + (open ? 'true' : 'false') + '">'
+    +      (open ? '▾' : '▸') + ' ' + escapeHtml(String(label))
+    +    '</div>'
+    +    '<div class="perf-fold"' + (open ? '' : ' hidden') + '>' + bodyHtml + '</div>';
+}
+
+function perfBasisStrip(){
+  return '<div class="perf-basis">'
+    + '<span><b>Labour only, by event date.</b> Equipment, vehicles, fuel and expenses are billed outside SmartStaff, '
+    +   'and revenue is attributed to when the work happened rather than when it was billed — so this will never '
+    +   'reconcile to the accounts, deliberately.</span>'
+    + '<span><b>No margin figure.</b> Charge-out rates are reliable; pay rates are hand-keyed and paygrade variants '
+    +   'that all charge the same amount pay three different ones. A margin would carry the whole of that error.</span>'
+    + '</div>';
+}
+
+// ── sparkline ───────────────────────────────────────────────────────────────
+// A 52-point trend behind a KPI tile. Fixed 100x30 viewBox with
+// preserveAspectRatio="none" so it stretches to whatever width the tile happens
+// to be. It carries SHAPE ONLY: no axis, no baseline at zero, no labels, and it
+// is never read for a value — the value is the large number sitting on top of it.
+function perfSparkSvg(vals, color){
+  const v = (vals || []).filter(function(x){ return x != null && isFinite(x); });
+  if(v.length < 2) return '';
+  let lo = Infinity, hi = -Infinity;
+  v.forEach(function(x){ if(x < lo) lo = x; if(x > hi) hi = x; });
+  if(!(hi > lo)) hi = lo + 1;
+  const X = function(i){ return 100 * i / (v.length - 1); };
+  const Y = function(x){ return 29 - 27 * ((x - lo) / (hi - lo)); };
+  let line = '', area = 'M0,30';
+  v.forEach(function(x, i){
+    const px = X(i).toFixed(2), py = Y(x).toFixed(2);
+    line += (i ? 'L' : 'M') + px + ',' + py;
+    area += 'L' + px + ',' + py;
+  });
+  area += 'L100,30Z';
+  return '<svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true" focusable="false">'
+    +      '<path d="' + area + '" fill="' + perfRgba(color, 0.32) + '"/>'
+    +      '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="1.4" vector-effect="non-scaling-stroke"/>'
+    +    '</svg>';
+}
+
+// ── label decluttering ──────────────────────────────────────────────────────
+// Push overlapping labels apart WITHOUT moving the points they belong to. Used
+// by the slope chart and the scatter, both of which have clusters the data
+// genuinely puts on top of each other.
+//
+// One downward pass in y order, then a clamp back up if the stack overran the
+// bottom. Every caller draws a leader line from the shifted label to the true
+// point, so the chart never quietly relocates a value to make room for its name.
+function perfDeclutter(ys, minGap, lo, hi){
+  const order = ys.map(function(_, i){ return i; }).sort(function(a, b){ return ys[a] - ys[b]; });
+  const out   = ys.slice();
+  let last = -Infinity;
+  order.forEach(function(i){
+    const y = Math.max(ys[i], last + minGap, lo);
+    out[i] = y;
+    last   = y;
+  });
+  if(last > hi){
+    let ceil = hi;
+    for(let k = order.length - 1; k >= 0; k--){
+      const i = order[k];
+      out[i] = Math.min(out[i], ceil);
+      ceil   = out[i] - minGap;
+    }
+  }
+  return out;
+}
+
+// Names are drawn into SVG <text>, which does not wrap and has no ellipsis.
+function perfTrim(s, n){
+  const t = String(s == null ? '' : s);
+  return (t.length > n) ? (t.slice(0, n - 1) + '…') : t;
+}
+// ── CHART 1 · the year in six numbers ───────────────────────────────────────
+// A number without a direction is a fact, not a signal. Every tile that HAS a
+// comparable prior year carries one, coloured by PERF_SIGNALS, with the 52-week
+// series drawn faintly behind it — which costs no space and turns each tile into
+// a trend.
+//
+// BOOKINGS IS THE ONE TILE WITH NO DELTA, and that is not an omission. Weekly
+// booking counts are NOT SUMMABLE: a booking spanning two weeks is counted in
+// both, so adding the comparison weeks would produce a larger, wronger number
+// and invite a comparison against a distinct count. `totals.bookings` is a
+// distinct count for the window and the endpoint computes no such figure for the
+// prior year, so there is nothing honest to put beside it.
+function perfHeadlines(d){
+  const t    = d.totals || {};
+  const win  = d.window || {};
+  const pt   = perfPriorTotals(d);
+  const sp   = perfSplitWeeks(d);
+  const eq   = perfWindowEquipment(d);
+  const cust = d.customers || [];
+
+  // REVENUE PER HOUR IS ALL-IN, AND THAT IS A CHANGE FROM v5.14.0.
+  //
+  // It has to match the bridge beside it. The volume and rate effects sum
+  // EXACTLY to the change in total revenue only when the rate is total revenue
+  // over total hours — that is arithmetic, not preference — and a decomposition
+  // that does not reconcile to its own total is worse than a slightly
+  // contaminated ratio. Equipment is 65 hours in 104,311, so the contamination
+  // is about a cent on the blended rate; the reconciliation is the whole point
+  // of the chart.
+  //
+  // Crew-only was right when this tile was the headline yield metric and nothing
+  // sat beside it that had to balance. It is not discarded — it moves to the
+  // tile's own sub-line, where it is still readable and no longer has to agree
+  // with a waterfall.
+  const crewH0 = Math.max(0, pt.prev.hours - pt.prev.equipment_hours);
+  const crewR0 = pt.prev.revenue - pt.prev.equipment_revenue;
+  const crewH1 = Math.max(0, (t.hours || 0) - eq.hours);
+  const crewR1 = (t.revenue || 0) - eq.revenue;
+  const crewY1 = crewH1 > 0 ? crewR1 / crewH1 : 0;
+  const y0 = pt.prev.hours > 0 ? pt.prev.revenue / pt.prev.hours : 0;
+  const y1 = (t.hours || 0) > 0 ? (t.revenue || 0) / (t.hours || 0) : 0;
+
+  const dRev = perfDeltaPct(t.revenue || 0, pt.prev.revenue);
+  const dHrs = perfDeltaPct(t.hours   || 0, pt.prev.hours);
+  const dYld = perfDeltaPct(y1, y0);
+
+  const top3   = cust.slice(0, 3);
+  const share3 = perfPct(top3.reduce(function(a, c){ return a + (c.revenue || 0); }, 0), t.revenue);
+  const share8 = perfPct(cust.reduce(function(a, c){ return a + (c.revenue || 0); }, 0), t.revenue);
+
+  const revSeries = sp.cur.map(function(w){ return (w.invoiced && w.invoiced.revenue) || 0; });
+  const hrsSeries = sp.cur.map(function(w){ return (w.invoiced && w.invoiced.hours)   || 0; });
+  // A week with no hours has no rate — it is dropped rather than plotted as zero,
+  // which would put a hole in the trend where there was simply no work.
+  const yldSeries = sp.cur.map(function(w){
+    const iv = w.invoiced || {};
+    return (iv.hours > 0) ? (iv.revenue || 0) / iv.hours : null;
+  }).filter(function(x){ return x != null; });
+
+  const tile = function(o){
+    const col = o.sig ? perfSignalColor(o.sig, o.sigVal) : null;
+    return '<div class="perf-head' + (o.muted ? ' perf-head--muted' : '') + '"'
+      +      (o.title ? ' title="' + escapeHtml(o.title) + '"' : '') + '>'
+      +      (o.spark ? '<div class="perf-spark">' + o.spark + '</div>' : '')
+      +      '<div class="perf-head-in">'
+      +        '<div class="perf-head-val' + (o.accent ? ' accent' : '') + '">' + o.val + '</div>'
+      +        (o.delta
+                 ? '<div class="perf-tile-delta"' + (col ? ' style="color:' + col + '"' : '') + '>'
+                   + (col ? '<span class="perf-tile-dot" style="background:' + col + '"></span>' : '')
+                   + o.delta
+                   + (o.vs && o.sigVal != null ? '<span class="perf-tile-vs">' + o.vs + '</span>' : '')
+                   + '</div>'
+                 : '')
+      +        '<div class="perf-head-lbl">' + escapeHtml(o.lbl) + '</div>'
+      +        (o.sub ? '<div class="perf-head-sub">' + o.sub + '</div>' : '')
+      +      '</div>'
+      +    '</div>';
+  };
+
+  const heads = '<div class="perf-heads">'
+    + tile({ val: perfMoney(t.revenue), accent: true, lbl: 'invoiced revenue',
+             delta: perfDeltaText(dRev), vs: 'vs ' + perfMoney(pt.prev.revenue),
+             sig: 'revenueYoY', sigVal: dRev, spark: perfSparkSvg(revSeries, '#d4af37'),
+             sub: escapeHtml(String(win.from || '')) + ' → ' + escapeHtml(String(win.to || '')) })
+    + tile({ val: perfNum(t.hours) + '<span class="perf-head-u">h</span>', lbl: 'hours',
+             delta: perfDeltaText(dHrs), vs: 'vs ' + perfNum(pt.prev.hours) + 'h',
+             sig: 'hoursYoY', sigVal: dHrs, spark: perfSparkSvg(hrsSeries, '#4ea8de'),
+             sub: perfNum(crewH1) + ' crew · ' + perfNum(eq.hours) + ' equipment' })
+    + tile({ val: perfMoney(y1) + '<span class="perf-head-u">/hr</span>', lbl: 'revenue per hour',
+             delta: perfDeltaText(dYld), vs: 'vs ' + perfMoney(y0),
+             sig: 'yieldYoY', sigVal: dYld, spark: perfSparkSvg(yldSeries, '#48bb78'),
+             // THE SUB-LINE CARRIES THE BASIS, NOT A SECOND NUMBER.
+             //
+             // Printing the crew-only rate beside the all-in one was the obvious
+             // way to keep both, and it is wrong: equipment is ~65 hours at 80.00
+             // against a blended rate near 74.53, so the two bases differ by about
+             // a THIRD OF A CENT and render identically at any precision a tile
+             // should use. "$74.53 all-in · $74.53 crew only" reads as a bug, not
+             // as two bases. What is worth stating is how much equipment is in
+             // there at all; the exact pair is in the hover and the fold.
+             sub: 'all-in · equipment ' + perfNum(eq.hours) + 'h of ' + perfNum(t.hours) + 'h',
+             title: 'All-in: ' + perfMoneyFull(t.revenue) + ' over ' + perfNum(t.hours) + ' hours = $' + perfNum(y1, 4) + '/hr.\n'
+                  + 'Crew only (equipment excluded): $' + perfNum(crewY1, 4) + '/hr over ' + perfNum(crewH1) + ' hours.\n'
+                  + 'All-in is shown so this tile reconciles exactly with the revenue bridge below.' })
+    + tile({ val: perfNum(t.bookings), lbl: 'bookings',
+             sub: perfNum(t.customer_count) + ' customers · no prior-year figure' })
+    + tile({ val: (top3.length ? share3.toFixed(1) + '%' : '—'), lbl: 'top-3 customer share',
+             sig: 'top3Share', sigVal: (top3.length ? share3 : null),
+             delta: (top3.length ? 'top 8 · ' + share8.toFixed(1) + '%' : null),
+             sub: escapeHtml(top3.map(function(c){ return c.name; }).join(' · ')),
+             title: top3.map(function(c){ return c.name + '  ' + perfMoneyFull(c.revenue); }).join('\n') })
+    + tile({ val: '—', lbl: 'gross margin', muted: true,
+             sub: 'cost data not yet reliable' })
+    + '</div>';
+
+  // The whole method note for the strip, folded. Everything here is worth
+  // reading once.
+  const note =
+      '<div class="perf-note"><b>The window is ' + perfNum(pt.weeks) + ' complete ISO weeks</b> ('
+    +   escapeHtml(String(win.from || '')) + ' → ' + escapeHtml(String(win.to || ''))
+    +   '), compared against the ' + perfNum(pt.weeks) + ' before it ('
+    +   escapeHtml(String(win.compare_from || '')) + ' → ' + escapeHtml(String(win.compare_to || ''))
+    +   '). It ends at the last COMPLETE week, so on any day but a Monday there is a gap between the '
+    +   'end of the window and today — work in that gap belongs to neither year.</div>'
+    + '<div class="perf-note"><b>Revenue per hour is all-in</b> in both years — total revenue over total hours, '
+    +   'so the revenue and hours tiles beside it divide into it exactly, and it is the same rate the bridge below '
+    +   'decomposes. A decomposition that does not reconcile to its own total is worse than a slightly contaminated '
+    +   'ratio: equipment is ' + perfNum(eq.hours) + ' hours in ' + perfNum(t.hours) + ', which separates the two bases by '
+    +   (Math.abs(y1 - crewY1) < 0.005
+        ? '<b>less than a cent an hour</b> — they are the same number at any precision this tile should show. '
+        : '<b>$' + perfNum(Math.abs(y1 - crewY1), 2) + ' an hour</b>. ')
+    +   'The <b>crew-only</b> figure, which excludes equipment hire billing 80.00 an hour against no pay at all, is '
+    +   '$' + perfNum(crewY1, 4) + ' against $' + perfNum(y1, 4) + ' all-in; both are in the tile\'s hover. '
+    +   'Equipment matters far more <b>per customer</b> than in aggregate, and the scatter below is all-in for the '
+    +   'harder reason that the payload carries no per-customer equipment split at all.</div>'
+    + '<div class="perf-note"><b>Bookings carries no year-on-year figure, deliberately.</b> Weekly booking counts '
+    +   'are not summable — a booking spanning two weeks is counted in both — and the endpoint computes a distinct '
+    +   'count for the requested window only. Summing the comparison weeks would produce a bigger number and a '
+    +   'false comparison. It is worth watching anyway: bookings have been decoupling from hours, so a flat '
+    +   'booking count is not evidence of a flat year.</div>'
+    + '<div class="perf-note"><b>The most recent two or three weeks are always incomplete</b>, because invoicing '
+    +   'lags the work. That is what the hatched band on the weekly chart measures, and it is why these totals '
+    +   'drift upward for a fortnight after the fact.</div>';
+
+  return heads + perfBasisStrip() + perfFold('kpiNotes', 'how these six numbers are built', note);
+}
+
+// ── CHART 2 · why revenue moved ─────────────────────────────────────────────
+// A waterfall is the only chart that shows a total DECOMPOSED INTO ITS CAUSES. A
+// line chart says revenue fell; this says whether it fell because less work was
+// sold or because it was sold for less, and those demand opposite responses.
+//
+// ALL-IN, NOT CREW-ONLY, and that is a deliberate divergence from the $/hr tile
+// above it. The two effects must sum EXACTLY to the change in total revenue or
+// the chart is decorative, and that only closes when the rate used is total
+// revenue over total hours. Equipment is 65 hours in 104,000 so the visual
+// difference is nil, but the arithmetic difference is the difference between a
+// chart that reconciles and one that nearly does.
+//
+//   volume = (H1 - H0) x r0        what last year's rate would have earned on
+//                                  this year's hours
+//   rate   = R1 - R0 - volume      the residual, which is algebraically
+//                                  H1 x (r1 - r0) and is written as the residual
+//                                  so the four bars ALWAYS close on R1 exactly,
+//                                  whatever rounding the payload arrived with
+function perfWaterfallSvg(R0, R1, H0, H1){
+  if(!(H0 > 0) || !(H1 > 0)) return '<div class="ops-lane-status">Not enough history to decompose.</div>';
+
+  const r0  = R0 / H0;
+  const vol = (H1 - H0) * r0;
+  const rat = R1 - R0 - vol;
+
+  const W = 580, H = 320, padL = 66, padR = 14, padT = 30, padB = 48;
+  const plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;
+  const top = perfNiceMax(Math.max(R0, R1, R0 + vol, 0));
+  const Y   = function(v){ return baseY - plotH * ((v || 0) / top); };
+
+  const steps = [
+    { lbl: 'Last year', val: R0,  kind: 'total' },
+    { lbl: 'Hours',     val: vol, kind: 'delta' },
+    { lbl: 'Rates',     val: rat, kind: 'delta' },
+    { lbl: 'This year', val: R1,  kind: 'total' }
+  ];
+
+  let grid = '';
+  for(let g = 0; g <= 4; g++){
+    const v = top * g / 4, y = Y(v);
+    grid += '<line class="perf-grid" x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + y.toFixed(1) + '"/>'
+          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + perfMoney(v) + '</text>';
+  }
+
+  const slot = plotW / steps.length;
+  const bw   = slot * 0.52;
+  let bars = '', conn = '', run = 0, prevY = null;
+
+  steps.forEach(function(s, i){
+    const cx = padL + slot * i + slot / 2;
+    const x  = cx - bw / 2;
+    let from, to;
+    if(s.kind === 'total'){ from = 0; to = s.val; run = s.val; }
+    else                  { from = run; to = run + s.val; run = to; }
+
+    const yHi = Y(Math.max(from, to));
+    const yLo = Y(Math.min(from, to));
+    const h   = Math.max(1.5, yLo - yHi);
+    const col = (s.kind === 'total')
+              ? '#8a7a2f'
+              : (s.val >= 0 ? PERF_SIGNAL_COLORS.good : PERF_SIGNAL_COLORS.bad);
+
+    const tip = (s.kind === 'total')
+              ? s.lbl + '\n' + perfMoneyFull(s.val)
+              : s.lbl + ' effect\n' + (s.val >= 0 ? '+' : '−') + perfMoneyFull(Math.abs(s.val))
+                + '\nrunning total ' + perfMoneyFull(to);
+
+    bars += '<rect x="' + x.toFixed(1) + '" y="' + yHi.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '"'
+         +  ' fill="' + col + '" fill-opacity="' + (s.kind === 'total' ? '0.85' : '0.75') + '"'
+         +  ' stroke="' + col + '" stroke-width="1"><title>' + escapeHtml(tip) + '</title></rect>';
+
+    // Value above the bar, in the bar's own colour for the two effects so the
+    // sign is carried twice — by position and by hue.
+    const vtxt = (s.kind === 'total')
+               ? perfMoney(s.val)
+               : (s.val >= 0 ? '+' : '−') + perfMoney(Math.abs(s.val));
+    bars += '<text class="perf-ax" x="' + cx.toFixed(1) + '" y="' + (yHi - 7).toFixed(1) + '"'
+         +  ' text-anchor="middle" fill="' + (s.kind === 'total' ? 'var(--text)' : col) + '">' + escapeHtml(vtxt) + '</text>';
+
+    bars += '<text class="perf-ax" x="' + cx.toFixed(1) + '" y="' + (baseY + 16) + '" text-anchor="middle">' + escapeHtml(s.lbl) + '</text>';
+
+    // Dotted connector from the previous bar's running total to this one.
+    if(prevY != null){
+      conn += '<line class="perf-grid" stroke-dasharray="2 3" x1="' + (cx - slot / 2 - bw / 2 + bw).toFixed(1) + '"'
+           +  ' y1="' + prevY.toFixed(1) + '" x2="' + x.toFixed(1) + '" y2="' + prevY.toFixed(1) + '"/>';
+    }
+    prevY = Y(to);
+  });
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
+    +      ' aria-label="' + escapeHtml('Revenue bridge: last year ' + perfMoneyFull(R0)
+             + ', hours effect ' + perfMoneyFull(vol) + ', rate effect ' + perfMoneyFull(rat)
+             + ', this year ' + perfMoneyFull(R1)) + '">'
+    +      grid + conn + bars
+    +    '</svg>';
+}
+
+function perfWaterfallCard(d){
+  const t  = d.totals || {};
+  const pt = perfPriorTotals(d);
+  const R0 = pt.prev.revenue, R1 = t.revenue || 0;
+  const H0 = pt.prev.hours,   H1 = t.hours   || 0;
+
+  const r0  = H0 > 0 ? R0 / H0 : 0;
+  const vol = (H1 - H0) * r0;
+  const rat = R1 - R0 - vol;
+  const dRev = perfDeltaPct(R1, R0);
+
+  // The caption is a TEMPLATE, never a string. "Hours cost $867k, better rates
+  // gave $390k back" is true today and may be the exact reverse next quarter, at
+  // which point a hardcoded sentence would contradict the chart directly above it.
+  const cap = (!(H0 > 0) || !(H1 > 0))
+    ? ''
+    : '<div class="perf-cap">'
+      + 'Hours ' + (vol >= 0 ? 'added ' : 'cost ') + '<b style="color:' + (vol >= 0 ? PERF_SIGNAL_COLORS.good : PERF_SIGNAL_COLORS.bad) + '">' + perfMoney(Math.abs(vol)) + '</b>. '
+      + 'Rates ' + (rat >= 0 ? 'gave ' : 'took ') + '<b style="color:' + (rat >= 0 ? PERF_SIGNAL_COLORS.good : PERF_SIGNAL_COLORS.bad) + '">' + perfMoney(Math.abs(rat)) + '</b>'
+      + (rat >= 0 ? ' back' : '') + '. The gap is the year.'
+      + '</div>';
+
+  const note =
+      '<div class="perf-note"><b>Read this as volume against price.</b> The hours bar is what last year\'s average '
+    +   'rate would have earned on this year\'s hours — the value of the work won or lost. The rates bar is what '
+    +   'this year\'s hours earned above or below that. They are different problems: one is a sales problem, the '
+    +   'other a pricing one.</div>'
+    + '<div class="perf-note"><b>All-in, including equipment</b>, on the same basis as the revenue-per-hour tile '
+    +   'above. The two effects have to sum exactly to the change in total revenue, and that only closes when the '
+    +   'rate used is total revenue over total hours — so the tile was moved onto this basis rather than the bridge '
+    +   'onto the tile\'s. Equipment is ' + perfNum(perfWindowEquipment(d).hours) + ' hours of ' + perfNum(H1)
+    +   ', so the contamination is small and the reconciliation is exact.</div>'
+    + '<div class="perf-note">The rate bar is computed as the <b>residual</b> rather than independently, so the four '
+    +   'bars always close on this year\'s revenue exactly, whatever rounding the payload arrived with.</div>';
+
+  return '<div class="perf-card">'
+    + '<div class="perf-card-head">'
+    +   '<span class="perf-card-title">WHY REVENUE MOVED</span>'
+    +   '<span class="perf-card-sub">' + (dRev == null ? 'against last year' :
+          (dRev >= 0 ? 'up ' : 'down ') + Math.abs(dRev).toFixed(1) + '% against last year') + '</span>'
+    + '</div>'
+    + perfWaterfallSvg(R0, R1, H0, H1)
+    + cap
+    + perfFold('waterfallNotes', 'how this decomposition works', note)
+    + '</div>';
+}
+// ── CHART 3 · who moved ─────────────────────────────────────────────────────
+// A stacked bar shows composition. A slope shows CHANGE, and crossing lines make
+// movement unmissable. This is the chart that turns "revenue is down" into a
+// name, which is why it replaced the stack that used to sit here: the stack
+// answered "who is big", a question nobody was asking twice.
+//
+// Y IS VALUE, NOT RANK. Rank slots would space the nine rows evenly and read
+// more cleanly, but the story here is magnitude — one customer falling further
+// than the whole business did — and rank throws exactly that away. The crowding
+// that value scaling causes at the bottom is handled by moving the LABELS with
+// perfDeclutter and drawing a leader back to the true point, never by moving the
+// point.
+function perfSlopeSvg(rows, selectedId){
+  if(!rows || rows.length < 2) return '<div class="ops-lane-status">Not enough customers to compare.</div>';
+
+  const W = 620, H = 340, padL = 64, padR = 196, padT = 26, padB = 30;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const x0 = padL, x1 = padL + plotW;
+
+  let max = 0;
+  rows.forEach(function(r){ max = Math.max(max, r.revenue || 0, r.prevRevenue || 0); });
+  const top = perfNiceMax(max);
+  const Y   = function(v){ return padT + plotH - plotH * ((v || 0) / top); };
+
+  const yL = rows.map(function(r){ return Y(r.prevRevenue); });
+  const yR = rows.map(function(r){ return Y(r.revenue); });
+  const lL = perfDeclutter(yL, 13, padT + 4, padT + plotH);
+  const lR = perfDeclutter(yR, 13, padT + 4, padT + plotH);
+
+  const axis = '<line class="perf-grid" x1="' + x0 + '" y1="' + padT + '" x2="' + x0 + '" y2="' + (padT + plotH) + '"/>'
+             + '<line class="perf-grid" x1="' + x1 + '" y1="' + padT + '" x2="' + x1 + '" y2="' + (padT + plotH) + '"/>'
+             + '<text class="perf-ax" x="' + x0 + '" y="' + (padT - 10) + '" text-anchor="middle">last year</text>'
+             + '<text class="perf-ax" x="' + x1 + '" y="' + (padT - 10) + '" text-anchor="middle">this year</text>';
+
+  let body = '';
+  rows.forEach(function(r, i){
+    const sig = perfSignal('customerYoY', r.pct);
+    const col = (sig === 'none') ? r.color : PERF_SIGNAL_COLORS[sig];
+    // Thickness carries the SIZE of the move, colour carries its direction —
+    // so a large customer drifting 1% never looks like a small one halving.
+    const wgt = 1.4 + 4.2 * Math.min(1, Math.abs(r.delta) / Math.max(1, max * 0.28));
+    const dim = (selectedId != null && String(selectedId) !== String(r.id));
+
+    const tip = r.name + '\n'
+              + 'last year  ' + perfMoneyFull(r.prevRevenue) + '\n'
+              + 'this year  ' + perfMoneyFull(r.revenue) + '\n'
+              + (r.delta >= 0 ? '+' : '−') + perfMoneyFull(Math.abs(r.delta))
+              + (r.pct == null ? '  (new)' : '  (' + (r.pct >= 0 ? '+' : '−') + Math.abs(r.pct).toFixed(1) + '%)');
+
+    body += '<g class="perf-mark" data-perf-cust="' + escapeHtml(String(r.id)) + '" role="button" tabindex="0"'
+         +  ' opacity="' + (dim ? '0.22' : '1') + '">'
+         +  '<title>' + escapeHtml(tip) + '</title>'
+         // A generous transparent hit line under the visible one — a 2px stroke is
+         // not a click target anybody can hit.
+         +  '<line x1="' + x0 + '" y1="' + yL[i].toFixed(1) + '" x2="' + x1 + '" y2="' + yR[i].toFixed(1) + '"'
+         +    ' stroke="transparent" stroke-width="14"/>'
+         +  '<line x1="' + x0 + '" y1="' + yL[i].toFixed(1) + '" x2="' + x1 + '" y2="' + yR[i].toFixed(1) + '"'
+         +    ' stroke="' + col + '" stroke-width="' + wgt.toFixed(2) + '" stroke-opacity="0.85"/>'
+         +  '<circle cx="' + x0 + '" cy="' + yL[i].toFixed(1) + '" r="3.4" fill="' + r.color + '"/>'
+         +  '<circle cx="' + x1 + '" cy="' + yR[i].toFixed(1) + '" r="3.4" fill="' + r.color + '"/>';
+
+    // Leaders, drawn only when the label actually had to move.
+    if(Math.abs(lL[i] - yL[i]) > 1.5){
+      body += '<line class="perf-lead" x1="' + (x0 - 5) + '" y1="' + yL[i].toFixed(1) + '" x2="' + (x0 - 9) + '" y2="' + lL[i].toFixed(1) + '"/>';
+    }
+    if(Math.abs(lR[i] - yR[i]) > 1.5){
+      body += '<line class="perf-lead" x1="' + (x1 + 5) + '" y1="' + yR[i].toFixed(1) + '" x2="' + (x1 + 9) + '" y2="' + lR[i].toFixed(1) + '"/>';
+    }
+
+    body += '<text class="perf-lbl-mut" x="' + (x0 - 12) + '" y="' + (lL[i] + 3.5).toFixed(1) + '" text-anchor="end">'
+         +    escapeHtml(perfMoney(r.prevRevenue)) + '</text>'
+         +  '<text class="perf-lbl" x="' + (x1 + 12) + '" y="' + (lR[i] + 3.5).toFixed(1) + '">'
+         +    escapeHtml(perfTrim(r.name, 21))
+         +    '<tspan class="perf-lbl-mut" dx="6">' + escapeHtml(perfMoney(r.revenue)) + '</tspan>'
+         +  '</text>'
+         +  '</g>';
+  });
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
+    +      ' aria-label="Revenue by customer, last year against this year, one line per customer">'
+    +      axis + body
+    +    '</svg>';
+}
+
+function perfSlopeCard(d){
+  const rows = perfCustomerYoY(d);
+  if(!rows.length) return '';
+
+  // The headline arithmetic that makes this chart worth the space: the largest
+  // faller against everyone else combined. Computed, never written down.
+  const t     = d.totals || {};
+  const pt    = perfPriorTotals(d);
+  const total = (t.revenue || 0) - pt.prev.revenue;
+  const worst = rows.slice().sort(function(a, b){ return a.delta - b.delta; })[0];
+  const rest  = total - (worst ? worst.delta : 0);
+
+  let cap = '';
+  if(worst && worst.delta < 0){
+    cap = '<div class="perf-cap">'
+        + escapeHtml(perfTrim(worst.name, 28)) + ' <b style="color:' + PERF_SIGNAL_COLORS.bad + '">−' + perfMoney(Math.abs(worst.delta)) + '</b>. '
+        + 'Everyone else combined <b style="color:' + (rest >= 0 ? PERF_SIGNAL_COLORS.good : PERF_SIGNAL_COLORS.bad) + '">'
+        + (rest >= 0 ? '+' : '−') + perfMoney(Math.abs(rest)) + '</b>.'
+        + '</div>';
+  }
+
+  const note =
+      '<div class="perf-note"><b>Line colour is direction, line thickness is size.</b> Growing above '
+    +   PERF_SIGNALS.customerYoY.good + '% is green, falling below ' + PERF_SIGNALS.customerYoY.watch
+    +   '% is red, and anything between is amber — so a large customer drifting a per cent never looks like a '
+    +   'small one halving. Click any line for that customer\'s own weekly chart.</div>'
+    + '<div class="perf-note"><b>The ranking is this year\'s, and the left-hand column is not a prior-year league '
+    +   'table.</b> A customer that was large last year and has since collapsed sits inside "All other" on both '
+    +   'sides rather than appearing as its own line. What these rows do cover completely is the revenue: the top '
+    +   'eight plus the roll-up is the whole business in each year, so nothing is missing — it is only bucketed '
+    +   'differently on the left than a true prior-year ranking would bucket it.</div>'
+    + '<div class="perf-note">Labels are pushed apart where the values crowd; a short leader joins each one back '
+    +   'to its true position. The dots are where the money actually sits.</div>';
+
+  return '<div class="perf-card">'
+    + '<div class="perf-card-head">'
+    +   '<span class="perf-card-title">WHO MOVED</span>'
+    +   '<span class="perf-card-sub">revenue by customer, both years — click a line to drill in</span>'
+    + '</div>'
+    + perfSlopeSvg(rows, _perfCustomer)
+    + cap
+    + perfConcentrationFold(d)
+    + perfFold('slopeNotes', 'how to read this chart', note)
+    + '</div>';
+}
+
+// ── CHART 4 · where the work sits and what it earns ─────────────────────────
+// Two continuous variables and a third for weight, which is a scatter and
+// nothing else. THE POINT IS THE BOTTOM-RIGHT QUADRANT: high hours, low yield is
+// the renegotiation list, and a table of the same numbers hides it completely —
+// position surfaces an outlier instantly, a sorted column just puts it last.
+//
+// Below PERF_RANK_MIN_HOURS a customer is drawn hollow and unlabelled rather than
+// dropped. Its yield is one event's shift mix, not a commercial fact, so it must
+// not sit in the quadrant as though it were — but removing it would misrepresent
+// how much of the business is small.
+function perfScatterSvg(rows, selectedId){
+  const plot = (rows || []).filter(function(r){ return (r.hours || 0) > 0 && r.id !== '__other__'; });
+  if(plot.length < 2) return '<div class="ops-lane-status">Not enough customers to plot.</div>';
+
+  const ranked = plot.filter(function(r){ return r.hours >= PERF_RANK_MIN_HOURS; });
+  if(!ranked.length) return '<div class="ops-lane-status">No customer has enough hours to rank on yield.</div>';
+
+  const W = 1000, H = 380, padL = 62, padR = 168, padT = 22, padB = 46;
+  const plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;
+
+  const hMax = perfNiceMax(Math.max.apply(null, plot.map(function(r){ return r.hours; })));
+  let yLo = Infinity, yHi = -Infinity;
+  plot.forEach(function(r){ if(r.yield < yLo) yLo = r.yield; if(r.yield > yHi) yHi = r.yield; });
+  // A little air, snapped to $5, so the axis reads in round money and no bubble
+  // is clipped by the frame.
+  yLo = Math.floor((yLo - 4) / 5) * 5;
+  yHi = Math.ceil((yHi + 4) / 5) * 5;
+  if(!(yHi > yLo)) yHi = yLo + 5;
+
+  const X = function(h){ return padL + plotW * ((h || 0) / hMax); };
+  const Y = function(y){ return baseY - plotH * (((y || 0) - yLo) / (yHi - yLo)); };
+
+  // Medians across the RANKED set only — a crosshair drawn through customers
+  // whose yield we have just declared unreadable would not be a median of
+  // anything.
+  const med = function(arr){
+    const a = arr.slice().sort(function(p, q){ return p - q; });
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  };
+  const mH = med(ranked.map(function(r){ return r.hours; }));
+  const mY = med(ranked.map(function(r){ return r.yield; }));
+
+  let grid = '';
+  for(let g = 0; g <= 4; g++){
+    const v = yLo + (yHi - yLo) * g / 4, y = Y(v);
+    grid += '<line class="perf-grid" x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + y.toFixed(1) + '"/>'
+          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + perfMoney(v) + '</text>';
+  }
+  for(let g = 0; g <= 4; g++){
+    const v = hMax * g / 4, x = X(v);
+    grid += '<text class="perf-ax" x="' + x.toFixed(1) + '" y="' + (baseY + 16) + '" text-anchor="middle">' + perfNum(v) + '</text>';
+  }
+  grid += '<text class="perf-ax" x="' + (padL + plotW / 2).toFixed(1) + '" y="' + (baseY + 34) + '" text-anchor="middle">hours in the window</text>';
+
+  // The quadrant that is the reason for the chart.
+  const quad = '<rect class="perf-quad" x="' + X(mH).toFixed(1) + '" y="' + Y(mY).toFixed(1) + '"'
+             + ' width="' + Math.max(0, padL + plotW - X(mH)).toFixed(1) + '"'
+             + ' height="' + Math.max(0, baseY - Y(mY)).toFixed(1) + '"/>'
+             + '<text class="perf-quad-lbl" x="' + (padL + plotW - 6).toFixed(1) + '" y="' + (baseY - 7) + '" text-anchor="end">'
+             + 'more hours · less per hour</text>';
+
+  const cross = '<line class="perf-grid" stroke-dasharray="3 3" x1="' + X(mH).toFixed(1) + '" y1="' + padT + '" x2="' + X(mH).toFixed(1) + '" y2="' + baseY + '"/>'
+              + '<line class="perf-grid" stroke-dasharray="3 3" x1="' + padL + '" y1="' + Y(mY).toFixed(1) + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + Y(mY).toFixed(1) + '"/>';
+
+  const revMax = Math.max.apply(null, plot.map(function(r){ return r.revenue || 0; })) || 1;
+  // Area, not radius, tracks revenue — a radius-linear bubble overstates the
+  // biggest customer by the square of its lead.
+  const R = function(rev){ return 5 + 26 * Math.sqrt(Math.max(0, rev) / revMax); };
+
+  // Labels for the ranked set only, decluttered down the right-hand gutter.
+  const lab   = ranked.slice().sort(function(a, b){ return b.revenue - a.revenue; });
+  const labY  = perfDeclutter(lab.map(function(r){ return Y(r.yield); }), 14, padT + 6, baseY);
+  const gutter = padL + plotW + 14;
+
+  let marks = '';
+  plot.forEach(function(r){
+    const isRanked = r.hours >= PERF_RANK_MIN_HOURS;
+    const sig = isRanked ? perfSignal('customerYield', r.yield) : 'none';
+    const col = PERF_SIGNAL_COLORS[sig];
+    const dim = (selectedId != null && String(selectedId) !== String(r.id));
+    const tip = r.name + '\n' + perfMoneyFull(r.yield) + ' per hour'
+              + '\n' + perfNum(r.hours) + ' hours  ·  ' + perfMoneyFull(r.revenue)
+              + (isRanked ? '' : '\nunder ' + perfNum(PERF_RANK_MIN_HOURS) + ' hours — yield not ranked');
+
+    marks += '<g class="perf-mark" data-perf-cust="' + escapeHtml(String(r.id)) + '" role="button" tabindex="0"'
+          +  ' opacity="' + (dim ? '0.2' : '1') + '">'
+          +  '<title>' + escapeHtml(tip) + '</title>'
+          +  '<circle cx="' + X(r.hours).toFixed(1) + '" cy="' + Y(r.yield).toFixed(1) + '" r="' + R(r.revenue).toFixed(1) + '"'
+          +    ' fill="' + (isRanked ? col : 'none') + '" fill-opacity="' + (isRanked ? '0.30' : '0') + '"'
+          +    ' stroke="' + (isRanked ? col : 'var(--muted)') + '" stroke-width="1.6"'
+          +    ' stroke-dasharray="' + (isRanked ? 'none' : '3 3') + '"/>'
+          +  '</g>';
+  });
+
+  lab.forEach(function(r, i){
+    const dim = (selectedId != null && String(selectedId) !== String(r.id));
+    const y   = Y(r.yield);
+    // The leader stays INSIDE the right-hand margin. Run from the bubble itself
+    // and a label for a low-hours customer draws a line right across the plot,
+    // which reads as a trend line and is the loudest thing on the chart. The
+    // association survives without it: every label carries its own $/hr, and the
+    // y axis IS $/hr, so the label at $73 belongs to the bubble sitting on $73.
+    let leader = '';
+    if(Math.abs(labY[i] - y) > 1.5){
+      leader = '<line class="perf-lead" x1="' + (padL + plotW + 4) + '" y1="' + y.toFixed(1) + '"'
+             + ' x2="' + (gutter - 4) + '" y2="' + labY[i].toFixed(1) + '"/>';
+    }
+    marks += '<g class="perf-mark" data-perf-cust="' + escapeHtml(String(r.id)) + '" role="button" tabindex="0"'
+          +  ' opacity="' + (dim ? '0.2' : '1') + '">' + leader
+          +  '<text class="perf-lbl" x="' + gutter + '" y="' + (labY[i] + 3.5).toFixed(1) + '">'
+          +    escapeHtml(perfTrim(r.name, 17))
+          +    '<tspan class="perf-lbl-mut" dx="6">' + escapeHtml(perfMoney(r.yield)) + '</tspan>'
+          +  '</text></g>';
+  });
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
+    +      ' aria-label="Revenue per hour against hours, one bubble per customer, sized by revenue">'
+    +      grid + quad + cross + marks
+    +    '</svg>';
+}
+
+// ── CHART 6 · what is booked, and what is short ─────────────────────────────
+// A bullet per week: the bar is confirmed seats, the marker is required, and the
+// gap between them is segmented by KIND. Bullets are built for actual-against-
+// target in minimal space, and the segmentation carries the DIAGNOSIS rather
+// than only the size of the gap.
+//
+// The two kinds need opposite responses and look identical on any chart that
+// draws the shortfall as one block:
+//   hard to fill  offers >= seats — everyone has been asked, a supply problem
+//   not started   offers <  seats — nobody has picked the task up, an ops task
+function perfBulletSvg(weeks){
+  const rows = (weeks || []).filter(function(w){ return (w.calls || 0) > 0; });
+  if(!rows.length) return '';
+
+  const W = 1000, rowH = 38, padL = 96, padR = 116, padT = 22;
+  const H = padT + rows.length * rowH + 10;
+  const plotW = W - padL - padR;
+  const max = Math.max.apply(null, rows.map(function(w){ return Math.max(w.required_seats || 0, w.confirmed_seats || 0); })) || 1;
+  const top = perfNiceMax(max);
+  const X = function(v){ return plotW * ((v || 0) / top); };
+
+  let out = '<text class="perf-ax" x="' + (W - 4) + '" y="' + (padT - 8) + '" text-anchor="end">filled</text>';
+  for(let g = 0; g <= 4; g++){
+    const v = top * g / 4, x = padL + X(v);
+    out += '<line class="perf-grid" x1="' + x.toFixed(1) + '" y1="' + (padT - 4) + '" x2="' + x.toFixed(1) + '" y2="' + (padT + rows.length * rowH - 16) + '"/>'
+         + '<text class="perf-ax" x="' + x.toFixed(1) + '" y="' + (padT - 8) + '" text-anchor="middle">' + perfNum(v) + '</text>';
+  }
+  out += '<text class="perf-ax" x="' + (padL - 10) + '" y="' + (padT - 8) + '" text-anchor="end">seats</text>';
+
+  rows.forEach(function(w, i){
+    const y   = padT + i * rowH;
+    const bh  = 15;
+    const req = w.required_seats  || 0;
+    const con = w.confirmed_seats || 0;
+    const pct = req > 0 ? (100 * con / req) : 100;
+    const col = perfSignalColor('fillRate', pct);
+
+    // The shortfall, split by kind. hard_to_fill and not_started are SEAT counts
+    // the endpoint already classified; they sum to the unfilled seats.
+    const hard = w.hard_to_fill || 0;
+    const cold = w.not_started  || 0;
+
+    // Track to the required marker, then the two shortfall segments sitting on
+    // top of the confirmed bar in the order they are actionable.
+    out += '<g><title>' + escapeHtml(
+              perfWeekLabel(w.key) + '\n'
+            + perfNum(req) + ' required  ·  ' + perfNum(con) + ' confirmed  ·  ' + pct.toFixed(1) + '% filled'
+            + (hard ? '\n' + perfNum(hard) + ' hard to fill — everyone has been asked' : '')
+            + (cold ? '\n' + perfNum(cold) + ' not started — fewer offers sent than seats' : '')
+            + '\n' + perfNum(w.calls) + ' calls  ·  ' + perfNum(w.required_hours) + ' required hours'
+           ) + '</title>'
+        +  '<text class="perf-ax" x="' + (padL - 10) + '" y="' + (y + bh / 2 + 3.5) + '" text-anchor="end">'
+        +    escapeHtml(perfWeekLabel(w.key)) + '</text>'
+        +  '<rect x="' + padL + '" y="' + (y + 1) + '" width="' + X(top).toFixed(1) + '" height="' + (bh - 2) + '" fill="var(--surface2)"/>'
+        // Confirmed is GOLD, never the week's signal colour. Colouring it by
+        // signal put an amber bar directly against the amber "not started"
+        // segment that extends it, and the two became one shape. Gold is the
+        // app's neutral series colour, red and amber are reserved for the two
+        // kinds of shortfall, and the week's own signal is carried by the
+        // percentage on the right.
+        +  '<rect x="' + padL + '" y="' + (y + 1) + '" width="' + X(con).toFixed(1) + '" height="' + (bh - 2) + '"'
+        +    ' fill="#d4af37" fill-opacity="0.55"/>';
+
+    let sx = padL + X(con);
+    [[hard, PERF_SHORTFALL_COLORS.hard], [cold, PERF_SHORTFALL_COLORS.cold]].forEach(function(seg){
+      if(!(seg[0] > 0)) return;
+      const sw = X(seg[0]);
+      out += '<rect x="' + sx.toFixed(1) + '" y="' + (y + 1) + '" width="' + sw.toFixed(1) + '" height="' + (bh - 2) + '"'
+          +  ' fill="' + seg[1] + '" fill-opacity="0.55"/>';
+      sx += sw;
+    });
+
+    // The target marker: required seats, drawn through the bar as a tick.
+    out += '<line x1="' + (padL + X(req)).toFixed(1) + '" y1="' + (y - 3) + '" x2="' + (padL + X(req)).toFixed(1) + '" y2="' + (y + bh + 2) + '"'
+        +    ' stroke="var(--text)" stroke-width="2"/>'
+        +  '<text class="perf-ax" x="' + (padL + plotW + 10) + '" y="' + (y + bh / 2 + 3.5) + '" fill="' + col + '">'
+        +    pct.toFixed(0) + '%<tspan class="perf-lbl-mut" dx="6">' + perfNum(con) + '/' + perfNum(req) + '</tspan></text>'
+        +  '</g>';
+  });
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
+    +      ' aria-label="Confirmed against required seats by week, with the shortfall split by kind">'
+    +      out
+    +    '</svg>';
+}
 // ── render ──────────────────────────────────────────────────────────────────
+// ORDER IS THE ARGUMENT. The strip is the glance; the waterfall and the slope
+// are the diagnosis and sit side by side deliberately, because one says what
+// KIND of change and the other says WHOSE, and split across rows the connection
+// is lost; the scatter is the opportunity; the weekly chart is the context; the
+// forward book is the near term. A reader who stops after the first two rows has
+// the whole story.
 function renderPerformance(){
   const body = document.getElementById('perf-body');
   const d    = _perfData;
   if(!body || !d) return;
-  body.innerHTML = perfHeadlines(d) + perfWeeklyCard(d) + perfForwardCard(d) + perfCustomerCard(d) + perfYieldCard(d);
+  body.innerHTML = perfHeadlines(d)
+                 + '<div class="perf-row2">' + perfWaterfallCard(d) + perfSlopeCard(d) + '</div>'
+                 + perfYieldCard(d)
+                 + perfWeeklyCard(d)
+                 + perfForwardCard(d)
+                 // Last, full width, and never sharing a row: it is the only view
+                 // with a target on it, so it is the one read in a hurry.
+                 + perfFyCard(d);
 }
 
 // Window equipment, summed off the weekly series — the only place the payload
@@ -19152,36 +20095,14 @@ function perfWindowEquipment(d){
   });
   return { revenue: rev, hours: hrs };
 }
-
-function perfHeadlines(d){
-  const t    = d.totals || {};
-  const win  = d.window || {};
-  const top1 = (d.customers || [])[0] || null;
-  const share = top1 ? perfPct(top1.revenue, t.revenue) : 0;
-  const eq   = perfWindowEquipment(d);
-  const crewHours = Math.max(0, (t.hours || 0) - eq.hours);
-  const crewRev   = (t.revenue || 0) - eq.revenue;
-  const yieldAll  = crewHours > 0 ? crewRev / crewHours : 0;
-
-  const card = function(val, lbl, sub, accent){
-    return '<div class="perf-head">'
-      + '<div class="perf-head-val' + (accent ? ' accent' : '') + '">' + val + '</div>'
-      + '<div class="perf-head-lbl">' + escapeHtml(lbl) + '</div>'
-      + (sub ? '<div class="perf-head-sub">' + sub + '</div>' : '')
-      + '</div>';
-  };
-
-  return '<div class="perf-heads">'
-    + card(perfMoney(t.revenue), 'invoiced revenue', escapeHtml(String(win.from || '')) + ' → ' + escapeHtml(String(win.to || '')), true)
-    + card(perfNum(t.hours), 'hours', perfNum(crewHours) + ' crew · ' + perfNum(eq.hours) + ' equipment')
-    + card(perfNum(t.bookings), 'bookings', perfNum(t.customer_count) + ' customers')
-    + card(top1 ? share.toFixed(1) + '%' : '—', 'top customer share',
-           top1 ? escapeHtml(top1.name) : '')
-    + card(perfMoney(yieldAll) + '<span style="font-size:12px;color:var(--muted)">/hr</span>', 'crew revenue per hour',
-           'equipment excluded')
-    + '</div>';
-}
-
+// ── CHART 5 · the shape of the year ─────────────────────────────────────────
+// Trend over time with a comparison that aligns by WEEK INDEX rather than by
+// date: an events business needs like-for-like weeks, because dates drift a day
+// or two each year and week 45 is the thing that repeats, not 6 November.
+//
+// The chart itself is unchanged. What changed in this pass is that all of its
+// explanation now folds — it was four paragraphs of permanently visible prose
+// under a chart, worth reading once and dead space every visit after that.
 function perfWeeklyCard(d){
   const custId = _perfCustomer;
   const unit   = _perfUnit;
@@ -19220,10 +20141,10 @@ function perfWeeklyCard(d){
   };
 
   let head = '<div class="perf-card-head">'
-    + '<span class="perf-card-title">WEEKLY ' + (unit === 'hours' ? 'HOURS' : 'REVENUE') + '</span>'
-    + '<span class="perf-card-sub">' + escapeHtml(who) + ' · invoiced '
+    + '<span class="perf-card-title">THE SHAPE OF THE YEAR</span>'
+    + '<span class="perf-card-sub">' + escapeHtml(who) + ' · weekly '
     +   (unit === 'hours' ? 'hours' : 'revenue')
-    +   ' by event date, this year against last</span>';
+    +   ', this year against last</span>';
   if(custId != null){
     head += '<span class="perf-back" data-perf-cust="" role="button" tabindex="0" style="margin-left:auto">← all customers</span>';
   }
@@ -19232,14 +20153,37 @@ function perfWeeklyCard(d){
        +  '</span>'
        +  '</div>';
 
+  // The peak arithmetic, computed rather than written down: the two biggest
+  // weeks and what share of the year they carry. On a live rolling window this
+  // is a different pair of weeks every few months.
+  let cap = '';
+  if(s.inv.length > 2){
+    const idx = s.inv.map(function(v, i){ return i; })
+                     .sort(function(a, b){ return s.inv[b] - s.inv[a]; }).slice(0, 2);
+    const tot = s.inv.reduce(function(a, v){ return a + v; }, 0);
+    const two = idx.reduce(function(a, i){ return a + s.inv[i]; }, 0);
+    if(tot > 0){
+      const fmtF = perfUnitFmtFull(unit);
+      cap = '<div class="perf-cap">Two peaks carry the year. '
+          // Chronological, by week INDEX. Sorting the rendered labels instead
+          // sorts "1 Dec 2025" before "3 Nov 2025", which is alphabetical order
+          // wearing a date's clothes.
+          + escapeHtml(idx.slice().sort(function(a, b){ return a - b; })
+                          .map(function(i){ return perfWeekLabel(s.labels[i]); }).join(' and '))
+          + ' alone are <b>' + fmtF(two) + '</b> — ' + perfPct(two, tot).toFixed(0)
+          + '% of the ' + perfUnitLabel(unit) + ' in two weeks.</div>';
+    }
+  }
+
   // The unit changes what the caveats ARE, not just their wording: in hours the
   // uninvoiced band stops being an estimate at all, because its hours are actuals
   // off the crew sheet and only its money was ever modelled.
   let note = (unit === 'hours')
-    ? '<div class="perf-note"><b>Invoiced hours, by event date.</b> Hours are attributed to when the work happened, '
-      + 'not when it was billed. Equipment hire lines carry hours here too — the crew-only figure is in the headline row above.</div>'
-    : '<div class="perf-note"><b>Invoiced revenue, by event date.</b> It will not match a monthly Xero figure, '
-      + 'deliberately — revenue is attributed to when the work happened, not when it was billed, so it sits on the same clock as the hours.</div>';
+    ? '<div class="perf-note"><b>Invoiced hours, by event date.</b> Equipment hire lines carry hours here too — '
+      + 'the crew-only figure is in the tile row at the top.</div>'
+    : '<div class="perf-note"><b>Invoiced revenue, by event date.</b> Weeks align by ISO week INDEX rather than by '
+      + 'date, so week 45 sits above week 45 — an events business compares like-for-like weeks, and dates drift a '
+      + 'day or two each year.</div>';
 
   if(s.hasUnv){
     note += '<div class="perf-note">The hatched band is <b>work delivered but not yet invoiced</b>. It is not a shortfall — its width is the billing lag. ';
@@ -19262,10 +20206,10 @@ function perfWeeklyCard(d){
       + 'so both are absent here rather than shown as zero — the empty forward zone is not a claim that this customer has nothing booked.</div>';
   }
 
-  // The forward book's own explanation sits with the chart, because the label is
-  // load-bearing: the curve always slopes toward zero at the far edge, since calls
-  // are entered as they are booked. That is the pipeline, not a collapsing
-  // quarter, and it is why this is never called a forecast.
+  // The forward book's own explanation. The label is load-bearing: the curve
+  // always slopes toward zero at the far edge, since calls are entered as they
+  // are booked. That is the pipeline, not a collapsing quarter, and it is why
+  // this is never called a forecast.
   if(s.fwd){
     note += '<div class="perf-note">Right of the dashed line is <b>on the books, as at '
       + escapeHtml(String(s.fwd.asAt || 'today')) + '</b> — not a forecast. It slopes down at the far edge because '
@@ -19282,18 +20226,20 @@ function perfWeeklyCard(d){
 
   return '<div class="perf-card">' + head
        + perfWeeklyChartSvg(s, perfUnitFmt(unit), perfUnitFmtFull(unit), accent)
-       + perfChartKey(s, accent) + note + '</div>';
+       + perfChartKey(s, accent)
+       + cap
+       + perfFold('weeklyNotes', 'how to read this chart', note)
+       + '</div>';
 }
-
 // ── the forward book ────────────────────────────────────────────────────────
-// §5.3's other half. The chart shares one y-axis with the history, which is
-// honest and which also means a normal forward week is a few pixels tall beside
-// a $700k tour week. So the chart carries the SHAPE and this card carries the
-// MAGNITUDE, as numbers, where nothing has to be read off a pixel.
+// The chart above shares one y-axis with the history, which is honest and which
+// also means a normal forward week is a few pixels tall beside a $700k tour
+// week. So that chart carries the SHAPE, and this card carries the MAGNITUDE —
+// as tiles, as a bullet per week, and as a table behind a fold.
 //
-// The three seat states are the point of it. required - ordered is seats nobody
-// has been approached for, which is the most actionable figure on this screen and
-// appears nowhere else in the business.
+// The three seat states are the point of it. required - confirmed is the
+// actionable gap, and `ordered` is what splits that gap into two problems with
+// opposite answers.
 function perfForwardCard(d){
   const f  = d.forward || null;
   const fp = (f && f.priced) || null;
@@ -19315,44 +20261,77 @@ function perfForwardCard(d){
   const weeks = fp.weeks || [];
   const short = t.unfilled_seats || 0;
 
-  const tile = function(val, lbl, sub, accent){
-    return '<div class="perf-head">'
-      + '<div class="perf-head-val' + (accent ? ' accent' : '') + '">' + val + '</div>'
+  // AN EMPTY BOOK IS NOT A FULL BOOK. With no seats required, a naive
+  // confirmed/required defaults to 100% and paints the tile green — "every seat
+  // confirmed" when the truth is "nothing is sold". That is the exact inversion,
+  // in the exact colour, on the only chart carrying a staffing signal, and on a
+  // book that fills every near week it would surface first in a quiet January.
+  //
+  // THREE STATES, NOT TWO, and they must not share a rendering:
+  //   nothing sold      no calls at all           — a pipeline fact
+  //   nothing rostered  calls, seats, none filled — a staffing emergency
+  //   no denominator    calls, but zero seats     — a data fault
+  // The first and second are opposites; keying only on required_seats would put
+  // the third in with the first, reporting "nothing on the books" over a bullet
+  // chart that is visibly drawing calls.
+  const reqSeats  = t.required_seats  || 0;
+  const conSeats  = t.confirmed_seats || 0;
+  const fwdCalls  = weeks.reduce(function(a, w){ return a + (w.calls || 0); }, 0);
+  const onBook    = fwdCalls > 0;      // is anything sold into this window at all
+  const booked    = reqSeats > 0;      // is there a denominator to fill against
+  const fillPct   = booked ? (100 * conSeats / reqSeats) : null;
+  const fillCol   = booked ? perfSignalColor('fillRate', fillPct) : null;
+
+  const tile = function(val, lbl, sub, accent, col){
+    return '<div class="perf-head"><div class="perf-head-in">'
+      + '<div class="perf-head-val' + (accent ? ' accent' : '') + '"' + (col ? ' style="color:' + col + '"' : '') + '>' + val + '</div>'
       + '<div class="perf-head-lbl">' + escapeHtml(lbl) + '</div>'
       + (sub ? '<div class="perf-head-sub">' + sub + '</div>' : '')
-      + '</div>';
+      + '</div></div>';
   };
 
   const heads = '<div class="perf-heads">'
     + tile(perfMoney(t.revenue), 'forward revenue',
            'required seats, list rates'
            + (card.captured_at ? ' · <span style="white-space:nowrap">card ' + escapeHtml(String(card.captured_at)) + '</span>' : ''), true)
-    + tile(perfNum(t.required_hours) + '<span style="font-size:12px;color:var(--muted)">h</span>', 'required hours',
+    + tile(booked ? fillPct.toFixed(1) + '%' : '—', 'seats filled',
+           booked ? perfNum(conSeats) + ' of ' + perfNum(reqSeats) + ' confirmed'
+                  : (onBook ? perfNum(fwdCalls) + ' calls, no seats required'
+                            : 'nothing on the books yet'), false, fillCol)
+    + tile(perfNum(t.required_hours) + '<span class="perf-head-u">h</span>', 'required hours',
            perfNum(t.billable_hours) + 'h billable after the minimum')
     // Secured is stated in HOURS and SEATS, never in dollars — the same reason the
     // chart draws one money line. `secured_revenue` is exact and stays in the
     // payload, but putting it beside forward revenue here would invite the very
     // subtraction the chart was changed to prevent: the difference is a staffing
     // gap and costs nothing, because required is invoiced either way.
-    + tile(perfNum(t.secured_hours) + '<span style="font-size:12px;color:var(--muted)">h</span>', 'secured hours',
+    + tile(perfNum(t.secured_hours) + '<span class="perf-head-u">h</span>', 'secured hours',
            'hours with crew confirmed')
-    + tile(perfNum(t.required_seats), 'seats required',
-           perfNum(t.confirmed_seats) + ' confirmed · ' + perfNum(t.ordered_seats) + ' offers sent')
     + tile(perfNum(short), 'seats unfilled',
-           perfNum(t.short_calls) + ' call' + ((t.short_calls === 1) ? '' : 's') + ' short')
+           perfNum(t.hard_to_fill) + ' hard to fill · ' + perfNum(t.not_started) + ' not started',
+           false, short > 0 ? fillCol : null)
     + '</div>';
 
-  // Per week, because a total over 60 days hides which week is empty.
-  // Weeks with nothing booked are LEFT OUT rather than shown as a row of zeroes,
-  // for the same reason the chart stops its line: a zero row reads as "no work
-  // that week" when it means "nothing sold into it yet". The count is stated
-  // under the table instead.
+  const bullet = perfBulletSvg(weeks);
+  const key = bullet
+    ? '<div class="perf-key">'
+      + '<span class="perf-key-i"><span class="perf-key-sw" style="background:#d4af37;opacity:.55"></span>confirmed</span>'
+      + '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + PERF_SHORTFALL_COLORS.hard + ';opacity:.55"></span>hard to fill — everyone has been asked</span>'
+      + '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + PERF_SHORTFALL_COLORS.cold + ';opacity:.55"></span>not started — fewer offers than seats</span>'
+      + '<span class="perf-key-i"><span class="perf-key-sw" style="background:var(--text);width:3px"></span>required</span>'
+      + '</div>'
+    : '';
+
+  // Per week, because a total over 60 days hides which week is empty. Weeks with
+  // nothing booked are LEFT OUT of both the bullets and the table rather than
+  // drawn as zero, for the same reason the chart stops its line: a zero row reads
+  // as "no work that week" when it means "nothing sold into it yet". The count is
+  // stated underneath instead.
   let rows = '', emptyWeeks = 0;
   weeks.forEach(function(w){
     if(!(w.calls > 0)){ emptyWeeks++; return; }
     const sh = w.unfilled_seats || 0;
     const un = (w.unpriced_calls || 0) + (w.error_calls || 0);
-    // The shortfall's KIND, per week. Same gap, opposite response.
     const kind = [];
     if(w.hard_to_fill) kind.push(perfNum(w.hard_to_fill) + ' hard to fill');
     if(w.not_started)  kind.push(perfNum(w.not_started) + ' not started');
@@ -19375,42 +20354,48 @@ function perfForwardCard(d){
     + '<th style="text-align:right">Unfilled</th><th>Why</th>'
     + '<th style="text-align:right">Offers sent</th>'
     + '<th style="text-align:right">Hours</th><th style="text-align:right">Revenue</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table>'
-    + (emptyWeeks
-        ? '<div class="perf-note">' + perfNum(emptyWeeks) + ' later week'
-          + (emptyWeeks === 1 ? '' : 's') + ' in the window '
-          + (emptyWeeks === 1 ? 'has' : 'have') + ' <b>nothing booked yet</b> and '
-          + (emptyWeeks === 1 ? 'is' : 'are') + ' omitted above — the book fills up as calls are entered, '
-          + 'so an empty far week is the pipeline, not a gap in the work.</div>'
-        : '');
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
 
-  let notes = '<div class="perf-note"><b>On the books, as at ' + escapeHtml(String(f.as_at || 'today'))
-    + '</b> — the next ' + perfNum(f.days || 0) + ' days, not a forecast. Both figures are priced at list rates: '
-    + '<b>required</b> is what the customer is charged for whether the seat is filled or not, and <b>secured</b> is the '
-    + 'same seats at the same rates with only the confirmed ones counted.</div>';
+  const emptyNote = emptyWeeks
+    ? '<div class="perf-note">' + perfNum(emptyWeeks) + ' later week'
+      + (emptyWeeks === 1 ? '' : 's') + ' in the window '
+      + (emptyWeeks === 1 ? 'has' : 'have') + ' <b>nothing booked yet</b> and '
+      + (emptyWeeks === 1 ? 'is' : 'are') + ' omitted above — the book fills up as calls are entered, '
+      + 'so an empty far week is the pipeline, not a gap in the work.</div>'
+    : '';
 
-  if(short > 0){
-    notes += '<div class="perf-note"><b>' + perfNum(short) + ' seat' + (short === 1 ? '' : 's')
-      + ' unfilled across ' + perfNum(t.short_calls) + ' call' + ((t.short_calls === 1) ? '' : 's') + '.</b> '
-      + 'This is a <b>staffing</b> gap, not lost revenue — required is charged either way. '
-      + 'Two kinds, and they need opposite responses: '
-      + '<b>' + perfNum(t.hard_to_fill) + ' hard to fill</b> — everyone has been asked and the seats are still open, which is a supply problem; '
-      + '<b>' + perfNum(t.not_started) + ' not started</b> — fewer offers have gone out than there are seats, which is an ops task nobody has picked up. '
-      + 'The two look identical on the chart; only the offers-sent count separates them.</div>';
+  let cap;
+  if(!onBook){
+    cap = '<div class="perf-cap"><b>Nothing is on the books in this window yet.</b> That is the sales pipeline, '
+        + 'not a staffing result — calls are entered as they are sold, and an empty window means none have been.</div>';
+  } else if(!booked){
+    cap = '<div class="perf-cap"><b>' + perfNum(fwdCalls) + ' call' + (fwdCalls === 1 ? '' : 's')
+        + ' on the book require no seats.</b> That is a data fault rather than a staffing position — '
+        + 'a call with nobody to roster cannot be filled or short.</div>';
+  } else if(conSeats === 0){
+    cap = '<div class="perf-cap"><b style="color:' + fillCol + '">Nothing is rostered.</b> All '
+        + perfNum(reqSeats) + ' seats across ' + perfNum(fwdCalls) + ' call' + (fwdCalls === 1 ? '' : 's')
+        + ' are still open — this is the opposite of an empty book, and the work is already sold.</div>';
+  } else if(short > 0){
+    cap = '<div class="perf-cap"><b style="color:' + fillCol + '">' + perfNum(short) + ' seat'
+        + (short === 1 ? '' : 's') + ' short</b> across ' + perfNum(t.short_calls) + ' call'
+        + (t.short_calls === 1 ? '' : 's') + '. ' + perfNum(t.hard_to_fill) + ' where everyone has been asked; '
+        + perfNum(t.not_started) + ' where nobody has started.</div>';
+  } else {
+    cap = '<div class="perf-cap">Every one of the ' + perfNum(reqSeats)
+        + ' seats on the book is <b style="color:' + PERF_SIGNAL_COLORS.good + '">confirmed</b>.</div>';
   }
 
   // TWO GROUPS, SPLIT AT "cancelled calls excluded".
   //
   // The first two caveats say the revenue figure above is UNDERSTATED — a call
   // nobody could price, a call the engine refused. Those change how the number
-  // should be read, so they stay on screen. Everything from the cancelled-call
-  // count onward explains how the figures are BUILT: real provenance, worth
-  // having, but not something to re-read every time the panel is opened. That
-  // group folds.
-  //
-  // On the live book both leading caveats are zero, so what actually collapses
-  // begins at "cancelled calls excluded" — which is the boundary as specified.
-  const caveats = [];      // always visible
+  // should be READ, which is the same test the basis strip at the top of the tab
+  // applies, so they stay on screen. Everything from the cancelled-call count
+  // onward explains how the figures are BUILT: real provenance, worth having,
+  // and not something to re-read every time the panel is opened. That group
+  // folds, along with the rest of this card's prose.
+  const caveats  = [];     // always visible
   const foldable = [];     // behind the disclosure
   if(dq.forward_unmapped_calls){
     const names = (dq.forward_unmapped_names || []).map(function(u){
@@ -19425,6 +20410,17 @@ function perfForwardCard(d){
     caveats.push(perfNum(dq.forward_price_errors) + ' call'
       + (dq.forward_price_errors === 1 ? '' : 's') + ' the pricing engine refused (usually a missing start time).');
   }
+
+  foldable.push('<b>On the books, as at ' + escapeHtml(String(f.as_at || 'today'))
+    + '</b> — the next ' + perfNum(f.days || 0) + ' days, and never a forecast. Both figures are priced at list '
+    + 'rates: <b>required</b> is what the customer is charged for whether the seat is filled or not, and '
+    + '<b>secured</b> is the same seats at the same rates with only the confirmed ones counted.');
+  foldable.push('<b>The shortfall is a staffing gap, not lost revenue</b> — required is charged either way. '
+    + 'The two kinds need opposite responses: <b>hard to fill</b> means everyone has been asked and the seats are '
+    + 'still open, which is a supply problem; <b>not started</b> means fewer offers have gone out than there are '
+    + 'seats, which is an ops task nobody has picked up. They look identical on any chart that draws the gap as '
+    + 'one block, which is why the bullets segment it.');
+
   if(fdq.forward_cancelled_calls){
     foldable.push(perfNum(fdq.forward_cancelled_calls) + ' cancelled call'
       + (fdq.forward_cancelled_calls === 1 ? '' : 's') + ' excluded (' + perfNum(fdq.forward_cancelled_seats)
@@ -19461,71 +20457,57 @@ function perfForwardCard(d){
       + (fdq.forward_gap_calls === 1 ? '' : 's') + ' earlier this week sit in neither view: the history ends at the '
       + 'last complete week and the book starts today.');
   }
-  if(caveats.length){
-    notes += '<div class="perf-note">' + caveats.join(' ') + '</div>';
-  }
 
-  if(foldable.length){
-    // Closed by default and remembered per operator, like the units toggle. The
-    // control is a real button: role, tabindex and aria-expanded, so it is not
-    // conveyed by the triangle alone.
-    const open = !!goatPrefs.get('perf', 'fold:forwardNotes', false);
-    notes += '<div class="perf-fold-t" data-perf-fold="forwardNotes" role="button" tabindex="0"'
-          +    ' aria-expanded="' + (open ? 'true' : 'false') + '">'
-          +    (open ? '▾' : '▸') + ' ' + perfNum(foldable.length) + ' note'
-          +    (foldable.length === 1 ? '' : 's') + ' on how these figures are built'
-          +  '</div>'
-          +  '<div class="perf-fold"' + (open ? '' : ' hidden') + '>'
-          +    '<div class="perf-note">' + foldable.join(' ') + '</div>'
-          +  '</div>';
-  }
+  const visible = caveats.length ? '<div class="perf-note">' + caveats.join(' ') + '</div>' : '';
 
   return '<div class="perf-card">'
     + '<div class="perf-card-head">'
-    +   '<span class="perf-card-title">THE FORWARD BOOK</span>'
+    +   '<span class="perf-card-title">WHAT IS BOOKED, AND WHAT IS SHORT</span>'
     +   '<span class="perf-card-sub">' + escapeHtml(String(f.from || '')) + ' → ' + escapeHtml(String(f.to || ''))
-    +   ' · required against secured</span>'
+    +   ' · on the books as at ' + escapeHtml(String(f.as_at || 'today')) + '</span>'
     + '</div>'
-    + heads + tbl + notes
+    + heads + bullet + key + cap + visible
+    + perfFold('forwardTable', 'the same weeks as a table', tbl + emptyNote)
+    + perfFold('forwardNotes', 'how these figures are built', '<div class="perf-note">' + foldable.join(' ') + '</div>')
     + '</div>';
 }
-
-// ── customer stack ──────────────────────────────────────────────────────────
-// Top 8 + the roll-up. The bar is the shape of the concentration at a glance;
-// the legend beneath carries every number, because at Live Nation's ~32% the
-// smallest segments are only a few pixels wide and could never hold a label.
-// Both are click targets — every number on this screen reaches the weeks behind it.
-function perfCustomerCard(d){
-  // Follows the weekly chart's unit: concentration by revenue and concentration
-  // by hours are different shapes, and a reader who has switched the chart to
-  // hours is asking about the hours. perfYieldCard deliberately does NOT follow —
-  // it is already a ratio of the two and has no unit to switch.
+// The old CUSTOMER CONCENTRATION card, kept but folded.
+//
+// The stack answered "who is big", which is a question nobody asks twice, and
+// the slope above answers it as well as showing change — so it no longer earns
+// permanent space. What it still carries that the slope does not is SHARE OF
+// TOTAL, and it is the compact colour key for the customer palette used across
+// the tab, so it folds rather than going away.
+function perfConcentrationFold(d){
   const unit  = _perfUnit;
   const val   = function(c){ return ((unit === 'hours' ? c.hours : c.revenue) || 0); };
   const fmt   = perfUnitFmt(unit);
   const cust  = (d.customers || []).slice();
   const other = d.other || {};
   const cmap  = perfColorMap(d);
-  const segs  = cust.map(function(c, i){
-    return { id: c.id, name: c.name, value: val(c), revenue: c.revenue || 0, hours: c.hours || 0, color: cmap[String(c.id)] };
+
+  const segs = cust.map(function(c){
+    return { id: c.id, name: c.name, value: val(c), revenue: c.revenue || 0,
+             hours: c.hours || 0, color: cmap[String(c.id)] };
   });
   if((other.revenue || 0) !== 0 || (other.customer_count || 0) > 0){
     segs.push({ id: '__other__',
                 name: 'All other (' + perfNum(other.customer_count) + ' customers)',
-                value: val(other), revenue: other.revenue || 0, hours: other.hours || 0, color: PERF_OTHER_COLOR });
+                value: val(other), revenue: other.revenue || 0, hours: other.hours || 0,
+                color: PERF_OTHER_COLOR });
   }
   const total = segs.reduce(function(a, s){ return a + s.value; }, 0);
-  if(total <= 0) return '<div class="perf-card"><div class="ops-lane-status">No invoiced '
-    + (unit === 'hours' ? 'hours' : 'revenue') + ' in this window.</div></div>';
+  if(total <= 0) return '';
 
-  const W = 1000, H = 34;
+  const W = 1000, H = 30;
   let x = 0, bar = '';
   segs.forEach(function(sg){
     const w   = (sg.value / total) * W;
     const pct = perfPct(sg.value, total);
     const tip = sg.name + '\n' + perfMoneyFull(sg.revenue) + '  ·  ' + perfNum(sg.hours) + ' hours'
               + '\n' + pct.toFixed(1) + '% of ' + perfUnitLabel(unit);
-    bar += '<rect data-cust="' + escapeHtml(String(sg.id)) + '" data-perf-cust="' + escapeHtml(String(sg.id)) + '" x="' + x.toFixed(2) + '" y="0" width="' + Math.max(0, w).toFixed(2) + '" height="' + H + '"'
+    bar += '<rect data-cust="' + escapeHtml(String(sg.id)) + '" data-perf-cust="' + escapeHtml(String(sg.id)) + '"'
+        +  ' x="' + x.toFixed(2) + '" y="0" width="' + Math.max(0, w).toFixed(2) + '" height="' + H + '"'
         +  ' fill="' + sg.color + '">'
         +  '<title>' + escapeHtml(tip) + '</title></rect>';
     // Only label a segment wide enough to hold the text — never a clipped number.
@@ -19543,23 +20525,22 @@ function perfCustomerCard(d){
       + '</div>';
   }).join('');
 
-  return '<div class="perf-card">'
-    + '<div class="perf-card-head">'
-    +   '<span class="perf-card-title">CUSTOMER CONCENTRATION</span>'
-    +   '<span class="perf-card-sub">share of invoiced ' + (unit === 'hours' ? 'hours' : 'revenue')
-    +   ' in the window — click any customer for its own weekly chart</span>'
-    + '</div>'
-    + '<svg class="perf-stack" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img"'
+  const body = '<svg class="perf-stack" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img"'
     +   ' aria-label="' + escapeHtml((unit === 'hours' ? 'Hours' : 'Revenue') + ' share by customer, top 8 and the remainder') + '">' + bar + '</svg>'
-    + '<div class="perf-legs">' + legs + '</div>'
-    + '</div>';
+    + '<div class="perf-legs">' + legs + '</div>';
+
+  return perfFold('concentration', 'share of the window, and the colour key', body);
 }
 
-// ── yield table ─────────────────────────────────────────────────────────────
+// ── CHART 4 · the scatter, with the ranking behind it ───────────────────────
+// The scatter is the view; the ranked table is the same numbers exactly and
+// folds beneath it. Position surfaces the outlier instantly — a sorted column
+// merely puts it last — but the table is what you read a figure off, and it
+// carries the drill-through rows.
 function perfYieldCard(d){
   const other = d.other || {};
   const cmap  = perfColorMap(d);
-  const rows  = (d.customers || []).map(function(c, i){
+  const rows  = (d.customers || []).map(function(c){
     return { id: c.id, name: c.name, revenue: c.revenue || 0, hours: c.hours || 0, color: cmap[String(c.id)] };
   });
   if((other.revenue || 0) !== 0 || (other.hours || 0) !== 0){
@@ -19589,19 +20570,65 @@ function perfYieldCard(d){
       + unranked.map(function(r){ return tr(r, null); }).join('');
   }
 
-  return '<div class="perf-card">'
-    + '<div class="perf-card-head">'
-    +   '<span class="perf-card-title">REVENUE PER HOUR</span>'
-    +   '<span class="perf-card-sub">hours shown beside every figure — a rate means nothing without the sample behind it</span>'
-    + '</div>'
-    + '<table class="perf-tbl"><thead><tr>'
+  const tbl = '<table class="perf-tbl"><thead><tr>'
     +   '<th class="rank">#</th><th></th><th>Customer</th>'
     +   '<th style="text-align:right">Revenue / hour</th>'
     +   '<th style="text-align:right">Hours</th>'
     +   '<th style="text-align:right">Revenue</th>'
-    + '</tr></thead><tbody>' + tbody + '</tbody></table>'
-    + '<div class="perf-note">Per-customer figures are <b>all-in</b>: the endpoint carries the equipment split on the weekly series only, '
-    + 'not per customer, so equipment hire sits inside these rates. The crew-only figure in the headline row above excludes it.</div>'
+    + '</tr></thead><tbody>' + tbody + '</tbody></table>';
+
+  // The renegotiation candidate, named by the data rather than by a caption: the
+  // ranked customer with the most hours sitting below the median yield. On a
+  // different quarter this is a different name, or none at all.
+  let cap = '';
+  if(ranked.length > 2){
+    const ys  = ranked.map(function(r){ return r.yield; }).sort(function(a, b){ return a - b; });
+    const m   = Math.floor(ys.length / 2);
+    const med = ys.length % 2 ? ys[m] : (ys[m - 1] + ys[m]) / 2;
+    // Ranked by MONEY ON THE TABLE — hours x the distance below the median —
+    // not by hours below the median. A large customer sitting a dollar under the
+    // median is not a renegotiation; a mid-sized one sitting nine dollars under
+    // it is, and only the product of the two separates them.
+    const low = ranked.filter(function(r){ return r.yield < med; })
+                      .map(function(r){ return { r: r, gap: r.hours * (med - r.yield) }; })
+                      .sort(function(a, b){ return b.gap - a.gap; })[0];
+    if(low){
+      cap = '<div class="perf-cap">' + escapeHtml(perfTrim(low.r.name, 30)) + ' bills '
+          + '<b style="color:' + perfSignalColor('customerYield', low.r.yield) + '">' + perfMoneyFull(low.r.yield) + '/hr</b> on '
+          + perfNum(low.r.hours) + ' hours. Closing that to the median of ' + perfMoneyFull(med)
+          + ' is <b>' + perfMoney(low.gap) + '</b> a year — the largest such gap in the business.</div>';
+    }
+  }
+
+  const note =
+      '<div class="perf-note"><b>Bottom right is the renegotiation list.</b> More hours than the median, less per '
+    +   'hour than the median — a customer of real scale priced below its peers. The crosshair is the median of the '
+    +   'ranked customers on each axis, so the quadrants move as the business does.</div>'
+    + '<div class="perf-note"><b>Bubble area is revenue</b>, not radius — a radius-linear bubble overstates the '
+    +   'biggest customer by the square of its lead. Colour is the rate: above ' + perfMoney(PERF_SIGNALS.customerYield.good)
+    +   '/hr green, ' + perfMoney(PERF_SIGNALS.customerYield.watch) + '–' + perfMoney(PERF_SIGNALS.customerYield.good)
+    +   ' amber, below ' + perfMoney(PERF_SIGNALS.customerYield.watch) + ' red.</div>'
+    + '<div class="perf-note"><b>Under ' + perfNum(PERF_RANK_MIN_HOURS) + ' hours a customer is drawn hollow and '
+    +   'left unlabelled</b>, and is excluded from the medians. At that size $/hr is one event\'s shift mix rather '
+    +   'than a commercial fact. It is still plotted, because dropping it would misrepresent how much of the '
+    +   'business is small.</div>'
+    + '<div class="perf-note"><b>These rates are all-in, and cannot be anything else.</b> The endpoint carries the '
+    +   'equipment split on the weekly series only — there is no per-customer equipment figure in the payload — so '
+    +   'equipment hire sits inside every rate here. That matters more per customer than it does in aggregate: '
+    +   'equipment is a rounding error across the business, but a single customer hiring harnesses on a light week '
+    +   'can carry a visible amount of it. A customer sitting oddly high is worth checking against its lines before '
+    +   'it is read as a pricing win. "All other" is a bucket of ' + perfNum(other.customer_count || 0)
+    +   ' customers rather than one, so it is listed in the table but never plotted.</div>';
+
+  return '<div class="perf-card">'
+    + '<div class="perf-card-head">'
+    +   '<span class="perf-card-title">WHERE THE WORK SITS, AND WHAT IT EARNS</span>'
+    +   '<span class="perf-card-sub">hours against revenue per hour, all-in, sized by revenue — click a bubble to drill in</span>'
+    + '</div>'
+    + perfScatterSvg(rows, _perfCustomer)
+    + cap
+    + perfFold('yieldTable', 'the same customers as a ranked table', tbl)
+    + perfFold('yieldNotes', 'how to read this chart', note)
     + '</div>';
 }
 
@@ -19634,12 +20661,16 @@ function perfYieldCard(d){
     const el = ev.target;
     // Element.closest exists on SVG elements too, which matters: the customer
     // stack's click targets are <rect>s.
-    return (el && el.closest) ? el.closest('[data-perf-unit],[data-perf-cust],[data-perf-fold]') : null;
+    return (el && el.closest) ? el.closest('[data-perf-unit],[data-perf-fyrange],[data-perf-cust],[data-perf-fold]') : null;
   };
 
   const fire = function(t){
     if(t.hasAttribute('data-perf-unit')){
       perfSetUnit(t.getAttribute('data-perf-unit'));
+      return;
+    }
+    if(t.hasAttribute('data-perf-fyrange')){
+      perfSetFyRange(t.getAttribute('data-perf-fyrange'));
       return;
     }
     if(t.hasAttribute('data-perf-fold')){
@@ -19668,6 +20699,351 @@ function perfYieldCard(d){
 })();
 
 // Disclosure state, per operator, remembered like the units toggle.
+// ── CHART 7 · financial year to date, against target ────────────────────────
+//
+// The only view on this screen with a TARGET on it, which is why the brief puts
+// it last and expects Joe to read it first. Everything above is diagnosis of a
+// rolling 52 weeks; this is the scoreboard against a number the business set.
+//
+// THE STRAIGHT LINE WOULD HAVE BEEN WRONG, AND BADLY. This business earns about
+// 7% of its annual hours in the first 8 weeks of the FY while 15% of the year has
+// elapsed — July and August are the quiet quarter and November carries the year.
+// A diagonal drawn to the year-end total reads roughly -63% on hours today; the
+// prior year's own curve, scaled, reads about -19%. The first number is an
+// artefact of the calendar and would teach a reader to ignore the chart every
+// winter. The target is therefore the PRIOR YEAR'S SHAPE, scaled — never a line
+// to a year-end number.
+
+// Growth targets, by unit. Judgements about the business, so they sit out here
+// with PERF_SIGNALS rather than inside a render function.
+const PERF_FY_TARGET = { hours: 1.100, revenue: 1.135 };
+
+// prior = last year's actual curve · target = that curve scaled · actual = this
+// year earned · booked = secured, NOT earned, which is why it is a separate
+// series in a separate colour rather than a continuation of the same line.
+const PERF_FY_COLORS = { prior: '#6f6f6f', target: '#9d8cd4', actual: '#d4af37', booked: '#4ea8de' };
+
+// ── the financial year boundary ─────────────────────────────────────────────
+// The Australian FY runs 1 July – 30 June, and that boundary falls MID-WEEK:
+// 1 July 2025 was a Tuesday, 1 July 2026 a Wednesday. The ISO week holding it has
+// days in both financial years — in every year, not just those two.
+//
+// The rule is majority of days: the straddling week belongs to whichever FY owns
+// four or more of its seven. Both functions below are defined off ONE primitive
+// so they cannot drift apart — perfFyOfWeek asks perfFyStartMonday where the year
+// begins rather than re-deriving the rule and eventually disagreeing with it.
+function perfFyStartMonday(fy){
+  const dow = (new Date(fy, 6, 1).getDay() + 6) % 7;   // 0 = Monday, for 1 July
+  // (7 - dow) days of that week fall in the new FY. Four or more and the week is
+  // week 1; otherwise week 1 is the Monday after.
+  return (7 - dow >= 4) ? new Date(fy, 6, 1 - dow) : new Date(fy, 6, 8 - dow);
+}
+function perfFyOfWeek(key){
+  const m = perfIsoWeekMonday(key);
+  if(!m) return null;
+  const y = m.getFullYear();
+  return (m >= perfFyStartMonday(y)) ? y : y - 1;
+}
+function perfFyLabel(fy){ return 'FY' + fy + '–' + String(fy + 1).slice(2); }
+
+// Whole weeks between two Mondays. Melbourne observes DST, so a week is not
+// always 604800000ms — get-performance.php walks its own buckets with relative
+// date strings for exactly this reason. Rounding the quotient absorbs the hour.
+function perfWeeksBetween(a, b){ return Math.round((b - a) / 604800000); }
+
+// ── series ──────────────────────────────────────────────────────────────────
+function perfFySeries(d, unit){
+  const U   = (unit === 'hours') ? 'hours' : 'revenue';
+  const all = (d && d.weeks) || [];
+  if(all.length < 2) return null;
+
+  const curFy = perfFyOfWeek(all[all.length - 1].key);
+  if(curFy == null) return null;
+  const priorFy   = curFy - 1;
+  const startCur  = perfFyStartMonday(curFy);
+  const startPrev = perfFyStartMonday(priorFy);
+  const N         = perfWeeksBetween(startPrev, startCur);      // 52, or 53
+  if(!(N > 1)) return null;
+
+  // A SHORT WINDOW MUST NOT PRODUCE A FLATTERING TARGET.
+  //
+  // The target is the prior year's own curve scaled up. A prior year the payload
+  // only half covers would scale a half-sized year, and every week of this year
+  // would then read as comfortably ahead of it — plausible, green, and wrong.
+  // weeks=52 (the default) spans 104 and covers the prior FY in full; a caller
+  // passing ?weeks=13 does not, and this card refuses to draw a target it cannot
+  // stand behind rather than drawing an encouraging one.
+  const haveFullPrior = perfIsoWeekMonday(all[0].key) <= startPrev;
+
+  // Value per FY-week-index, null where the payload carries no bucket at all —
+  // which is NOT the same as a week that carries zero work.
+  const slot = function(mon0){
+    const v = new Array(N);
+    for(let i = 0; i < N; i++) v[i] = null;
+    all.forEach(function(w){
+      const m = perfIsoWeekMonday(w.key);
+      if(!m) return;
+      const i = perfWeeksBetween(mon0, m);
+      if(i >= 0 && i < N) v[i] = (w.invoiced && w.invoiced[U]) || 0;
+    });
+    return v;
+  };
+  // Cumulative, stopping at the first week the payload does not carry. A missing
+  // week must end the line, not be summed as a zero — the current FY is a
+  // part-year and its line has to stop at the last COMPLETE week.
+  const cum = function(raw){
+    const out = []; let t = 0;
+    for(let i = 0; i < raw.length; i++){ if(raw[i] == null) break; t += raw[i]; out.push(t); }
+    return out;
+  };
+
+  const prior  = cum(slot(startPrev));
+  const actual = cum(slot(startCur));
+  const mult   = PERF_FY_TARGET[U] || 1;
+  const target = haveFullPrior ? prior.map(function(v){ return v * mult; }) : [];
+
+  // ── the book, continuing the line in its own tone ─────────────────────────
+  const fp   = ((d.forward || {}) || {}).priced || {};
+  const fwks = (!fp.unavailable && fp.weeks) ? fp.weeks : [];
+  const pick = function(w){ return (U === 'hours') ? (w.required_hours || 0) : (w.revenue || 0); };
+
+  const bslot = new Array(N);
+  for(let i = 0; i < N; i++) bslot[i] = null;
+  fwks.forEach(function(w){
+    const m = perfIsoWeekMonday(w.key);
+    if(!m) return;
+    const i = perfWeeksBetween(startCur, m);
+    if(i >= actual.length && i < N) bslot[i] = pick(w);
+  });
+  // Trailing empty weeks are the PIPELINE, not a forecast of zero, so the line
+  // stops at the last week carrying work. An empty week BETWEEN two booked ones
+  // is kept, and draws flat — that is a real gap in the book.
+  let lastB = -1;
+  for(let i = N - 1; i >= actual.length; i--){ if(bslot[i] > 0){ lastB = i; break; } }
+  // `has` marks the weeks the book actually carries a bucket for. Every index is
+  // kept so the LINE stays a true cumulative — a week with nothing booked does
+  // not raise the running total, and drawing it flat is correct — but only the
+  // weeks with a bucket get a point drawn on them. A circle asserts "this is the
+  // figure for this week", and over a gap there is no figure to assert.
+  const booked = [];
+  let run = actual.length ? actual[actual.length - 1] : 0;
+  for(let i = actual.length; i <= lastB; i++){
+    run += (bslot[i] || 0);
+    booked.push({ i: i, v: run, has: bslot[i] != null });
+  }
+
+  return { unit: U, fy: curFy, priorFy: priorFy, N: N, mult: mult,
+           prior: prior, target: target, actual: actual, booked: booked,
+           haveFullPrior: haveFullPrior, startCur: startCur, startPrev: startPrev };
+}
+
+// ── the chart ───────────────────────────────────────────────────────────────
+function perfFySvg(s, fmt, fmtFull, range){
+  if(!s || !(s.N > 1)) return '<div class="ops-lane-status">Not enough weeks to chart.</div>';
+  fmt = fmt || perfMoney; fmtFull = fmtFull || perfMoneyFull;
+
+  // The drawn window. 'ytd' ends two weeks past the last thing there is to
+  // show — every series is still the SAME cumulative series, cut at the same
+  // week; nothing is rescaled and no second axis is introduced. The prior year
+  // and the target keep their own shape inside the window, so "behind the
+  // dashed line" means exactly what it means in the full-year view.
+  const lastDrawn = Math.max(s.actual.length, s.booked.length ? s.booked[s.booked.length - 1].i + 1 : 0);
+  const N = (range === 'full' || !lastDrawn) ? s.N : Math.min(s.N, Math.max(lastDrawn + 2, 6));
+  const cut = function(a){ return a.slice(0, N); };
+
+  const W = 1000, H = 320, padL = 70, padR = 18, padT = 16, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const baseY = padT + plotH;
+
+  const prior = cut(s.prior), target = cut(s.target), actual = cut(s.actual);
+  const booked = s.booked.filter(function(b){ return b.i < N; });
+
+  let max = 0;
+  const scan = function(a){ a.forEach(function(v){ if(v > max) max = v; }); };
+  scan(prior); scan(target); scan(actual);
+  booked.forEach(function(b){ if(b.v > max) max = b.v; });
+  const top = perfNiceMax(max || 1);
+
+  const X = function(i){ return padL + (plotW * i / (N - 1)); };
+  const Y = function(v){ return baseY - (plotH * ((v || 0) / top)); };
+  const path = function(a){
+    return a.map(function(v, i){ return (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1); }).join(' ');
+  };
+
+  let grid = '';
+  for(let t = 0; t <= 4; t++){
+    const v = top * t / 4, y = Y(v);
+    grid += '<line class="perf-grid" x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW).toFixed(1) + '" y2="' + y.toFixed(1) + '"/>'
+          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + fmt(v) + '</text>';
+  }
+
+  // x axis: month names walked off the CURRENT FY's own Mondays, so week 1 is
+  // labelled Jul whichever calendar day it started on.
+  let xlab = '', lastM = -1, lastAt = -99;
+  const gap = (N > 20) ? 4 : 2;
+  for(let i = 0; i < N; i++){
+    const dt = new Date(s.startCur.getFullYear(), s.startCur.getMonth(), s.startCur.getDate() + i * 7);
+    if(dt.getMonth() !== lastM && (i - lastAt) >= gap){
+      lastM = dt.getMonth(); lastAt = i;
+      xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (baseY + 15) + '" text-anchor="middle">'
+            + PERF_MONTHS[dt.getMonth()] + (dt.getMonth() === 0 ? " '" + String(dt.getFullYear()).slice(2) : '') + '</text>';
+    }
+  }
+
+  const C = PERF_FY_COLORS;
+  let body = '';
+  if(prior.length > 1){
+    body += '<path d="' + path(prior) + '" fill="none" stroke="' + C.prior + '" stroke-width="1.75">'
+          + '<title>' + escapeHtml(perfFyLabel(s.priorFy) + ' actual, cumulative — ' + fmtFull(s.prior[s.prior.length - 1]) + ' for the full year') + '</title></path>';
+  }
+  if(target.length > 1){
+    body += '<path d="' + path(target) + '" fill="none" stroke="' + C.target + '" stroke-width="1.75" stroke-dasharray="6 4">'
+          + '<title>' + escapeHtml('Target ' + perfFyLabel(s.fy) + ' — ' + perfFyLabel(s.priorFy) + ' scaled by '
+              + ((s.mult - 1) * 100).toFixed(1) + '%, week by week. Year end ' + fmtFull(s.target[s.target.length - 1])) + '</title></path>';
+  }
+
+  // the read line: everything left of it is earned, everything right is not
+  if(actual.length){
+    const xk = X(actual.length - 1);
+    body += '<line x1="' + xk.toFixed(1) + '" y1="' + padT + '" x2="' + xk.toFixed(1) + '" y2="' + baseY + '" stroke="' + C.actual + '" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>';
+  }
+
+  if(booked.length && actual.length){
+    const j = actual.length - 1;
+    body += '<path d="M' + X(j).toFixed(1) + ' ' + Y(actual[j]).toFixed(1)
+          + booked.map(function(b){ return ' L' + X(b.i).toFixed(1) + ' ' + Y(b.v).toFixed(1); }).join('')
+          + '" fill="none" stroke="' + C.booked + '" stroke-width="2.25" stroke-dasharray="5 3">'
+          + '<title>' + escapeHtml('On the books, not yet earned — takes the year to ' + fmtFull(s.booked[s.booked.length - 1].v)) + '</title></path>';
+    booked.forEach(function(b){
+      if(!b.has) return;
+      body += '<circle cx="' + X(b.i).toFixed(1) + '" cy="' + Y(b.v).toFixed(1) + '" r="3" fill="' + C.booked + '"><title>'
+            + escapeHtml('Week ' + (b.i + 1) + ' — booked, cumulative ' + fmtFull(b.v)) + '</title></circle>';
+    });
+  }
+
+  if(actual.length > 1){
+    body += '<path d="' + path(actual) + '" fill="none" stroke="' + C.actual + '" stroke-width="2.5"/>';
+  }
+  actual.forEach(function(v, i){
+    const t = (target.length > i) ? target[i] : null;
+    body += '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(v).toFixed(1) + '" r="' + (i === actual.length - 1 ? 4 : 2.5) + '" fill="' + C.actual + '"><title>'
+          + escapeHtml('Week ' + (i + 1) + ' — earned ' + fmtFull(v) + (t ? ', target ' + fmtFull(t) : '')) + '</title></circle>';
+  });
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" '
+       + 'aria-label="' + escapeHtml('Cumulative ' + (s.unit === 'hours' ? 'hours' : 'revenue') + ' financial year to date against target') + '">'
+       + grid + xlab + body + '</svg>';
+}
+
+// ── the card ────────────────────────────────────────────────────────────────
+function perfFyCard(d){
+  const unit    = _perfUnit;
+  const fmt     = perfUnitFmt(unit), fmtFull = perfUnitFmtFull(unit);
+  const s       = perfFySeries(d, unit);
+  if(!s) return '';
+
+  const k  = s.actual.length;                       // complete weeks this FY
+  const a  = k ? s.actual[k - 1] : 0;
+  const tv = (s.target.length >= k && k) ? s.target[k - 1] : null;
+  const pv = (s.prior.length  >= k && k) ? s.prior[k - 1]  : null;
+  const dT = (tv > 0) ? (100 * (a / tv - 1)) : null;
+  const dP = (pv > 0) ? (100 * (a / pv - 1)) : null;
+  const col = perfSignalColor('fyPacing', dT);
+  const bookedTo = s.booked.length ? s.booked[s.booked.length - 1].v : null;
+
+  const tile = function(val, lbl, sub, accent, c){
+    return '<div class="perf-head"><div class="perf-head-in">'
+      + '<div class="perf-head-val' + (accent ? ' accent' : '') + '"' + (c ? ' style="color:' + c + '"' : '') + '>' + val + '</div>'
+      + '<div class="perf-head-lbl">' + escapeHtml(lbl) + '</div>'
+      + (sub ? '<div class="perf-head-sub">' + sub + '</div>' : '')
+      + '</div></div>';
+  };
+
+  const heads = '<div class="perf-heads">'
+    + tile(fmt(a), 'earned, year to date', k + ' complete week' + (k === 1 ? '' : 's') + ' of ' + s.N, true)
+    + tile(tv != null ? fmt(tv) : '&mdash;', 'target at this week',
+           tv != null ? perfFyLabel(s.priorFy) + ' shape, +' + ((s.mult - 1) * 100).toFixed(1) + '%'
+                      : 'prior year not fully in the window')
+    + tile(dT != null ? perfDeltaText(dT) : '&mdash;', 'against target',
+           dP != null ? perfDeltaText(dP) + ' against last year' : 'no prior year at this week', false, col)
+    + tile(bookedTo != null ? fmt(bookedTo) : '&mdash;', 'with the book added',
+           bookedTo != null ? 'secured, not earned' : 'nothing on the books')
+    + '</div>';
+
+  const key = '<div class="perf-key">'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + PERF_FY_COLORS.actual + ';height:3px"></span>' + escapeHtml(perfFyLabel(s.fy)) + ' earned</span>'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,' + PERF_FY_COLORS.booked + ' 0 5px,transparent 5px 8px,' + PERF_FY_COLORS.booked + ' 8px 14px);height:3px"></span>on the books &mdash; secured, not earned</span>'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,' + PERF_FY_COLORS.target + ' 0 6px,transparent 6px 10px,' + PERF_FY_COLORS.target + ' 10px 14px);height:2px"></span>target</span>'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + PERF_FY_COLORS.prior + ';height:2px"></span>' + escapeHtml(perfFyLabel(s.priorFy)) + ' actual</span>'
+    + '</div>';
+
+  // Templated, never written down: next quarter this may read "ahead".
+  let cap = '';
+  if(k && dT != null){
+    cap = '<div class="perf-cap"><b>' + k + ' week' + (k === 1 ? '' : 's') + ' in:</b> ' + fmtFull(a)
+        + ' against a target of ' + fmtFull(tv) + '. <b style="color:' + col + '">'
+        + (dT >= 0 ? 'Ahead' : 'Behind') + ' by ' + Math.abs(dT).toFixed(0) + '%</b>'
+        + (dP != null ? ', and ' + (dP >= 0 ? 'ahead of' : 'behind') + ' last year by ' + Math.abs(dP).toFixed(0) + '%' : '')
+        + '.' + (bookedTo != null ? ' The book carries it to ' + fmtFull(bookedTo) + ', which is secured rather than earned.' : '')
+        + '</div>';
+  } else if(k){
+    cap = '<div class="perf-cap"><b>' + k + ' week' + (k === 1 ? '' : 's') + ' in:</b> ' + fmtFull(a)
+        + ' earned. <b>No target is drawn</b> — the requested window does not reach back over the whole of '
+        + escapeHtml(perfFyLabel(s.priorFy)) + ', and a target scaled off a part-year would read as comfortably ahead.</div>';
+  }
+
+  const jul1c = new Date(s.fy, 6, 1), jul1p = new Date(s.priorFy, 6, 1);
+  const dnum  = function(dt){ return dt.getDate() + ' ' + PERF_MONTHS[dt.getMonth()] + ' ' + dt.getFullYear(); };
+  const dows  = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  const dow   = function(dt){ return dows[(dt.getDay() + 6) % 7]; };
+
+  const notes = perfFold('fyNotes', 'how the year and its target are drawn',
+      '<div class="perf-note"><b>The target is last year’s own curve, scaled</b> — '
+    +   perfFyLabel(s.priorFy) + ' week by week, times ' + s.mult.toFixed(3) + ' on ' + escapeHtml(perfUnitLabel(unit))
+    +   '. It is <b>not</b> a straight line to a year-end number. This business earns a small share of its year in '
+    +   'July and August and is carried by November and December, so a diagonal would read tens of percent behind '
+    +   'every winter and teach a reader to ignore the chart. Pacing is always measured against the target <b>at the '
+    +   'same week</b>, never against the year-end total.</div>'
+    + '<div class="perf-note"><b>ISO-week approximated, and this is the one chart on this screen someone may '
+    +   'reconcile against the accounts.</b> The financial year starts 1 July, which falls mid-week: '
+    +   dnum(jul1p) + ' was a ' + dow(jul1p) + ' and ' + dnum(jul1c) + ' a ' + dow(jul1c)
+    +   ', so the ISO week holding each one has days in both financial years. That week is assigned here to '
+    +   'whichever year owns four or more of its seven days, which puts ' + escapeHtml(perfFyLabel(s.fy))
+    +   ' week 1 at the week beginning ' + dnum(s.startCur) + '. The error is the part-week at each end, it is real, '
+    +   'and it lands at the <b>start</b> of the series where a pacing chart is read most closely. Doing it exactly '
+    +   'needs the endpoint to bucket across the boundary by day, which it does not.</div>'
+    + '<div class="perf-note"><b>The default view is the elapsed year, not all 52 weeks.</b> Across a full year the '
+    +   'eight weeks that have happened sit inside a corner of the plot, and the gap to target — the one thing this '
+    +   'chart exists to show as a vertical distance — stops being readable. <b>Full year</b> redraws the same series '
+    +   'over all ' + s.N + ' weeks; nothing is rescaled between the two and no second axis is introduced, so being '
+    +   'below the dashed line means the same thing in both.</div>'
+    + '<div class="perf-note"><b>The book is drawn, and it is not a forecast.</b> It continues the line in its own '
+    +   'colour because those ' + escapeHtml(perfUnitLabel(unit)) + ' are secured, not earned. It stops at the last '
+    +   'week carrying work rather than running to the year end — the empty weeks past it are the sales pipeline, '
+    +   'not a prediction of zero.</div>');
+
+  const rangeBtn = function(r, lbl, aria){
+    const on = (_perfFyRange === r);
+    return '<span class="perf-unit' + (on ? ' on' : '') + '" role="button" tabindex="0"'
+      + ' aria-pressed="' + (on ? 'true' : 'false') + '" aria-label="' + escapeHtml(aria) + '"'
+      + ' data-perf-fyrange="' + escapeHtml(r) + '">' + escapeHtml(lbl) + '</span>';
+  };
+
+  return '<div class="perf-card">'
+    + '<div class="perf-card-head"><span class="perf-card-title">FINANCIAL YEAR TO DATE</span>'
+    +   '<span class="perf-card-sub">' + escapeHtml(perfFyLabel(s.fy)) + ' against a seasonally-shaped target'
+    +   ' · ISO-week approximated'
+    +   (_perfCustomer != null ? ' · whole business, the target is not apportioned to customers' : '')
+    +   '</span>'
+    +   '<span class="perf-units" style="margin-left:auto">'
+    +     rangeBtn('ytd',  'year to date', 'Show the elapsed year and the book')
+    +     rangeBtn('full', 'full year',    'Show all 52 weeks and the target\u2019s shape')
+    +   '</span>'
+    + '</div>'
+    + heads + perfFySvg(s, fmt, fmtFull, _perfFyRange) + key + cap + notes
+    + '</div>';
+}
+
 function perfToggleFold(name){
   const key = 'fold:' + name;
   goatPrefs.set('perf', key, !goatPrefs.get('perf', key, false));
