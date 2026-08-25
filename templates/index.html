@@ -17326,7 +17326,7 @@ const OPS_LANES = [
   { key:'bookings_at_risk', label:'Bookings at risk', source:'induction',
     render: renderOpsAtRisk, list: renderOpsAtRiskList, dims:['risk','lead'] },
   { key:'inductions_expiring', label:'Inductions expiring', source:'induction',
-    render: renderOpsExpiring, list: renderOpsExpiringList, dims:['lead'] }
+    render: renderOpsExpiring, list: renderOpsExpiringList, dims:['lead','venue'] }
 ];
 
 // Shared-source cache: name -> in-flight/resolved Promise<responseJSON>. Memoised
@@ -17398,12 +17398,22 @@ const OPS_RISK_LABELS  = { none:'No induction', expired_by:'Expired by then', ex
 // design, leaving only one state to chart) — it now uses the shared lead-time
 // dimension, so there is no OPS_STATE_* palette.
 
+// Venue segments are dynamic — keys and labels come from the server, not from a
+// map written here. Populated in renderOpsExpiring on every render, and read by
+// opsChipsBar / the card summary through OPS_DIM_LABELS.venue, which references
+// this same object. Mutated in place, never reassigned, or that link breaks.
+const OPS_VENUE_LABELS = {};
+// Rank-assigned, because the key set is unbounded. Index into the server's
+// already-sorted segment array; '__other__' always takes muted.
+const OPS_VENUE_RANK_COLORS = ['var(--accent)', '#22c55e', 'var(--warn)', '#f97316', 'var(--suggest)'];
+
 // Chip labels by dimension — lets opsChipsBar render any lane's active filters
 // without naming lanes. Defined after the per-dim label maps above exist.
 const OPS_DIM_LABELS = {
   status: OPS_STATUS_LABELS, age: OPS_AGE_LABELS,
   fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS,
-  kind:   OPS_KIND_LABELS,   risk: OPS_RISK_LABELS
+  kind:   OPS_KIND_LABELS,   risk: OPS_RISK_LABELS,
+  venue:  OPS_VENUE_LABELS
 };
 
 // Serial by design: one SmartStaff request at a time. Awaiting each lane in
@@ -18320,24 +18330,67 @@ function renderOpsExpiring(lane){
     opsSyncDetail(lane);
     return;
   }
-  // One donut only — lead time (now → expiry). Already-expired is excluded server-
-  // side, so there is no "state" dimension left to chart.
+  // Lead time (now → expiry). Already-expired is excluded server-side, so there
+  // is no "state" dimension left to chart.
   const leadSegs = ['under48','from48to168','over168'].map(function(k){
     return { key:k, value:(counts.lead && counts.lead[k]) || 0,
              color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
   });
+  // Venue spread. Segments arrive sorted (value desc, then label) with
+  // '__other__' last; colour is assigned by that rank because the key set is
+  // unbounded. Populate the label map as we go — the chip bar reads it. Labels
+  // are decoded here, once: the legend, the chip and the card summary all take
+  // them from this map and none of them decodes on its own.
+  const venueRaw  = (counts.venue && counts.venue.length) ? counts.venue : [];
+  const venueSegs = venueRaw.map(function(s, i){
+    const lb = decodeEntities(s.label || '');
+    OPS_VENUE_LABELS[s.key] = lb;
+    return { key:s.key, value:s.value, label:lb,
+             color:(s.key === '__other__')
+                     ? 'var(--muted)'
+                     : (OPS_VENUE_RANK_COLORS[i] || 'var(--muted)') };
+  });
+  // The two donuts show DIFFERENT centre totals and both are right: lead time
+  // counts crew (== the badge), venue spread counts crew x venue PAIRS. One
+  // crew member expiring at two venues is one row and two pairs. The endpoint
+  // carries the same warning in PHP. Do not reconcile them.
   body.innerHTML = ''
     + '<div class="ops-donuts">'
     +   opsDonutBlock(lane, 'Lead time', 'lead', leadSegs)
+    +   (venueSegs.length ? opsDonutBlock(lane, 'Venue spread', 'venue', venueSegs) : '')
     + '</div>';
   setOpsLaneDetail(lane, true);
   opsSyncDetail(lane);
+}
+
+// Resolve a venue segment key to the catalogue keys it covers. Reads the same
+// counts.venue the donut drew from — one source, so the segment and the list
+// cannot disagree. An unknown segment yields [], which correctly empties the
+// list rather than silently showing everything.
+function opsVenueKeysFor(block, segKey){
+  const segs = (block && block.counts && block.counts.venue) || [];
+  for(let i = 0; i < segs.length; i++){
+    if(segs[i].key === segKey) return segs[i].keys || [segs[i].key];
+  }
+  return [];
 }
 
 function opsFilteredExpiring(lane){
   const st = _opsLaneState[lane.key];
   let rows = (st.data && st.data.expiring && st.data.expiring.rows) ? st.data.expiring.rows.slice() : [];
   if(st.chips.lead) rows = rows.filter(function(o){ return o.lead_bucket === st.chips.lead; });
+  // Set intersection, not scalar equality: a row matches when its venue_keys
+  // share ANY key with the segment. Singles carry a keys array too, so
+  // '__other__' needs no special case. Both sides are strings from JSON — do
+  // not cast either.
+  if(st.chips.venue){
+    const keys = opsVenueKeysFor(st.data && st.data.expiring, st.chips.venue);
+    rows = rows.filter(function(o){
+      const vk = o.venue_keys || [];
+      for(let i = 0; i < vk.length; i++) if(keys.indexOf(vk[i]) !== -1) return true;
+      return false;
+    });
+  }
   return rows;
 }
 
