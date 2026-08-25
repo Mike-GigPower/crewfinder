@@ -1,6 +1,6 @@
 {
-  "version": "5.17.0",
-  "release_date": "2026-08-25",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.17.0/TheGOAT.dmg",
-  "release_notes": "The Inductions expiring lane now shows which venues the expiring inductions are at. Click a venue to filter the list, and combine it with the lead-time filter."
+  "version": "5.18.0",
+  "release_date": "2026-08-26",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.18.0/TheGOAT.dmg",
+  "release_notes": "A new executive dashboard: how revenue moved and why, which customers grew or shrank, what each pays per hour, and how the financial year is tracking against target."
 }
