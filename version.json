@@ -1,6 +1,6 @@
 {
-  "version": "5.16.0",
-  "release_date": "2026-08-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.16.0/TheGOAT.dmg",
-  "release_notes": "Selecting a customer on the Performance chart now recolours the chart to match, and those colours stay the same between sessions. The forward book notes now collapse."
+  "version": "5.17.0",
+  "release_date": "2026-08-25",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.17.0/TheGOAT.dmg",
+  "release_notes": "The Inductions expiring lane now shows which venues the expiring inductions are at. Click a venue to filter the list, and combine it with the lead-time filter."
 }
