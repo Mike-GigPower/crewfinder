@@ -42,24 +42,40 @@
 	/* fresh set of break rows. The single UPDATE below sets voided = 1 and is
 	/* the failure path in section 5.2 — it changes no typed value.
 	/*
-	/* ---- OPEN QUESTION Q34, DELIBERATELY NOT DECIDED HERE ----
+	/* ---- UNBOOKED CREW ARE IDENTIFIED BY EIN (decision 21) ----
 	/*
-	/* An UNBOOKED row with userID = 0 CANNOT FIND ITS PREDECESSOR.
-	/* goat_time_submission_for() returns array() for userID 0 by design — 0 is
-	/* "identity not established", not a wildcard, and several different people
-	/* on one call can carry it. So a resubmission for an unbooked person
-	/* inserts FRESH with supersedes_id = 0, and two rows for the same human
-	/* will both be live.
+	/* An unbooked row supplies the person's EIN. It is resolved to a userID
+	/* here and the userID is stored. There is NO fallback to a typed name, and
+	/* unbooked_name is no longer accepted at all — the column stays in the
+	/* schema, nullable and unused.
 	/*
-	/* Three options were on the table: match on unbooked_name, require the
-	/* client to send the previous submission id, or accept the duplicate and
-	/* let Ops resolve it. THIS FILE DOES THE THIRD, because it is the only one
-	/* that cannot silently merge two different people who happen to share a
-	/* typed name. It is recorded here rather than decided silently. If Phase
-	/* 2b wants one of the other two, this is the comment to come back to.
+	/* EIN IS NOT THE userID AND NEVER HAS BEEN. EIN 5925 is userID 9734 — the
+	/* v3.4.10 regression. Resolve, then store what resolved.
 	/*
-	/* An unbooked row that carries a real userID (a picked crew member who was
-	/* not booked) supersedes correctly, because it has an identity.
+	/* WHY AN UNRESOLVED EIN IS REJECTED, AND WHY THAT IS A CONTROL RATHER THAN
+	/* FUSSY VALIDATION. From Mike, 26 Aug 2026: "All workers will have an EIN,
+	/* we cannot legally engage workers who are not onboarded, it voids our
+	/* workcover." So every person legitimately on site HAS an EIN, by
+	/* definition. A rejection therefore means one of exactly two things: the
+	/* number was mistyped, or somebody worked who should not have been there.
+	/* Both want stopping at the point of entry, and neither is helped by
+	/* accepting a typed name instead.
+	/*
+	/* DO NOT ADD A NAME FALLBACK BACK IN "to be helpful". It would convert the
+	/* second case — an un-onboarded worker on site — from a visible rejection
+	/* into a silently accepted payroll row.
+	/*
+	/* THIS CLOSES Q34. An unbooked row now carries a real userID, so
+	/* goat_time_submission_for($callID, $userID) finds its predecessor and sets
+	/* supersedes_id exactly as for booked crew. The three live unbooked rows
+	/* seen in slice 2 testing were a consequence of userID = 0 and cannot
+	/* recur. Slice 1's userID <= 0 guard stays correct; it simply stops being
+	/* reachable through this path.
+	/*
+	/* An EIN that resolves to someone already CONFIRMED on the call is allowed.
+	/* It is arguably a booked row submitted the wrong way, but it is harmless:
+	/* callID + userID is the supersede key, so it chains rather than
+	/* duplicating, and refusing it would mean guessing at the boss's intent.
 	/*
 	/* PHP 5.x — mysql_*, no ??, no short array syntax.
 	*/
@@ -132,6 +148,26 @@
 		}
 
 		return $v;
+	}
+
+	/*
+	/* 'HH:MM:SS' + a next-day flag -> minutes from midnight on the shift's
+	/* FIRST day. This is what makes the break-window test work across
+	/* midnight: a shift 17:00 -> 00:30 next day is 1020 -> 1470, and a break
+	/* at 00:10 next day is 1450, which is inside it. Comparing raw clock
+	/* readings would put that break four hours before the shift started.
+	*/
+
+	function sct_minutes($hms, $nextDay)
+	{
+		$parts = explode(':', $hms);
+
+		if (count($parts) < 2)
+		{
+			return -1;
+		}
+
+		return ((int) $parts[0]) * 60 + ((int) $parts[1]) + ($nextDay ? 1440 : 0);
 	}
 
 	/*
@@ -250,18 +286,60 @@
 		}
 		else
 		{
-			if ($userID <= 0 && $uname === '')
+			/*
+			/* UNBOOKED: the EIN is the identity, and it is required. See the
+			/* header for why an unresolved EIN is a control and not fussy
+			/* validation.
+			*/
+
+			$ein = isset($row->ein) ? (int) $row->ein : 0;
+
+			if ($ein <= 0)
 			{
-				$errors[] = $label . ': an unbooked row needs either a userID or an unbooked_name';
+				$errors[] = $label . ': an unbooked row requires an ein';
 			}
-		}
+			else
+			{
+				$ures = mysql_query("SELECT id FROM users WHERE ein = " . $ein . " LIMIT 1");
 
-		/* VARCHAR(120) / VARCHAR(255). Reject rather than truncate — silently
-		/* shortening a person's name in a payroll input is not a kindness. */
+				/*
+				/* A FAILED LOOKUP IS A 500, NOT "no such EIN". Reporting a
+				/* broken query as an unresolved number would tell the boss
+				/* their crew member is not onboarded, which is both false and
+				/* alarming — and is the same shape as the ccm.id / crewmapID
+				/* failure in call-supervision.php on 18 Aug.
+				*/
 
-		if (strlen($uname) > 120)
-		{
-			$errors[] = $label . ': unbooked_name exceeds 120 characters';
+				if ($ures === false)
+				{
+					sct_fail(500, 'Internal Server Error',
+					         'EIN lookup failed: ' . mysql_error(), array('row' => $i));
+				}
+
+				$urow = mysql_fetch_object($ures);
+
+				if (!$urow)
+				{
+					$errors[] = $label . ': no crew member found with EIN ' . $ein;
+				}
+				else
+				{
+					$userID = (int) $urow->id;
+				}
+			}
+
+			/*
+			/* unbooked_name is NO LONGER ACCEPTED. Rejected rather than
+			/* ignored: nothing consumes this endpoint yet, so a client sending
+			/* it is built against the superseded contract and should be told
+			/* now, loudly, rather than having the boss's typing silently
+			/* dropped. (Q12c: decided as reject.)
+			*/
+
+			if ($uname !== '')
+			{
+				$errors[] = $label . ': unbooked_name is no longer accepted — supply ein instead';
+			}
 		}
 
 		if (strlen($note) > 255)
@@ -296,6 +374,23 @@
 		*/
 
 		$offNext = (isset($row->off_next_day) && $row->off_next_day) ? 1 : 0;
+
+		/*
+		/* ---- the shift window, for the break test below (Q37) ----
+		/*
+		/* Only computable when both times parsed. A window that does not move
+		/* forward is reported as such rather than left to reject every break
+		/* with a misleading "outside the shift" — off_next_day is the field
+		/* the boss actually got wrong in that case, and the message says so.
+		*/
+
+		$onMin  = ($on  === '') ? -1 : sct_minutes($on, 0);
+		$offMin = ($off === '') ? -1 : sct_minutes($off, $offNext);
+
+		if ($onMin >= 0 && $offMin >= 0 && $offMin <= $onMin)
+		{
+			$errors[] = $label . ': off_time is not after on_time — set off_next_day if the shift runs past midnight';
+		}
 
 		/* ---- breaks ---- */
 
@@ -339,9 +434,38 @@
 				$errors[] = $label . ' break ' . $bi . ': duration_mins must be a multiple of 15';
 			}
 
+			$bNext = (isset($b->start_next_day) && $b->start_next_day) ? 1 : 0;
+
+			/*
+			/* Q37, CLOSED 26 Aug 2026: A BREAK OUTSIDE THE SHIFT IS REJECTED,
+			/* NOT SILENTLY DROPPED.
+			/*
+			/* A break is time not worked WITHIN a shift. One outside the shift
+			/* is time nobody was being paid for anyway, so deducting it would
+			/* take the hours away twice — but discarding it quietly hides a
+			/* typo. A break at 08:00 on a 17:00 call is a mistake worth
+			/* surfacing while the boss is still looking at the form.
+			/*
+			/* Both ends are next-day aware, or every overnight shift would
+			/* reject its own perfectly valid breaks.
+			*/
+
+			if ($bs !== '' && $onMin >= 0 && $offMin > $onMin && $dm > 0)
+			{
+				$bStart = sct_minutes($bs, $bNext);
+				$bEnd   = $bStart + $dm;
+
+				if ($bStart < $onMin || $bEnd > $offMin)
+				{
+					$errors[] = $label . ' break ' . $bi . ': falls outside the shift ('
+					          . substr($on, 0, 5) . '-' . substr($off, 0, 5)
+					          . ($offNext ? ' next day' : '') . ')';
+				}
+			}
+
 			$breaks[] = array(
 				'start_time'     => $bs,
-				'start_next_day' => (isset($b->start_next_day) && $b->start_next_day) ? 1 : 0,
+				'start_next_day' => $bNext,
 				'duration_mins'  => $dm
 			);
 		}
@@ -442,8 +566,12 @@
 			}
 		}
 
-		$nameSql = ($c['unbooked_name'] === '') ? 'NULL' : $db->sc($c['unbooked_name']);
-		$noteSql = ($c['note'] === '')          ? 'NULL' : $db->sc($c['note']);
+		/* unbooked_name is never written — decision 21 replaced it with the
+		/* EIN-resolved userID. The column remains in the schema, nullable and
+		/* unused, so slice 1's fixtures and any pre-amendment row still read. */
+
+		$nameSql = 'NULL';
+		$noteSql = ($c['note'] === '') ? 'NULL' : $db->sc($c['note']);
 
 		$sql = "INSERT INTO call_time_submissions
 		        (callID, userID, unbooked, unbooked_name, covering_for,
