@@ -7,6 +7,19 @@
 	include('cohort.php');
 	include('call-graph.php');
 	include_once('resolve-call-contact.php');
+	/*
+	/* SLICE C2 — THE OPT-IN. Switches rung 2 of the contact hierarchy to prefer
+	/* an explicit call_supervision edge over time overlap.
+	/*
+	/* THIS LINE LOOKS UNUSED AND IS NOT. Nothing in this file calls into
+	/* supervision-graph.php directly; resolve-call-contact.php reaches it via
+	/* function_exists('goat_supervision_boss_call'), guarded at the call site to
+	/* avoid a circular include (see the comment there). Remove this include and
+	/* the resolver silently falls back to overlap-only — no error, no failed
+	/* test, because overlap is still a valid code path. It just stops finding
+	/* the boss of any call that does not happen to overlap its boss call.
+	*/
+	include_once('supervision-graph.php');
 
 	/*
 	/* JSON response */
