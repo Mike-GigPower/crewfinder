@@ -282,27 +282,35 @@
 		}
 
 		/*
-		/* Given call ids, which of them have NO live submission for at least
-		/* one CONFIRMED crew member. Drives the notification (slice 6) and the
-		/* outstanding indicator (slice 4).
+		/* callID -> how many CONFIRMED crew members have NO live submission.
+		/*
+		/* THIS IS THE SINGLE IMPLEMENTATION OF "who still owes times".
+		/* goat_calls_awaiting_times() below is the boolean form of the same
+		/* question and DELEGATES here rather than asking it again. Two
+		/* implementations would eventually disagree, and the disagreement
+		/* would surface as a badge saying "4 still to enter" beside a list
+		/* showing none — which reads as a broken page rather than a bug.
 		/*
 		/* Takes an ARRAY so a caller can pass a boss's whole scope in one
-		/* query rather than N. Returns array() for empty input — the guard is
+		/* pass rather than N. Returns array() for empty input — the guard is
 		/* not politeness, an empty IN () list is a SQL syntax error.
 		/*
-		/* A call with NO confirmed crew is NOT awaiting. There is nobody whose
-		/* times are missing, so reporting it would put a permanent badge on
-		/* every unstaffed call.
+		/* A call with NO confirmed crew counts 0, never "awaiting". There is
+		/* nobody whose times are missing, so reporting it would put a
+		/* permanent badge on every unstaffed call.
 		/*
-		/* Only booked crew are considered. An unbooked person is by definition
-		/* not in call_crew_map, so they cannot be "missing" — they are known
-		/* only because a boss typed them in.
+		/* ONLY CONFIRMED CREW (status 5) ARE COUNTED. A standby who did not
+		/* work has no times to enter; counting them would mean the badge never
+		/* reached zero. An unbooked person is not in call_crew_map at all, so
+		/* they cannot be "missing" — they are known only because a boss typed
+		/* them in.
 		/*
-		/* Input order is preserved in the output so callers can zip the result
-		/* against what they passed.
+		/* A VOIDED submission does not count as done: voiding is how a boss
+		/* retracts an entry, and the call goes back to awaiting. A SUPERSEDED
+		/* one does — the person was submitted for, then corrected.
 		*/
 
-		function goat_calls_awaiting_times($callIDs)
+		function goat_outstanding_by_call($callIDs)
 		{
 			$out = array();
 
@@ -365,13 +373,7 @@
 				$crew[$cid][$uid] = true;
 			}
 
-			/*
-			/* 2. who already has a live submission. Superseded rows are
-			/* excluded the same way goat_time_submissions_for_call() excludes
-			/* them; a superseded row still proves the person was submitted
-			/* for, but a VOIDED one does not — a void is how a boss retracts
-			/* an entry, and the call goes back to awaiting.
-			*/
+			/* 2. who already has a live submission */
 
 			$done = array();
 
@@ -400,24 +402,61 @@
 				$done[$cid][$uid] = true;
 			}
 
-			/* 3. a call is awaiting if any confirmed member is not done */
+			/* 3. count the confirmed crew nobody has submitted for */
+
+			foreach ($crew as $cid => $members)
+			{
+				$n = 0;
+
+				foreach ($members as $uid => $ignored)
+				{
+					if (!isset($done[$cid][$uid]))
+					{
+						$n++;
+					}
+				}
+
+				$out[$cid] = $n;
+			}
+
+			return $out;
+		}
+
+		/*
+		/* Given call ids, which of them have NO live submission for at least
+		/* one confirmed crew member. The BOOLEAN form of
+		/* goat_outstanding_by_call(), and it delegates rather than asking the
+		/* question a second time.
+		/*
+		/* Input order is preserved in the output so callers can zip the result
+		/* against what they passed.
+		*/
+
+		function goat_calls_awaiting_times($callIDs)
+		{
+			$out = array();
+
+			if (!is_array($callIDs) || count($callIDs) === 0)
+			{
+				return $out;
+			}
+
+			$counts = goat_outstanding_by_call($callIDs);
+			$seen   = array();
 
 			foreach ($callIDs as $cid)
 			{
 				$cid = (int) $cid;
 
-				if ($cid <= 0 || !isset($crew[$cid]) || in_array($cid, $out))
+				if ($cid <= 0 || isset($seen[$cid]))
 				{
 					continue;
 				}
 
-				foreach ($crew[$cid] as $uid => $ignored)
+				if (isset($counts[$cid]) && $counts[$cid] > 0)
 				{
-					if (!isset($done[$cid][$uid]))
-					{
-						$out[] = $cid;
-						break;
-					}
+					$seen[$cid] = true;
+					$out[] = $cid;
 				}
 			}
 

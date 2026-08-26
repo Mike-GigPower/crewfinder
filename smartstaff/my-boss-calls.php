@@ -6,6 +6,7 @@
 	include('../../global.php');
 	include('cohort.php');
 	include_once('supervision-graph.php');
+	include_once('time-submission-graph.php');
 
 	/*
 	/* JSON response */
@@ -262,8 +263,20 @@
 	/* are containers and get no roster of their own, so they are excluded
 	/* unless they are also in scope.
 	/*
-	/* CONFIRMED ONLY (status = 5). Phase 1 shows a boss who is coming, not who
-	/* declined.
+	/* CONFIRMED AND STANDBY (status IN (5, 7)) — CHANGED 27 Aug 2026.
+	/*
+	/* Slice E scoped this to "who is coming, not who might", which was right
+	/* for a read-only visibility page and is wrong now. A boss whose crew
+	/* member has not turned up needs the standby list at exactly that moment,
+	/* and it is the one moment they cannot go and ask Ops. my-call-crew.php
+	/* has always included standby for that reason; this now matches it.
+	/*
+	/* Each row carries its own status so the two are never confused —
+	/* ringing a standby thinking they are late is worse than not seeing them.
+	/*
+	/* `confirmed` STILL COUNTS status 5 ONLY. It is compared against
+	/* `required` ("28 of 30"), so folding standby into it would say a call is
+	/* staffed when it is not. `standby` is a separate count.
 	/*
 	/* MOBILES (Q13). Rich confirmed that bosses ring crew who are running
 	/* late, and this is the whole reason the column is here. It is scoped as
@@ -294,12 +307,15 @@
 				u.id         AS user_id,
 				u.firstname  AS firstname,
 				u.lastname   AS lastname,
-				u.mobile     AS mobile
+				u.mobile     AS mobile,
+				ccm.status   AS status,
+				ccm.is_call_boss AS is_call_boss
 			FROM call_crew_map ccm
 			INNER JOIN users u ON u.id = ccm.userID
 			WHERE ccm.callID IN ($rosterList)
-			  AND ccm.status = 5
-			ORDER BY u.lastname ASC, u.firstname ASC
+			  AND ccm.status IN (5, 7)
+			ORDER BY ccm.is_call_boss DESC, ccm.status ASC,
+			         u.firstname ASC, u.lastname ASC
 		";
 
 		$crewRes = mysql_query($crewSql);
@@ -329,22 +345,56 @@
 			$first = html_entity_decode((string) $crow->firstname, ENT_QUOTES);
 			$last  = html_entity_decode((string) $crow->lastname,  ENT_QUOTES);
 
+			/*
+			/* 5 -> confirmed, ANYTHING ELSE -> standby. Mapped exactly as
+			/* my-call-crew.php does; there is no third value, and inventing
+			/* one would give the client a state it has no rendering for.
+			*/
+
 			$crewByCall[$ccid][] = array(
 				'user_id' => (int) $crow->user_id,
 				'name'    => trim(trim($first) . ' ' . trim($last)),
 				'mobile'  => ($crow->mobile === null ? '' : $crow->mobile),
+				'status'  => ((int) $crow->status === 5) ? 'confirmed' : 'standby',
 			);
 		}
 	}
 
 	/*
-	/* QUERY 3 of 3 does not exist, and that is the point. The confirmed count
-	/* is DERIVED from the roster we already have rather than bought with a
-	/* third round trip — and it cannot disagree with the crew array, which a
-	/* separate COUNT(*) eventually would.
+	/* OUTSTANDING TIMES, one set-based pass over every windowed scope call.
+	/*
+	/* goat_outstanding_by_call() is the SINGLE implementation of "who still
+	/* owes times"; goat_calls_awaiting_times(), which slice 1 wrote and
+	/* nothing has ever called, is now the boolean form of it and delegates
+	/* there. That matters more than it looks: a badge reading "4 still to
+	/* enter" beside a list showing none would read as a broken page rather
+	/* than as two functions disagreeing.
+	/*
+	/* THAT HELPER IS TREATED AS UNPROVEN, NOT INHERITED. It was written before
+	/* partial submissions existed and its only exercise was the slice 1
+	/* harness against hand-inserted rows. The tests for this slice put real
+	/* submissions on a call where SOME crew have times and some do not.
+	/*
+	/* Degrades to an empty map on failure: a missing badge is a visible
+	/* absence, and this is a display, not an assertion. The crew query above
+	/* is the one that fails hard.
 	*/
 
-	function goat_boss_leaf_call($info, $crewByCall)
+	$outstandingByCall = goat_outstanding_by_call($rosterIDs);
+
+	/*
+	/* The confirmed count is DERIVED from the roster already fetched rather
+	/* than bought with another round trip — so it cannot disagree with the
+	/* crew array, which a separate COUNT(*) eventually would.
+	/*
+	/* IT IS NO LONGER count($crew). Since 27 Aug the roster also carries
+	/* standby, and `confirmed` is compared against `required` to render
+	/* "28 of 30". Counting the array would have reported a call as fully
+	/* staffed the moment enough standby existed — a wrong answer that looks
+	/* exactly like a right one.
+	*/
+
+	function goat_boss_leaf_call($info, $crewByCall, $outstandingByCall)
 	{
 		$cid  = $info['call_id'];
 		$crew = isset($crewByCall[$cid]) ? $crewByCall[$cid] : array();
@@ -353,8 +403,36 @@
 
 		unset($info['is_nominated']);
 
-		$info['confirmed'] = count($crew);
+		$confirmed = 0;
+		$standby   = 0;
+
+		foreach ($crew as $member)
+		{
+			if ($member['status'] === 'confirmed')
+			{
+				$confirmed++;
+			}
+			else
+			{
+				$standby++;
+			}
+		}
+
+		$info['confirmed'] = $confirmed;
+		$info['standby']   = $standby;
 		$info['crew']      = $crew;
+
+		/*
+		/* How many CONFIRMED crew still have no live submission. Drives the
+		/* "4 still to enter" badge on the collapsed call header, which is the
+		/* highest-value element on the Your Crew page — it turns the page into
+		/* the outstanding list without expanding anything.
+		/*
+		/* Standby are excluded: a standby who did not work has no times to
+		/* enter, and counting them would mean the badge never reached zero.
+		*/
+
+		$info['outstanding'] = isset($outstandingByCall[$cid]) ? $outstandingByCall[$cid] : 0;
 
 		return $info;
 	}
@@ -438,7 +516,7 @@
 
 			$emitted[$kid] = true;
 
-			$out[] = goat_boss_leaf_call($callInfo[$kid], $crewByCall);
+			$out[] = goat_boss_leaf_call($callInfo[$kid], $crewByCall, $outstandingByCall);
 		}
 
 		$entry['children'] = $out;
@@ -497,7 +575,7 @@
 		if (isset($emitted[$cid]))            continue;
 		if (!$callInfo[$cid]['is_nominated']) continue;
 
-		$directCalls[] = goat_boss_leaf_call($callInfo[$cid], $crewByCall);
+		$directCalls[] = goat_boss_leaf_call($callInfo[$cid], $crewByCall, $outstandingByCall);
 	}
 
 	echo json_encode(array(
