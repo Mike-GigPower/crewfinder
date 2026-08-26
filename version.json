@@ -1,6 +1,6 @@
 {
-  "version": "5.18.0",
+  "version": "5.18.1",
   "release_date": "2026-08-26",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.18.0/TheGOAT.dmg",
-  "release_notes": "A new executive dashboard: how revenue moved and why, which customers grew or shrank, what each pays per hour, and how the financial year is tracking against target."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.18.1/TheGOAT.dmg",
+  "release_notes": "You can now search bookings by number. Type a booking number, with or without a #, into the Schedule or Unfilled Calls search and it goes straight to that booking. Searching by name or venue works exactly as before."
 }
