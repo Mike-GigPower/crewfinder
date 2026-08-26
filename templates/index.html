@@ -1540,7 +1540,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <button class="btn-refresh" onclick="loadCalls(true)">&#8635; Refresh</button>
     </div>
     <div class="calls-search">
-      <input type="text" id="calls-search-input" placeholder="Search bookings..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="filterCalls(this.value)">
+      <input type="text" id="calls-search-input" placeholder="Search bookings or #id..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="filterCalls(this.value)">
     </div>
     <div class="call-select-hint" id="call-select-hint">Click to select &bull; Cmd/Shift+click for multi</div>
     <div class="selected-calls-bar" id="selected-calls-bar" style="display:none">
@@ -1710,7 +1710,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
               title="Also show the previous 10 days"
               onclick="toggleSchedBack()">+ Prev 10 days</span>
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
-        <input type="text" id="sched-search" placeholder="Search bookings..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')"
+        <input type="text" id="sched-search" placeholder="Search bookings or #id..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')"
                style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;
                       padding:5px 10px;color:var(--text);font-family:'Share Tech Mono',monospace;
                       font-size:11px;outline:none;width:160px"
@@ -9032,9 +9032,31 @@ async function bookingImportConfirm(){
 }
 
 // ── CALL SEARCH & COLLAPSE ──
+// A bare number (optionally #-prefixed) is a candidate booking id, matched
+// EXACTLY — substring on an id would make "118" return the whole 11800s, which
+// is noise precisely when you are trying to land on one booking. Anything else
+// returns null and the caller falls through to its normal name/venue matching.
+// Callers must also fall through when the digits match no booking, so a query
+// never fails closed and a booking genuinely *named* "11821" stays findable.
+function bookingIdQuery(q){
+  const m = String(q||'').trim().replace(/^#/, '');
+  return /^\d+$/.test(m) ? m : null;
+}
+
 function filterCalls(query){
-  const q=query.toLowerCase().trim();
-  document.querySelectorAll('.booking-group').forEach(grp=>{
+  const q      = query.toLowerCase().trim();
+  const idq    = bookingIdQuery(q);
+  const groups = document.querySelectorAll('.booking-group');
+  /* The group element already carries the id as "bg-<booking_id>". The id only
+     takes over when it actually matches a group — otherwise we fall through to
+     the name substring rather than showing nothing. */
+  let idHit = false;
+  if(idq) groups.forEach(grp=>{ if(grp.id === 'bg-' + idq) idHit = true; });
+  groups.forEach(grp=>{
+    if(idHit){
+      grp.style.display = (grp.id === 'bg-' + idq) ? '' : 'none';
+      return;
+    }
     const name=grp.querySelector('.booking-group-name')?.textContent.toLowerCase()||'';
     grp.style.display=(!q||name.includes(q))?'':'none';
   });
@@ -21358,8 +21380,17 @@ function renderSchedule(){
   const today    = _schedData.today || dates[0];
 
   // Filter bookings by search and status
+  // An id query only takes over when it actually matches a booking; otherwise
+  // we fall through to name/venue rather than showing nothing.
+  const idq   = bookingIdQuery(search);
+  const idHit = idq && _schedData.bookings.some(b => String(b.booking_id) === idq);
+
   let bookings = _schedData.bookings.filter(b => {
-    if(search && !b.booking_name.toLowerCase().includes(search) && !b.venue.toLowerCase().includes(search))
+    if(idHit){
+      if(String(b.booking_id) !== idq) return false;
+    }
+    else if(search && !b.booking_name.toLowerCase().includes(search)
+                   && !b.venue.toLowerCase().includes(search))
       return false;
     if(_schedFilter === 'all') return true;
     // 'open' = any call that is partial or unfilled
