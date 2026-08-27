@@ -52,6 +52,22 @@
 	/*  goat_boss_scope() — let them enter the same people's hours. Being able
 	/*  to record someone's pay and not see who they are was the bug.
 	/*
+	/*  THE CONTAINER ITSELF: the call is one of the user's own dedicated boss
+	/*  calls, from goat_boss_calls_for_user(). ADDED 27 Aug 2026 (slice C4),
+	/*  and it is NOT covered by the branch above. goat_boss_scope() reaches a
+	/*  container only through its DIRECT branch, which requires the flag; the
+	/*  supervisory branch adds a boss call's CHILDREN and never the boss call
+	/*  itself. So a confirmed-but-unflagged boss — Q4's normal case — could
+	/*  read the roster of every call they supervised and was refused the
+	/*  roster of the Crew Boss call they were standing on, which
+	/*  my-boss-calls.php had already been handing them since 27 Aug. Two
+	/*  endpoints disagreeing about one call is the same failure slice C3 fixed
+	/*  one layer down.
+	/*
+	/*  This grants a confirmed resource on a boss call sight of that call's
+	/*  own roster — their colleagues on the call they are working, and a
+	/*  narrower set than the children they already see.
+	/*
 	/*  Anything else is a flat 403 with no body detail — a refusal must not tell
 	/*  the caller whether the call exists or who is on it, and the two failure
 	/*  modes are deliberately indistinguishable from each other.
@@ -148,7 +164,9 @@
 
 	$direct = ($me && (int) $me->is_call_boss === 1 && (int) $me->status === 5);
 
-	if (!$direct && !in_array($callID, goat_boss_scope($userID)))
+	if (!$direct
+	    && !in_array($callID, goat_boss_scope($userID))
+	    && !in_array($callID, goat_boss_calls_for_user($userID)))
 	{
 		http_response_code(403);
 		die('{"error":"not the call boss for this call"}');

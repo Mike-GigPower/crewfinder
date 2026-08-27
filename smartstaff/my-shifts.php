@@ -173,6 +173,34 @@
 		die('{"error":"query failed: ' . addslashes(mysql_error()) . '"}');
 	}
 
+	/*
+	/* SUPERVISORY SCOPE, RESOLVED ONCE — ADDED 27 Aug 2026 (slice C4).
+	/*
+	/* BOTH of these are WHOLE-SCOPE queries, not per-call tests. Calling either
+	/* inside the row loop would issue one query per shift, and this endpoint
+	/* returns up to 56 days of them — a visible slowdown on the busiest page in
+	/* Crew Hub. Resolve once, test with in_array() below.
+	/*
+	/*   $bossScope — the calls this user may ACT ON: flagged on the call
+	/*                itself, or a child of a dedicated boss call they are
+	/*                confirmed on.
+	/*   $bossCalls — the user's OWN dedicated boss calls. A SEPARATE SET, and
+	/*                the reason is the whole point of this slice: goat_boss_
+	/*                scope() reaches a container ONLY through its direct
+	/*                branch, which requires the is_call_boss flag. The
+	/*                supervisory branch adds a boss call's CHILDREN and never
+	/*                the boss call itself. So a confirmed-but-unflagged boss —
+	/*                Q4's normal case, 18 of 22 containers on test — is not in
+	/*                scope for their own Crew Boss call and would see no Crew
+	/*                list button on the one card they most need it from.
+	/*
+	/* Both return array() for most crew, which is the point: can_see_crew then
+	/* collapses to is_call_boss and nothing changes for the roster at large.
+	*/
+
+	$bossScope = goat_boss_scope($userID);
+	$bossCalls = goat_boss_calls_for_user($userID);
+
 	$shifts   = array();
 	$unavails = array();
 
@@ -199,13 +227,51 @@
 			$entry['venue_postcode'] = (string) $row->venue_postcode;
 
 			/*
-			/* Is this crew member the CALL BOSS on this call? Drives the "Crew
-			/* list" link on the shift card, which reads my-call-crew.php. Always
-			/* emitted (1 or 0) rather than omitted when false, so the portal can
-			/* tell "not the boss" from "old PHP that never sent the field".
+			/* Is this crew member FLAGGED as the call boss on this call? A fact
+			/* about the call_crew_map row and nothing more — the "Crew list"
+			/* link is gated on can_see_crew below, not on this, since 27 Aug
+			/* 2026. Always emitted (1 or 0) rather than omitted when false, so
+			/* the portal can tell "not the boss" from "old PHP that never sent
+			/* the field".
 			*/
 
 			$entry['is_call_boss'] = ((int) $row->is_call_boss === 1) ? 1 : 0;
+
+			/*
+			/* MAY THIS CREW MEMBER SEE THE CREW LIST FOR THIS CALL? A SEPARATE
+			/* QUESTION FROM is_call_boss, AND IT NEEDS A SEPARATE FIELD.
+			/*
+			/* is_call_boss is a FACT ABOUT A call_crew_map ROW and other
+			/* consumers read it as exactly that. Widening it to mean "may see
+			/* the crew" would make it lie to every one of them. This is the
+			/* honestly-named boolean for the question the UI actually has.
+			/*
+			/* TRUE BY ANY OF THREE ROUTES, matching the union my-call-crew.php
+			/* gates on:
+			/*
+			/*   1. flagged is_call_boss on this call
+			/*   2. holding it through a call_supervision edge (slice C3)
+			/*   3. it IS one of the viewer's own dedicated boss calls
+			/*
+			/* Route 3 is not redundant with route 2 and the difference is what
+			/* this slice exists for. goat_boss_scope() reaches a container only
+			/* via its DIRECT branch, which requires the flag; its supervisory
+			/* branch adds children and never the container. A boss confirmed on
+			/* a Crew Boss call and not flagged on it — Q4's normal case — is
+			/* therefore absent from their own container's scope, and the Crew
+			/* Boss card is the one card on their shifts page that is actually
+			/* theirs: the children are not on this page at all, because they
+			/* are not confirmed on them.
+			/*
+			/* ADDITIVE. is_call_boss is emitted unchanged directly above; no
+			/* existing consumer moves.
+			*/
+
+			$entry['can_see_crew'] =
+				(((int) $row->is_call_boss === 1)
+				 || in_array((int) $row->call_id, $bossScope)
+				 || in_array((int) $row->call_id, $bossCalls))
+					? 1 : 0;
 
 			/*
 			/* Contact hierarchy — who does this crew member call? Resolved at READ
