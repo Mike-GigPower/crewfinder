@@ -2090,12 +2090,12 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <div class="forecast-toolbar">
         <span class="section-label">FROM</span>
         <input type="date" class="fc-date-input" id="fc-start-date" onchange="loadForecast()">
-        <input type="number" id="fc-days" value="28" min="1" max="28"
+        <input type="number" id="fc-days" value="28" min="1" max="90"
                style="width:48px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;
                       padding:5px 8px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:11px;
                       outline:none;text-align:center"
-               title="Number of days (max 28)"
-               oninput="this.value=Math.min(28,Math.max(1,this.value||1))">
+               title="Number of days (max 90)"
+               oninput="this.value=Math.min(90,Math.max(1,this.value||1))">
         <span style="font-size:10px;color:var(--muted)">days</span>
 
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
@@ -2139,7 +2139,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
         <div class="fc-loading" id="fc-placeholder">
           <div style="font-size:32px;opacity:.4">📊</div>
           <div class="fc-loading-text">Resource Forecaster</div>
-          <div style="font-size:11px;max-width:260px;text-align:center;line-height:1.6">Shows crew bookings over a 28-day window. Select a date range and click Refresh to load.</div>
+          <div style="font-size:11px;max-width:260px;text-align:center;line-height:1.6">Shows crew bookings over a window of up to 90 days. Select a date range and click Refresh to load.</div>
           <button class="btn-search" onclick="loadForecast()">Load Forecast</button>
         </div>
         <div id="fc-loading-indicator" style="display:none" class="fc-loading">
@@ -2673,15 +2673,49 @@ async function loadMyShifts(){
 }
 
 async function loadMyUnavail(){
-  const box=document.getElementById('ms-unavail-list');
+  const box = document.getElementById('ms-unavail-list');
   try{
     const d = await (await fetch('/api/me/unavailability')).json();
-    if(d.error){ box.innerHTML=`<div class="ms-empty">${d.error}</div>`; return; }
-    const list=d.unavailabilities||[];
-    if(!list.length){ box.innerHTML='<div class="ms-empty">No unavailability periods.</div>'; return; }
-    const fmt=iso=>{const x=new Date(iso);return x.toLocaleDateString('en-AU',{day:'2-digit',month:'short'})+' '+x.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});};
-    box.innerHTML = list.map(p=>`<div class="ms-row"><span class="ms-venue">${p.reason||'Unavailable'}<br><span class="ms-when">${fmt(p.start)} → ${fmt(p.end)}</span></span><button class="ms-del" onclick='msDeleteUnavail(${JSON.stringify(p.id)})'>✕ Remove</button></div>`).join('');
-  }catch(e){ box.innerHTML=`<div class="ms-empty">Error: ${e.message}</div>`; }
+    if(d.error){ box.innerHTML = `<div class="ms-empty">${d.error}</div>`; return; }
+    window._msLast = d.unavailabilities || [];
+    renderMyUnavail();
+  }catch(e){ box.innerHTML = `<div class="ms-empty">Error: ${e.message}</div>`; }
+}
+
+function renderMyUnavail(){
+  const box = document.getElementById('ms-unavail-list');
+  if(!box) return;
+  const list = window._msLast || [];
+  if(!list.length){ box.innerHTML = '<div class="ms-empty">No unavailability periods.</div>'; return; }
+  const parts = unavailPartition(list);
+  const row = (p, dim) => `<div class="ms-row" style="opacity:${dim?'0.6':'1'}"><span class="ms-venue">${escapeHtml(p.reason)}<br><span class="ms-when">${escapeHtml(unavailFmtRange(p.start, p.end))}</span></span>${dim?'':`<button class="ms-del" onclick="msDeleteUnavail(${Number(p.id)})">✕ Remove</button>`}</div>`;
+  let html = '';
+  if(parts.current.length)  html += unavailSectionHead('Current')  + parts.current.map(p => row(p, false)).join('');
+  if(parts.upcoming.length) html += unavailSectionHead('Upcoming') + parts.upcoming.map(p => row(p, false)).join('');
+  if(parts.past.length){
+    const open = !!window._msPastOpen;
+    html += `<div onclick="toggleMyUnavailPast()" style="cursor:pointer;user-select:none;font-size:10px;
+             letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;
+             border-top:1px solid var(--border);padding-top:10px">${open?'▾':'▸'} Past (${parts.past.length})</div>`;
+    if(open){
+      let lastYear = '';
+      html += parts.past.map(p => {
+        const y = unavailYearOf(p);
+        let pre = '';
+        if(y && y !== lastYear){
+          lastYear = y;
+          pre = `<div class="ms-when" style="margin:8px 0 4px;display:block">${y}</div>`;
+        }
+        return pre + row(p, true);
+      }).join('');
+    }
+  }
+  box.innerHTML = html;
+}
+
+function toggleMyUnavailPast(){
+  window._msPastOpen = !window._msPastOpen;
+  renderMyUnavail();
 }
 
 function msToggleAllDay(){
@@ -10767,13 +10801,149 @@ async function ceLoadShifts(id){
     + rows;
 }
 
+// ── Unavailability: shared ordering + formatting ────────────────────────────
+// SmartStaff's get-unavailabilities.php already orders by `start ASC`, but no
+// render site relies on that any more — each sorts for itself. Dates always
+// carry the year: without it a 2025 period and a 2026 period are visually
+// identical, and a correctly sorted list reads as scrambled.
+function unavailIsAllDay(s, e){
+  return s.getHours() === 0 && s.getMinutes() === 0 &&
+         e.getHours() === 23 && e.getMinutes() >= 45;
+}
+function unavailDatePart(d){
+  return d.toLocaleDateString('en-AU', {day:'2-digit', month:'short', year:'numeric'});
+}
+function unavailTimePart(d){
+  return d.toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit', hour12:false});
+}
+function unavailFmtRange(startIso, endIso){
+  var s = new Date(startIso), e = new Date(endIso);
+  if(isNaN(s.getTime()) || isNaN(e.getTime())) return String(startIso)+' \u2192 '+String(endIso);
+  var sameDay = s.getFullYear()===e.getFullYear() && s.getMonth()===e.getMonth() && s.getDate()===e.getDate();
+  var allDay  = unavailIsAllDay(s, e);
+  if(sameDay && allDay) return unavailDatePart(s)+' \u00b7 All day';
+  if(sameDay)           return unavailDatePart(s)+' \u00b7 '+unavailTimePart(s)+' \u2192 '+unavailTimePart(e);
+  if(allDay)            return unavailDatePart(s)+' \u2192 '+unavailDatePart(e)+' \u00b7 All day';
+  return unavailDatePart(s)+' '+unavailTimePart(s)+' \u2192 '+unavailDatePart(e)+' '+unavailTimePart(e);
+}
+// Split into current / upcoming / past, each sorted. Unparseable dates sort to
+// the end of `upcoming` rather than being dropped — a period we can't read is
+// still a period, and silently hiding it is worse than showing it awkwardly.
+function unavailPartition(list){
+  var now = Date.now();
+  var rows = (list || []).map(function(p){
+    var ts = new Date(p.start).getTime();
+    var te = new Date(p.end).getTime();
+    return {
+      id:     p.id,
+      reason: p.reason || 'Unavailable',
+      start:  p.start,
+      end:    p.end,
+      ts:     isNaN(ts) ? Infinity : ts,
+      te:     isNaN(te) ? Infinity : te
+    };
+  });
+  rows.sort(function(a, b){ return a.ts - b.ts; });
+  var out = {current:[], upcoming:[], past:[]};
+  rows.forEach(function(r){
+    if(r.te < now)       out.past.push(r);
+    else if(r.ts <= now) out.current.push(r);
+    else                 out.upcoming.push(r);
+  });
+  out.past.reverse();          // most recent past first
+  return out;
+}
+function unavailYearOf(row){
+  var d = new Date(row.start);
+  return isNaN(d.getTime()) ? '' : String(d.getFullYear());
+}
+function unavailSectionHead(text){
+  return '<div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:10px 0 6px">'
+       + escapeHtml(text) + '</div>';
+}
+
+// ── Unavailability calendar: day bucketing ─────────────────────────────────
+// Local-date keys only. The payload carries an offset (`date('c')`), so the
+// parsed Date is correct in the box's own timezone and getFullYear/getMonth/
+// getDate give the day the operator actually means. Never slice the ISO string.
+function unavailDayKey(d){
+  return d.getFullYear() + '-' +
+         String(d.getMonth()+1).padStart(2,'0') + '-' +
+         String(d.getDate()).padStart(2,'0');
+}
+// {dayKey: [period, …]}. A period ending exactly at midnight does NOT occupy
+// its end day — 27 Aug 09:00 → 28 Aug 00:00 is a Thursday, not Thursday and
+// Friday. The 1200-day guard stops a corrupt end date from spinning forever.
+function unavailDayMap(list){
+  var map = {};
+  (list || []).forEach(function(p){
+    var s = new Date(p.start), e = new Date(p.end);
+    if(isNaN(s.getTime()) || isNaN(e.getTime())) return;
+    var cur  = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+    var last = new Date(e.getFullYear(), e.getMonth(), e.getDate());
+    if(e.getHours() === 0 && e.getMinutes() === 0 && last.getTime() > cur.getTime()){
+      last = new Date(last.getFullYear(), last.getMonth(), last.getDate() - 1);
+    }
+    var guard = 0;
+    while(cur.getTime() <= last.getTime() && guard < 1200){
+      var k = unavailDayKey(cur);
+      if(!map[k]) map[k] = [];
+      map[k].push(p);
+      cur = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
+      guard++;
+    }
+  });
+  return map;
+}
+// Is this whole day blocked, or only part of it? The 23:45 threshold matches
+// unavailIsAllDay: the admin dialog's minute select only offers :00/:15/:30/:45,
+// so older all-day rows end at 23:45 rather than 23:59.
+function unavailDayCoverage(dayDate, periods){
+  var y = dayDate.getFullYear(), mo = dayDate.getMonth(), da = dayDate.getDate();
+  var ds = new Date(y, mo, da, 0, 0, 0).getTime();
+  var de = new Date(y, mo, da, 23, 45, 0).getTime();
+  var full = false, labels = [];
+  (periods || []).forEach(function(p){
+    var s = new Date(p.start).getTime(), e = new Date(p.end).getTime();
+    if(isNaN(s) || isNaN(e)) return;
+    if(s <= ds && e >= de){ full = true; return; }
+    labels.push(unavailTimePart(new Date(Math.max(s, ds))) + '\u2013' +
+                unavailTimePart(new Date(Math.min(e, de))));
+  });
+  return {full: full, label: full ? '' : labels.join(' ')};
+}
+// Which month should the calendar open on? The one holding whatever is live or
+// next, not today — a crew member with nothing on until November should not
+// open to an empty August.
+function unavailInitialMonth(list){
+  var parts = unavailPartition(list);
+  var seed = null;
+  if(parts.current.length)       seed = parts.current[0].start;
+  else if(parts.upcoming.length) seed = parts.upcoming[0].start;
+  var d = seed ? new Date(seed) : new Date();
+  if(isNaN(d.getTime())) d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+// Button styling, declared before first use rather than relying on hoisting.
+var CEU_VIEWBTN_STYLE = 'background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:3px;padding:4px 14px;font-size:11px;cursor:pointer;font-family:\'Rajdhani\',sans-serif;font-weight:600;letter-spacing:.04em';
+var CEU_NAVBTN_STYLE = 'background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:3px;padding:2px 12px;font-size:14px;line-height:1.2;cursor:pointer';
+
 async function ceLoadUnavail(id){
   var panel = document.getElementById('ce-panel-unavail');
   if(!panel) return;
+  window._ceuPastOpen = false;
+  window._ceuLast     = null;
+  window._ceuView     = 'list';
+  window._ceuCalMonth = null;
+  window._ceuCalSel   = null;
   var today = new Date().toISOString().slice(0,10);
   var inp = 'background:#0a0a0a;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px;display:block;margin-bottom:5px;width:160px;box-sizing:border-box';
   panel.innerHTML =
-      '<div id="ceu-list" style="margin-bottom:16px"><div style="color:var(--muted);font-size:12px">Loading\u2026</div></div>'
+      '<div style="display:flex;gap:6px;margin-bottom:12px">'
+    +   '<button id="ceu-view-list" onclick="ceUnavailSetView(\'' + String(id) + '\',\'list\')" style="'+CEU_VIEWBTN_STYLE+'">List</button>'
+    +   '<button id="ceu-view-cal" onclick="ceUnavailSetView(\'' + String(id) + '\',\'cal\')" style="'+CEU_VIEWBTN_STYLE+'">Calendar</button>'
+    + '</div>'
+    + '<div id="ceu-list" style="margin-bottom:16px"><div style="color:var(--muted);font-size:12px">Loading\u2026</div></div>'
     + '<div style="border-top:1px solid var(--border);padding-top:12px">'
     + '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Add a period</div>'
     + '<label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text);margin-bottom:10px;cursor:pointer;user-select:none">'
@@ -10791,6 +10961,7 @@ async function ceLoadUnavail(id){
     + '<div id="ceu-msg" style="font-size:11px;margin-top:8px;min-height:14px"></div>'
     + '<div style="padding-top:4px">'+entityBtn('Add unavailability', "ceUnavailAdd('"+String(id)+"')", {primary:true, id:'ceu-add-btn'})+'</div>'
     + '</div>';
+  ceUnavailApplyViewBar();
   ceUnavailReload(id);
 }
 
@@ -10802,17 +10973,176 @@ async function ceUnavailReload(id){
     var resp = await fetch('/api/unavailability/'+encodeURIComponent(id));
     var data = await resp.json();
     if(data.error){ box.innerHTML = '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(data.error)+'</div>'; return; }
-    var list = data.unavailabilities || [];
-    if(!list.length){ box.innerHTML = '<div style="color:var(--muted);font-size:12px">No unavailability periods.</div>'; return; }
-    var fmt = function(iso){ var d=new Date(iso); return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false}); };
-    box.innerHTML = list.map(function(p){
-      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 9px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;background:rgba(168,85,247,0.06)">'
-        + '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">'+escapeHtml(p.reason||'Unavailable')+'</div>'
-        + '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(fmt(p.start))+' \u2192 '+escapeHtml(fmt(p.end))+'</div></div>'
-        + '<button onclick="ceUnavailDelete(\''+String(id)+'\','+Number(p.id)+')" style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:\'Rajdhani\',sans-serif;font-weight:600">\u2715 Remove</button>'
-        + '</div>';
-    }).join('');
+    window._ceuLast = data.unavailabilities || [];
+    ceUnavailRender(id, window._ceuLast);
   }catch(e){ box.innerHTML = '<div style="color:var(--conflict);font-size:12px">Error: '+escapeHtml(e.message)+'</div>'; }
+}
+
+function ceUnavailRenderList(id, list){
+  var box = document.getElementById('ceu-list');
+  if(!box) return;
+  if(!list || !list.length){ box.innerHTML = '<div style="color:var(--muted);font-size:12px">No unavailability periods.</div>'; return; }
+  var parts = unavailPartition(list);
+  function row(p, dim){
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 9px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;background:rgba(168,85,247,'+(dim?'0.03':'0.06')+');opacity:'+(dim?'0.65':'1')+'">'
+      + '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">'+escapeHtml(p.reason)+'</div>'
+      + '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(unavailFmtRange(p.start, p.end))+'</div></div>'
+      + '<button onclick="ceUnavailDelete(\''+String(id)+'\','+Number(p.id)+')" style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:\'Rajdhani\',sans-serif;font-weight:600">\u2715 Remove</button>'
+      + '</div>';
+  }
+  var html = '';
+  if(parts.current.length){
+    html += unavailSectionHead('Current') + parts.current.map(function(p){ return row(p, false); }).join('');
+  }
+  if(parts.upcoming.length){
+    html += unavailSectionHead('Upcoming') + parts.upcoming.map(function(p){ return row(p, false); }).join('');
+  }
+  if(parts.past.length){
+    var open = !!window._ceuPastOpen;
+    html += '<div onclick="ceUnavailTogglePast(\''+String(id)+'\')" style="cursor:pointer;user-select:none;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;border-top:1px solid var(--border);padding-top:10px">'
+          + (open ? '\u25be' : '\u25b8') + ' Past (' + parts.past.length + ')</div>';
+    if(open){
+      var lastYear = '';
+      html += parts.past.map(function(p){
+        var y = unavailYearOf(p), pre = '';
+        if(y && y !== lastYear){
+          lastYear = y;
+          pre = '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace;margin:8px 0 4px">'+escapeHtml(y)+'</div>';
+        }
+        return pre + row(p, true);
+      }).join('');
+    }
+  }
+  box.innerHTML = html;
+}
+
+function ceUnavailTogglePast(id){
+  window._ceuPastOpen = !window._ceuPastOpen;
+  ceUnavailRender(id, window._ceuLast || []);
+}
+
+function ceUnavailApplyViewBar(){
+  var view = window._ceuView || 'list';
+  [['ceu-view-list','list'], ['ceu-view-cal','cal']].forEach(function(pair){
+    var el = document.getElementById(pair[0]);
+    if(!el) return;
+    var on = (view === pair[1]);
+    el.style.color       = on ? 'var(--accent)' : 'var(--muted)';
+    el.style.borderColor = on ? 'var(--accent)' : 'var(--border)';
+    el.style.background  = on ? 'rgba(212,175,55,0.08)' : 'transparent';
+  });
+}
+
+function ceUnavailSetView(id, view){
+  window._ceuView   = (view === 'cal') ? 'cal' : 'list';
+  window._ceuCalSel = null;
+  ceUnavailApplyViewBar();
+  ceUnavailRender(id, window._ceuLast || []);
+}
+
+// Dispatcher. Each renderer owns its own empty state — the calendar still draws
+// a grid when there is nothing on it, because an empty month is information.
+function ceUnavailRender(id, list){
+  if((window._ceuView || 'list') === 'cal') ceUnavailRenderCal(id, list);
+  else                                      ceUnavailRenderList(id, list);
+}
+
+function ceUnavailRenderCal(id, list){
+  var box = document.getElementById('ceu-list');
+  if(!box) return;
+  if(!window._ceuCalMonth) window._ceuCalMonth = unavailInitialMonth(list);
+  var m     = window._ceuCalMonth;
+  var year  = m.getFullYear(), mon = m.getMonth();
+  var map   = unavailDayMap(list);
+  var first = new Date(year, mon, 1);
+  var lead  = (first.getDay() + 6) % 7;                  // Monday-first
+  var dim   = new Date(year, mon + 1, 0).getDate();
+  var todayKey = unavailDayKey(new Date());
+  var head =
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+    +   '<button onclick="ceUnavailCalNav(\''+String(id)+'\',-1)" style="'+CEU_NAVBTN_STYLE+'">\u2039</button>'
+    +   '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:15px;letter-spacing:.12em;color:var(--text)">'
+    +     escapeHtml(first.toLocaleDateString('en-AU',{month:'long'}).toUpperCase()) + ' ' + year
+    +   '</div>'
+    +   '<button onclick="ceUnavailCalNav(\''+String(id)+'\',1)" style="'+CEU_NAVBTN_STYLE+'">\u203a</button>'
+    + '</div>';
+  var dows = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  var dowRow = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px">'
+    + dows.map(function(d, i){
+        var col = (i >= 5) ? 'rgba(212,175,55,0.6)' : 'var(--muted)';
+        return '<div style="text-align:center;font-size:9px;letter-spacing:.06em;color:'+col+'">'+d+'</div>';
+      }).join('')
+    + '</div>';
+  var cells = [];
+  for(var i = 0; i < lead; i++){
+    cells.push('<div style="min-height:46px"></div>');
+  }
+  var blockedDays = 0;
+  for(var d = 1; d <= dim; d++){
+    var dayDate = new Date(year, mon, d);
+    var key     = unavailDayKey(dayDate);
+    var periods = map[key] || [];
+    var cov     = unavailDayCoverage(dayDate, periods);
+    if(periods.length) blockedDays++;
+    var bg = periods.length ? (cov.full ? 'rgba(168,85,247,0.30)' : 'rgba(168,85,247,0.14)') : 'transparent';
+    var bd = (key === todayKey) ? 'var(--accent)'
+           : (window._ceuCalSel === d) ? 'var(--text)'
+           : 'var(--border)';
+    var bw = (key === todayKey || window._ceuCalSel === d) ? '2px' : '1px';
+    var label = cov.label
+      ? '<div style="font-size:8px;line-height:1.2;color:var(--muted);font-family:\'Share Tech Mono\',monospace;margin-top:2px;overflow:hidden">'+escapeHtml(cov.label)+'</div>'
+      : (cov.full ? '<div style="font-size:8px;color:var(--muted);margin-top:2px">All day</div>' : '');
+    var more = periods.length > 1
+      ? '<div style="font-size:8px;color:var(--muted)">+'+(periods.length-1)+' more</div>' : '';
+    cells.push(
+        '<div onclick="ceUnavailCalDay(\''+String(id)+'\','+d+')" '
+      + 'style="min-height:46px;border:'+bw+' solid '+bd+';border-radius:3px;background:'+bg+';padding:3px 4px;cursor:'+(periods.length?'pointer':'default')+';box-sizing:border-box">'
+      +   '<div style="font-size:11px;color:var(--text);font-family:\'Share Tech Mono\',monospace">'+d+'</div>'
+      +   label + more
+      + '</div>');
+  }
+  var grid = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">'+cells.join('')+'</div>';
+  var summary = '<div style="font-size:10px;color:var(--muted);margin-top:10px">'
+    + (blockedDays ? escapeHtml(blockedDays + ' day' + (blockedDays===1?'':'s') + ' blocked this month')
+                   : 'Nothing blocked this month')
+    + '</div>';
+  box.innerHTML = head + dowRow + grid + summary + ceUnavailCalDetail(id, map, year, mon);
+}
+
+function ceUnavailCalDetail(id, map, year, mon){
+  var sel = window._ceuCalSel;
+  if(!sel) return '';
+  var dayDate = new Date(year, mon, sel);
+  var periods = map[unavailDayKey(dayDate)] || [];
+  if(!periods.length) return '';
+  var rows = periods.map(function(p){
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 9px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;background:rgba(168,85,247,0.06)">'
+      + '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">'+escapeHtml(p.reason || 'Unavailable')+'</div>'
+      + '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(unavailFmtRange(p.start, p.end))+'</div></div>'
+      + '<button onclick="ceUnavailDelete(\''+String(id)+'\','+Number(p.id)+')" style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:\'Rajdhani\',sans-serif;font-weight:600">\u2715 Remove</button>'
+      + '</div>';
+  }).join('');
+  return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">'
+       + unavailSectionHead(dayDate.toLocaleDateString('en-AU',{weekday:'long', day:'2-digit', month:'short', year:'numeric'}))
+       + rows + '</div>';
+}
+
+function ceUnavailCalNav(id, delta){
+  var m = window._ceuCalMonth || unavailInitialMonth(window._ceuLast || []);
+  window._ceuCalMonth = new Date(m.getFullYear(), m.getMonth() + delta, 1);
+  window._ceuCalSel   = null;
+  ceUnavailRenderCal(id, window._ceuLast || []);
+}
+
+// Clicking an empty day is a no-op. Without this guard the cell takes a
+// selected border and the detail strip renders nothing, which reads as a bug.
+function ceUnavailCalDay(id, day){
+  var m   = window._ceuCalMonth || unavailInitialMonth(window._ceuLast || []);
+  var map = unavailDayMap(window._ceuLast || []);
+  var key = unavailDayKey(new Date(m.getFullYear(), m.getMonth(), day));
+  if(!map[key] || !map[key].length) return;
+  window._ceuCalSel = (window._ceuCalSel === day) ? null : day;
+  ceUnavailRenderCal(id, window._ceuLast || []);
 }
 
 function ceUnavailToggleAllDay(){
@@ -16570,8 +16900,9 @@ function renderForecastTable(){
 
     return `<tr>
       <td class="fc-col-name"><span class="fc-name" style="cursor:pointer;text-decoration:underline;text-decoration-color:rgba(212,175,55,0.3);text-underline-offset:2px"
-            title="Manage unavailability"
-            onclick="openUnavailManager('${(c.id||'').toString().replace(/'/g,'')}', ${JSON.stringify(c.name).replace(/"/g,'&quot;')})">${c.name}</span></td>
+            title="Manage unavailability" tabindex="0"
+            data-unavail-crew="${escapeHtml(String(c.id||''))}"
+            data-unavail-crewname="${escapeHtml(String(c.name||''))}">${escapeHtml(c.name)}</span></td>
       <td class="fc-col-phone">${phoneLink(c.phone)}</td>
       <td class="fc-col-stars"><span style="color:#f59e0b;font-size:8px;letter-spacing:0">${stars}</span><span style="color:var(--border);font-size:8px;letter-spacing:0">${noStars}</span></td>
       <td class="fc-col-id"><span class="fc-id">${c.ein||c.id}</span></td>
@@ -16590,6 +16921,30 @@ function renderForecastTable(){
   // Easter egg: gold glow for 10-star available crew
   setTimeout(applyGoldRows, 50);
 }
+
+(function(){
+  if(window._fcNameBound) return;
+  window._fcNameBound = true;
+  var target = function(ev){
+    var el = ev.target;
+    return (el && el.closest) ? el.closest('[data-unavail-crew]') : null;
+  };
+  var fire = function(t){
+    openUnavailManager(t.getAttribute('data-unavail-crew'),
+                       t.getAttribute('data-unavail-crewname') || '');
+  };
+  document.addEventListener('click', function(ev){
+    var t = target(ev);
+    if(t) fire(t);
+  });
+  document.addEventListener('keydown', function(ev){
+    if(ev.key !== 'Enter' && ev.key !== ' ') return;
+    var t = target(ev);
+    if(!t || !t.hasAttribute('tabindex')) return;
+    ev.preventDefault();
+    fire(t);
+  });
+})();
 
 
 // ── ASK GOAT ────────────────────────────────────────────────────────────────
@@ -17251,29 +17606,60 @@ async function loadUnavailList(){
     const resp = await fetch('/api/unavailability/' + encodeURIComponent(_unavailCrewId));
     const data = await resp.json();
     if(data.error){ box.innerHTML = `<div style="color:var(--accent2);font-size:12px">${data.error}</div>`; return; }
-    const list = data.unavailabilities || [];
-    if(!list.length){ box.innerHTML = '<div style="color:var(--muted);font-size:12px">No unavailability periods.</div>'; return; }
-    const fmt = iso => {
-      const d = new Date(iso);
-      return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short'}) + ' ' +
-             d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
-    };
-    box.innerHTML = list.map(p => `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;
-                  padding:7px 9px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;
-                  background:rgba(168,85,247,0.06)">
-        <div style="min-width:0">
-          <div style="font-size:12px;color:var(--text)">${p.reason||'Unavailable'}</div>
-          <div style="font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace">${fmt(p.start)} → ${fmt(p.end)}</div>
-        </div>
-        ${window.isReadOnlyCohort() ? '' : `<button onclick="submitUnavailDelete(${JSON.stringify(p.id)})"
-                style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);
-                       color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;
-                       font-family:'Rajdhani',sans-serif;font-weight:600">✕ Remove</button>`}
-      </div>`).join('');
+    window._unavailLast = data.unavailabilities || [];
+    renderUnavailList();
   }catch(e){
     box.innerHTML = `<div style="color:var(--accent2);font-size:12px">Error: ${e.message}</div>`;
   }
+}
+
+function renderUnavailList(){
+  const box = document.getElementById('unavail-list');
+  if(!box) return;
+  const list = window._unavailLast || [];
+  if(!list.length){ box.innerHTML = '<div style="color:var(--muted);font-size:12px">No unavailability periods.</div>'; return; }
+  const parts = unavailPartition(list);
+  const ro = window.isReadOnlyCohort();
+  const row = (p, dim) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;
+                  padding:7px 9px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;
+                  background:rgba(168,85,247,${dim?'0.03':'0.06'});opacity:${dim?'0.65':'1'}">
+        <div style="min-width:0">
+          <div style="font-size:12px;color:var(--text)">${escapeHtml(p.reason)}</div>
+          <div style="font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace">${escapeHtml(unavailFmtRange(p.start, p.end))}</div>
+        </div>
+        ${ro ? '' : `<button onclick="submitUnavailDelete(${Number(p.id)})"
+                style="flex-shrink:0;background:rgba(227,30,36,0.1);border:1px solid rgba(227,30,36,0.3);
+                       color:var(--accent2);border-radius:3px;padding:4px 10px;font-size:11px;cursor:pointer;
+                       font-family:'Rajdhani',sans-serif;font-weight:600">✕ Remove</button>`}
+      </div>`;
+  let html = '';
+  if(parts.current.length)  html += unavailSectionHead('Current')  + parts.current.map(p => row(p, false)).join('');
+  if(parts.upcoming.length) html += unavailSectionHead('Upcoming') + parts.upcoming.map(p => row(p, false)).join('');
+  if(parts.past.length){
+    const open = !!window._unavailPastOpen;
+    html += `<div onclick="toggleUnavailPast()" style="cursor:pointer;user-select:none;font-size:10px;
+             letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;
+             border-top:1px solid var(--border);padding-top:10px">${open?'▾':'▸'} Past (${parts.past.length})</div>`;
+    if(open){
+      let lastYear = '';
+      html += parts.past.map(p => {
+        const y = unavailYearOf(p);
+        let pre = '';
+        if(y && y !== lastYear){
+          lastYear = y;
+          pre = `<div style="font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace;margin:8px 0 4px">${y}</div>`;
+        }
+        return pre + row(p, true);
+      }).join('');
+    }
+  }
+  box.innerHTML = html;
+}
+
+function toggleUnavailPast(){
+  window._unavailPastOpen = !window._unavailPastOpen;
+  renderUnavailList();
 }
 
 function _unavailMsg(text, ok){
@@ -20662,7 +21048,10 @@ function perfYieldCard(d){
 // attribute parser, so `node --check` over this block cannot see it and neither
 // can any lint we run. Release 1 shipped three drill-through controls built as
 //
-//     onclick="perfSelectCustomer(' + JSON.stringify(String(id)) + ')"
+//     onclick = "perfSelectCustomer(' + JSON.stringify(String(id)) + ')"
+//
+//     (spaced around the = on purpose: written the real way, this line trips
+//      the pre-release grep and hands the gate a permanent false positive.)
 //
 // and JSON.stringify emits DOUBLE quotes, which close the double-quoted
 // attribute early. The browser parsed the handler as the truncated text
