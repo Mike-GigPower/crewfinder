@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include_once('supervision-graph.php');
 
 	/*
 	/* JSON response */
@@ -35,15 +36,25 @@
 	/*  contact list. Authorising next to the data means the wrong person cannot
 	/*  be handed a roster no matter what the caller asks for.
 	/*
-	/* THE GATE (all three conditions required)
+	/* THE GATE — TWO WAYS TO BE THE BOSS, AND EITHER IS ENOUGH
 	/*
-	/*  The acting user must have a call_crew_map row for THIS call, with
-	/*  is_call_boss = 1 AND status = 5 (Confirmed). Per-call, never per-booking:
-	/*  a linked package can make someone boss of the load-in and an ordinary
-	/*  hand on the load-out, and they get the roster for the first only.
+	/*  DIRECT: the acting user has a call_crew_map row for THIS call with
+	/*  is_call_boss = 1 AND status = 5 (Confirmed). Per-call, never
+	/*  per-booking: a linked package can make someone boss of the load-in and
+	/*  an ordinary hand on the load-out, and they get the roster for the first
+	/*  only.
+	/*
+	/*  SUPERVISORY: the call is in the user's goat_boss_scope() — they are
+	/*  confirmed on a dedicated boss call that supervises it. ADDED 27 Aug
+	/*  2026 (slice C3). This file predates call_supervision and asked only the
+	/*  first question, so a supervising boss got a 403 on the Crew List button
+	/*  while submit-call-times.php and my-call-times.php — which gate on
+	/*  goat_boss_scope() — let them enter the same people's hours. Being able
+	/*  to record someone's pay and not see who they are was the bug.
 	/*
 	/*  Anything else is a flat 403 with no body detail — a refusal must not tell
-	/*  the caller whether the call exists or who is on it.
+	/*  the caller whether the call exists or who is on it, and the two failure
+	/*  modes are deliberately indistinguishable from each other.
 	/*
 	/* WHO IS RETURNED
 	/*
@@ -99,8 +110,10 @@
 	}
 
 	/*
-	/* THE GATE. Read the acting user's own row on this call and require boss +
-	/* confirmed. Nothing below this point runs for anyone else.
+	/* THE GATE. Read the acting user's own row on this call — it answers the
+	/* DIRECT branch below. A supervising boss has no row here, which is not a
+	/* failure. Nothing past the gate runs for anyone who satisfies neither
+	/* branch.
 	*/
 
 	$me = $db->selectFirst(
@@ -109,7 +122,33 @@
 		'userID=' . $db->sc($userID) . ' AND callID=' . $db->sc($callID)
 	);
 
-	if (!$me || (int) $me->is_call_boss !== 1 || (int) $me->status !== 5)
+	/*
+	/* Boss of this call EITHER by is_call_boss on the call itself, OR by
+	/* supervising it from a dedicated boss call (call_supervision). The second
+	/* branch did not exist when this file was written: goat_boss_scope() is the
+	/* same gate submit-call-times.php and my-call-times.php use, so a boss who
+	/* can enter a person's hours can now also see who they are. Without it the
+	/* two disagree, which is the bug this fixes.
+	/*
+	/* $me MAY BE FALSE HERE, AND THAT IS THE WHOLE POINT. A supervising boss
+	/* is not on the child call at all, so they have no call_crew_map row to
+	/* read. The null check lives INSIDE $direct rather than short-circuiting
+	/* the gate, or the supervisory branch would never be reached.
+	/*
+	/* goat_boss_scope() IS RECOMPUTED PER REQUEST. Never cached, never passed
+	/* in, and there is no parameter that widens it.
+	/*
+	/* is_call_boss is binary(50) — the (int) cast stays, and it is never
+	/* compared with "= 1" in SQL.
+	/*
+	/* BOTH FAILURE MODES RETURN THE SAME BODY, DELIBERATELY. "Not the boss"
+	/* and "not in scope" are indistinguishable to a caller, because a refusal
+	/* must not tell you why — see the header.
+	*/
+
+	$direct = ($me && (int) $me->is_call_boss === 1 && (int) $me->status === 5);
+
+	if (!$direct && !in_array($callID, goat_boss_scope($userID)))
 	{
 		http_response_code(403);
 		die('{"error":"not the call boss for this call"}');
