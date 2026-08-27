@@ -1,6 +1,6 @@
 {
-  "version": "5.18.1",
-  "release_date": "2026-08-26",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.18.1/TheGOAT.dmg",
-  "release_notes": "You can now search bookings by number. Type a booking number, with or without a #, into the Schedule or Unfilled Calls search and it goes straight to that booking. Searching by name or venue works exactly as before."
+  "version": "5.19.0",
+  "release_date": "2026-08-27",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.19.0/TheGOAT.dmg",
+  "release_notes": "Unavailability now lists in date order with the year shown, current and upcoming separated, and past periods tucked away. There's a new calendar view on a crew member's Unavailability tab. Crew Utilization now goes out to 90 days instead of 28."
 }
