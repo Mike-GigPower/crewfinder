@@ -134,7 +134,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.18.1"
+APP_VERSION    = "5.19.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -7424,7 +7424,7 @@ def api_forecast():
     if not ss: return jsonify({"error":"Not logged in"}), 401
 
     start_str = request.args.get("start_date", datetime.now().strftime("%Y-%m-%d"))
-    try:    days = min(28, max(1, int(request.args.get("days", 28))))
+    try:    days = min(90, max(1, int(request.args.get("days", 28))))
     except: days = 28
     try:    start_dt = datetime.strptime(start_str, "%Y-%m-%d").replace(hour=0, minute=0, second=0)
     except: return jsonify({"error":"Invalid start_date"}), 400
