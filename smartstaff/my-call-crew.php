@@ -8,6 +8,15 @@
 	include_once('supervision-graph.php');
 
 	/*
+	/* How far back the SUPERVISION branches of the gate reach. Same name and
+	/* same value as my-shift-history.php, so changing the policy is one grep
+	/* rather than remembering there are two. Guarded because both files define
+	/* it and neither should fatal if an include chain ever brings them
+	/* together.
+	*/
+	if (!defined('HISTORY_SCOPE_DAYS')) define('HISTORY_SCOPE_DAYS', 90);
+
+	/*
 	/* JSON response */
 
 	header('Content-Type: application/json');
@@ -67,6 +76,12 @@
 	/*  This grants a confirmed resource on a boss call sight of that call's
 	/*  own roster — their colleagues on the call they are working, and a
 	/*  narrower set than the children they already see.
+	/*
+	/*  BOTH SUPERVISORY ROUTES ARE WINDOWED TO 90 DAYS, the flag route is not.
+	/*  See HISTORY_SCOPE_DAYS at the gate. The justification for post-shift
+	/*  access is that crew times are submitted after the shift; that covers
+	/*  last week and not a call from 2012, and what this returns is names and
+	/*  mobile numbers.
 	/*
 	/*  Anything else is a flat 403 with no body detail — a refusal must not tell
 	/*  the caller whether the call exists or who is on it, and the two failure
@@ -164,9 +179,48 @@
 
 	$direct = ($me && (int) $me->is_call_boss === 1 && (int) $me->status === 5);
 
+	/*
+	/* HISTORIC WINDOW — 90 days, matching my-shift-history.php.
+	/*
+	/* Without this the window there is COSMETIC: it hides the link while this
+	/* endpoint still serves a 2015 roster to anyone who types the URL. Crew
+	/* names and mobile numbers are what is behind it, so hiding a link is not
+	/* a control.
+	/*
+	/* COSTS NOTHING FOR NORMAL USE. Current and future calls are inside the
+	/* window by definition — it is a LOWER bound only, so a call next month
+	/* has a start_date well above it. Only a supervising boss reaching back
+	/* past 90 days is refused, which is the intent.
+	/*
+	/* is_call_boss STAYS UNBOUNDED, exactly as it is in my-shift-history.php.
+	/* A flagged boss keeps the historic access they have always had; the
+	/* window is a rider on the two branches supervision added, not a new
+	/* policy for the flag.
+	/*
+	/* Resolved ONLY when $direct is false, so the flagged path pays nothing
+	/* for it. start_date is an INT unix timestamp at LOCAL MIDNIGHT and the
+	/* bound is derived the same way — compared as ints, never against a
+	/* datetime string.
+	/*
+	/* A CALL THAT DOES NOT EXIST leaves $in_window false and falls through to
+	/* the same bodiless 403. That is the right answer twice over: no scope,
+	/* and no hint that the id resolves to nothing.
+	*/
+
+	$in_window = false;
+
+	if (!$direct)
+	{
+		$history_window_ts = (int) strtotime('-' . HISTORY_SCOPE_DAYS . ' days', strtotime('today 00:00:00'));
+
+		$callRow = $db->selectFirst('start_date', 'calls', 'id=' . $db->sc($callID));
+
+		$in_window = ($callRow && (int) $callRow->start_date >= $history_window_ts);
+	}
+
 	if (!$direct
-	    && !in_array($callID, goat_boss_scope($userID))
-	    && !in_array($callID, goat_boss_calls_for_user($userID)))
+	    && !($in_window && in_array($callID, goat_boss_scope($userID)))
+	    && !($in_window && in_array($callID, goat_boss_calls_for_user($userID))))
 	{
 		http_response_code(403);
 		die('{"error":"not the call boss for this call"}');
