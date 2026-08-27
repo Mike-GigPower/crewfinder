@@ -1,6 +1,6 @@
 {
-  "version": "5.19.0",
+  "version": "5.20.0",
   "release_date": "2026-08-27",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.19.0/TheGOAT.dmg",
-  "release_notes": "Unavailability now lists in date order with the year shown, current and upcoming separated, and past periods tucked away. There's a new calendar view on a crew member's Unavailability tab. Crew Utilization now goes out to 90 days instead of 28."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.20.0/TheGOAT.dmg",
+  "release_notes": "Today has a new lane for calls where crew times are still outstanding — how many are owed and who to chase, with calls that have no crew boss called out separately. Opening a row goes straight to Enter Times with the boss's submitted figures already filled in and marked, so you check them rather than type them. Also fixes lane tiles overlapping on smaller laptop screens."
 }
