@@ -281,6 +281,271 @@
 			return array_keys($scope);
 		}
 
+		/*
+		/* THE INVERSION — GIVEN CALLS, WHO IS THE BOSS OF EACH.
+		/*
+		/* Every other helper in this file is keyed on a userID, because every
+		/* crew-facing surface is a person asking about themselves. Two
+		/* surfaces ask the opposite question:
+		/*
+		/*   calls-awaiting-times.php   the cron — which bosses owe times
+		/*   ops-times-outstanding.php  the Ops lane — who does Rich ring
+		/*
+		/* It is one question read in opposite directions, and this is the ONE
+		/* answer both of them read. A second implementation of "who is the
+		/* boss of this call" is how the five supervision-blindness instances
+		/* happened; keeping it here means a branch added for one caller
+		/* cannot go missing from the other.
+		/*
+		/* THREE BRANCHES, and the third is the one that gets forgotten:
+		/*
+		/*   DIRECT       the row is flagged is_call_boss on the call itself.
+		/*   CONTAINER    the CALL is a dedicated boss call and the row is
+		/*                anyone confirmed on it (Q4 — scope belongs to every
+		/*                confirmed resource on a boss call, not only the
+		/*                flagged one, which on test is 18 of 22 containers).
+		/*   SUPERVISORY  the call is the child of a boss call, and the row is
+		/*                anyone confirmed on THAT call. No is_call_boss test:
+		/*                the same asymmetry goat_boss_scope() carries, for the
+		/*                same reason — nomination governs who the crew RING,
+		/*                not who is responsible for the times.
+		/*
+		/* PRECEDENCE direct > container > supervisory. A boss reachable two
+		/* ways is ONE entry carrying the most specific reason, because `how`
+		/* exists to answer "why is this person responsible" and the weaker
+		/* answer is the less useful one.
+		/*
+		/* is_call_boss IS binary(50) — selected and cast in PHP, NEVER
+		/* compared with "= 1" in SQL. makeboss writes the STRING '1', stored
+		/* as byte 0x31 null-padded to 50 bytes.
+		/*
+		/* THE RETURN SHAPE DEPARTS FROM THIS FILE'S array()-ON-FAILURE RULE,
+		/* ON PURPOSE:
+		/*
+		/*   array('ok' => bool, 'error' => string,
+		/*         'by_call' => array(callID => array(userID => how)))
+		/*
+		/* because the two states that rule conflates are opposite answers
+		/* here. An empty entry for a call that EXISTS is a real and important
+		/* finding — nobody can submit times for it, and the Ops lane draws it
+		/* as its own segment. A broken query is not that, and both callers
+		/* must fail hard rather than report a call as bossless or a boss as
+		/* owing nothing. Still an array on every path, so no caller is handed
+		/* false or null.
+		/*
+		/* Every call id that exists in `calls` comes back as a key, so
+		/* "bossless" is readable without a second existence check. Ids that
+		/* are not in `calls` are absent, matching every other traversal here.
+		*/
+
+		function goat_boss_claim(&$byCall, $callID, $userID, $how)
+		{
+			$rank = array('direct' => 3, 'container' => 2, 'supervisory' => 1);
+
+			$callID = (int) $callID;
+			$userID = (int) $userID;
+
+			if ($userID <= 0 || !isset($byCall[$callID]))
+			{
+				return;   /* not a call we were asked about */
+			}
+
+			if (!isset($byCall[$callID][$userID])
+			    || $rank[$how] > $rank[$byCall[$callID][$userID]])
+			{
+				$byCall[$callID][$userID] = $how;
+			}
+		}
+
+		function goat_bosses_by_call($callIDs)
+		{
+			$fail = array('ok' => false, 'error' => '', 'by_call' => array());
+			$none = array('ok' => true,  'error' => '', 'by_call' => array());
+
+			if (!is_array($callIDs) || count($callIDs) === 0)
+			{
+				return $none;
+			}
+
+			/* dedupe and sanitise; every id is cast, no string reaches SQL */
+
+			$ids = array();
+
+			foreach ($callIDs as $cid)
+			{
+				$cid = (int) $cid;
+
+				if ($cid > 0)
+				{
+					$ids[$cid] = true;
+				}
+			}
+
+			if (count($ids) === 0)
+			{
+				return $none;
+			}
+
+			$idList = implode(',', array_map('intval', array_keys($ids)));
+
+			/*
+			/* ---- 1 of 3: THE CALLS THEMSELVES ----
+			/*
+			/* The name test runs in PHP because goat_is_boss_call_name() is
+			/* exclusion-based and cannot be expressed as a WHERE clause. This
+			/* query is also the existence check: a caller may hold an id for a
+			/* call that has since been deleted, and it must not come back as
+			/* bossless.
+			*/
+
+			$nameRes = mysql_query("SELECT id, call_name FROM calls WHERE id IN (" . $idList . ")");
+
+			if ($nameRes === false)
+			{
+				$fail['error'] = 'call name lookup failed: ' . mysql_error();
+				return $fail;
+			}
+
+			$byCall     = array();
+			$isBossCall = array();
+
+			while ($row = mysql_fetch_object($nameRes))
+			{
+				$cid = (int) $row->id;
+
+				if ($cid <= 0)
+				{
+					continue;
+				}
+
+				$byCall[$cid]     = array();
+				$isBossCall[$cid] = goat_is_boss_call_name($row->call_name);
+			}
+
+			if (count($byCall) === 0)
+			{
+				return $none;
+			}
+
+			$liveList = implode(',', array_map('intval', array_keys($byCall)));
+
+			/*
+			/* ---- 2 of 3: DIRECT AND CONTAINER ----
+			/*
+			/* One query serves both branches, because both ask the same thing
+			/* of the same table — every confirmed row on the calls — and
+			/* differ only in what makes the row count.
+			*/
+
+			$crewRes = mysql_query("SELECT ccm.callID AS call_id, ccm.userID AS user_id,
+			                               ccm.is_call_boss AS is_call_boss
+			                        FROM call_crew_map ccm
+			                        WHERE ccm.callID IN (" . $liveList . ")
+			                          AND ccm.status = 5");
+
+			if ($crewRes === false)
+			{
+				$fail['error'] = 'crew query failed: ' . mysql_error();
+				return $fail;
+			}
+
+			while ($crow = mysql_fetch_object($crewRes))
+			{
+				$cid = (int) $crow->call_id;
+				$uid = (int) $crow->user_id;
+
+				if ((int) $crow->is_call_boss === 1)
+				{
+					goat_boss_claim($byCall, $cid, $uid, 'direct');
+				}
+
+				if (isset($isBossCall[$cid]) && $isBossCall[$cid])
+				{
+					goat_boss_claim($byCall, $cid, $uid, 'container');
+				}
+			}
+
+			/*
+			/* ---- 3 of 3: SUPERVISORY ----
+			/*
+			/* Two queries, never one per call. First every supervision edge
+			/* whose CHILD is one of ours, then the confirmed roster of the
+			/* boss calls those edges point at — which are usually OUTSIDE the
+			/* set we were asked about (a Crew Boss call runs in the morning
+			/* and the load-out it supervises finishes at midnight), so they
+			/* are looked up by id rather than found among the inputs.
+			/*
+			/* INNER JOIN calls on the boss call, matching every other
+			/* traversal of this table: an edge left dangling by a deleted call
+			/* resolves to nothing rather than to a boss who does not exist.
+			*/
+
+			$edgeRes = mysql_query("SELECT s.boss_call AS boss_call, s.child_call AS child_call
+			                        FROM call_supervision s
+			                        INNER JOIN calls cb ON cb.id = s.boss_call
+			                        WHERE s.child_call IN (" . $liveList . ")");
+
+			if ($edgeRes === false)
+			{
+				$fail['error'] = 'supervision query failed: ' . mysql_error();
+				return $fail;
+			}
+
+			$childrenOf = array();   /* bossCallID -> [childCallID] */
+
+			while ($erow = mysql_fetch_object($edgeRes))
+			{
+				$bc = (int) $erow->boss_call;
+				$cc = (int) $erow->child_call;
+
+				if ($bc <= 0 || !isset($byCall[$cc]))
+				{
+					continue;
+				}
+
+				if (!isset($childrenOf[$bc]))
+				{
+					$childrenOf[$bc] = array();
+				}
+
+				$childrenOf[$bc][] = $cc;
+			}
+
+			if (count($childrenOf) > 0)
+			{
+				$bossList = implode(',', array_map('intval', array_keys($childrenOf)));
+
+				$bossCrewRes = mysql_query("SELECT ccm.callID AS call_id, ccm.userID AS user_id
+				                            FROM call_crew_map ccm
+				                            WHERE ccm.callID IN (" . $bossList . ")
+				                              AND ccm.status = 5");
+
+				if ($bossCrewRes === false)
+				{
+					$fail['error'] = 'boss roster query failed: ' . mysql_error();
+					return $fail;
+				}
+
+				while ($brow = mysql_fetch_object($bossCrewRes))
+				{
+					$bc  = (int) $brow->call_id;
+					$uid = (int) $brow->user_id;
+
+					if (!isset($childrenOf[$bc]))
+					{
+						continue;
+					}
+
+					foreach ($childrenOf[$bc] as $cc)
+					{
+						goat_boss_claim($byCall, $cc, $uid, 'supervisory');
+					}
+				}
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $byCall);
+		}
+
 	}
 
 ?>

@@ -59,7 +59,23 @@
 
 	$scope = goat_boss_scope($actor);
 
-	if (!in_array($callID, $scope))
+	/*
+	/* BOSS OF THIS CALL, OR OPS. The boss reads this to see what they
+	/* submitted; Ops read the same thing to review it before accepting, which
+	/* is what the Times outstanding lane opens (addendum 1, Q42). Same data,
+	/* two legitimate readers.
+	/*
+	/* goat_can_read_all() IS THE EXISTING OPS GATE — get-booking.php uses it
+	/* for the whole booking, and this is one call's crew inside a booking Ops
+	/* can already open. It grants nothing new; it stops Ops being refused
+	/* their own review surface.
+	/*
+	/* THE REFUSAL IS IDENTICAL FOR BOTH FAILURE MODES, deliberately: someone
+	/* who is neither must not be able to tell "no such scope" from "not Ops"
+	/* by reading the message.
+	*/
+
+	if (!goat_can_read_all() && !in_array($callID, $scope))
 	{
 		goat_json_error(403, 'You are not the crew boss for this call');
 	}

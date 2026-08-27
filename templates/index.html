@@ -1239,7 +1239,19 @@ a.recruit-action{text-decoration:none;display:inline-block}
    3&4, 5 alone — matching the pairing the design calls for. align-items:start
    keeps each lane its natural height, so expanding one never stretches its
    row-neighbour. */
-.ops-lanes{flex:1;min-height:0;padding:14px 16px;overflow-y:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start;align-items:start;gap:12px;width:100%;max-width:1700px;margin:0 auto}
+.ops-lanes{flex:1;min-height:0;padding:14px 16px;overflow-y:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:min-content;align-content:start;align-items:start;gap:12px;width:100%;max-width:1700px;margin:0 auto}
+/* grid-auto-rows:min-content is load-bearing, not tidiness (v5.20.0). With the
+   default `auto` rows, a row's MINIMUM is the automatic minimum size of the
+   lanes in it — and a lane is overflow:hidden, whose automatic minimum is
+   zero. So the rows start at zero and the scroller's own height (a definite
+   one: .ops-lanes is flex:1 in a fixed-height panel) is shared equally
+   between them instead of each row taking the height its lane needs. It only
+   bites once the lanes together are taller than the scroller — measured at
+   1157x864, where each lane wants 367px and got a 235px row, so every lane
+   ran 119px into the one below and the lower lane's opaque background painted
+   over its donuts. Wider or taller windows fit and hid it. min-content sizes
+   each row to the lane in it and .ops-lanes scrolls, which is what
+   overflow-y:auto was always for. */
 @media (max-width:960px){.ops-lanes{grid-template-columns:1fr}}
 .ops-page-note{grid-column:1/-1;font-size:13px;color:var(--text);padding:8px 2px}
 .ops-lane{border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden}
@@ -14575,6 +14587,114 @@ function _ctStatusBadge(st){
   return '<span style="font-size:9px;letter-spacing:.5px;color:'+e[1]+'">'+e[0]+'</span>';
 }
 
+// ── THE BOSS'S SUBMITTED TIMES ──────────────────────────────────────────────
+// Two reads, two different things, and the grid has to keep them apart:
+//   /api/call/<b>/<c>/times    call_crew_map — what has been ACCEPTED (payroll)
+//   /api/call/<c>/submissions  call_time_submissions — what a boss CLAIMED
+// Accepting is what turns the second into the first, so a grid where both look
+// identical is one where a stray keystroke is indistinguishable from a boss's
+// entry. That is why the pre-fill is marked and not silent.
+
+// "Nothing keyed" is get-performance.php's test, deliberately the same one:
+// both `on` and `off` still at midnight. A genuine midnight finish is
+// indistinguishable from an unkeyed row in this schema — that endpoint counts
+// and skips the same ambiguity — and reading it as unkeyed here only means a
+// pre-fill lands beside a value the reviewer can see and correct.
+function _ctUnkeyed(c){
+  const on = hms2hm(c.on), off = hms2hm(c.off);
+  return (on === '' || on === '00:00') && (off === '' || off === '00:00');
+}
+
+// Fetched AFTER the saved times and NEVER beside them: SmartStaff's per-session
+// PHP file lock hangs concurrent /ajax/crew/ requests. This is a user-opened
+// dialog, so one extra round trip is invisible; firing both at once would hang
+// it.
+//
+// A MISSING OR FAILED FETCH DEGRADES TO THE BEHAVIOUR THAT SHIPPED BEFORE IT —
+// an empty grid, no marks, no error banner. A display, not an assertion:
+// nothing untrue is stated, and the dialog still works for every call that has
+// no submission anyway.
+async function _ctLoadSubmissions(){
+  const s = _ctState;
+  if(!s) return;
+  let d = null;
+  try{
+    const r = await fetch('/api/call/'+s.callId+'/submissions');
+    d = await r.json();
+    if(!d || d.error) d = null;
+  }catch(e){ d = null; }
+  if(!d) return;
+
+  const byUser = {};
+  (d.crew || []).forEach(function(c){
+    if(c && c.submission) byUser[c.user_id] = c.submission;
+  });
+
+  // Someone a boss submitted for who is NOT booked on this call. They have no
+  // row in a grid built from the roster, and dropping them silently would hide
+  // a claim that somebody worked — so they are listed above it instead.
+  s.unbookedSubs = (d.unbooked || []).filter(function(u){ return u && u.submission; });
+
+  s.crew.forEach(function(c){
+    const sub = byUser[c.user_id];
+    if(!sub) return;
+    c._sub = sub;                  // shown on every row that has one
+    if(!_ctUnkeyed(c)) return;     // an accepted value is NEVER overwritten
+    c.on  = sub.on_time  || c.on;
+    c.off = sub.off_time || c.off;
+    c._prefilled = true;
+  });
+}
+
+// What the boss said, under the name, on any row that has a submission — the
+// times, the breaks and the note.
+//
+// THE BREAKS ARE SHOWN, NOT FILLED IN. The grid's two break fields are DAY and
+// NIGHT, and deciding which band a 30-minute break at 19:00 falls in is the
+// arithmetic derivation.py owns (it is the same day/night boundary
+// get-performance.php ports). Splitting them here would be a second
+// implementation of that rule living in a text field, and getting it wrong
+// writes a payroll number. The reviewer sees what was taken and keys it.
+//
+// The note is the reason a short shift is short — "Left early, back gave out"
+// is exactly the context that stops Ops querying it.
+function _ctSubHint(c){
+  const sub = c._sub;
+  if(!sub) return '';
+  const span = [sub.on_time || '', sub.off_time || ''].filter(Boolean).join('–')
+             + (sub.off_next_day ? ' (+1d)' : '');
+  const brk = (sub.breaks || []).map(function(b){
+    return (b.duration_mins || 0) + 'm @ ' + (b.start_time || '')
+         + (b.start_next_day ? ' (+1d)' : '');
+  }).join(', ');
+  const bits = [];
+  if(span) bits.push('boss: ' + span);
+  if(brk)  bits.push('breaks ' + brk);
+  if(sub.note) bits.push('“' + sub.note + '”');
+  if(!bits.length) return '';
+  return '<div style="font-size:10px;color:var(--muted);padding-top:2px;max-width:340px;white-space:normal">'
+       + escapeHtml(decodeEntities(bits.join(' · '))) + '</div>';
+}
+
+// Submissions for people who are not on the roster. Read-only here on purpose:
+// booking someone onto a call is a different action with its own conflict
+// checks, and doing it silently from a times grid would book crew as a side
+// effect of reviewing hours.
+function _ctUnbookedNote(){
+  const s = _ctState;
+  const rows = (s && s.unbookedSubs) || [];
+  if(!rows.length) return '';
+  const items = rows.map(function(u){
+    const sub = u.submission || {};
+    const span = [sub.on_time || '', sub.off_time || ''].filter(Boolean).join('–');
+    return escapeHtml(decodeEntities(u.name || ('EIN ' + (u.ein || '?')))) + (span ? (' ' + escapeHtml(span)) : '');
+  }).join(' · ');
+  return '<div style="font-size:11px;color:var(--warn);padding:0 0 8px">'
+       + rows.length + ' submission' + (rows.length === 1 ? '' : 's')
+       + ' for crew who are not booked on this call: ' + items
+       + '. Book them on the call first if they worked — nothing here can save their times.</div>';
+}
+
 async function openCallTimes(bookingId, callId){
   document.getElementById('entity-modal-title').textContent = 'Enter Times';
   document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
@@ -14588,7 +14708,12 @@ async function openCallTimes(bookingId, callId){
       document.getElementById('entity-modal-actions').innerHTML = entityBtn('‹ Back to call',"openCallDialog('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
       return;
     }
-    _ctState = {bookingId:bookingId, callId:callId, crew:data.crew||[], paygrades:data.paygrades||[], locked:!!data.call_locked};
+    _ctState = {bookingId:bookingId, callId:callId, crew:data.crew||[],
+                paygrades:data.paygrades||[], locked:!!data.call_locked, unbookedSubs:[]};
+    // Then, separately, what the crew boss submitted — see _ctLoadSubmissions.
+    // Sequential and soft: it pre-fills the empty rows and marks them, and a
+    // failure leaves the grid exactly as it was before submissions existed.
+    await _ctLoadSubmissions();
     renderCallTimesGrid();
   }catch(e){
     document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load times: '+escapeHtml(e.message)+'</div>';
@@ -14631,8 +14756,18 @@ function renderCallTimesGrid(){
     const rowTt = ok ? '' : ' title="Only confirmed crew can have times entered."';
     const name  = escapeHtml(decodeEntities((c.lastname||'')+', '+(c.firstname||'')));
     const pgSel = (c.callpaygradeID && c.callpaygradeID > 0) ? c.callpaygradeID : c.user_paygradeID;
-    return '<tr style="border-bottom:1px solid var(--border);'+rowSt+'"'+rowTt+'>'
-      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+'</td>'
+    // A pre-filled row is the boss's claim, not a saved value, and it has to
+    // LOOK different: the accent edge and the chip are the only thing between a
+    // number somebody typed on a phone in a loading dock and a payroll figure
+    // Ops have accepted. Saving is what makes them the same.
+    const mark = c._prefilled
+      ? 'border-left:2px solid var(--accent);'
+      : '';
+    const chip = c._prefilled
+      ? ' <span title="Submitted by the crew boss — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">BOSS</span>'
+      : '';
+    return '<tr style="border-bottom:1px solid var(--border);'+mark+rowSt+'"'+rowTt+'>'
+      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+chip+_ctSubHint(c)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock', dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00', 'dur',   dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00', 'dur',   dis)+'</td>'
@@ -14661,17 +14796,22 @@ function renderCallTimesGrid(){
 
   document.getElementById('entity-modal-body').innerHTML =
       lockNote
+    + _ctUnbookedNote()
     + '<div id="ct-result" style="font-size:11px;padding:0 0 6px"></div>'
     + '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%">'
     + '<thead><tr style="border-bottom:1px solid var(--border)">'
     + th('Crew')+thFill('On','on')+thFill('Day Break','break')+thFill('Night Break','break_night')+thFill('Off','off')+thFill('Rate','rate')+th('Late')+th('Note')
     + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
-    + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). Saving writes times, rate, late and note — it does <b>not</b> tick “Times filled” or lock the call; that stays your review step in SmartStaff.</div>'
+    + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). <b>Save</b> writes times, rate, late and note and leaves the call outstanding. <b>Accept</b> saves and then ticks “Times filled”, which is what clears the call from the Times outstanding lane. Neither ever locks the call — that stays a SmartStaff action.</div>'
     + skipNote;
 
+  // Two buttons, two states — a call is outstanding or it is done (§B.4).
+  // Save keeps exactly the meaning it has always had, for a half-finished
+  // keying session; Accept is the one that says a human reviewed these numbers,
+  // and it is the only thing that clears the lane.
   const actions = s.locked
     ? entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()')
-    : entityBtn('Save Times',"saveCallTimes()",{primary:true, id:'ct-save-btn'}) + entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()');
+    : entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn'}) + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()');
   document.getElementById('entity-modal-actions').innerHTML = actions;
 }
 
@@ -14750,7 +14890,14 @@ function ctFillDown(col){
   }
 }
 
-async function saveCallTimes(){
+// Save leaves the call outstanding; Accept saves and then ticks times_filled.
+// ONE code path, because the numbers must reach call_crew_map identically
+// either way — an accept that wrote times by a different route would be a
+// second times writer, and payroll would have two of them to reconcile.
+async function saveCallTimes(){   return _ctSave(false); }
+async function acceptCallTimes(){ return _ctSave(true);  }
+
+async function _ctSave(accept){
   const s = _ctState;
   if(!s || s.locked) return;
   const result = document.getElementById('ct-result');
@@ -14791,9 +14938,14 @@ async function saveCallTimes(){
   }
 
   result.style.color = 'var(--muted)';
-  result.textContent = 'Saving…';
-  const saveBtn = document.getElementById('ct-save-btn');
-  if(saveBtn) saveBtn.disabled = true;
+  result.textContent = accept ? 'Saving, then accepting…' : 'Saving…';
+  // Both buttons go down: while a save is in flight the other one would post the
+  // same rows a second time, and SmartStaff's per-session file lock would hang
+  // the second request rather than reject it.
+  const saveBtn   = document.getElementById('ct-save-btn');
+  const acceptBtn = document.getElementById('ct-accept-btn');
+  if(saveBtn)   saveBtn.disabled   = true;
+  if(acceptBtn) acceptBtn.disabled = true;
 
   try{
     const res = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/times', {
@@ -14809,17 +14961,46 @@ async function saveCallTimes(){
     }
     const fails = (data.rows||[]).filter(function(r){ return !r.ok; });
     if(fails.length){
+      // NOT ACCEPTED. The tick says a human reviewed what is in call_crew_map;
+      // with rows that failed to write, what is in there is not what was on
+      // screen, and accepting would attest to numbers nobody has seen.
       result.style.color = 'var(--conflict)';
-      result.innerHTML   = 'Saved with issues: '+escapeHtml(fails.map(function(r){ return r.user_id+': '+r.error; }).join('; '));
-    } else {
+      result.innerHTML   = 'Saved with issues'+(accept ? ' — NOT accepted' : '')+': '
+                         + escapeHtml(fails.map(function(r){ return r.user_id+': '+r.error; }).join('; '));
+      return;
+    }
+    if(!accept){
       result.style.color = 'var(--ok,#10b981)';
       result.innerHTML   = '✓ Times saved for '+(data.rows||[]).length+' crew.';
+      return;
     }
+    // The second request, only once the first has returned. Never concurrent:
+    // the file lock hangs, it does not fail.
+    const ares = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/times/accept', { method:'POST' });
+    const adata = await ares.json();
+    if(!ares.ok || (adata && adata.error)){
+      // The times ARE saved — say so, rather than letting a failed tick read as
+      // a failed save and invite someone to key them all again.
+      result.style.color = 'var(--conflict)';
+      result.innerHTML   = 'Times saved, but accepting failed: '
+                         + escapeHtml((adata && adata.error) || ('HTTP '+ares.status))
+                         + '. The call is still in the Times outstanding lane.';
+      return;
+    }
+    result.style.color = 'var(--ok,#10b981)';
+    result.innerHTML   = '✓ Times saved for '+(data.rows||[]).length+' crew and accepted'
+                       + (adata.already_filled ? ' (it was already ticked).' : '.');
+    // Refetch the lane rather than removing the row here: the count is small and
+    // a refetch keeps the badge honest, the same choice opsDismissAck makes.
+    const lane = OPS_LANES.find(function(l){ return l.key === 'times_outstanding'; });
+    const lst  = lane && _opsLaneState[lane.key];
+    if(lane && lst && lst.status === 'ready') await loadOpsTimes(lane, true);
   }catch(e){
     result.style.color = 'var(--conflict)';
     result.innerHTML   = 'Save failed: '+escapeHtml(e.message);
   }finally{
-    if(saveBtn) saveBtn.disabled = false;
+    if(saveBtn)   saveBtn.disabled   = false;
+    if(acceptBtn) acceptBtn.disabled = false;
   }
 }
 
@@ -17770,6 +17951,12 @@ const OPS_LANES = [
     load: loadOpsCalls, render: renderOpsCalls, list: renderOpsCallsList, dims:['fill','lead'] },
   { key:'acks', label:'Acknowledgements outstanding',
     load: loadOpsAcks, render: renderOpsAcks, list: renderOpsAcksList, dims:['kind','lead'] },
+  // The backward-looking lane, sitting with the other work queues rather than
+  // with the induction pair. `target` overrides the drill-down destination: this
+  // row opens the times grid, not the call dialog (addendum 1, Q42).
+  { key:'times_outstanding', label:'Times outstanding',
+    load: loadOpsTimes, render: renderOpsTimes, list: renderOpsTimesList,
+    target: opsTimesTarget, dims:['status','age'] },
   // Lanes A and B share ONE fetch (source:'induction'): both blocks come back in
   // a single response, so declaring a source instead of a load lets loadOps fetch
   // once and render both. Load order A-before-B is preserved by array order.
@@ -17818,6 +18005,26 @@ const OPS_STATUS_COLORS = {
   awaiting:    'var(--accent)'   // status 1 — ball is with them
 };
 const OPS_STATUS_LABELS = { not_messaged:'Not messaged', awaiting:'Awaiting reply' };
+
+// Lane 4 (times_outstanding) reuses the `status` DIMENSION rather than
+// inventing one, so opsChipsBar and OPS_DIM_LABELS keep working untouched — its
+// three keys cannot collide with lane 2's two, and a chip still resolves to one
+// label map. Vocabulary (§5): this lane does not say "awaiting" either. "Awaiting
+// review" would have been a third sense of a word that already means an
+// unanswered offer on lane 2 and an unanswered re-confirm on the Schedule, so
+// the segment the SERVER calls awaiting_review READS as "Submitted, not
+// accepted" — which is also the more useful sentence.
+// no_boss TAKES THE RED, and that is the point of splitting it out: both it and
+// not_submitted mean "no times have arrived", but one is "chase the boss" and
+// the other is "nothing is coming on its own — ring someone who was on the
+// call". Folding them together loses the only distinction that changes what Ops
+// do next.
+OPS_STATUS_COLORS.awaiting_review = 'var(--accent)';
+OPS_STATUS_COLORS.not_submitted   = 'var(--warn)';
+OPS_STATUS_COLORS.no_boss         = 'var(--accent2)';
+OPS_STATUS_LABELS.awaiting_review = 'Submitted, not accepted';
+OPS_STATUS_LABELS.not_submitted   = 'Not submitted';
+OPS_STATUS_LABELS.no_boss         = 'No crew boss';
 
 // Lane 1 (calls_to_fill) palette + labels. "Nobody booked" is the urgent case
 // (red), "partly filled" amber. Lead time mirrors age: the nearest call is the
@@ -18305,7 +18512,14 @@ function opsRowCard(o, laneKey){
 function opsRowClick(laneKey, id){
   const idx = _opsRowIndex[laneKey];
   const o = idx && idx[id];
-  if(o) opsRowTarget(o);
+  if(!o) return;
+  // A lane may declare its own destination. Lane 4's row opens the times grid
+  // rather than the call dialog, because the work the row represents IS entering
+  // times; every other lane's row is a conversation to have about a call, which
+  // is what the dialog is for.
+  const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
+  if(lane && lane.target) lane.target(o);
+  else opsRowTarget(o);
 }
 
 // The one place the drill-down destination is decided. Rich and Monty have not
@@ -18648,6 +18862,193 @@ async function opsDismissAck(ev, bookingId, callId, userId){
     if(errEl) errEl.textContent = 'Dismiss failed: ' + (e.message || 'network error');
   }
 }
+
+// ── Lane 4: Times outstanding ───────────────────────────────────────────────
+// The only lane that looks BACKWARDS. The others ask what is coming; this asks
+// what has not been finished off: calls that have run, where somebody still has
+// no times, and which nobody has accepted yet.
+//
+// IT IS A WORK QUEUE, NOT A COUNT, and the action is almost always to ring
+// somebody — so every row carries WHO TO CHASE. A row with nobody to chase is
+// the most important kind in the lane rather than an edge case: both it and
+// "not submitted" mean no times, but one means chase the boss and the other
+// means nothing is coming on its own.
+//
+// /api/ops/times owns the predicate, the status / age_bucket tags, the boss
+// resolution and the counts; nothing here re-derives a boundary, exactly as the
+// other lanes don't.
+async function loadOpsTimes(lane, force){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/times');
+    const d = await r.json();
+    if(d && d.unavailable){
+      st.status = 'unavailable'; st.error = d.error || '';
+      renderOpsUnavailable(lane); return;
+    }
+    st.status = 'ready'; st.data = d;
+    if(d && d.generated_at) setOpsAsAt(d.generated_at);
+    renderOpsTimes(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = e.message || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+function renderOpsTimes(lane){
+  const st     = _opsLaneState[lane.key];
+  const data   = st && st.data;
+  const counts = (data && data.counts) || {};
+  const total  = counts.total || 0;
+  st.total = total;   // the one place the window reads a lane's headline count
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  // Empty is the SUCCESS state: every finished call in the window has its times.
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
+    return;
+  }
+  // Segment order is the escalation order, so the eye reads left-to-right from
+  // "someone has done the work" to "nobody is going to".
+  const statusSegs = ['awaiting_review','not_submitted','no_boss'].map(function(k){
+    return { key:k, value:(counts.status && counts.status[k]) || 0,
+             color:OPS_STATUS_COLORS[k], label:OPS_STATUS_LABELS[k] };
+  });
+  // Age runs from the call's scheduled END, in the same buckets lane 2 uses, so
+  // "> 72h" means the same thing on both.
+  const ageSegs = ['under24','from24to72','over72'].map(function(k){
+    return { key:k, value:(counts.age && counts.age[k]) || 0,
+             color:OPS_AGE_COLORS[k], label:OPS_AGE_LABELS[k] };
+  });
+  body.innerHTML = ''
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Status', 'status', statusSegs)
+    +   opsDonutBlock(lane, 'Age',    'age',    ageSegs)
+    + '</div>';
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
+}
+
+// Filter on the server's status / age_bucket tags — never a recomputed boundary.
+function opsFilteredTimes(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st.data && st.data.calls) ? st.data.calls.slice() : [];
+  if(st.chips.status) rows = rows.filter(function(o){ return o.status === st.chips.status; });
+  if(st.chips.age)    rows = rows.filter(function(o){ return o.age_bucket === st.chips.age; });
+  return rows;
+}
+
+// Oldest finish first — the mirror of the forward lanes' soonest-first, and for
+// the same reason: the call at the top is the one going cold. Ties broken by the
+// larger shortfall, so the call missing five people's times sits above one
+// missing a single row.
+function opsSortTimes(rows){
+  return rows.slice().sort(function(a, b){
+    const ae = a.end || '', be = b.end || '';
+    if(ae < be) return -1;
+    if(ae > be) return 1;
+    return (b.needing || 0) - (a.needing || 0);
+  });
+}
+
+function renderOpsTimesList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const rows = opsSortTimes(opsFilteredTimes(lane));
+  const idx = {};
+  rows.forEach(function(o){ idx[o.call_id] = o; });
+  _opsRowIndex[lane.key] = idx;
+  if(!rows.length){
+    el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No calls match the current filter.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(function(o){ return opsTimesCard(o, lane.key); }).join('');
+}
+
+// Non-exclusive labels — a call can be both bossless and waiting on a linked
+// call. Neither repeats the status pill; they say what to do about it.
+function opsTimesLabels(o){
+  const L = [];
+  if(o.status === 'no_boss') L.push('<span class="ops-lbl lbl-nm">Nobody to chase</span>');
+  // The sibling flag (§B.7). derive_times() tops a short engagement up to the
+  // four-hour minimum across a continuous block, and where a linked call's real
+  // times have not arrived it works from that call's SCHEDULED hours and returns
+  // sibling_hours_estimated — a figure that can change once the real times land.
+  // Nothing in THE GOAT derives yet, so the server flags the CONDITION that
+  // makes such a figure provisional: a locked-linked call whose own times are
+  // still missing. A reviewer who cannot see it will not know to look again.
+  if(o.sibling_times_pending) L.push('<span class="ops-lbl lbl-sf">Linked call’s times not in</span>');
+  return L.join('');
+}
+
+// Who to chase, with the number, because the action is a phone call. The `how`
+// is shown for anyone who is not directly flagged on the call, so "why am I
+// ringing this person" is answerable from the row. Several bosses is a real
+// state (two confirmed on one boss call, split crews) — the most specific one
+// leads and the rest are counted, never silently dropped.
+function opsTimesChase(o){
+  const bosses = o.bosses || [];
+  if(!bosses.length){
+    return '<span class="ops-offered" style="color:var(--accent2)">No crew boss assigned</span>';
+  }
+  const b    = bosses[0];
+  const name = escapeHtml(decodeEntities(b.name || '—'));
+  const mob  = (b.mobile || '').trim();
+  const via  = (b.how && b.how !== 'direct') ? ' · via boss call' : '';
+  const more = (bosses.length > 1) ? (' · +' + (bosses.length - 1) + ' more') : '';
+  return '<span class="ops-offered">Chase ' + name
+       + (mob ? (' · ' + escapeHtml(mob)) : ' · no mobile on file')
+       + escapeHtml(via + more) + '</span>';
+}
+
+// "3 of 8 still need times" — people, not calls. The badge counts calls; these
+// two numbers must never be added to it or to each other.
+function opsTimesCard(o, laneKey){
+  const booking = escapeHtml(decodeEntities(o.booking_name || ''));
+  const meta = [o.venue, o.call_name]
+                 .map(function(x){ return escapeHtml(decodeEntities(x || '')); })
+                 .filter(Boolean).join(' · ');
+  const when   = escapeHtml(opsTimesWhen(o));
+  const pcol   = OPS_STATUS_COLORS[o.status] || 'var(--muted)';
+  const need   = (o.needing || 0) + ' of ' + (o.confirmed || 0) + ' still need times';
+  const labels = opsTimesLabels(o);
+  return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(o.call_id||0)+')">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+(booking || '—')+'</span>'
+    +       '<span class="ops-row-when">'+when+'</span>'
+    +     '</div>'
+    +     '<span class="ops-row-meta">'+meta+'</span>'
+    +   '</div>'
+    +   '<div class="ops-row-fill">'
+    +     '<span class="ops-pill" style="color:'+pcol+';border-color:'+pcol+'">'+escapeHtml(need)+'</span>'
+    +     opsTimesChase(o)
+    +   '</div>'
+    +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
+    + '</div>';
+}
+
+// This lane dates a row by when the call ENDED, not when it started: "ended Fri
+// 22 Aug · 23:00" is the moment the clock on the times started running.
+function opsTimesWhen(o){
+  const e = o.end || '';
+  if(!e) return '';
+  const d  = String(e).slice(0, 10);
+  const t  = String(e).slice(11, 16);
+  const dt = new Date(d + 'T00:00:00');
+  const ds = isNaN(dt.getTime()) ? d
+           : dt.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short' });
+  return 'ended ' + ds + (t ? (' · ' + t) : '');
+}
+
+// Q42, closed 27 Aug: the row opens the EXISTING times grid, pre-filled from
+// what the boss submitted — not an inline grid in the lane. One place where
+// call times are edited; a second surface for the same data would drift from it.
+function opsTimesTarget(o){ openCallTimes(o.booking_id, o.call_id); }
 
 // ── Lanes A & B: induction exceptions (one shared source) ───────────────────
 // Both render from _opsLaneState[key].data, which is the WHOLE induction

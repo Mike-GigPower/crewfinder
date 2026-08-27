@@ -170,6 +170,79 @@ def main():
         check("my-shifts has 'shifts' list", isinstance((d or {}).get("shifts"), list))
         check("my-shifts has 'unavails' list", isinstance((d or {}).get("unavails"), list))
 
+    # ── ops-times-outstanding (the Times outstanding lane) ─────────────────────
+    # A BACKWARD window: this is the only lane that asks what has not been
+    # finished off, so the checks run over the last 14 days rather than `win`.
+    print("ops-times-outstanding.php")
+    back = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+    twin = f"?start={back}&end={start}"
+    times_doc, e = get_json(ss, "/ajax/crew/ops-times-outstanding.php" + twin)
+    tcalls = []
+    if check("ops-times-outstanding returns JSON", times_doc is not None, e) and times_doc:
+        check("no error body (Ops gate accepts this session)",
+              "error" not in times_doc, times_doc.get("error", ""))
+        tcalls = times_doc.get("calls", [])
+        counts = times_doc.get("counts") or {}
+        check("has 'calls' list", isinstance(tcalls, list))
+        check("has counts.total", isinstance(counts.get("total"), int))
+        # The identities the lane's donuts depend on: every row lands in exactly
+        # one status and exactly one age bucket. A drift here shows up as a donut
+        # whose centre disagrees with its own segments.
+        check("counts.total == len(calls)", counts.get("total") == len(tcalls),
+              f"{counts.get('total')} vs {len(tcalls)}")
+        check("sum(status) == total",
+              sum((counts.get("status") or {}).values()) == counts.get("total"))
+        check("sum(age) == total",
+              sum((counts.get("age") or {}).values()) == counts.get("total"))
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        if tcalls:
+            for k in ("call_id", "booking_id", "booking_name", "call_name", "venue",
+                      "start", "end", "confirmed", "needing", "submitted",
+                      "status", "age_bucket", "bosses", "sibling_times_pending"):
+                check(f"times row carries '{k}'", all(k in c for c in tcalls))
+            check("status is one of the three segments",
+                  all(c.get("status") in ("awaiting_review", "not_submitted", "no_boss")
+                      for c in tcalls))
+            check("age_bucket uses the shared buckets",
+                  all(c.get("age_bucket") in ("under24", "from24to72", "over72")
+                      for c in tcalls))
+            # Every row is work: at least one confirmed person with no times by
+            # either route, and never more of them than are on the call.
+            check("needing >= 1 on every row",
+                  all(int(c.get("needing") or 0) >= 1 for c in tcalls))
+            check("needing <= confirmed on every row",
+                  all(int(c.get("needing") or 0) <= int(c.get("confirmed") or 0)
+                      for c in tcalls))
+            check("every row has finished", all((c.get("end") or "") <= now_str for c in tcalls),
+                  "a call that has not ended yet is being asked for times")
+            # no_boss is the segment Ops act on differently — it must mean exactly
+            # what it says, in both directions.
+            check("no_boss rows carry no boss, and only those",
+                  all((len(c.get("bosses") or []) == 0) == (c.get("status") == "no_boss")
+                      for c in tcalls if c.get("status") != "awaiting_review"),
+                  "a bossless call is not flagged no_boss, or a flagged one has a boss")
+            bosses = [b for c in tcalls for b in (c.get("bosses") or [])]
+            if bosses:
+                check("every boss carries a name",
+                      all((b.get("name") or "").strip() for b in bosses))
+                check("every boss carries how it was resolved",
+                      all(b.get("how") in ("direct", "container", "supervisory") for b in bosses))
+        else:
+            print("  (nothing outstanding in the last 14 days — row checks skipped)")
+
+    # ── my-call-times gate, widened for the Ops review surface ────────────────
+    # Slice 4 refused anyone who was not the crew boss of the call. The times
+    # grid opens it as Ops, so a read-all session must now get the roster back —
+    # and this admin session is almost certainly not the boss of that call.
+    if tcalls:
+        cid = tcalls[0].get("call_id")
+        print(f"my-call-times.php (Ops gate, callID={cid})")
+        d, e = get_json(ss, f"/ajax/crew/my-call-times.php?callID={cid}")
+        if check("my-call-times returns JSON", d is not None, e) and d:
+            check("Ops are not refused (widened gate)", "error" not in d, d.get("error", ""))
+            check("my-call-times has 'crew' list", isinstance(d.get("crew"), list))
+            check("my-call-times has 'call' object", isinstance(d.get("call"), dict))
+
     # ── summary ────────────────────────────────────────────────────────────────
     print("\n" + "=" * 50)
     print(f"PASS {len(_PASS)}   FAIL {len(_FAIL)}")

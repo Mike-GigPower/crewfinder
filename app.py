@@ -8174,6 +8174,79 @@ def api_ops_induction_exceptions():
     return jsonify(data)
 
 
+def fetch_ops_times(ss, start, end):
+    """Ops landing — the 'Times outstanding' lane source, via
+    ops-times-outstanding.php (dual-gated). Returns the endpoint's own dict —
+    its per-row status / age_bucket tags, its `bosses` list and its counts —
+    passed through untouched, so THE GOAT never re-derives a boundary the
+    server already decided (mirrors the offers and acks lanes).
+
+    The PHP decodes the display strings on the way out, as its sibling
+    calls-awaiting-times.php does, so there is no unescape pass here.
+
+    ONE request only: this endpoint holds the same per-session PHP file lock the
+    other reads do, so a concurrent /ajax/crew/ call on this session would hang.
+    No thread pool, no parallel fetch, ever.
+
+    Returns (data, error). On any failure data is None and error is a short
+    message; the caller soft-fails to an 'unavailable' lane."""
+    url = f"{BASE_URL}/ajax/crew/ops-times-outstanding.php?start={start}&end={end}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/ops/times", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_times():
+    """Ops landing — the 'Times outstanding' lane: finished calls whose times
+    have not arrived, each carrying who to chase. The PHP owns the predicate
+    (finished + somebody still has no times by either route + not accepted), the
+    status / age_bucket tags, the boss resolution and the counts; we proxy them
+    straight through.
+
+    THE WINDOW LOOKS BACKWARDS, unlike every other lane. The others ask what is
+    coming; this one asks what has not been finished off, so it runs from 14 days
+    ago to today rather than today to today + 28. Fourteen days is a fortnight of
+    backlog — long enough that nothing quietly ages out of view between one
+    Monday and the next, short enough that the lane does not open with the
+    archive.
+
+    Dual-gated exactly like the other read lanes: @require_cohort(*READ_ALL_COHORTS)
+    mirrors goat_can_read_all(). Soft-fails with HTTP 200 {"unavailable": true}
+    so the lane renders 'unavailable' and never takes the page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = request.args.get("start") or (today - timedelta(days=14)).strftime("%Y-%m-%d")
+    end   = request.args.get("end")   or today.strftime("%Y-%m-%d")
+
+    data, err = fetch_ops_times(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-times] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
+
 def fetch_performance(ss, weeks):
     """GM Performance — the whole dashboard's data, via get-performance.php
     (goat_can_read_all()-gated). Returns the endpoint's own dict — the weekly
@@ -11888,6 +11961,124 @@ def api_call_times_save(booking_id, call_id):
     if not isinstance(rows, list):
         return jsonify({"error": "Body must be {rows:[...]}"}), 400
     result, err = ss_update_call_times(ss, call_id, rows)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(result)
+
+
+def ss_get_call_submissions(ss, call_id):
+    """The crew bosses' SUBMITTED times for one call, via my-call-times.php.
+    Returns {call, crew:[{user_id,name,covering_for,submission}], unbooked:[...],
+    outstanding} — each `submission` being on_time / off_time / off_next_day /
+    note / submitted_at / breaks, or null where nobody has submitted for that
+    person.
+
+    THIS IS NOT get-call-times.php AND MUST NOT BECOME IT. That endpoint reads
+    call_crew_map — the payroll record, what has been ACCEPTED. This reads
+    call_time_submissions — what a boss CLAIMED. The times grid needs both and
+    has to keep them apart on screen, because accepting is what turns one into
+    the other; merging them into one shape here would destroy the only
+    distinction the reviewer is being asked to make.
+
+    my-call-times.php is the crew bosses' own read, gated on their boss scope,
+    widened to admit the read-all cohorts so Ops can review what they are
+    accepting. Nothing here is derived: no rounded times, no billable hours —
+    the boss's typed numbers, as typed.
+
+    Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/my-call-times.php"
+    try:
+        resp = ss.get(url, params={"callID": int(call_id)},
+                      allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_accept_call_times(ss, call_id):
+    """Tick calls.times_filled for one call via accept-call-times.php (admin-only)
+    — the review half of accepting times. The numbers themselves go in through
+    ss_update_call_times() first; this says a human has looked at them.
+
+    NEVER call_locked. That column gates invoicing and payslip eligibility and
+    its 0->1 transition fires the accounting cascade; the endpoint refuses to
+    touch it and returns call_locked from before and after the write so the
+    caller can prove it. Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/accept-call-times.php"
+    try:
+        resp = ss.post(url, params={"id": int(call_id)}, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/call/<call_id>/submissions")
+@require_cohort("admin")
+def api_call_submissions(call_id):
+    """What the crew boss submitted for this call, to pre-fill the times grid
+    where nothing has been accepted yet. Proxies my-call-times.php.
+
+    NO booking id in the path, unlike its neighbours: my-call-times.php derives
+    everything it needs from the call, and a booking id here would be a second
+    thing the caller could get wrong. The route is more static than
+    /api/call/<b>/<c>, so Werkzeug matches this one first.
+
+    Soft: the caller treats any failure as 'no submissions' and shows the empty
+    grid it would have shown before this existed."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_call_submissions(ss, call_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/times/accept", methods=["POST"])
+@require_cohort("admin")
+def api_call_times_accept(booking_id, call_id):
+    """Accept this call's times: tick calls.times_filled, and nothing else.
+    Proxies accept-call-times.php (admin-only). booking_id is for URL symmetry;
+    the endpoint derives it from the call.
+
+    THE TIMES ARE ALREADY SAVED WHEN THIS RUNS. The grid posts them to
+    .../times first and only calls this once that has returned — two sequential
+    requests, never parallel, because SmartStaff's per-session file lock hangs
+    concurrent /ajax/crew/ calls. Accepting a call whose save failed would tick
+    a review of numbers that were never written.
+
+    The response carries call_locked from before and after the write; it is the
+    payroll gate and this path must never move it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    result, err = ss_accept_call_times(ss, call_id)
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)

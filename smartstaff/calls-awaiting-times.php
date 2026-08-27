@@ -107,7 +107,7 @@
 	}
 
 	/*
-	/* ---- 1 of 5: CANDIDATE CALLS ----
+	/* ---- 1 of 4: CANDIDATE CALLS ----
 	/*
 	/* SQL PREFILTERS COARSELY ON start_date; PHP FILTERS EXACTLY ON THE END.
 	/*
@@ -157,7 +157,6 @@
 	}
 
 	$callInfo = array();   /* callID -> assembled call row */
-	$isBossCall = array(); /* callID -> bool, the name test, run once */
 
 	while ($row = mysql_fetch_object($result))
 	{
@@ -180,7 +179,6 @@
 			'end'          => date('Y-m-d H:i', $win['end']),
 		);
 
-		$isBossCall[$cid] = goat_is_boss_call_name($row->call_name);
 	}
 
 	if (count($callInfo) === 0)
@@ -190,7 +188,7 @@
 	}
 
 	/*
-	/* ---- 2 of 5: WHO STILL OWES ----
+	/* ---- 2 of 4: WHO STILL OWES ----
 	/*
 	/* ONE CALL over the whole window, never one per call — the helper takes an
 	/* array for exactly this reason. Calls with nothing outstanding are
@@ -207,7 +205,6 @@
 		if ($n <= 0)
 		{
 			unset($callInfo[$cid]);
-			unset($isBossCall[$cid]);
 			continue;
 		}
 
@@ -220,181 +217,49 @@
 		exit;
 	}
 
-	$owedList = implode(',', array_map('intval', array_keys($callInfo)));
-
 	/*
-	/* ---- 3 of 5: DIRECT AND CONTAINER ----
+	/* ---- 3 of 4: WHO IS THE BOSS ----
 	/*
-	/* One query serves both branches, because both ask the same thing of the
-	/* same table — every confirmed row on the owed calls — and differ only in
-	/* what makes the row count:
+	/* THE INVERSION ITSELF LIVES IN supervision-graph.php, and this endpoint
+	/* is one of its two readers — the Ops "Times outstanding" lane is the
+	/* other. It used to be written out here in two steps; it was lifted the
+	/* day the lane needed the same answer, because a second copy of "who is
+	/* the boss of this call" is how the five supervision-blindness instances
+	/* happened. What it does — direct, container, supervisory, precedence
+	/* direct > container > supervisory, is_call_boss cast in PHP — is
+	/* unchanged and documented there.
 	/*
-	/*   DIRECT    — the row is flagged is_call_boss.
-	/*   CONTAINER — the CALL is a dedicated boss call, and the row is anyone
-	/*               confirmed on it. Q4: scope belongs to every confirmed
-	/*               resource on a boss call, not only the flagged one, which
-	/*               on test is 18 of 22 containers.
+	/* THE TRANSPOSE. The helper answers callID -> bosses, because a call is
+	/* what the Ops lane draws a row for. The cron needs the opposite index,
+	/* boss -> calls, because a boss is who it pushes to. One nested loop,
+	/* here, rather than a second traversal of the graph.
 	/*
-	/* is_call_boss IS binary(50) — SELECTED and cast in PHP, NEVER compared
-	/* with "= 1" in SQL. makeboss writes the STRING '1', stored as byte 0x31
-	/* null-padded to 50 bytes.
+	/* ok === false IS A 500, NOT AN EMPTY SET — the file rule at the top,
+	/* applied to a helper that reports its own failures rather than
+	/* degrading. An empty bosses list means "nobody is owed anything"; a
+	/* broken query must never be able to say that.
 	*/
+
+	$inversion = goat_bosses_by_call(array_keys($callInfo));
+
+	if (!$inversion['ok'])
+	{
+		http_response_code(500);
+		die(json_encode(array('error' => $inversion['error'])));
+	}
 
 	$holders = array();   /* userID -> callID -> how */
 
-	function caw_claim(&$holders, $userID, $callID, $how)
+	foreach ($inversion['by_call'] as $cid => $whoMap)
 	{
-		/*
-		/* PRECEDENCE: direct beats container beats supervisory. A boss
-		/* reachable two ways is ONE entry with the most specific reason — the
-		/* field exists to answer "why did this person get prompted", and the
-		/* weaker answer is the less useful one. Test 6 is the assertion that
-		/* this collapses rather than duplicating.
-		*/
-
-		$rank = array('direct' => 3, 'container' => 2, 'supervisory' => 1);
-
-		if (!isset($holders[$userID]))
+		foreach ($whoMap as $uid => $how)
 		{
-			$holders[$userID] = array();
-		}
-
-		if (!isset($holders[$userID][$callID])
-		    || $rank[$how] > $rank[$holders[$userID][$callID]])
-		{
-			$holders[$userID][$callID] = $how;
-		}
-	}
-
-	$crewSql = "
-		SELECT ccm.callID AS call_id, ccm.userID AS user_id,
-		       ccm.is_call_boss AS is_call_boss
-		FROM call_crew_map ccm
-		WHERE ccm.callID IN ($owedList)
-		  AND ccm.status = 5
-	";
-
-	$crewRes = mysql_query($crewSql);
-
-	if ($crewRes === false)
-	{
-		http_response_code(500);
-		die(json_encode(array('error' => 'crew query failed: ' . mysql_error())));
-	}
-
-	while ($crow = mysql_fetch_object($crewRes))
-	{
-		$cid = (int) $crow->call_id;
-		$uid = (int) $crow->user_id;
-
-		if ($uid <= 0 || !isset($callInfo[$cid]))
-		{
-			continue;
-		}
-
-		if ((int) $crow->is_call_boss === 1)
-		{
-			caw_claim($holders, $uid, $cid, 'direct');
-		}
-
-		if ($isBossCall[$cid])
-		{
-			caw_claim($holders, $uid, $cid, 'container');
-		}
-	}
-
-	/*
-	/* ---- 4 of 5: SUPERVISORY ----
-	/*
-	/* Two queries, never one per call. First every supervision edge whose
-	/* CHILD is an owed call, then the confirmed roster of the boss calls those
-	/* edges point at.
-	/*
-	/* The boss call itself is usually OUTSIDE the window — a Crew Boss call
-	/* runs in the morning and the load-out it supervises finishes at midnight
-	/* — so it is looked up by id rather than found among the candidates.
-	/*
-	/* INNER JOIN calls ON the boss call, matching every other traversal of
-	/* this table: an edge left dangling by a deleted call resolves to nothing
-	/* rather than to a boss who does not exist. sss::deleteCall does not know
-	/* call_supervision exists.
-	*/
-
-	$edgeSql = "
-		SELECT s.boss_call AS boss_call, s.child_call AS child_call
-		FROM call_supervision s
-		INNER JOIN calls cb ON cb.id = s.boss_call
-		WHERE s.child_call IN ($owedList)
-	";
-
-	$edgeRes = mysql_query($edgeSql);
-
-	if ($edgeRes === false)
-	{
-		http_response_code(500);
-		die(json_encode(array('error' => 'supervision query failed: ' . mysql_error())));
-	}
-
-	$childrenOf = array();   /* bossCallID -> [childCallID] */
-
-	while ($erow = mysql_fetch_object($edgeRes))
-	{
-		$bc = (int) $erow->boss_call;
-		$cc = (int) $erow->child_call;
-
-		if ($bc <= 0 || !isset($callInfo[$cc]))
-		{
-			continue;
-		}
-
-		if (!isset($childrenOf[$bc]))
-		{
-			$childrenOf[$bc] = array();
-		}
-
-		$childrenOf[$bc][] = $cc;
-	}
-
-	if (count($childrenOf) > 0)
-	{
-		$bossList = implode(',', array_map('intval', array_keys($childrenOf)));
-
-		$bossCrewSql = "
-			SELECT ccm.callID AS call_id, ccm.userID AS user_id
-			FROM call_crew_map ccm
-			WHERE ccm.callID IN ($bossList)
-			  AND ccm.status = 5
-		";
-
-		$bossCrewRes = mysql_query($bossCrewSql);
-
-		if ($bossCrewRes === false)
-		{
-			http_response_code(500);
-			die(json_encode(array('error' => 'boss roster query failed: ' . mysql_error())));
-		}
-
-		while ($brow = mysql_fetch_object($bossCrewRes))
-		{
-			$bc  = (int) $brow->call_id;
-			$uid = (int) $brow->user_id;
-
-			if ($uid <= 0 || !isset($childrenOf[$bc]))
+			if (!isset($holders[$uid]))
 			{
-				continue;
+				$holders[$uid] = array();
 			}
 
-			/*
-			/* NO is_call_boss TEST, and the asymmetry is Q4 again: every
-			/* confirmed resource on a dedicated boss call holds its children,
-			/* not only the nominated one. Nomination governs who the crew
-			/* RING, not who is responsible for the times.
-			*/
-
-			foreach ($childrenOf[$bc] as $cc)
-			{
-				caw_claim($holders, $uid, $cc, 'supervisory');
-			}
+			$holders[$uid][$cid] = $how;
 		}
 	}
 
@@ -405,7 +270,7 @@
 	}
 
 	/*
-	/* ---- 5 of 5: EIN ----
+	/* ---- 4 of 4: EIN ----
 	/*
 	/* REQUIRED, NOT OPTIONAL. push_subscriptions and sendPushToEin are keyed
 	/* on EIN; a userID reaches nobody. One query for every boss found.

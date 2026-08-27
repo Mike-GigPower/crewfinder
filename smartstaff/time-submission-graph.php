@@ -463,6 +463,117 @@
 			return $out;
 		}
 
+		/*
+		/* Given call ids, WHO HAS A LIVE SUBMISSION on each.
+		/*
+		/* The complement of goat_outstanding_by_call(), and the Ops lane needs
+		/* both: outstanding says how much work is left, this says whether any
+		/* of it has ARRIVED. A call with nothing submitted and a call with
+		/* half submitted are the same number on the badge and completely
+		/* different actions — one is "chase the boss", the other is "review
+		/* what came in".
+		/*
+		/* SAME PREDICATE AS goat_outstanding_by_call()'s `$done` SET, and it
+		/* has to stay that way: voided = 0 (a retraction returns the call to
+		/* awaiting) and userID > 0. If one of them ever gains a condition the
+		/* other lacks, a call will show as submitted while still counting as
+		/* outstanding for the same person.
+		/*
+		/* NO supersedes RESOLUTION IS NEEDED. This counts DISTINCT people with
+		/* at least one live row; which of their rows is the live one is
+		/* goat_time_submission_for()'s question, and asking it here would be a
+		/* second opinion about the same thing.
+		/*
+		/* THE SET CAN REACH BEYOND THE CONFIRMED ROSTER. An unbooked row is a
+		/* submission for someone who is not in call_crew_map for the call
+		/* (design §7), and it belongs here — it is a real claim someone has to
+		/* review. Callers rendering "N of M submitted" against the roster must
+		/* intersect first; count() alone will overstate it.
+		/*
+		/* RETURN SHAPE matches goat_bosses_by_call() rather than this file's
+		/* array()-on-failure rule, for the same reason: zero submissions and a
+		/* broken query are opposite answers here, and a lane that quietly
+		/* labelled every call "not submitted" because a query failed would
+		/* send Ops chasing bosses who had already done the work.
+		/*
+		/*   array('ok' => bool, 'error' => string,
+		/*         'by_call' => array(callID => array(userID => true)))
+		/*
+		/* A SET, not a count, because the one caller that matters has to
+		/* intersect it with the roster and with who already has times keyed in
+		/* call_crew_map. count() on an entry gives the number back.
+		/*
+		/* Calls with no submissions at all are ABSENT from by_call, exactly as
+		/* goat_outstanding_by_call() omits calls with no confirmed crew.
+		*/
+
+		function goat_submitted_by_call($callIDs)
+		{
+			$none = array('ok' => true, 'error' => '', 'by_call' => array());
+
+			if (!is_array($callIDs) || count($callIDs) === 0)
+			{
+				return $none;
+			}
+
+			/* dedupe and sanitise; every id is cast, no string reaches SQL */
+
+			$ids = array();
+
+			foreach ($callIDs as $cid)
+			{
+				$cid = (int) $cid;
+
+				if ($cid > 0)
+				{
+					$ids[$cid] = true;
+				}
+			}
+
+			if (count($ids) === 0)
+			{
+				return $none;
+			}
+
+			$idList = implode(',', array_map('intval', array_keys($ids)));
+
+			$res = mysql_query("SELECT s.callID AS callID, s.userID AS userID
+			                    FROM call_time_submissions s
+			                    INNER JOIN calls c ON c.id = s.callID
+			                    WHERE s.callID IN (" . $idList . ")
+			                      AND s.voided = 0
+			                      AND s.userID > 0");
+
+			if ($res === false)
+			{
+				return array('ok'    => false,
+				             'error' => 'submission lookup failed: ' . mysql_error(),
+				             'by_call' => array());
+			}
+
+			$seen = array();   /* callID -> userID -> true, so a correction counts once */
+
+			while ($row = mysql_fetch_object($res))
+			{
+				$cid = (int) $row->callID;
+				$uid = (int) $row->userID;
+
+				if ($cid <= 0 || $uid <= 0)
+				{
+					continue;
+				}
+
+				if (!isset($seen[$cid]))
+				{
+					$seen[$cid] = array();
+				}
+
+				$seen[$cid][$uid] = true;
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $seen);
+		}
+
 	}
 
 ?>
