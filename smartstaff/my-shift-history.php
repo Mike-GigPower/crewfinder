@@ -7,6 +7,13 @@
 	include('cohort.php');
 
 	/*
+	/* SLICE C5 — needed for goat_boss_scope() and goat_boss_calls_for_user(),
+	/* which build can_see_crew below. include_once, not include: this file is
+	/* function_exists-guarded but resolve-call-contact.php beneath it is not.
+	*/
+	include_once('supervision-graph.php');
+
+	/*
 	/* JSON response */
 
 	header('Content-Type: application/json');
@@ -115,6 +122,47 @@
 		die('{"error":"query failed: ' . addslashes(mysql_error()) . '"}');
 	}
 
+	/*
+	/* SUPERVISORY SETS, RESOLVED ONCE — ADDED 27 Aug 2026 (slice C5).
+	/*
+	/* Both are WHOLE-SCOPE queries, not per-call tests. Inside the row loop
+	/* they would be TWO QUERIES PER ROW over a history that runs to 16 years
+	/* and thousands of rows. Resolve once, test with in_array() below.
+	/*
+	/*   $bossScope — calls this user may ACT ON: flagged on the call itself,
+	/*                or a child of a dedicated boss call they are confirmed on.
+	/*   $bossCalls — the user's OWN dedicated boss calls. A SEPARATE SET:
+	/*                goat_boss_scope() reaches a container only through its
+	/*                direct branch, which requires the flag, and its
+	/*                supervisory branch adds a boss call's CHILDREN and never
+	/*                the boss call itself. A confirmed-but-unflagged boss —
+	/*                Q4's normal case, 18 of 22 containers on test — is absent
+	/*                from their own Crew Boss call's scope without this.
+	/*
+	/* ---- CURRENT SCOPE AGAINST HISTORIC CALLS, AND IT IS NOT CHECKED ----
+	/*
+	/* READ THIS BEFORE TRUSTING can_see_crew ON AN OLD ROW. Both helpers
+	/* resolve against TODAY'S call_crew_map and call_supervision rows. This
+	/* endpoint returns shifts going back years. Nothing here asks who held the
+	/* call AT THE TIME, because nothing in the schema records it.
+	/*
+	/* So: a supervision edge deleted since the shift means a boss who genuinely
+	/* ran that call in March reads 0 today — their access lapses silently. An
+	/* edge added later grants access to a call they did not run (narrower than
+	/* it sounds: the roster is colleagues on a booking they were on, since the
+	/* row only exists because they were confirmed on the call).
+	/*
+	/* NEITHER IS NEW AND THE UNION DOES NOT MAKE IT WORSE. is_call_boss has
+	/* had exactly this property since day one — unflagging someone removes
+	/* their historic access already. Fixing it properly means recording who
+	/* held a call at the time, which is a schema change and not this slice.
+	/* Documented rather than solved, so the next reader does not assume the
+	/* historic call was checked against historic scope. It was not.
+	*/
+
+	$bossScope = goat_boss_scope($userID);
+	$bossCalls = goat_boss_calls_for_user($userID);
+
 	$shifts    = array();
 	$seen      = 0;
 	$truncated = false;
@@ -150,6 +198,23 @@
 			'start'        => date('Y-m-d\TH:i:s', $start_ts),
 			'est_length'   => (double) $row->est_length,
 			'is_call_boss' => ((int) $row->is_call_boss === 1) ? 1 : 0,
+
+			/*
+			/* MAY this crew member open the crew list for this past call? A
+			/* DIFFERENT QUESTION FROM is_call_boss, which stays exactly as it
+			/* is — a fact about the call_crew_map row, read as such by the
+			/* history page's "Call Boss" badge and its search token.
+			/*
+			/* The same three-way union my-call-crew.php gates on since slices
+			/* C3 and C4, so the link and the endpoint agree. Before this, a
+			/* supervising boss was refused the roster AFTER the shift — which
+			/* is precisely when the no-time-window decision exists to serve
+			/* them, because that is when crew time is submitted.
+			*/
+
+			'can_see_crew' => (((int) $row->is_call_boss === 1)
+			                   || in_array((int) $row->call_id, $bossScope)
+			                   || in_array((int) $row->call_id, $bossCalls)) ? 1 : 0,
 		);
 	}
 
