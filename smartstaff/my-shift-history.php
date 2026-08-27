@@ -14,6 +14,13 @@
 	include_once('supervision-graph.php');
 
 	/*
+	/* How far back the SUPERVISION branches of can_see_crew reach. One line to
+	/* change, with a comment, rather than a bare 90 buried in a boolean —
+	/* the number is a policy decision and will be revisited.
+	*/
+	define('HISTORY_SCOPE_DAYS', 90);
+
+	/*
 	/* JSON response */
 
 	header('Content-Type: application/json');
@@ -90,6 +97,29 @@
 	   "upcoming" */
 
 	$today_ts = (int) strtotime('today 00:00:00');
+
+	/*
+	/* HISTORIC WINDOW for the supervision branches of can_see_crew.
+	/*
+	/* The justification for post-shift roster access is that times are
+	/* submitted after the shift. That covers last week. It does not cover a
+	/* call from 2012, and what the link leads to is crew names and mobile
+	/* numbers.
+	/*
+	/* APPLIED TO THE SUPERVISION BRANCHES ONLY. is_call_boss keeps its
+	/* unbounded historic grant: it has had it since this endpoint existed, and
+	/* narrowing it is a separate policy change rather than a rider on this
+	/* one. Test 10 is the assertion that this was applied to the right
+	/* branches — a flagged boss on a call from years ago must still read 1.
+	/*
+	/* On test this took one boss from 359 newly-linked past calls down to the
+	/* handful inside the window.
+	/*
+	/* Derived from $today_ts, which the start_date filter below already needs,
+	/* so the whole window costs one strtotime() outside the row loop.
+	*/
+
+	$history_window_ts = (int) strtotime('-' . HISTORY_SCOPE_DAYS . ' days', $today_ts);
 
 	$sql = "
 		SELECT
@@ -182,6 +212,15 @@
 		$start_ts = strtotime(date('Y-m-d', (int) $row->start_date) . ' ' . $row->start_time);
 
 		/*
+		/* Inside the supervision window? Compared on start_date, the INT unix
+		/* timestamp at LOCAL MIDNIGHT, against a bound derived the same way —
+		/* not against $start_ts, which carries start_time and would make the
+		/* boundary depend on what time of day the call began.
+		*/
+
+		$in_window = ((int) $row->start_date >= $history_window_ts);
+
+		/*
 		/* html_entity_decode is a no-op on clean data, but booking and venue
 		/* names entered through SmartStaff's admin UI can carry encoded
 		/* entities (a "&" saved as "&amp;"). React escapes on render, so an
@@ -210,11 +249,22 @@
 			/* supervising boss was refused the roster AFTER the shift — which
 			/* is precisely when the no-time-window decision exists to serve
 			/* them, because that is when crew time is submitted.
+			/*
+			/* THE TWO SUPERVISION BRANCHES ARE WINDOWED and the flag branch is
+			/* not — see $history_window_ts above. That asymmetry is deliberate,
+			/* not an oversight to tidy up.
+			/*
+			/* NOTE THE ENDPOINT DISAGREES WITH THE LINK BEYOND THE WINDOW, and
+			/* in the safe direction: my-call-crew.php has no window, so a
+			/* supervising boss who types the URL for a call from 2012 still
+			/* gets the roster. This hides the link, it does not close the door.
+			/* Closing it means windowing that gate too, which is a policy
+			/* decision about the endpoint rather than about this list.
 			*/
 
 			'can_see_crew' => (((int) $row->is_call_boss === 1)
-			                   || in_array((int) $row->call_id, $bossScope)
-			                   || in_array((int) $row->call_id, $bossCalls)) ? 1 : 0,
+			                   || ($in_window && in_array((int) $row->call_id, $bossScope))
+			                   || ($in_window && in_array((int) $row->call_id, $bossCalls))) ? 1 : 0,
 		);
 	}
 
