@@ -35,7 +35,9 @@
 	/* TWO TOP-LEVEL GROUPS, AND WHY ONE SHAPE WILL NOT DO:
 	/*
 	/*   boss_calls   — "I am running this job from a dedicated boss call".
-	/*                  Containers. They carry `children`, never `crew`.
+	/*                  They carry `children` AND, since 27 Aug 2026, their own
+	/*                  roster: a boss call is a real call with real people
+	/*                  confirmed on it, not only a grouping device.
 	/*   direct_calls — "I am working this call and happen to be the nominated
 	/*                  boss on it". Rich's Pro Stage factory case: five crew,
 	/*                  one in charge, no boss call above them. Confirmed as the
@@ -285,15 +287,19 @@
 	/* export, no history.
 	*/
 
-	$rosterIDs = array();
+	/*
+	/* EVERY windowed call, containers included — CHANGED 27 Aug 2026.
+	/*
+	/* This used to be scope-only, because a boss call was a pure grouping
+	/* container with no roster of its own. It now carries one: a dedicated
+	/* boss call has confirmed crew like any other call, and a boss looking at
+	/* "Crew Boss 1 of 1" needs to see who that is.
+	/*
+	/* $order is already scope UNION boss calls, windowed by query 1, so this
+	/* is the whole set without recomputing it.
+	*/
 
-	foreach ($order as $cid)
-	{
-		if (isset($scopeSet[$cid]))
-		{
-			$rosterIDs[] = $cid;
-		}
-	}
+	$rosterIDs = $order;
 
 	$crewByCall = array();
 
@@ -351,11 +357,22 @@
 			/* one would give the client a state it has no rendering for.
 			*/
 
+			/*
+			/* is_call_boss IS EMITTED — ADDED 27 Aug 2026. It has been in the
+			/* SELECT since the ordering changed and was never output, so the
+			/* boss badge on a crew row has never had anything to render from.
+			/*
+			/* binary(50): cast in PHP, never compared with "= 1" in SQL.
+			/* makeboss writes the STRING '1', stored as byte 0x31 null-padded
+			/* to 50 bytes.
+			*/
+
 			$crewByCall[$ccid][] = array(
-				'user_id' => (int) $crow->user_id,
-				'name'    => trim(trim($first) . ' ' . trim($last)),
-				'mobile'  => ($crow->mobile === null ? '' : $crow->mobile),
-				'status'  => ((int) $crow->status === 5) ? 'confirmed' : 'standby',
+				'user_id'      => (int) $crow->user_id,
+				'name'         => trim(trim($first) . ' ' . trim($last)),
+				'mobile'       => ($crow->mobile === null ? '' : $crow->mobile),
+				'status'       => ((int) $crow->status === 5) ? 'confirmed' : 'standby',
+				'is_call_boss' => ((int) $crow->is_call_boss === 1) ? 1 : 0,
 			);
 		}
 	}
@@ -394,14 +411,26 @@
 	/* exactly like a right one.
 	*/
 
+	/*
+	/* THE ROSTER ATTACH, AND IT IS NOW RUN OVER EVERY CALL THIS ENDPOINT
+	/* EMITS — container, child and direct alike. A dedicated boss call
+	/* returns required, confirmed, standby, crew and outstanding exactly as a
+	/* leaf does; there is no second, thinner shape.
+	/*
+	/* IT UNSETS is_nominated, AND THAT IS CORRECT FOR A LEAF ONLY. A child or
+	/* a direct call is never something the viewer is "the nominated contact
+	/* for" in the sense a boss call means. A container IS, so the caller reads
+	/* the field before this runs and puts it back afterwards — see the boss
+	/* call loop below for why that is not a tidy-up waiting to happen.
+	/*
+	/* is_nominated is the ONLY key removed here. If a second one is ever
+	/* added, the container branch has to be revisited with it.
+	*/
+
 	function goat_boss_leaf_call($info, $crewByCall, $outstandingByCall)
 	{
 		$cid  = $info['call_id'];
 		$crew = isset($crewByCall[$cid]) ? $crewByCall[$cid] : array();
-
-		/* a leaf carries its roster; is_nominated is a boss-call concept */
-
-		unset($info['is_nominated']);
 
 		$confirmed = 0;
 		$standby   = 0;
@@ -433,6 +462,8 @@
 		*/
 
 		$info['outstanding'] = isset($outstandingByCall[$cid]) ? $outstandingByCall[$cid] : 0;
+
+		unset($info['is_nominated']);
 
 		return $info;
 	}
@@ -467,13 +498,43 @@
 			continue;   /* outside the window */
 		}
 
-		$entry = $callInfo[$bid];
-
 		$emitted[$bid] = true;
 
-		/* a container has no roster of its own, and no `required` to fill */
+		/*
+		/* A CONTAINER NOW CARRIES ITS OWN ROSTER — CHANGED 27 Aug 2026.
+		/*
+		/* It used to drop `required` and carry no crew at all, on the reading
+		/* that a boss call is only a grouping device. It is also a real call
+		/* that real people are confirmed on, and "Crew Boss 1 of 1" is a row a
+		/* boss wants to open like any other, so it now runs through
+		/* goat_boss_leaf_call() like everything else this endpoint emits.
+		/*
+		/* is_nominated IS READ FIRST AND PUT BACK AFTER, ON PURPOSE. The
+		/* helper unsets it, which is right for a child or a direct call and
+		/* wrong here.
+		/*
+		/* DO NOT "TIDY" THE RESTORE AWAY as a leftover of the old two-function
+		/* shape. is_nominated: false is a REAL AND REACHABLE state on a
+		/* container, not a theoretical one: goat_boss_calls_for_user()
+		/* deliberately does not check is_call_boss, because Q4 grants scope to
+		/* every confirmed resource on a dedicated boss call and not only to
+		/* the flagged one. So a boss can hold a container they are NOT the
+		/* listed contact for, and this field is the only thing that tells them
+		/* so — Q19, the quiet line explaining why the crew are ringing a
+		/* colleague. Drop it and two genuinely different situations collapse
+		/* into one.
+		/*
+		/* The roster does not answer the same question. A crew member's
+		/* is_call_boss says who the flagged boss IS; is_nominated says whether
+		/* it is YOU, and the viewer is not always on their own container's
+		/* roster to be found there.
+		*/
 
-		unset($entry['required']);
+		$nominated = $callInfo[$bid]['is_nominated'];
+
+		$entry = goat_boss_leaf_call($callInfo[$bid], $crewByCall, $outstandingByCall);
+
+		$entry['is_nominated'] = $nominated;
 
 		$kids = goat_supervision_children($bid);
 		$out  = array();
