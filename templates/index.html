@@ -419,6 +419,12 @@ tr.skipped{opacity:.6}
 .subtab-bar.show{display:flex}
 .subtab-group{display:none}
 .subtab-group.active{display:inline-flex;border:1px solid var(--border-gold);border-radius:20px;overflow:hidden}
+/* Focus mode (Crew Finder): hide global chrome to fit more crew on short
+   laptop screens. .env-strip is deliberately NOT hidden — the TEST banner is a
+   safety indicator and must survive every display mode. */
+body.cf-focus nav,
+body.cf-focus .tab-bar,
+body.cf-focus .subtab-bar{display:none}
 .subtab-group .tab-btn{height:28px;padding:0 18px;font-size:12px;font-weight:600;letter-spacing:.04em;border-bottom:none}
 .subtab-group .tab-btn.active{background:var(--accent);color:#000;border-bottom:none}
 /* Inactive crew aren't scheduled or inducted (slice 2 §6a): the Utilization and
@@ -514,6 +520,11 @@ tr.skipped{opacity:.6}
 .import-error-item{font-size:10px;color:#fca5a5;margin-bottom:3px;display:flex;gap:6px}
 .import-error-item::before{content:'×';font-weight:700;color:var(--conflict);flex-shrink:0}
 .import-section{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+/* Children keep their natural height so the column can actually overflow and
+   #import-mode-manual's overflow-y:auto engages. Without this, .import-section's
+   overflow:hidden resolves min-height:auto to 0, letting the cards shrink and
+   clip their own contents (the "+ Add Call" button disappearing). */
+#import-mode-manual > *{flex-shrink:0}
 .import-section-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;background:var(--surface2)}
 .import-section-title{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;color:var(--text);flex:1}
 .import-section-body{padding:14px}
@@ -1456,7 +1467,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
 </div>
 <nav>
   <div class="nav-logo">
-    <img src="/static/logo.png" alt="Gig Power" style="height:36px;width:auto;object-fit:contain">
+    <img src="/static/gigpower-logo-white.png" alt="Gig Power" style="height:36px;width:auto;object-fit:contain">
   </div>
   <div class="nav-centre">
     <img src="/static/the-goat-emblem.png" alt="THE GOAT" onclick="goatStampede()" title="🐐"
@@ -1503,7 +1514,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
 
 <div class="subtab-bar" id="subtab-bar">
   <div class="subtab-group" id="subtab-today">
-    <button class="tab-btn" id="tab-btn-ops"         onclick="switchTab('ops')">Today</button>
+    <button class="tab-btn" id="tab-btn-ops"         onclick="switchTab('ops')">Operations</button>
     <button class="tab-btn" id="tab-btn-performance" onclick="switchTab('performance')">Performance</button>
   </div>
   <div class="subtab-group" id="subtab-bookings">
@@ -1593,6 +1604,12 @@ a.recruit-action{text-decoration:none;display:inline-block}
             </div>
           </div>
           <div class="cf-dd-sec">
+            <div class="cf-dd-lbl">Hide from results</div>
+            <label class="cf-dd-check"><input type="checkbox" id="cf-hide-booked" checked onchange="cfSetHideRel()"> Already booked on this call</label>
+            <label class="cf-dd-check"><input type="checkbox" id="cf-hide-declined" checked onchange="cfSetHideRel()"> Declined this call</label>
+            <div style="font-size:10px;color:var(--muted);margin-top:6px">With several calls selected, hides only crew settled the same way on <b>every</b> one &mdash; someone booked on a load-in may still be needed on the load-out.</div>
+          </div>
+          <div class="cf-dd-sec">
             <label class="cf-dd-check"><input type="checkbox" id="exclude-pt" onchange="cfRenderChips();cfReSearchIfActive()"> Exclude public-transport-only crew</label>
           </div>
           <div class="cf-dd-sec">
@@ -1620,6 +1637,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
         <button id="goat-ask-btn" class="btn" onclick="askGoatCrew()">Ask</button>
         <div id="goat-ask-status" class="goat-ask-status" style="display:none"></div>
       </div>
+      <button type="button" class="btn" id="cf-focus-btn" onclick="cfToggleFocus()"
+              title="Hide the top bars to fit more crew on screen (Esc to exit)">&#10530; Focus</button>
     </div>
     <div class="cf-chips" id="cf-chips"></div>
     <div class="results-header" id="results-header" style="display:none">
@@ -1628,6 +1647,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <div class="stat"><span class="stat-num grey" id="cnt-skip">0</span><span class="stat-label">skipped</span></div>
       <div class="stat" id="stat-unknown" style="display:none"><span class="stat-num grey" id="cnt-unknown">0</span><span class="stat-label">no location</span></div>
       <div class="stat" id="stat-lic-hidden" style="display:none"><span class="stat-num grey" id="cnt-lic-hidden">0</span><span class="stat-label">hidden &mdash; expired licence</span></div>
+      <div class="stat" id="stat-rel-hidden" style="display:none"><span class="stat-num grey" id="cnt-rel-hidden">0</span><span class="stat-label">hidden &mdash; booked or declined</span></div>
       <div class="results-actions">
         <button class="btn" id="view-table-btn" onclick="setView('table')">&#9776; Table</button>
         <button class="btn btn-view-active" id="view-tl-btn" onclick="setView('timeline')">&#9632; Timeline</button>
@@ -2390,11 +2410,12 @@ let geoMode='venue', _geoActive=false;  // distance-filter state
 let _showRanking=false;                 // show "Available for X of Y" — only when the set is mixed (soft targets in play)
 let _softCallIds=new Set();             // call_ids of soft (considered) targets in the current result — for chip marking
 
-let _bookedCollapsed=false;             // ALREADY BOOKED panel collapse state (session-scoped)
+let _bookedCollapsed=true;              // ALREADY BOOKED panel collapse state (session-scoped, starts collapsed)
 let _selCollapsed=false;                // SELECTED panel chips collapse state (session-scoped)
 let _sortBy=null, _sortDir='asc';       // clickable-header sort (asc → desc → off)
 let _cfRoster=[];                       // {id,name,ein} roster for the spot-check autocomplete
 let _cfNameFilter='';                   // result-list name filter (substring, case-insensitive)
+let _cfHideBooked=true, _cfHideDeclined=true;   // session-scoped, default hidden
 
 // ── TIMELINE CONFIG ──
 const TL_START_H=0,TL_END_H=30,TL_TOTAL_H=30,TL_TICKS=[0,4,8,12,16,20,24,28];
@@ -3385,6 +3406,53 @@ function setView(view){
   if(currentResult)renderResults(currentResult,currentResult.details,currentResult.targets);
 }
 
+// Focus mode — hides nav + both tab bars. Crew Finder only: the tab bars are
+// the only way to leave this tab, so anything that navigates away must clear
+// the class or the operator is stranded with no chrome.
+function cfToggleFocus(on){
+  const want = (on===undefined) ? !document.body.classList.contains('cf-focus') : !!on;
+  document.body.classList.toggle('cf-focus', want);
+  const b=document.getElementById('cf-focus-btn');
+  if(b){ b.innerHTML = want ? '&#10530; Exit focus' : '&#10530; Focus'; b.classList.toggle('btn-view-active', want); }
+}
+
+// Display filter: hide crew whose answer to THIS search is already settled.
+// Re-render only — never cfReSearchIfActive(): this filters a result already in
+// hand, and re-running the search would cost a 30-second round trip per tick.
+function cfSetHideRel(){
+  _cfHideBooked  = !!document.getElementById('cf-hide-booked').checked;
+  _cfHideDeclined= !!document.getElementById('cf-hide-declined').checked;
+  if(currentResult) renderResults(currentResult, currentResult.details, currentResult.targets);
+}
+
+// Settled relationship to the search, or null when it can't be established for
+// EVERY selected call. Null always means "show the row".
+//
+// link_group is deliberately NOT consulted. The original design hid only within
+// a joined set, on the grounds that "booked on one call is exactly who we want
+// to see for another" — true of booked-on-SOME, but it also blocked hiding
+// someone booked on ALL of them, who has nothing left to be offered whether or
+// not SmartStaff formally links the calls. Requiring a row for every selected
+// call AND unanimous agreement is what makes dropping the gate safe: it is also
+// the check that covers a split linked set, since the respond-to-call.php
+// accept/decline cascade does NOT cover SmartStaff's native dash.php, so even a
+// linked set can disagree in the data.
+function cfSettledRelationship(crew){
+  const n=selectedCalls.size;
+  if(n<=1) return targetRelationship(crew);          // _bookedRel is authoritative
+  // is_target is set for SOFT (considered) targets too — they ride in the same
+  // `calls` array to /api/availability — so restrict to the selected hard calls,
+  // or a soft call's row would join the agreement vote.
+  const hardIds=new Set([...selectedCalls.keys()].map(String));
+  const ts=(crew.shifts||[]).filter(s=>s.is_target && hardIds.has(String(s.call_id)));
+  // Count DISTINCT calls covered, not rows: two rows against one call must not
+  // stand in for a call that has no row at all.
+  if(new Set(ts.map(s=>String(s.call_id))).size < n) return null;
+  const rels=new Set(ts.map(s=> s.status===5?'booked' : s.status===6?'declined'
+                                : s.status===7?'backup' : 'waiting'));
+  return rels.size===1 ? [...rels][0] : null;
+}
+
 // Clickable column-header sort. Cycles asc → desc → off for the clicked column.
 function sortByHeader(key){
   if(_sortBy!==key){ _sortBy=key; _sortDir='asc'; }
@@ -3510,6 +3578,10 @@ function renderResults(result,details,targets){
     goatInfo={explanation:_goatSpec.explanation||'Filtered',note:_goatSpec.note||'',matched:ap.matched,total:ap.total};
   }
   updateGoatBar(goatInfo);
+  // Hoisted above the filters below (was beside the count updates): the
+  // booked/declined filter calls targetRelationship(), which reads _bookedRel.
+  const bookedCrew = result.bookedCrew || [];
+  _bookedRel = buildBookedRel(bookedCrew);
   // Result-list name filter (3.6.0): narrows the rendered buckets by name
   // substring. Composes with the GOAT filter and the header sort; the counts
   // below recompute off the filtered result so the stats track what's shown.
@@ -3520,6 +3592,22 @@ function renderResults(result,details,targets){
       if(Array.isArray(result[k])) result[k]=result[k].filter(c=>(c.name||'').toLowerCase().includes(q));
     });
   }
+  // Hide crew whose answer to this search is settled (booked / declined). Only
+  // when the answer covers EVERY selected call — see cfSettledRelationship.
+  // `backup` and `waiting` are not hidden; neither is a settled answer.
+  let _cfRelHidden=0;
+  if(_cfHideBooked||_cfHideDeclined){
+    result={...result};
+    ['available','conflicts','skipped','location_unknown'].forEach(k=>{
+      if(!Array.isArray(result[k])) return;
+      result[k]=result[k].filter(c=>{
+        const rel=cfSettledRelationship(c);
+        if(_cfHideBooked  && rel==='booked'){   _cfRelHidden++; return false; }
+        if(_cfHideDeclined&& rel==='declined'){ _cfRelHidden++; return false; }
+        return true;
+      });
+    });
+  }
   // Clickable-header sort: applied after any GOAT filter, within each bucket.
   if(_sortBy){
     result={...result};
@@ -3528,8 +3616,6 @@ function renderResults(result,details,targets){
     });
   }
   const{available,conflicts,skipped}=result;
-  const bookedCrew = result.bookedCrew || [];
-  _bookedRel = buildBookedRel(bookedCrew);
   document.getElementById('cnt-avail').textContent=available.length;
   document.getElementById('cnt-conf').textContent=conflicts.length;
   document.getElementById('cnt-skip').textContent=skipped.length;
@@ -3548,8 +3634,17 @@ function renderResults(result,details,targets){
     if(nHidden){ document.getElementById('cnt-lic-hidden').textContent=nHidden; lh.style.display=''; }
     else { lh.style.display='none'; }
   }
+  // A silent filter is not acceptable — the count is what tells the operator the
+  // list got shorter on purpose.
+  const rh = document.getElementById('stat-rel-hidden');
+  if(rh){
+    if(_cfRelHidden){ document.getElementById('cnt-rel-hidden').textContent=_cfRelHidden; rh.style.display=''; }
+    else { rh.style.display='none'; }
+  }
   document.getElementById('results-header').style.display='flex';
-  document.getElementById('cf-legend').style.display='flex';
+  // Shift-bar legend explains timeline bar colours only — in Table view there
+  // are no bars, so the whole legend (induction line included) is dead chrome.
+  document.getElementById('cf-legend').style.display = (currentView==='timeline') ? 'flex' : 'none';
   cfRenderChips();
   // Venue-level induction context. Without this a blank badge is ambiguous:
   // "venue isn't controlled" and "this person has no record" look identical.
@@ -4788,6 +4883,7 @@ function visibleChildren(g){
 function switchGroup(g){
   const kids = visibleChildren(g);
   if(!kids.length) return;                       // group is fully cohort-hidden
+  cfToggleFocus(false);   // never navigate away with the chrome still hidden
   const remembered = goatPrefs.get('nav', 'last:' + g, null);
   switchTab(kids.includes(remembered) ? remembered : kids[0]);
 }
@@ -4803,6 +4899,7 @@ function applyGroupVisibility(){
 
 // ── TABS ──
 function switchTab(tab){
+  cfToggleFocus(false);   // a pop-out or palette jump must never land with nav hidden
   _activeTab = tab;   // source of truth for pop-out (nav My Status isn't a .tab-btn)
   // Match buttons/panels by id, not list position — robust to hidden/added tabs
   // (the positional version broke when the My Status tab was added).
@@ -13991,12 +14088,19 @@ document.addEventListener('keydown', function(e){
 
 // Lowest-priority Escape: closes the crew detail row, but only when neither the call
 // dialog (entity-modal) nor the ops dialog (ops-modal) is open — they own Esc first.
+// Focus mode sits BELOW even the detail row: with a row open, one press closes the
+// row and keeps the chrome hidden, a second press exits focus. The palette owns Esc
+// while open, so cancelling it must not also drop the operator out of focus mode.
 document.addEventListener('keydown', function(e){
   if(e.key !== 'Escape') return;
   const em = document.getElementById('entity-modal');
   if(em && em.style.display === 'flex') return;
   const om = document.getElementById('ops-modal');
   if(om && om.style.display === 'flex') return;
+  const pal = document.getElementById('cmd-palette');
+  const palOpen = !!pal && pal.style.display === 'flex';
+  if(!palOpen && !document.querySelector('tr.crew-detail-row')
+     && document.body.classList.contains('cf-focus')){ cfToggleFocus(false); return; }
   closeCrewDetail();
 });
 
