@@ -1,6 +1,6 @@
 {
-  "version": "5.21.0",
+  "version": "5.21.1",
   "release_date": "2026-08-28",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.21.0/TheGOAT.dmg",
-  "release_notes": "Crew Finder hides crew who've already answered and reclaims screen space with a new Focus mode. Create Booking scrolls properly again, the Today tab is now Operations, and there's a new Gig Power logo."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.21.1/TheGOAT.dmg",
+  "release_notes": "New sound when a booking reaches fully crewed."
 }
