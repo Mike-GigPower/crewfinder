@@ -1,6 +1,6 @@
 {
-  "version": "5.21.1",
-  "release_date": "2026-08-28",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.21.1/TheGOAT.dmg",
-  "release_notes": "New sound when a booking reaches fully crewed."
+  "version": "5.22.0",
+  "release_date": "2026-08-31",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.22.0/TheGOAT.dmg",
+  "release_notes": "New Miscellaneous licence group: Police Check, ISO 45001 Auditor and Responsible Service of Alcohol can now be recorded, filtered on and chased for expiry. Licence Triage now accepts every type in the catalogue."
 }
