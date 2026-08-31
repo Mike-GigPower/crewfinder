@@ -5448,7 +5448,15 @@ async function doSendReminders(id){
   const res = await postSessions({ action:'send_reminders', id:id, milestone:milestone });
   if(res.httpError || !res.body || res.body.ok === false){
     const err = document.getElementById('sess-remind-err');
-    if(err) err.textContent = 'Could not send: ' + ((res.body && (res.body.error || res.body.reason)) || 'error');
+    // A 504 from our own proxy is NOT a failed send — it means the send outlasted
+    // how long we were willing to wait for the reply, and is still running. Say so
+    // in those words. "Could not send" here is what had ops believing 302 delivered
+    // reminders had failed (31 Aug 2026); the prefix is the whole bug, not the wait.
+    if(res.status === 504 || (res.body && res.body.timeout)){
+      if(err) err.textContent = (res.body && res.body.error) || 'Still working — press again shortly to see what is left.';
+    } else {
+      if(err) err.textContent = 'Could not send: ' + ((res.body && (res.body.error || res.body.reason)) || 'error');
+    }
     if(actions) actions.querySelectorAll('button').forEach(b => b.disabled = false);
     return;
   }
@@ -5510,7 +5518,15 @@ async function doCancelSession(id){
   if(res.httpError || !res.body || res.body.ok === false){
     const err = document.getElementById('sess-cancel-err');
     const msg = (res.body && (res.body.error || res.body.reason)) || 'error';
-    if(err) err.textContent = 'Could not cancel: ' + (msg === 'already_cancelled' ? 'this session is already cancelled.' : msg);
+    // Same distinction as doSendReminders: on a 504 the cancellation itself has
+    // already committed in the database and the apology emails are still going
+    // out. Saying "could not cancel" would invite a second press, which comes
+    // back 'already_cancelled' and reads like a second failure.
+    if(res.status === 504 || (res.body && res.body.timeout)){
+      if(err) err.textContent = (res.body && res.body.error) || 'Still working — reload the list shortly to confirm.';
+    } else {
+      if(err) err.textContent = 'Could not cancel: ' + (msg === 'already_cancelled' ? 'this session is already cancelled.' : msg);
+    }
     if(btns) btns.querySelectorAll('button').forEach(b => b.disabled = false);
     return;
   }
