@@ -5,6 +5,7 @@
 
 	include('../../global.php');
 	include('cohort.php');
+	include('licence-catalogue-lib.php');
 
 	/*
 	/* JSON response */
@@ -85,17 +86,30 @@
 
 	/*
 	/* 3. validate the codes. Split on comma, trim, drop blanks, and check EVERY code
-	/* against the 41-value catalogue allow-list (kept in sync with app.py's
-	/* LICENCE_CATALOGUE and admin-add-license.php's $allowedTypes). Any invalid code
-	/* rejects the whole request — nothing is written. */
+	/* against the PUBLISHED catalogue allow-list, read from `licence_catalogue` via
+	/* goat_licence_allowed_types() — the same helper admin-add-license.php,
+	/* admin-edit-license.php and my-add-license.php use. Any invalid code rejects
+	/* the whole request; nothing is written.
+	/*
+	/* THIS WAS A HARDCODED 41-VALUE ARRAY until the Miscellaneous group landed.
+	/* Phase 1 of the catalogue migration moved the other four write paths onto the
+	/* table and missed this one, so triage kept validating against a frozen copy:
+	/* every code added to the catalogue after the seed — POLICE, ISO45001, RSA —
+	/* was assignable in the Licences tab and rejected as "invalid code" in triage,
+	/* the one screen built to assign them. Reading the table is what keeps the two
+	/* allow-lists guaranteed to agree.
+	/*
+	/* FALSE, not an empty array, on an unreadable catalogue: falling back to
+	/* array() would reject every code and read to the operator as a broken form
+	/* rather than an unavailable catalogue. A clean 500 is the honest failure. */
 
-	$allowedTypes = array(
-		'SB', 'SI', 'SA', 'DG', 'RB', 'RI', 'RA', 'BS', 'BA', 'TO', 'ES',
-		'CT', 'CS', 'CD', 'CP', 'CB', 'CV', 'CN', 'C2', 'C6', 'C1', 'C0',
-		'HM', 'HP', 'LF', 'LO', 'WP', 'RS', 'PB', 'TV',
-		'CI', 'WAH', 'EWPSOA', 'FA', 'TC', 'WWCC',
-		'LR', 'MR', 'HR', 'HC', 'MC'
-	);
+	$allowedTypes = goat_licence_allowed_types();
+
+	if ($allowedTypes === false)
+	{
+		http_response_code(500);
+		die('{"ok":false,"error":"licence catalogue unavailable"}');
+	}
 
 	$codesRaw = isset($_POST['codes']) ? $_POST['codes'] : '';
 	$codes    = array();
