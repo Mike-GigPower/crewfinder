@@ -36,3 +36,8 @@ test_inc.json
 before_plain.json
 after_plain.json
 after_inc.json
+
+# Visa register working exports — live crew PII (names, EINs, expiry dates).
+# Same reason as the get-calls-bulk dumps above: this repo is public.
+visa-draft-register.csv
+visa-*-register.csv
