@@ -15,8 +15,8 @@ and it GETs the PHP endpoints DIRECTLY (not via the app's parsers) so it sees th
 raw wire values — a PHP-side `(int)` cast regression won't be masked by the
 client's _coerce_status().
 
-Run:
-    python3 smoke_endpoints.py
+Run (the venv interpreter — the system python3 has none of the deps):
+    venv/bin/python3 smoke_endpoints.py
 
 Credentials (admin recommended, so the bulk endpoints are exercised):
     SS_USER / SS_PASS environment variables, else config.json username/password.
@@ -29,12 +29,32 @@ import sys
 from datetime import datetime, timedelta
 
 try:
-    from app import create_ss_session, BASE_URL, load_config
+    import requests
+    from app import (create_ss_session, BASE_URL, load_config,
+                     GOAT_RECRUITMENT_KEY, INDUCTION_SESSIONS_ADMIN_URL,
+                     SESSION_ACTION_TIMEOUTS)
 except Exception as e:  # pragma: no cover
-    print(f"FATAL: could not import from app.py: {e}")
+    # Inside the guard on purpose: this file promises exit code 2 and a readable
+    # line on a setup problem, not a traceback. A bare `import requests` above
+    # the guard broke that promise the first time it was run (31 Aug 2026).
+    print(f"FATAL: could not import dependencies: {e}")
+    print("       Run it with the venv interpreter: venv/bin/python3 smoke_endpoints.py")
     sys.exit(2)
 
 VALID_STATUS = {0, 1, 5, 6, 8}  # 5=confirmed,1=pending,6=declined,8=noshow,0=unset
+
+# Sessions actions this harness is permitted to call. THIS IS A SAFETY GATE, not
+# documentation: three of the endpoint's actions email real people —
+# send_reminders and cancel_session mail every booked candidate, cancel_on_behalf
+# mails one. On 31 Aug 2026 four presses of send_reminders put 302 emails into
+# candidates' inboxes in nine minutes. post_sessions() asserts against this set
+# at the call site so a future edit cannot quietly widen a smoke run into a
+# mailing run by passing a different action string.
+SESSIONS_READ_ONLY_ACTIONS = {"list", "roster", "no_suitable_list"}
+
+# Only "list" is actually exercised below. roster and no_suitable_list return
+# candidate names and email addresses; a failing assertion would print them into
+# CI output, so they stay unused unless someone needs them and handles that.
 
 _PASS, _FAIL = [], []
 
@@ -65,6 +85,39 @@ def get_json(ss, path):
         return resp.json(), None
     except Exception as e:
         return None, f"JSON parse failed: {e}; body starts {body[:60]!r}"
+
+
+def post_sessions(action, **payload):
+    """POST a read-only action to the induction-sessions-admin edge function.
+
+    Talks to the edge function directly with the service key — the same call
+    app.py's /api/recruitment/sessions makes, minus the cohort gate, which needs
+    a browser session this harness does not have. What is worth asserting here
+    is the CONTRACT the Sessions UI renders from.
+    """
+    if action not in SESSIONS_READ_ONLY_ACTIONS:
+        raise AssertionError(
+            "smoke tests may only call read-only session actions; refusing "
+            f"{action!r}. send_reminders and cancel_session email every booked "
+            "candidate."
+        )
+    body = dict(payload, action=action)
+    try:
+        r = requests.post(
+            INDUCTION_SESSIONS_ADMIN_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json=body,
+            timeout=SESSION_ACTION_TIMEOUTS.get(action, 20),
+        )
+    except Exception as e:
+        return None, f"request error: {e}"
+    text = (r.text or "").strip()
+    if not text:
+        return None, f"HTTP {r.status_code}, EMPTY body"
+    try:
+        return r.json(), None
+    except Exception as e:
+        return None, f"HTTP {r.status_code}, JSON parse failed: {e}; starts {text[:60]!r}"
 
 
 def main():
@@ -242,6 +295,61 @@ def main():
             check("Ops are not refused (widened gate)", "error" not in d, d.get("error", ""))
             check("my-call-times has 'crew' list", isinstance(d.get("crew"), list))
             check("my-call-times has 'call' object", isinstance(d.get("call"), dict))
+
+    # ── induction sessions (READ-ONLY) ────────────────────────────────────────
+    # No mutating action is reachable from here; see SESSIONS_READ_ONLY_ACTIONS.
+    print("induction-sessions-admin (read-only)")
+    if not GOAT_RECRUITMENT_KEY:
+        print("  (GOAT_RECRUITMENT_KEY not configured \u2014 sessions checks skipped)")
+    else:
+        d, e = post_sessions("list")
+        if check("sessions list returns JSON", d is not None, e) and d:
+            check("sessions list reports ok",
+                  d.get("ok") is True,
+                  f"ok={d.get('ok')!r} error={d.get('error')!r}")
+            sessions = d.get("sessions")
+            check("sessions is a list", isinstance(sessions, list),
+                  f"got {type(sessions).__name__}")
+            check("intakes is a list", isinstance(d.get("intakes"), list),
+                  f"got {type(d.get('intakes')).__name__}")
+
+            # Everything below reads fields off a row. An assertion with nothing
+            # to inspect is not a pass, it is a silent skip wearing a tick, so
+            # the emptiness is itself a failure rather than a reason to move on.
+            if check("sessions list is non-empty",
+                     isinstance(sessions, list) and len(sessions) > 0,
+                     "no rows returned \u2014 the field checks below would pass on nothing"):
+                row = sessions[0]
+                for k in ("id", "label", "intake_label", "state", "mode",
+                          "booked", "capacity", "waitlist_count", "starts_at"):
+                    check(f"session row carries '{k}'", k in row)
+                check("booked is int", isinstance(row.get("booked"), int),
+                      f"got {type(row.get('booked')).__name__}")
+                check("capacity is int", isinstance(row.get("capacity"), int),
+                      f"got {type(row.get('capacity')).__name__}")
+                check("waitlist_count is int", isinstance(row.get("waitlist_count"), int),
+                      f"got {type(row.get('waitlist_count')).__name__}")
+                states = {s.get("state") for s in sessions}
+                check("every state is one of draft/open/closed/cancelled",
+                      states <= {"draft", "open", "closed", "cancelled"},
+                      f"unexpected: {sorted(states - {'draft','open','closed','cancelled'})}")
+
+                # The reason 5.23.1 exists. Reminders send one email at a time at
+                # ~0.55s each, so the wall clock scales with the booked count and
+                # the proxy timeout has to stay ahead of the biggest session. Raise
+                # the session capacity cap without raising the timeout and this is
+                # the check that says so, instead of ops seeing a false failure.
+                SECS_PER_EMAIL = 0.6           # 0.53-0.59 measured 31 Aug 2026
+                budget = SESSION_ACTION_TIMEOUTS.get("send_reminders", 20)
+                biggest = max(int(s.get("booked") or 0) for s in sessions)
+                check("largest session still fits the send_reminders timeout",
+                      biggest * SECS_PER_EMAIL < budget,
+                      f"{biggest} booked x {SECS_PER_EMAIL}s = "
+                      f"{biggest * SECS_PER_EMAIL:.0f}s against a {budget}s budget")
+                check("the two emailing actions both carry a raised timeout",
+                      SESSION_ACTION_TIMEOUTS.get("send_reminders", 0) > 20
+                      and SESSION_ACTION_TIMEOUTS.get("cancel_session", 0) > 20,
+                      f"got {SESSION_ACTION_TIMEOUTS!r}")
 
     # ── summary ────────────────────────────────────────────────────────────────
     print("\n" + "=" * 50)
