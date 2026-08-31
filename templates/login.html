@@ -462,6 +462,11 @@ document.querySelector('form').addEventListener('submit', (e) => {
   const audio = new Audio('/static/welcome.mp3');
   audio.volume = 0.7;
   audio.play().catch(() => {});
+  // Hand the greeting to the app. The login page has no identity resolved yet,
+  // so it cannot read the per-person mute — index.html plays the line once it
+  // can, and honours the setting there. sessionStorage is per-tab, so it lands
+  // on this tab only.
+  try{ sessionStorage.setItem('goat_login_greet','1'); }catch(e){}
   btn.textContent = 'AUTHENTICATING...';
   btn.classList.add('loading');
   // Submit after 1.2s — enough for the sound to land
