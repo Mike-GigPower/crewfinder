@@ -35,6 +35,24 @@ nav{display:flex;align-items:center;gap:16px;padding:0 20px;height:58px;backgrou
 .nav-centre{flex:0 1 auto;display:flex;align-items:center;gap:10px;min-width:0}
 .nav-logo img{height:36px;width:36px;object-fit:contain;background:#000;border-radius:4px;padding:2px}
 .nav-goat-wordmark{display:flex;flex-direction:column;line-height:1}
+/* Personality audio — header gear, its popover, and the Admin panel controls */
+.gv-gear{background:none;border:none;color:var(--muted);font-size:12px;line-height:1;cursor:pointer;align-self:flex-end;padding:0 0 2px 8px}
+.gv-gear:hover{color:var(--accent)}
+.gv-gear.muted{opacity:.55}
+.gv-pop{position:fixed;z-index:99998;display:none;width:250px;padding:13px 15px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 34px rgba(0,0,0,.7);font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text)}
+.gv-pop.open{display:block}
+.gv-pop-title{font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:.12em;color:var(--accent);margin-bottom:9px}
+.gv-row{display:flex;align-items:center;gap:9px;margin:9px 0}
+.gv-row label{cursor:pointer;user-select:none}
+.gv-slider{flex:1;accent-color:var(--accent)}
+.gv-note{color:var(--muted);font-size:10px;line-height:1.55;margin-top:10px}
+.gv-btn{background:none;border:1px solid var(--border);color:var(--text);border-radius:4px;padding:4px 9px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-size:10px}
+.gv-btn:hover{border-color:var(--accent);color:var(--accent)}
+.gv-btn:disabled{opacity:.4;cursor:default;border-color:var(--border);color:var(--muted)}
+.gv-admin{padding:15px;background:var(--surface);border:1px solid var(--border);border-radius:7px;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--text);max-width:560px}
+.gv-admin .gv-note{font-size:10px}
+.gv-groups{margin-top:11px;border-top:1px solid var(--border);padding-top:10px;color:var(--muted);font-size:10px;line-height:1.7}
+
 .nav-goat-title{font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--accent);letter-spacing:.12em;line-height:1;white-space:nowrap}
 .nav-goat-sub{font-family:'Share Tech Mono',monospace;font-size:8px;color:#fff;letter-spacing:.2em;text-transform:uppercase;white-space:nowrap}
 .nav-appname{font-family:'Bebas Neue',sans-serif;font-size:15px;font-weight:800;color:var(--accent)}
@@ -1478,6 +1496,9 @@ a.recruit-action{text-decoration:none;display:inline-block}
       <span class="nav-goat-sub">Gig Power Ops, Admin, Tasking</span>
     </div>
     <span id="nav-version" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;align-self:flex-end;padding-bottom:2px"></span>
+    <button class="gv-gear" id="gv-gear" title="Personality audio"
+            onclick="goatVoiceTogglePopover(event)">&#9834;</button>
+
   </div>
   <div class="nav-right">
     <div class="cache-badge" id="cache-badge" onclick="refreshCache()">Loading cache...</div>
@@ -1485,9 +1506,31 @@ a.recruit-action{text-decoration:none;display:inline-block}
             onclick="switchTab('my-status')">👤 My Status</button>
     <button id="btn-elevate" class="btn-logout" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="openElevateModal()">🔑 Admin</button>
     <button id="btn-exit-admin" class="btn-logout" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="exitAdmin()">⤓ Exit Admin</button>
-    <a href="/logout" class="btn-logout">Sign out</a>
+    <a href="/logout" class="btn-logout" onclick="return goatVoiceFarewell(event)">Sign out</a>
   </div>
 </nav>
+
+<!-- Personality-audio quick controls. Fixed-position and a direct child of
+     <body> rather than of <nav>, so nav's overflow/stacking context can never
+     clip it. Positioned under the gear at open time. -->
+<div class="gv-pop" id="gv-pop">
+  <div class="gv-pop-title">THE GOAT&rsquo;S VOICE</div>
+  <div class="gv-row">
+    <input type="checkbox" id="gv-pop-on" onchange="goatVoiceSetEnabled(this.checked)">
+    <label for="gv-pop-on">Personality audio</label>
+  </div>
+  <div class="gv-row">
+    <span>Vol</span>
+    <input type="range" class="gv-slider" id="gv-pop-vol" min="0" max="100" step="5"
+           oninput="goatVoiceSetVolume(this.value/100)">
+    <span id="gv-pop-volnum" style="width:30px;text-align:right;color:var(--muted)"></span>
+  </div>
+  <div class="gv-row">
+    <button class="gv-btn" id="gv-pop-test" onclick="goatVoiceTest()">Hear one</button>
+    <span id="gv-pop-count" style="color:var(--muted);font-size:10px"></span>
+  </div>
+  <div class="gv-note" id="gv-pop-note"></div>
+</div>
 {% if not env_is_prod %}
 <div class="env-strip">&#9888; TEST &mdash; {{ env_url }}</div>
 {% endif %}
@@ -2394,6 +2437,35 @@ a.recruit-action{text-decoration:none;display:inline-block}
           </div>
         </button>
       </div>
+      <div class="admin-hub-section">Preferences</div>
+      <div class="gv-admin">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:.1em;color:var(--accent);margin-bottom:4px">PERSONALITY AUDIO</div>
+        <div class="gv-note" style="margin-top:0">
+          THE GOAT speaks when things happen &mdash; a cache refresh, a booking conflict,
+          an expired induction. Your setting is yours alone: four people on one Mac each
+          keep their own.
+        </div>
+        <div class="gv-row" style="margin-top:13px">
+          <input type="checkbox" id="gv-adm-on" onchange="goatVoiceSetEnabled(this.checked)">
+          <label for="gv-adm-on">Play personality audio</label>
+        </div>
+        <div class="gv-row">
+          <span style="width:52px">Volume</span>
+          <input type="range" class="gv-slider" id="gv-adm-vol" min="0" max="100" step="5"
+                 oninput="goatVoiceSetVolume(this.value/100)">
+          <span id="gv-adm-volnum" style="width:34px;text-align:right;color:var(--muted)"></span>
+        </div>
+        <div class="gv-row">
+          <button class="gv-btn" id="gv-adm-test" onclick="goatVoiceTest()">Hear one</button>
+        </div>
+        <div class="gv-groups" id="gv-adm-groups"></div>
+        <div class="gv-note">
+          This switch covers the voice library only. The older sounds &mdash; the goat
+          bray, the import cha-ching, the Harry Styles watermelons &mdash; keep their own
+          triggers and are not affected.
+        </div>
+      </div>
+
     </div>
   </div><!-- end tab-administration -->
 </div>
@@ -2502,6 +2574,303 @@ const goatPrefs = (function(){
     }
   };
 })();
+
+
+// ── PERSONALITY AUDIO ───────────────────────────────────────────────────────
+// THE GOAT's spoken lines: short recordings triggered by what the operator does,
+// so the app has a voice instead of just a UI. The library is DISCOVERED at
+// runtime from /api/voice/manifest, so a new line is a file copied in — no code
+// change here, no new <audio> tag, no list to keep in sync. The layout is
+// static/audio/<group>/<event>/<anything>.wav: the FOLDER names the event, so a
+// clip keeps whatever filename the recording tool gave it.
+//
+// SCOPE — this module owns the voice library and nothing else. The five original
+// sounds keep their own <audio> tags and their own triggers: goat-bray (the
+// header stampede and the "meaning of life" egg), cha-ching (a clean import),
+// closed.wav (fanfare), harry.mp3 (Harry Styles bookings, with its own
+// easterEgg/harry mute) and welcome.mp3 (login). Turning personality audio off
+// does not silence them, deliberately — welcome.mp3 fires on the login page,
+// which has no identity yet and therefore no preferences to read.
+//
+// Three rules do more to keep people from muting this than the writing does,
+// which is why they live in the player rather than at each call site:
+//   1. COOLDOWN — an event will not speak again inside its window. Refresh the
+//      cache four times in a minute and you hear one line, not four.
+//   2. NO STACKING — if something is already playing the new trigger is DROPPED,
+//      never queued. Two goats talking over each other is the fastest way to
+//      make someone switch this off for good.
+//   3. SILENT WHEN EMPTY — an event with no files installed is a no-op, not an
+//      error. Every call site can be wired today and recorded whenever.
+const goatVoice = (function(){
+  const AREA            = 'voice';     // goatPrefs area — per-person, per-machine
+  const DEFAULT_VOLUME  = 0.7;
+  const DEFAULT_COOLDOWN_MS = 20000;   // per event, overridable per call
+
+  let _manifest = null;    // {group:{event:[url,...]}} — null until loaded
+  let _loading  = null;    // in-flight load promise, so concurrent calls share one fetch
+  let _current  = null;    // the Audio element currently speaking, or null
+  const _lastAt = {};      // "group/event" -> epoch ms of last play
+
+  function enabled(){ return goatPrefs.get(AREA, 'enabled', true) !== false; }
+
+  function volume(){
+    const v = parseFloat(goatPrefs.get(AREA, 'volume', DEFAULT_VOLUME));
+    // A corrupt or out-of-range stored value must not produce a silent app or a
+    // painfully loud one, so it degrades to the default rather than clamping.
+    return (isFinite(v) && v >= 0 && v <= 1) ? v : DEFAULT_VOLUME;
+  }
+
+  function load(){
+    if(_manifest) return Promise.resolve(_manifest);
+    if(_loading)  return _loading;
+    _loading = fetch('/api/voice/manifest')
+      .then(function(r){ return r.ok ? r.json() : {groups:{}}; })
+      .then(function(d){ _manifest = (d && d.groups) || {}; return _manifest; })
+      .catch(function(){ _manifest = {}; return _manifest; })   // offline is silent, not broken
+      .then(function(m){ _loading = null; return m; });
+    return _loading;
+  }
+
+  function clips(group, event){
+    if(!_manifest) return [];
+    const g = _manifest[group];
+    if(!g) return [];
+    const list = g[event];
+    return Array.isArray(list) ? list : [];
+  }
+
+  function speaking(){
+    return !!(_current && !_current.ended && !_current.paused);
+  }
+
+  /* The one entry point. play('cache','refresh_start') and forget — every
+     reason not to make a sound is decided here.
+     opts: {cooldown:<ms>, chance:<0..1>, force:<bool>} */
+  function play(group, event, opts){
+    // play('rare') and play('rare', {chance:0.005}) both mean the event named
+    // after the group — the shape the library uses when a whole group is one
+    // event, e.g. static/audio/rare/*.wav.
+    if(event && typeof event === 'object'){ opts = event; event = null; }
+    opts  = opts || {};
+    event = event || group;
+    if(!opts.force){
+      if(!enabled())  return false;
+      if(speaking())  return false;                                  // rule 2
+      if(typeof opts.chance === 'number' && Math.random() >= opts.chance) return false;
+      const key  = group + '/' + event;
+      const cool = (typeof opts.cooldown === 'number') ? opts.cooldown : DEFAULT_COOLDOWN_MS;
+      const now  = Date.now();
+      if(cool > 0 && (now - (_lastAt[key] || 0)) < cool) return false;  // rule 1
+      _lastAt[key] = now;
+    }
+    // The manifest is primed at startup; a trigger firing before it lands is
+    // silent rather than queued. One missed line in the first second of a
+    // session is not worth the machinery to catch it.
+    const list = clips(group, event);
+    if(!list.length) return false;                                   // rule 3
+    try{
+      const a = new Audio(list[Math.floor(Math.random() * list.length)]);
+      a.volume = volume();
+      _current = a;
+      a.addEventListener('ended', function(){ if(_current === a) _current = null; });
+      a.play().catch(function(){ if(_current === a) _current = null; });
+      return true;
+    }catch(e){
+      _current = null;
+      return false;
+    }
+  }
+
+  function stop(){
+    if(_current){ try{ _current.pause(); }catch(e){} }
+    _current = null;
+  }
+
+  /* Every installed clip, flattened — for the "Hear one" button and the Admin
+     panel's count. Reads the manifest directly so it stays honest about what is
+     really on disk. */
+  function allClips(){
+    const out = [];
+    if(!_manifest) return out;
+    Object.keys(_manifest).forEach(function(g){
+      Object.keys(_manifest[g]).forEach(function(e){
+        (_manifest[g][e] || []).forEach(function(u){ out.push(u); });
+      });
+    });
+    return out;
+  }
+
+  function groupSummary(){
+    const out = [];
+    if(!_manifest) return out;
+    Object.keys(_manifest).sort().forEach(function(g){
+      let n = 0;
+      Object.keys(_manifest[g]).forEach(function(e){ n += (_manifest[g][e] || []).length; });
+      out.push({group: g, events: Object.keys(_manifest[g]).length, files: n});
+    });
+    return out;
+  }
+
+  return {
+    load: load, play: play, stop: stop,
+    enabled: enabled, volume: volume,
+    setEnabled: function(v){ goatPrefs.set(AREA, 'enabled', !!v); if(!v) stop(); },
+    setVolume:  function(v){
+      const n = Math.max(0, Math.min(1, parseFloat(v)));
+      goatPrefs.set(AREA, 'volume', isFinite(n) ? n : DEFAULT_VOLUME);
+      if(_current){ try{ _current.volume = volume(); }catch(e){} }   // audible while dragging
+    },
+    clips: clips, allClips: allClips, groupSummary: groupSummary,
+    ready: function(){ return _manifest !== null; }
+  };
+})();
+
+
+// ── PERSONALITY AUDIO · the two preference surfaces ─────────────────────────
+// A gear in the header (the kill switch, reachable from any tab by every cohort)
+// and a fuller card in Admin. Both drive the SAME goatVoice state and both call
+// goatVoiceSyncUI, so changing the setting in one place updates the other — a
+// stale-looking checkbox is how people conclude a setting does not work.
+
+function goatVoiceSyncUI(){
+  const on   = goatVoice.enabled();
+  const vol  = Math.round(goatVoice.volume() * 100);
+  const n    = goatVoice.allClips().length;
+
+  [['gv-pop-on','gv-pop-vol','gv-pop-volnum'],
+   ['gv-adm-on','gv-adm-vol','gv-adm-volnum']].forEach(function(ids){
+    const cb = document.getElementById(ids[0]);
+    const sl = document.getElementById(ids[1]);
+    const nm = document.getElementById(ids[2]);
+    if(cb) cb.checked  = on;
+    if(sl){ sl.value = vol; sl.disabled = !on; }
+    if(nm) nm.textContent = vol + '%';
+  });
+
+  const gear = document.getElementById('gv-gear');
+  if(gear){
+    gear.classList.toggle('muted', !on);
+    gear.title = on ? 'Personality audio is on' : 'Personality audio is off';
+  }
+
+  ['gv-pop-test','gv-adm-test'].forEach(function(id){
+    const b = document.getElementById(id);
+    if(b) b.disabled = !n;
+  });
+
+  const cnt = document.getElementById('gv-pop-count');
+  if(cnt) cnt.textContent = n ? (n + ' line' + (n === 1 ? '' : 's')) : '';
+
+  const note = document.getElementById('gv-pop-note');
+  if(note){
+    note.textContent = !goatVoice.ready() ? 'Checking what is installed…'
+                     : !n                 ? 'No audio installed yet.'
+                     : on                 ? 'Covers the voice library only, not the older sounds.'
+                                          : 'The goat is silent.';
+  }
+
+  const grp = document.getElementById('gv-adm-groups');
+  if(grp){
+    const rows = goatVoice.groupSummary();
+    grp.innerHTML = !goatVoice.ready()
+      ? 'Checking what is installed…'
+      : (rows.length
+          ? 'INSTALLED &nbsp;' + rows.map(function(r){
+              return escapeHtml(r.group) + ' <span style="color:var(--text)">' + r.files + '</span>';
+            }).join(' &nbsp;·&nbsp; ')
+          : 'No audio installed yet. Drop files into static/audio/&lt;group&gt;/ as '
+            + '&lt;event&gt;_01.mp3 and they appear here.');
+  }
+}
+
+/* The call-site wrapper. Use this, not goatVoice.play, so the rare lines get a
+   roll at EVERY event without a dozen call sites each remembering to try.
+   One in 200 a rare line pre-empts the ordinary one; the pre-empt matters
+   because the player's no-stacking rule would otherwise drop whichever came
+   second, and the rare line would almost never be the survivor. */
+function goatSay(group, event, opts){
+  if(goatVoice.play('rare', {chance: 0.005, cooldown: 0})) return true;
+  return goatVoice.play(group, event, opts);
+}
+
+/* Sign-out is a navigation, and navigation kills a sound the instant it starts.
+   So the goat gets its last word first and the browser follows 1.4s later — but
+   ONLY when something actually played. A pause on the way out with no audio to
+   show for it just reads as a slow app. */
+function goatVoiceFarewell(ev){
+  if(!goatSay('session', 'logout', {cooldown: 0})) return true;
+  if(ev) ev.preventDefault();
+  setTimeout(function(){ window.location.href = '/logout'; }, 1400);
+  return false;
+}
+
+function goatVoiceSetEnabled(v){ goatVoice.setEnabled(v); goatVoiceSyncUI(); }
+function goatVoiceSetVolume(v){  goatVoice.setVolume(v);  goatVoiceSyncUI(); }
+
+/* Plays one clip at random, ignoring the mute and the cooldown — a test button
+   that stays silent because of a cooldown the operator can't see reads as
+   broken. */
+function goatVoiceTest(){
+  goatVoice.load().then(function(){
+    const all = goatVoice.allClips();
+    if(!all.length){ goatVoiceSyncUI(); return; }
+    goatVoice.stop();
+    try{
+      const a = new Audio(all[Math.floor(Math.random() * all.length)]);
+      a.volume = goatVoice.volume();
+      a.play().catch(function(){});
+    }catch(e){}
+  });
+}
+
+function goatVoiceTogglePopover(ev){
+  if(ev) ev.stopPropagation();
+  const pop  = document.getElementById('gv-pop');
+  const gear = document.getElementById('gv-gear');
+  if(!pop || !gear) return;
+  if(pop.classList.contains('open')){ goatVoiceClosePopover(); return; }
+
+  const r = gear.getBoundingClientRect();
+  pop.style.top  = Math.round(r.bottom + 8) + 'px';
+  // Anchored to the gear's right edge, then pulled back inside the viewport if
+  // that would overflow — the gear sits mid-header on a narrow window.
+  pop.style.left = Math.round(Math.max(8, Math.min(r.right - 250, window.innerWidth - 258))) + 'px';
+  pop.classList.add('open');
+
+  goatVoice.load().then(goatVoiceSyncUI);
+  goatVoiceSyncUI();
+  setTimeout(function(){ document.addEventListener('click', goatVoiceOutsideClick); }, 0);
+}
+
+function goatVoiceClosePopover(){
+  const pop = document.getElementById('gv-pop');
+  if(pop) pop.classList.remove('open');
+  document.removeEventListener('click', goatVoiceOutsideClick);
+}
+
+function goatVoiceOutsideClick(e){
+  const pop = document.getElementById('gv-pop');
+  if(pop && !pop.contains(e.target)) goatVoiceClosePopover();
+}
+
+// Prime the manifest once at startup so the first real trigger has something to
+// play, and paint both surfaces from stored prefs.
+window.addEventListener('load', function(){
+  goatVoice.load().then(function(){
+    goatVoiceSyncUI();
+    // The login page sets this flag as it submits. sessionStorage is per-tab, so
+    // the greeting lands once on the tab you actually logged in through — not
+    // again on every pop-out window or reload.
+    try{
+      if(sessionStorage.getItem('goat_login_greet')){
+        sessionStorage.removeItem('goat_login_greet');
+        goatSay('session','login_success',{cooldown:0});
+      }
+    }catch(e){}
+  });
+  goatVoiceSyncUI();
+});
+
 
 
 // ── COHORT / role-aware UI ──────────────────────────────────────────────────
@@ -3307,6 +3676,7 @@ async function runSearch(){
     _cfNameFilter=''; const nf=document.getElementById('cf-name-filter'); if(nf) nf.value='';
     currentResult={...result, details:detailsArr[0], calls:calls};
     renderResults(result, detailsArr[0], result.targets);
+    goatSearchOutcome(result);
   }catch(e){alert('Search error: '+e)}
   finally{
     hideOverlay();
@@ -3390,6 +3760,7 @@ async function spotCheckCrew(){
     _cfNameFilter=''; const nf=document.getElementById('cf-name-filter'); if(nf) nf.value='';
     currentResult={...result, details:detailsArr[0], calls:calls};
     renderResults(result, detailsArr[0], result.targets);
+    goatSearchOutcome(result);
   }catch(e){ alert('Spot-check error: '+e); }
   finally{ hideOverlay(); restoreResults(); }
 }
@@ -4770,6 +5141,21 @@ function showOfferResults(title, results){
   return t;
 }
 
+/* How the search went, spoken once. Deliberately NOT inside renderResults,
+   which also runs on every filter toggle and column sort — the line belongs to
+   a new result arriving, not to a re-render of one already on screen.
+
+   CF_THIN_MAX is a heuristic, not a shortfall calculation: the real "to fill"
+   number depends on feeds and reservations, and guessing it wrong would put the
+   goat on the wrong side of an argument. Tune it here, the only place it
+   appears. */
+const CF_THIN_MAX = 3;
+function goatSearchOutcome(result){
+  const n = ((result && result.available) || []).length;
+  if(!n)                    goatSay('crewfinder','search_no_results');
+  else if(n <= CF_THIN_MAX) goatSay('crewfinder','search_thin');
+}
+
 // ── SMARTSTAFF ACTIONS ──
 async function addSelected(confirm){
   const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
@@ -4798,12 +5184,17 @@ async function addSelected(confirm){
     if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
     const results=j.results||[];
     const t=showOfferResults(confirm?'Add & Confirm - results':'Add crew - results', results);
+    // A failure in this response is nearly always SmartStaff refusing a clash,
+    // which is what conflict_blocked is for. Anything else is a clean result.
+    goatSay('crewfinder', t.failed ? 'conflict_blocked'
+                                   : (confirm ? 'crew_confirmed_all' : 'crew_assigned'));
     btn.textContent='Done - '+t.added+' added'
       +(t.unverified?', '+t.unverified+' unverified':'')
       +(t.skipped?', '+t.skipped+' already on call':'')
       +(t.failed?', '+t.failed+' failed':'');
   }catch(e){
     btn.textContent='Failed';
+    goatSay('session','error');
     alert((confirm?'Add & Confirm':'Add')+' failed: '+(e.message||e));
   }finally{
     setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},4000);
@@ -4829,12 +5220,14 @@ async function sendSMS(){
     if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
     const results=j.results||[];
     const t=showOfferResults('Send SMS - results', results);
+    goatSay('crewfinder','offer_sent');
     // SMS-phase rows have no `crew` field; add-phase rows do.
     const smsOk=results.filter(x=>x.success && !x.crew).length;
     btn.textContent='SMS sent ('+smsOk+' call'+(smsOk===1?'':'s')+', '+crew.length+' crew)'
       +(t.failed?' - '+t.failed+' issue'+(t.failed===1?'':'s'):'');
   }catch(e){
     btn.textContent='Failed';
+    goatSay('session','error');
     alert('Send SMS failed: '+(e.message||e));
   }finally{
     setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},3500);
@@ -9273,8 +9666,34 @@ function crewFilterApplyToUI(tab){
 
 let _indData=null, _selectedVenues=new Set();
 
+/* The fleet verdict for the Inductions tab, worst-first so one expired venue is
+   never buried under nine that are fine.
+
+   Computed from the LOADED DATA, not from the rendered table: renderInductionTable()
+   also runs on every venue checkbox and every keystroke in the name filter, and the
+   verdict belongs to the check, not to a repaint of it.
+
+   Called on both ways into the tab — a fresh load, and a return visit that reuses
+   the cached data — so arriving always gets an answer. The player's cooldown is
+   what stops a quick tab bounce repeating it. */
+function goatInductionVerdict(){
+  if(!_indData || !Array.isArray(_indData.crew)) return;
+  const venues = _indData.venues || [];
+  let expired = 0, expiring = 0;
+  _indData.crew.forEach(function(c){
+    venues.forEach(function(v){
+      const s = ((c.venue_status || {})[v] || {}).status;
+      if(s === 'Expired')            expired++;
+      else if(s === 'Expiring Soon') expiring++;
+    });
+  });
+  if(expired)                   goatSay('inductions','induction_expired');
+  else if(expiring)             goatSay('inductions','induction_expiring');
+  else if(_indData.crew.length) goatSay('inductions','induction_all_clear');
+}
+
 async function loadInductions(force=false){
-  if(_indData && !force) return;
+  if(_indData && !force){ goatInductionVerdict(); return; }
   document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">Loading inductions...</div></div>';
   showOverlay('Loading Inductions...', 'Reading crew induction records');
   try{
@@ -9284,6 +9703,7 @@ async function loadInductions(force=false){
     _selectedVenues=new Set(data.venues);
     buildVenueChecklist(data.venues);
     renderInductionTable();
+    goatInductionVerdict();
   }catch(e){
     document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">Error loading inductions</div></div>';
   } finally{
@@ -17414,6 +17834,9 @@ async function goatSend(){
   _goatHistory.push({role: 'user', content: text});
 
   const typingId = showGoatTyping();
+  // Roughly two questions in five, so it stays a surprise rather than becoming
+  // the noise the drawer makes.
+  goatSay('ask_the_goat','ask_the_goat',{chance:0.4, cooldown:45000});
 
   try{
     const resp = await fetch('/api/goat', {
@@ -17426,6 +17849,7 @@ async function goatSend(){
 
     if(!resp.ok){
       const err = await resp.json().catch(()=>({}));
+      goatSay('ask_the_goat','no answer');
       appendGoatMessage('goat', `Comms issue — ${err.error || resp.status}. Try again.`, true);
     } else {
       const reader  = resp.body.getReader();
@@ -22839,6 +23263,9 @@ async function checkForUpdates(){
       document.getElementById('update-notes').textContent=data.release_notes?'— '+data.release_notes:'';
       document.getElementById('update-link').href=data.dmg_url||'#';
       document.getElementById('update-banner').classList.add('show');
+      // Hourly at most: the version check re-runs on a timer, and nobody needs
+      // telling about the same release twice in one sitting.
+      goatSay('session','update_available',{cooldown:3600000});
     }
   }catch(e){}
 }
@@ -22867,6 +23294,7 @@ async function loadCacheStatus(){
 }
 
 async function refreshCache(){
+  goatSay('cache','refresh_start');
   await fetch('/api/cache/refresh',{method:'POST'});
   pollRefreshProgress();
 }
@@ -22874,6 +23302,9 @@ async function refreshCache(){
 async function pollRefreshProgress(){
   const badge=document.getElementById('cache-badge');
   badge.classList.remove('fresh');
+  // The apology line, once per refresh and only if this one is actually
+  // dragging. Cleared on completion, so a fast refresh never fires it.
+  const slowTimer=setTimeout(()=>goatSay('cache','refresh_slow'), 20000);
   const interval=setInterval(async()=>{
     try{
       const resp=await fetch('/api/cache/progress');
@@ -22882,7 +23313,8 @@ async function pollRefreshProgress(){
         const pct=data.total?Math.round(data.done/data.total*100):0;
         badge.textContent='Refreshing... '+data.done+'/'+(data.total||'?')+' ('+pct+'%)';
       } else {
-        clearInterval(interval);
+        clearInterval(interval); clearTimeout(slowTimer);
+        goatSay('cache','refresh_done');
         if(data.elapsed){
           badge.textContent='Refresh complete in '+data.elapsed+'s'+(data.errors?' ('+data.errors+' errors)':'');
           setTimeout(loadCacheStatus, 3000);
@@ -22890,7 +23322,7 @@ async function pollRefreshProgress(){
           loadCacheStatus();
         }
       }
-    }catch(e){ clearInterval(interval); loadCacheStatus(); }
+    }catch(e){ clearInterval(interval); clearTimeout(slowTimer); loadCacheStatus(); }
   }, 1000);
 }
 
