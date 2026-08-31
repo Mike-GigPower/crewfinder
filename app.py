@@ -5621,15 +5621,33 @@ def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version):
     return out, None
 
 
-def ss_push_visa(ss, user_id, fields, pdf_bytes):
+def ss_push_visa(ss, user_id, fields, pdf_bytes, mode=None, send_empty=False):
     """POST the visa record to admin-set-visa.php on the shared admin session `ss`
     (admin-gated, explicit target user). Upserts user_visa and sets the
-    users.is_visa_worker flag. `fields` is the flat form dict (only non-empty keys
-    are sent); the visa PDF is optional. Mirrors ss_push_licence. Returns
-    (result_dict, error_str)."""
+    users.is_visa_worker flag. The visa PDF is optional. Mirrors ss_push_licence.
+    Returns (result_dict, error_str).
+
+    `send_empty` decides whether a field the caller left blank is SENT as empty or
+    omitted. Both defaults keep convert-B behaviour byte-identical, and both matter:
+
+      send_empty=False (default, convert) — only non-empty keys are sent. Convert
+        builds the record from the work-eligibility feed and a missing fact should
+        not overwrite anything.
+      send_empty=True (the edit form) — every key is sent, empty included, so a
+        field the OPERATOR CLEARED is actually cleared. Without this, clearing a
+        passport number in the form would silently leave the old value in place
+        and the screen would disagree with the database.
+
+    `mode="patch"` asks the endpoint to assign only the posted columns. Use it for
+    a deliberate partial write — recording a VEVO check — never for the edit form,
+    which is a full replace by design."""
     data = {"user": str(user_id)}
+    if mode:
+        data["mode"] = str(mode)
     for k, v in (fields or {}).items():
-        if v is not None and v != "":
+        if v is None:
+            v = ""
+        if send_empty or v != "":
             data[k] = str(v)
     files = None
     if pdf_bytes:
@@ -13915,6 +13933,210 @@ def api_admin_licence_file(licence_id):
     try:
         resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-license-file.php",
                       params={"id": int(licence_id)}, timeout=60)
+    except Exception as e:
+        return jsonify({"error": f"request failed: {e}"}), 502
+    if resp.status_code != 200:
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+    ctype = (resp.headers.get("Content-Type") or "application/octet-stream").split(";")[0].strip()
+    return Response(resp.content, mimetype=ctype, headers={
+        "Content-Disposition": resp.headers.get("Content-Disposition", "inline"),
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+# ─── CREW VISA REGISTER ───────────────────────────────────────────────────────
+# Working-visa crew get a visible home: a register under Administration and a
+# Visa section in Manage Crew. See DESIGN-crew-visa-register-v0_1.md.
+#
+# ADMIN-ONLY throughout, matching the recruitment work-eligibility reveal —
+# passport numbers, grant numbers and conditions are immigration PII and the gate
+# travels with them. Not READ_ALL: leadership and operations see nothing.
+#
+# A LAPSED VISA IS NOT A LICENCE EXPIRY and is deliberately kept out of
+# compliance_status() / licence_expiry_expected() / the licence pill. A lapsed
+# licence is a chase; a lapsed visa means no right to work. Folding them together
+# would flatten that into the same amber dot people have learned to scroll past.
+
+VISA_FIELDS = (
+    "work_eligibility_status", "passport_number", "passport_country",
+    "visa_subclass", "visa_grant_number", "trn", "visa_grant_date",
+    "visa_expiry", "visa_conditions", "has_work_limitation",
+)
+
+
+def ss_get_visa(ss, user_id):
+    """One crew member's visa record via admin-get-visa.php, or (None, err).
+
+    A crew member with no record returns ({"visa": None}, None) — NOT an error.
+    Most of the roster has no visa and never will."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-visa.php",
+                      params={"user": int(user_id)}, timeout=20)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+def ss_list_visa_workers(ss):
+    """The visa register via list-visa-workers.php, or (None, err).
+
+    An EMPTY register is a legitimate answer — unlike the licence catalogue, where
+    zero rows means the seed never ran. user_visa starts empty and stays empty
+    until somebody records a visa."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/list-visa-workers.php", timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+@app.route("/api/visa-workers")
+@require_cohort("admin")
+def api_visa_workers():
+    """The visa register — every user_visa row with its crew member.
+
+    Not filtered to active crew, deliberately: this is a compliance surface and a
+    person whose roster flag is wrong is exactly who must stay visible. The
+    endpoint returns roster_flag ('active' / 'inactive' / 'unflagged') and the
+    client badges it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    out, err = ss_list_visa_workers(ss)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
+
+
+@app.route("/api/crew/<int:user_id>/visa")
+@require_cohort("admin")
+def api_crew_visa_get(user_id):
+    """One crew member's visa record, for the Manage Crew Visa section."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    out, err = ss_get_visa(ss, user_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
+
+
+@app.route("/api/crew/<int:user_id>/visa", methods=["POST"])
+@require_cohort("admin")
+def api_crew_visa_save(user_id):
+    """Create or replace one crew member's visa record from the edit form.
+
+    FULL REPLACE, with send_empty=True — the form submits every field, so a value
+    the operator cleared is genuinely cleared. That is what makes the screen and
+    the database agree.
+
+    THE VEVO STAMP IS CARRIED FORWARD, not taken from the client. A full replace
+    would otherwise NULL vevo_verified_at / vevo_verified_by on every ordinary
+    edit, silently un-verifying somebody's work rights because a passport number
+    was corrected. The stamp is read back off the existing record and re-sent
+    unchanged; the only way to set it is the /vevo route below, which stamps
+    identity server-side."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    fields = {}
+    for k in VISA_FIELDS:
+        fields[k] = (request.form.get(k) or "").strip()
+
+    status = fields.get("work_eligibility_status") or ""
+    if status not in ("citizen_pr", "working_visa"):
+        return jsonify({"error": "work_eligibility_status must be citizen_pr or working_visa"}), 400
+
+    # Carry the existing VEVO stamp across the replace. A read failure here must
+    # NOT silently drop the stamp, so it aborts rather than writing without it.
+    existing, err = ss_get_visa(ss, user_id)
+    if err:
+        return jsonify({"error": f"couldn't read the existing record: {err}"}), 502
+    prev = (existing or {}).get("visa") or {}
+    fields["vevo_verified_at"] = prev.get("vevo_verified_at") or ""
+    fields["vevo_verified_by"] = prev.get("vevo_verified_by") or ""
+
+    pdf_bytes = None
+    up = request.files.get("visa_pdf")
+    if up and up.filename:
+        pdf_bytes = up.read()
+        if not (pdf_bytes or b"")[:5] == b"%PDF-":
+            return jsonify({"error": "That file isn't a PDF"}), 400
+
+    out, err = ss_push_visa(ss, user_id, fields, pdf_bytes, send_empty=True)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
+
+
+@app.route("/api/crew/<int:user_id>/visa/vevo", methods=["POST"])
+@require_cohort("admin")
+def api_crew_visa_vevo(user_id):
+    """Record (or clear) the VEVO work-rights check on a crew member's visa.
+
+    PATCH mode — only the two stamp columns are assigned. A full write here would
+    blank the passport number, subclass and expiry, and it would look like the
+    operator had cleared them.
+
+    Identity is stamped SERVER-SIDE from the session, never supplied by the
+    browser, exactly as api_recruitment_vevo_verify does. A self-asserted verifier
+    is not a record of anything."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    data = request.get_json(silent=True) or {}
+    verified = data.get("verified", True)
+
+    if verified:
+        ident = current_identity() or {}
+        who = str(ident.get("name") or ident.get("ein") or "admin").strip()
+        when = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        who, when = "", ""
+
+    out, err = ss_push_visa(ss, user_id,
+                            {"vevo_verified_at": when, "vevo_verified_by": who},
+                            None, mode="patch", send_empty=True)
+    if err:
+        return jsonify({"error": err}), 502
+    out["vevo_verified_at"] = when or None
+    out["vevo_verified_by"] = who or None
+    return jsonify(out)
+
+
+@app.route("/api/crew/<int:user_id>/visa/file")
+@require_cohort("admin")
+def api_crew_visa_file(user_id):
+    """Stream one crew member's visa PDF inline, straight through from
+    admin-get-visa-file.php with the upstream content-type. The client passes a
+    user id and never handles a filename."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-visa-file.php",
+                      params={"user": int(user_id)}, timeout=60)
     except Exception as e:
         return jsonify({"error": f"request failed: {e}"}), 502
     if resp.status_code != 200:
