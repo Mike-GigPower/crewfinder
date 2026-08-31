@@ -2375,6 +2375,13 @@ a.recruit-action{text-decoration:none;display:inline-block}
             <div class="admin-card-desc">Confirm recorded licences against the card image.</div>
           </div>
         </button>
+        <button class="admin-card" onclick="adminVisaRegister()">
+          <div class="admin-card-icon">🛂</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Visa Register</div>
+            <div class="admin-card-desc">Who holds a working visa, when work rights end, and whether they have been checked.</div>
+          </div>
+        </button>
       </div>
 
       <div class="admin-hub-section">Access</div>
@@ -10389,11 +10396,15 @@ async function openCrewEdit(id){
     + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
-  window._ceLoaded = {inductions:false, licences:false, payslips:false, shifts:false, unavail:false};
+  window._ceLoaded = {inductions:false, licences:false, visa:false, payslips:false, shifts:false, unavail:false};
 
   const ceTabBar =
       '<div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap">'
-    + [['details','Details'],['inductions','Inductions'],['licences','Licences'],['payslips','Payslips'],['shifts','Calls'],['unavail','Unavailability']].map(function(t){
+    + ([['details','Details'],['inductions','Inductions'],['licences','Licences']]
+        // Visa is ADMIN ONLY — passport and grant numbers are immigration PII and
+        // the tab is absent for every other cohort, not merely disabled.
+        .concat(window._cohort === 'admin' ? [['visa','Visa']] : [])
+        .concat([['payslips','Payslips'],['shifts','Calls'],['unavail','Unavailability']])).map(function(t){
         return '<button type="button" id="ce-tabbtn-'+t[0]+'" onclick="ceShowTab(\''+String(c.id)+'\',\''+t[0]+'\')" '
           + 'style="background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:\'Rajdhani\',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer">'+t[1]+'</button>';
       }).join('')
@@ -10405,6 +10416,7 @@ async function openCrewEdit(id){
     + '<div id="ce-panel-details">'+detailsHtml+'</div>'
     + '<div id="ce-panel-inductions" style="display:none"></div>'
     + '<div id="ce-panel-licences" style="display:none"></div>'
+    + '<div id="ce-panel-visa" style="display:none"></div>'
     + '<div id="ce-panel-payslips" style="display:none"></div>'
     + '<div id="ce-panel-shifts" style="display:none"></div>'
     + '<div id="ce-panel-unavail" style="display:none"></div>';
@@ -10436,6 +10448,332 @@ function _ceVisaBadge(c){
     else { cls='induction-warn'; label='Work Visa · exp '+nice; }
   }
   return '<div style="margin-top:6px"><span class="'+cls+'" style="margin-left:0">'+escapeHtml(label)+'</span></div>';
+}
+
+// ── VISA REGISTER (admin) ────────────────────────────────────────────────────
+// Administration -> Visa Register. Every user_visa row, soonest expiry first.
+//
+// NOT filtered to active crew. This is a compliance surface and somebody whose
+// roster flag is wrong is exactly who must stay visible — on this database 3,270
+// crew carry a blank `active` and 115 of them worked in 2026. The roster flag is
+// shown instead, so an unflagged person reads as unflagged rather than vanishing.
+
+var _visaRows = [];
+var _visaFilter = '';
+
+function adminVisaRegister(){ openVisaRegisterModal(); }
+
+async function openVisaRegisterModal(){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Visa Register';
+  document.getElementById('entity-modal-sub').textContent   = 'Working-visa crew, soonest expiry first';
+  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div id="visa-reg-chips" style="display:flex;gap:6px;flex-wrap:wrap;padding-bottom:10px"></div>'
+    + '<div id="visa-reg-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>'
+    + '<div id="visa-reg-rows" style="max-height:52vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div></div>';
+  try{
+    var r = await fetch('/api/visa-workers');
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _visaRows = d.rows || [];
+    _visaFilter = '';
+    _renderVisaRegister();
+  }catch(e){
+    document.getElementById('visa-reg-rows').innerHTML =
+      '<div style="color:var(--conflict);font-size:12px;padding:8px 0">Couldn’t load the register: '+escapeHtml(e.message)+'</div>';
+  }
+}
+
+function visaRegFilter(f){
+  _visaFilter = (_visaFilter === f) ? '' : f;   // click again to clear
+  _renderVisaRegister();
+}
+
+function _visaMatches(row, f){
+  var days = _visaDays(row.visa_expiry);
+  if(f === 'expired')   return days !== null && days < 0;
+  if(f === 'soon')      return days !== null && days >= 0 && days <= 90;
+  if(f === 'unchecked') return !row.vevo_verified_at;
+  if(f === 'offroster') return row.roster_flag !== 'active';
+  if(f === 'nodate')    return !row.visa_expiry;
+  return true;
+}
+
+function _renderVisaRegister(){
+  var rowsEl  = document.getElementById('visa-reg-rows');
+  var countEl = document.getElementById('visa-reg-count');
+  var chipsEl = document.getElementById('visa-reg-chips');
+  if(!rowsEl) return;
+
+  // Four questions the screen exists to answer, one click each. No default
+  // filter: at this size everything fits, and a filter applied by default is a
+  // filter that hides a lapsed visa.
+  var defs = [
+    ['expired',   'Expired'],
+    ['soon',      'Expiring 90 days'],
+    ['unchecked', 'VEVO never checked'],
+    ['offroster', 'Not on roster'],
+    ['nodate',    'No expiry recorded']
+  ];
+  if(chipsEl){
+    chipsEl.innerHTML = defs.map(function(d){
+      var n = _visaRows.filter(function(r){ return _visaMatches(r, d[0]); }).length;
+      var on = (_visaFilter === d[0]);
+      return '<button type="button" class="group-chip'+(on?' active':'')+'" onclick="visaRegFilter(\'' + d[0] + '\')">'
+           + escapeHtml(d[1]) + ' · ' + n + '</button>';
+    }).join('');
+  }
+
+  var rows = _visaRows.filter(function(r){ return _visaMatches(r, _visaFilter); });
+
+  if(countEl){
+    var expired = _visaRows.filter(function(r){ var dd=_visaDays(r.visa_expiry); return dd!==null && dd<0; }).length;
+    countEl.textContent = _visaRows.length + ' on file · ' + expired + ' expired'
+      + (_visaFilter ? '  ·  showing ' + rows.length : '');
+  }
+
+  if(!_visaRows.length){
+    rowsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No visa records on file yet.</div>';
+    return;
+  }
+  if(!rows.length){
+    rowsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Nothing matches that filter.</div>';
+    return;
+  }
+
+  rowsEl.innerHTML = rows.map(function(r){
+    var roster = (r.roster_flag === 'active')
+      ? ''
+      : '<span style="font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:20px;padding:1px 7px;margin-left:6px">'
+        + (r.roster_flag === 'inactive' ? 'inactive' : 'not on roster') + '</span>';
+    var lim = (r.has_work_limitation === true)
+      ? '<span style="color:var(--warn)">restricted</span>' + (r.visa_conditions ? ' · '+escapeHtml(r.visa_conditions) : '')
+      : (r.has_work_limitation === false ? 'no limitation' : '<span style="color:var(--muted)">limitation unclear</span>');
+    return ''
+      + '<div style="border-bottom:1px solid var(--border);padding:9px 0">'
+      +   '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">'
+      +     '<div style="font-size:13px">'
+      +       '<button type="button" onclick="closeEntityModal();openCrewEdit(' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
+      +         escapeHtml(r.name || ('#'+r.user_id)) + '</button>'
+      +       '<span style="color:var(--muted);font-size:11px;margin-left:7px">EIN ' + escapeHtml(String(r.ein||'')) + '</span>'
+      +       roster
+      +     '</div>'
+      +     '<div style="font-size:12px">' + _visaExpiryHtml(r.visa_expiry) + '</div>'
+      +   '</div>'
+      +   '<div style="font-size:11px;color:var(--muted);padding-top:4px">'
+      +     (r.visa_subclass ? 'Subclass ' + escapeHtml(r.visa_subclass) + ' · ' : '')
+      +     lim + ' · ' + _vevoHtml(r)
+      +   '</div>'
+      + '</div>';
+  }).join('');
+}
+
+// ── CREW VISA (admin) ────────────────────────────────────────────────────────
+// The Manage Crew -> Visa section and the Administration -> Visa Register, both
+// admin-only. See DESIGN-crew-visa-register-v0_1.md.
+//
+// A LAPSED VISA IS NOT A LICENCE EXPIRY. It gets its own badge, its own words and
+// its own screen, and never joins the licence compliance pill: a lapsed licence
+// is a chase, a lapsed visa means no right to work, and one amber dot for both
+// teaches people to ignore the one that matters.
+
+var _ceVisa = null;          // the loaded record for the open crew member
+
+// Days from today to an ISO date, or null. Local-midnight both sides so a
+// timezone offset can never move an expiry across the boundary by a few hours —
+// which on this data would silently turn "expires today" into "expired".
+function _visaDays(iso){
+  var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(!m) return null;
+  var d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
+  var t = new Date(); t.setHours(0,0,0,0);
+  return Math.round((d - t) / 86400000);
+}
+
+function _visaNice(iso){
+  var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(!m) return '';
+  return new Date(Number(m[1]), Number(m[2])-1, Number(m[3]))
+    .toLocaleDateString('en-AU', {day:'2-digit', month:'short', year:'numeric'});
+}
+
+// Same thresholds as _ceVisaBadge() on the crew header — past today expired,
+// within 14 days expiring — so the register, the header and the section can
+// never disagree about whether somebody is lapsing.
+function _visaExpiryHtml(iso){
+  if(!iso) return '<span class="induction-warn" style="margin-left:0">No expiry recorded</span>';
+  var days = _visaDays(iso), nice = _visaNice(iso);
+  if(days === null) return escapeHtml(String(iso));
+  if(days < 0)   return '<span class="induction-expired" style="margin-left:0">NO WORK RIGHTS · expired '+escapeHtml(nice)+'</span>';
+  if(days <= 14) return '<span class="induction-expiring" style="margin-left:0">Expires '+escapeHtml(nice)+' · '+days+'d</span>';
+  return '<span class="induction-warn" style="margin-left:0">'+escapeHtml(nice)+'</span>';
+}
+
+function _vevoHtml(v){
+  if(v && v.vevo_verified_at){
+    return '<span style="color:#2dd4bf">✓ VEVO verified '
+      + escapeHtml(String(v.vevo_verified_at).slice(0,10))
+      + (v.vevo_verified_by ? ' by '+escapeHtml(v.vevo_verified_by) : '') + '</span>';
+  }
+  return '<span style="color:var(--warn)">⚠ Work rights not verified</span>';
+}
+
+async function ceLoadVisa(id){
+  var panel = document.getElementById('ce-panel-visa');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading visa record…</div>';
+  try{
+    var r = await fetch('/api/crew/'+encodeURIComponent(id)+'/visa');
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _ceVisa = d.visa || null;
+    _ceRenderVisaForm(id);
+  }catch(e){
+    panel.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:8px 0">Couldn’t load the visa record: '+escapeHtml(e.message)+'</div>';
+  }
+}
+
+function _ceRenderVisaForm(id){
+  var panel = document.getElementById('ce-panel-visa');
+  var v = _ceVisa || {};
+  var status = v.work_eligibility_status || '';
+  var lim = (v.has_work_limitation === true) ? '1'
+          : (v.has_work_limitation === false) ? '0' : '';
+
+  var statusSel =
+      '<select id="cv-status" onchange="ceVisaStatusChange()" style="'+EF_INPUT_STYLE+'">'
+    +   '<option value=""'+(status===''?' selected':'')+'>— not recorded —</option>'
+    +   '<option value="citizen_pr"'+(status==='citizen_pr'?' selected':'')+'>Citizen / Permanent resident</option>'
+    +   '<option value="working_visa"'+(status==='working_visa'?' selected':'')+'>Working visa</option>'
+    + '</select>';
+
+  var limSel =
+      '<select id="cv-limit" style="'+EF_INPUT_STYLE+'">'
+    +   '<option value=""'+(lim===''?' selected':'')+'>Unclear — needs checking</option>'
+    +   '<option value="0"'+(lim==='0'?' selected':'')+'>No limitation</option>'
+    +   '<option value="1"'+(lim==='1'?' selected':'')+'>Restricted — see conditions</option>'
+    + '</select>';
+
+  // The whole detail block hangs off "Working visa". Choosing Citizen / PR
+  // collapses it and clears is_visa_worker on save — which is also how a
+  // mistaken visa entry is undone, since there is no delete path.
+  var detail =
+      '<div id="cv-detail" style="'+(status==='working_visa'?'':'display:none')+'">'
+    +   efRow('Subclass',       efInput('cv-subclass', v.visa_subclass || '') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">e.g. 482, 500, 485, 462</div>')
+    +   efRow('Grant number',   efInput('cv-grant-no', v.visa_grant_number || ''))
+    +   efRow('Passport no.',   efInput('cv-passport', v.passport_number || ''))
+    +   efRow('Passport country', efInput('cv-country', v.passport_country || ''))
+    +   efRow('TRN',            efInput('cv-trn', v.trn || ''))
+    +   efRow('Granted',        efInput('cv-granted', v.visa_grant_date || '', 'date'))
+    +   efRow('Work rights end', efInput('cv-expiry', v.visa_expiry || '', 'date')
+                                 + '<div style="font-size:10px;color:var(--muted);padding-top:3px">The date work rights end. This is what the register and the booking warning read.</div>')
+    +   efRow('Work limitation', limSel)
+    +   efRow('Conditions',     efTextarea('cv-conditions', v.visa_conditions || ''))
+    +   efRow('Visa PDF',       '<input id="cv-pdf" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'">'
+                                 + (v.has_pdf ? '<div style="font-size:10px;padding-top:4px"><a href="/api/crew/'+encodeURIComponent(id)+'/visa/file" target="_blank" style="color:var(--accent)">View the document on file</a></div>'
+                                              : '<div style="font-size:10px;color:var(--muted);padding-top:3px">No document on file.</div>'))
+    + '</div>';
+
+  var vevoBlock = '';
+  if(status === 'working_visa'){
+    vevoBlock =
+        '<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px">'
+      +   '<div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Work rights check</div>'
+      +   '<div style="font-size:12px;margin-bottom:8px">'+_vevoHtml(v)+'</div>'
+      +   '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +     '<button type="button" onclick="ceVisaVevo(\'' + String(id) + '\', true)" style="background:none;border:1px solid var(--accent);color:var(--accent);border-radius:5px;font-size:11px;padding:5px 12px;cursor:pointer">'
+      +       (v.vevo_verified_at ? 'Re-record VEVO check' : 'Record VEVO check') + '</button>'
+      +     (v.vevo_verified_at ? '<button type="button" onclick="ceVisaVevo(\'' + String(id) + '\', false)" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:5px;font-size:11px;padding:5px 12px;cursor:pointer">Clear</button>' : '')
+      +   '</div>'
+      +   '<div style="font-size:10px;color:var(--muted);padding-top:6px">Records that YOU checked this person’s work rights in VEVO, now. Your name and the time are stamped server-side.</div>'
+      + '</div>';
+  }
+
+  var summary = '';
+  if(status === 'working_visa'){
+    summary = '<div style="padding:0 0 10px">'+_visaExpiryHtml(v.visa_expiry)+'</div>';
+  }
+
+  panel.innerHTML =
+      summary
+    + efRow('Work eligibility', statusSel)
+    + detail
+    + '<div id="cv-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>'
+    + '<div style="padding-top:8px"><button type="button" id="cv-save" onclick="ceVisaSave(\'' + String(id) + '\')" class="btn-logout" style="border-color:var(--accent);color:var(--accent);width:100%">Save visa record</button></div>'
+    + vevoBlock;
+}
+
+function ceVisaStatusChange(){
+  var sel = document.getElementById('cv-status');
+  var det = document.getElementById('cv-detail');
+  if(det) det.style.display = (sel && sel.value === 'working_visa') ? 'block' : 'none';
+}
+
+async function ceVisaSave(id){
+  var err = document.getElementById('cv-error');
+  var btn = document.getElementById('cv-save');
+  if(err) err.textContent = '';
+  var val = function(eid){ var el = document.getElementById(eid); return el ? el.value.trim() : ''; };
+
+  var status = val('cv-status');
+  if(status !== 'citizen_pr' && status !== 'working_visa'){
+    if(err) err.textContent = 'Choose Citizen / PR or Working visa.';
+    return;
+  }
+
+  // A full replace: every field is sent, blanks included, so clearing a field in
+  // the form actually clears it. The VEVO stamp is NOT sent — the server carries
+  // the existing one across, so an ordinary edit can never un-verify somebody.
+  var fd = new FormData();
+  fd.append('work_eligibility_status', status);
+  if(status === 'working_visa'){
+    fd.append('visa_subclass',       val('cv-subclass'));
+    fd.append('visa_grant_number',   val('cv-grant-no'));
+    fd.append('passport_number',     val('cv-passport'));
+    fd.append('passport_country',    val('cv-country'));
+    fd.append('trn',                 val('cv-trn'));
+    fd.append('visa_grant_date',     val('cv-granted'));
+    fd.append('visa_expiry',         val('cv-expiry'));
+    fd.append('visa_conditions',     val('cv-conditions'));
+    fd.append('has_work_limitation', val('cv-limit'));
+    var f = document.getElementById('cv-pdf');
+    if(f && f.files && f.files[0]) fd.append('visa_pdf', f.files[0]);
+  }else{
+    // Citizen / PR: everything else is cleared deliberately. Leaving a stale
+    // subclass and expiry on somebody recorded as a citizen is worse than blank.
+    ['visa_subclass','visa_grant_number','passport_number','passport_country',
+     'trn','visa_grant_date','visa_expiry','visa_conditions','has_work_limitation']
+      .forEach(function(k){ fd.append(k, ''); });
+  }
+
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/crew/'+encodeURIComponent(id)+'/visa', {method:'POST', body:fd});
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    await ceLoadVisa(id);
+  }catch(e){
+    if(err) err.textContent = e.message;
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = 'Save visa record'; }
+  }
+}
+
+async function ceVisaVevo(id, verified){
+  var err = document.getElementById('cv-error');
+  if(err) err.textContent = '';
+  try{
+    var r = await fetch('/api/crew/'+encodeURIComponent(id)+'/visa/vevo', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({verified: !!verified})
+    });
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    await ceLoadVisa(id);
+  }catch(e){
+    if(err) err.textContent = e.message;
+  }
 }
 
 async function submitCrewEdit(id){
@@ -10487,7 +10825,7 @@ async function submitCrewEdit(id){
 
 // ── Edit Crew Member: tabbed panels (Details / Inductions / Shifts / Unavailability) ──
 function ceShowTab(id, tab){
-  ['details','inductions','licences','payslips','shifts','unavail'].forEach(function(t){
+  ['details','inductions','licences','visa','payslips','shifts','unavail'].forEach(function(t){
     var panel = document.getElementById('ce-panel-'+t);
     var btn   = document.getElementById('ce-tabbtn-'+t);
     var on    = (t===tab);
@@ -10500,6 +10838,7 @@ function ceShowTab(id, tab){
   window._ceLoaded = window._ceLoaded || {};
   if(tab==='inductions' && !window._ceLoaded.inductions){ window._ceLoaded.inductions = true; ceLoadInductions(id); }
   if(tab==='licences'   && !window._ceLoaded.licences){   window._ceLoaded.licences = true;   ceLoadLicences(id); }
+  if(tab==='visa'       && !window._ceLoaded.visa){       window._ceLoaded.visa = true;       ceLoadVisa(id); }
   if(tab==='payslips'   && !window._ceLoaded.payslips){   window._ceLoaded.payslips = true;   ceLoadPayslips(id); }
   if(tab==='shifts'     && !window._ceLoaded.shifts){     window._ceLoaded.shifts = true;     ceLoadShifts(id); }
   if(tab==='unavail'    && !window._ceLoaded.unavail){    window._ceLoaded.unavail = true;    ceLoadUnavail(id); }
