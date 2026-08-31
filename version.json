@@ -1,6 +1,6 @@
 {
-  "version": "5.23.0",
+  "version": "5.23.1",
   "release_date": "2026-08-31",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.23.0/TheGOAT.dmg",
-  "release_notes": "New Visa Register under Administration, and a Visa tab in Manage Crew for recording work-rights expiry, conditions and VEVO checks. Admin only — nothing changes for other cohorts."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.23.1/TheGOAT.dmg",
+  "release_notes": "Sending induction reminders to a large session no longer reports a failure when the emails have in fact gone out. THE GOAT now waits up to three minutes for a bulk send instead of 20 seconds."
 }
