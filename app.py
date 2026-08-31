@@ -5110,6 +5110,13 @@ LICENCE_CATALOGUE = [
     {"code": "HR", "name": "Heavy rigid",                          "group": "Driver"},
     {"code": "HC", "name": "Heavy combination",                    "group": "Driver"},
     {"code": "MC", "name": "Multi-combination",                    "group": "Driver"},
+    # ── Miscellaneous (3) ─ certifications outside the HRW / driver schedules ──
+    # Group added Aug 2026 so codes ops actually chase have a home. The catalogue
+    # design originally ruled these OUT of the taxonomy; that is now reversed — a
+    # code nobody can record is a code nobody can filter on.
+    {"code": "POLICE",   "name": "Police Check",                   "group": "Miscellaneous"},
+    {"code": "ISO45001", "name": "ISO 45001 Auditor",              "group": "Miscellaneous"},
+    {"code": "RSA",      "name": "Responsible Service of Alcohol", "group": "Miscellaneous"},
 ]
 LICENCE_TYPE_ALLOWLIST = [e["code"] for e in LICENCE_CATALOGUE]
 # Group display order for the triage code grid and the Crew Finder chips. Ordered
@@ -5119,7 +5126,7 @@ LICENCE_GROUP_ORDER = [
     "Forklift", "EWP", "Heights", "Construction", "Child safety",
     "First aid", "Traffic", "Driver",
     "Rigging", "Scaffolding", "Cranes", "Hoists",
-    "Pressure equipment", "Other HRW",
+    "Pressure equipment", "Other HRW", "Miscellaneous",
 ]
 
 # Inbound aliases for convert-B. Gigpower-apply onboarding still emits the OLD
@@ -5177,6 +5184,7 @@ LICENCE_EXPIRY_EXPECTED = {
     "WWCC": True, "FA": True,
     "LF": True, "LO": True, "WP": True, "EWPSOA": True,
     "LR": True, "MR": True, "HR": True, "HC": True, "MC": True,
+    "POLICE": True, "ISO45001": True, "RSA": True,
 }
 
 # Driver classes are hierarchical: an HC holder can lawfully drive an MR vehicle,
