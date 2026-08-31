@@ -134,7 +134,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.23.0"
+APP_VERSION    = "5.23.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4996,6 +4996,27 @@ INDUCTION_SESSION_ACTIONS = {
     "cancel_session", "send_reminders",
 }
 
+# Per-action read timeout for the sessions proxy below. Everything else answers
+# in well under a second, so 20s stays the default and a genuinely wedged
+# endpoint still fails fast.
+#
+# The two exceptions email every booked candidate. The edge function sends them
+# strictly one at a time — a dedupe SELECT, the Resend POST, then the audit
+# INSERT, per person — which measures at ~0.55s each. That put every real send
+# over the old blanket 20s: on 31 Aug 2026 four reminder runs (48, 56, 98 and
+# 100 booked) took 25.9s, 32.4s, 52.9s and 53.9s. All four delivered in full;
+# all four showed ops "Could not send: Sessions service unavailable", because
+# the timeout was shorter than the job. The threshold was ~36 bookings, so this
+# fired on every session that mattered and on none of the ones we tested with.
+#
+# 180s is chosen to sit ABOVE the edge function's own wall-clock limit, so the
+# platform is what ends a runaway send, not us — us timing out first is what
+# produced a false failure while the work was still succeeding.
+SESSION_ACTION_TIMEOUTS = {
+    "send_reminders": 180,
+    "cancel_session": 180,
+}
+
 
 @app.route("/api/recruitment/sessions", methods=["POST"])
 @require_cohort("admin", "operations")
@@ -5023,8 +5044,21 @@ def api_recruitment_sessions():
             INDUCTION_SESSIONS_ADMIN_URL,
             headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
             json=data,
-            timeout=20,
+            timeout=SESSION_ACTION_TIMEOUTS.get(action, 20),
         )
+    except http.exceptions.Timeout:
+        # We gave up waiting; the edge function did NOT stop. For an emailing
+        # action that means mail is very likely still going out, so saying
+        # "unavailable" would be a lie in the one place ops cannot afford one.
+        # Every send is recorded per (candidate, session, milestone) before we
+        # answer, so pressing the button again is safe and shows what is left.
+        print(f"[induction-sessions] timed out waiting on action={action}")
+        if action in SESSION_ACTION_TIMEOUTS:
+            return jsonify({"error": "Still working — we stopped waiting for the reply, "
+                                     "but the send is most likely still running. Wait a "
+                                     "minute, then press again to see what is left.",
+                            "timeout": True}), 504
+        return jsonify({"error": "Sessions service unavailable"}), 502
     except Exception as e:
         print(f"[induction-sessions] request failed: {e}")
         return jsonify({"error": "Sessions service unavailable"}), 502
