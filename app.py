@@ -14098,5 +14098,146 @@ def api_licence_triage_save():
     return jsonify(out)
 
 
+# ─── PERSONALITY AUDIO · voice library manifest ───────────────────────────────
+# THE GOAT's spoken lines, generated in Voicebox and dropped into
+# static/audio/<group>/<event>_<nn>.<ext>. The manifest is DISCOVERED from the
+# filesystem, never listed in code: adding a line is copying a file in, and it
+# appears on the next page load. Nothing here decides WHEN a sound plays — that
+# is goatVoice in index.html — this only answers "what is installed".
+#
+# Deliberately separate from the five original easter-egg sounds (goat-bray,
+# cha-ching, closed, harry, welcome), which sit flat in static/ and keep their
+# own triggers and their own easterEgg/harry mute. Silencing personality audio
+# does not touch them, and vice versa.
+#
+# app.static_folder, NOT BASE_DIR. PyInstaller puts `datas` entries under
+# Contents/Resources/ while the composed runtime files (config.json,
+# au_postcodes.json and friends) land in Contents/MacOS/, which is what BASE_DIR
+# points at in a frozen build — the exact mismatch that made the 5.12.0
+# harry.mp3 bundle check fail. Flask resolves static_folder from its own
+# root_path, the same mechanism that already finds templates/ inside the bundle.
+
+from urllib.parse import quote as _urlquote
+
+VOICE_AUDIO_EXTS       = (".mp3", ".wav", ".m4a", ".ogg")
+VOICE_MANIFEST_TTL_SEC = 30      # a copied-in file appears within 30s, no restart
+_voice_manifest_cache  = {"data": None, "fetched_at": 0.0}
+_voice_manifest_lock   = threading.Lock()
+
+
+def _voice_audio_dir():
+    """Absolute path to static/audio, or None if the folder isn't there.
+
+    Absent is the NORMAL state until a library has been recorded, so every caller
+    treats None as "no audio installed" rather than as an error."""
+    root = app.static_folder
+    if not root:
+        return None
+    d = os.path.join(root, "audio")
+    return d if os.path.isdir(d) else None
+
+
+def _voice_url(*parts):
+    """A /static/audio/... URL with every segment percent-encoded.
+
+    Not cosmetic: event folders like "no answer" carry spaces, and an unencoded
+    space in an <audio> src is a clip that silently never plays."""
+    return "/static/audio/" + "/".join(_urlquote(p, safe="") for p in parts)
+
+
+def _voice_audio_files(d):
+    """Playable filenames directly inside `d`, sorted. Dotfiles, non-audio files
+    and subdirectories are skipped. An unreadable directory is an empty one."""
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return []
+    return [n for n in names
+            if not n.startswith(".")
+            and n.lower().endswith(VOICE_AUDIO_EXTS)
+            and os.path.isfile(os.path.join(d, n))]
+
+
+def _scan_voice_library():
+    """{group: {event: [url, ...]}} discovered from static/audio/.
+
+    TWO layouts, both supported, because this library is maintained in Finder and
+    both shapes fall out of that naturally:
+
+      static/audio/<group>/<event>/<anything>.wav   — folder per event (in use)
+      static/audio/<group>/<event>_<nn>.<ext>       — flat, numbered takes
+
+    The folder-per-event form is the one to prefer: the FOLDER names the event, so
+    a clip keeps whatever filename the recording tool produced and the name can
+    say what the line actually is. Filenames are never parsed for meaning there.
+
+    Audio sitting loose in a group folder becomes an event named after the group —
+    static/audio/rare/*.wav is group "rare", event "rare" — which is exactly what
+    goatVoice.play('rare') asks for when it omits the event. The flat form is
+    recognised only when a stem really ends in _<digits>; a descriptive filename
+    is never mistaken for an event name.
+
+    An empty event folder yields nothing rather than an empty event, so the
+    placeholders someone made in Finder for lines not yet recorded stay invisible
+    until there is something to play. Unreadable entries are skipped, not raised:
+    a half-copied folder must not be able to take the app down over a sound
+    effect."""
+    base = _voice_audio_dir()
+    if not base:
+        return {}
+    try:
+        groups = sorted(os.listdir(base))
+    except OSError:
+        return {}
+    out = {}
+    for group in groups:
+        gdir = os.path.join(base, group)
+        if group.startswith(".") or not os.path.isdir(gdir):
+            continue
+        events = {}
+        for name in _voice_audio_files(gdir):
+            stem  = os.path.splitext(name)[0]
+            flat  = re.sub(r"_\d+$", "", stem)
+            event = flat if flat != stem else group
+            events.setdefault(event, []).append(_voice_url(group, name))
+        try:
+            children = sorted(os.listdir(gdir))
+        except OSError:
+            children = []
+        for event in children:
+            edir = os.path.join(gdir, event)
+            if event.startswith(".") or not os.path.isdir(edir):
+                continue
+            urls = [_voice_url(group, event, n) for n in _voice_audio_files(edir)]
+            if urls:
+                events.setdefault(event, []).extend(urls)
+        if events:
+            out[group] = events
+    return out
+
+
+@app.route("/api/voice/manifest")
+@require_cohort(*KNOWN_COHORTS)
+def api_voice_manifest():
+    """What personality audio is installed, as {group: {event: [url, ...]}}.
+
+    EVERY cohort, unlike almost everything else here: the payload is a list of
+    filenames shipped inside the bundle and carries no crew data at all, and the
+    person who most needs to silence the goat is whoever it is currently
+    annoying — which is not a question of access level.
+
+    Cached for VOICE_MANIFEST_TTL_SEC so a reload doesn't restat the tree, short
+    enough that a file copied in during development shows up without a restart.
+    In memory only: the bundle is read-only once notarised."""
+    now = time.time()
+    with _voice_manifest_lock:
+        c = _voice_manifest_cache
+        if c["data"] is None or (now - c["fetched_at"]) >= VOICE_MANIFEST_TTL_SEC:
+            c["data"], c["fetched_at"] = _scan_voice_library(), now
+        data = c["data"]
+    return jsonify({"groups": data})
+
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5001, debug=False, threaded=True)
