@@ -25,6 +25,9 @@
 	/* mysql_error(), orphan-file cleanup). immigration PII — admin-gated, same as
 	/* the GOAT work-eligibility view.
 	/*
+	/* mode=patch assigns ONLY the posted columns (see 2b). Default is a full
+	/* replace, which is what convert-B relies on.
+	/*
 	/* Idempotent per (user): UNIQUE(`user`) on user_visa. A row already present is
 	/* UPDATED (not duplicated); a re-supplied PDF replaces the old one (unlinked).
 	*/
@@ -48,6 +51,25 @@
 		http_response_code(400);
 		die('{"ok":false,"error":"missing user"}');
 	}
+
+	/*
+	/* 2b. mode — 'patch' assigns ONLY the columns whose keys were posted.
+	/*
+	/* WITHOUT this the UPDATE below sets every column from the POST, so an absent
+	/* key is written as NULL. That is correct for convert, which always builds a
+	/* complete record from the work-eligibility feed and should be authoritative.
+	/* It is destructive for anything partial: a "record the VEVO check" POST
+	/* carrying only vevo_verified_at + vevo_verified_by would blank the passport
+	/* number, subclass, expiry and conditions in the same statement, and the row
+	/* would look like the operator had cleared it.
+	/*
+	/* Full mode stays the DEFAULT so convert-B is unchanged and needs no edit.
+	/*
+	/* A patch against a user with no visa row is refused rather than inserted — a
+	/* partial write should never conjure a half-empty immigration record.
+	*/
+
+	$patch = (isset($_POST['mode']) && strtolower(trim($_POST['mode'])) === 'patch');
 
 	/*
 	/* 3. work_eligibility_status — allow-list; anything else -> NULL. is_visa_worker
@@ -195,26 +217,59 @@
 		$visaPdfInsert = "'" . mysql_real_escape_string($savedName) . "'";
 	}
 
+	if ($existId === 0 && $patch)
+	{
+		http_response_code(404);
+		die('{"ok":false,"error":"no visa record to patch"}');
+	}
+
 	if ($existId > 0)
 	{
+		/*
+		/* work_eligibility_status and is_visa_worker move together — the flag is
+		/* DERIVED from the status, so assigning one without the other is how they
+		/* drift apart.
+		*/
+
+		$set = array();
+
+		if (!$patch || isset($_POST['work_eligibility_status']))
+		{
+			$set[] = "work_eligibility_status = " . $statusSql;
+			$set[] = "is_visa_worker = " . $isVisaWorker;
+		}
+
+		$assignable = array(
+			'passport_number'     => $passportNumberSql,
+			'passport_country'    => $passportCountrySql,
+			'visa_subclass'       => $subclassSql,
+			'visa_grant_number'   => $grantNumberSql,
+			'trn'                 => $trnSql,
+			'visa_grant_date'     => $grantDateSql,
+			'visa_expiry'         => $expirySql,
+			'visa_conditions'     => $conditionsSql,
+			'has_work_limitation' => $limitSql,
+			'vevo_verified_at'    => $vevoAtSql,
+			'vevo_verified_by'    => $vevoBySql
+		);
+
+		foreach ($assignable as $col => $val)
+		{
+			if (!$patch || isset($_POST[$col]))
+			{
+				$set[] = $col . " = " . $val;
+			}
+		}
+
+		$set[] = "updated_ts = " . time();
+
+		/* $visaPdfAssign already carries its own leading comma, and is empty
+		/* unless a new file was uploaded — so the PDF is never cleared by a write
+		/* that did not carry one, in either mode. */
+
 		mysql_query(
-			"UPDATE user_visa SET
-				work_eligibility_status = " . $statusSql . ",
-				is_visa_worker = " . $isVisaWorker . ",
-				passport_number = " . $passportNumberSql . ",
-				passport_country = " . $passportCountrySql . ",
-				visa_subclass = " . $subclassSql . ",
-				visa_grant_number = " . $grantNumberSql . ",
-				trn = " . $trnSql . ",
-				visa_grant_date = " . $grantDateSql . ",
-				visa_expiry = " . $expirySql . ",
-				visa_conditions = " . $conditionsSql . ",
-				has_work_limitation = " . $limitSql . ",
-				vevo_verified_at = " . $vevoAtSql . ",
-				vevo_verified_by = " . $vevoBySql . ",
-				updated_ts = " . time() . "
-				" . $visaPdfAssign . "
-			 WHERE id = " . $existId
+			"UPDATE user_visa SET " . implode(", ", $set) . $visaPdfAssign .
+			" WHERE id = " . $existId
 		);
 	}
 	else
@@ -267,7 +322,10 @@
 	/* 12. set the users.is_visa_worker quick-flag (rostering / compliance side reads
 	/* this without a join). Best-effort: a failure here does not undo the visa row. */
 
-	mysql_query("UPDATE users SET is_visa_worker = " . $isVisaWorker . " WHERE id = " . $user);
+	if (!$patch || isset($_POST['work_eligibility_status']))
+	{
+		mysql_query("UPDATE users SET is_visa_worker = " . $isVisaWorker . " WHERE id = " . $user);
+	}
 
 	/*
 	/* 13. done. */
