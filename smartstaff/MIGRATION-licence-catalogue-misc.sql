@@ -26,10 +26,32 @@
 -- Run on TEST (smartst_test) first, verify with §3–§5, then PROD.
 -- ─────────────────────────────────────────────────────────────────────────
 
--- 1. Pre-flight. Expect 41 rows and 14 distinct groups — the state this
---    migration assumes. Any other shape means the seed drifted; stop here.
+-- 1. Pre-flight. `groups_before` MUST be 14. That is the whole assertion: the
+--    sort_order below is rank 14 * 1000, so a 15th group already present means
+--    14000 collides and this migration is wrong for this database. Stop.
+--
+--    `rows_before` is INFORMATIONAL, not a gate. 41 is the seed, but the
+--    catalogue editor exists so codes can be added without a release, and a
+--    legitimate addition must not look like drift. On smartst_test it reads 43:
+--    ZZTEST2 and ZZPER2, leftover smoke-test rows from the editor's own
+--    testing, both parked in Forklift at sort_order 0. See §1b.
 SELECT COUNT(*) AS rows_before, COUNT(DISTINCT `grp`) AS groups_before
 FROM `licence_catalogue`;
+
+-- 1b. Anything present that the seed did not put there. Read it before running
+--     §2 — a code already carrying POLICE, ISO45001 or RSA would be SKIPPED by
+--     the INSERT IGNORE below and left in whatever group and expiry mode
+--     somebody else chose, while app.py insists it is Miscellaneous. Silent,
+--     and the reason this query exists rather than trusting the count.
+SELECT `code`, `name`, `grp`, `expiry_mode`, `validity_months`,
+       `require_certified`, `published`, `sort_order`
+FROM `licence_catalogue`
+WHERE `code` NOT IN (
+  'SB','SI','SA','DG','RB','RI','RA','BS','BA','TO','ES',
+  'CT','CS','CD','CP','CB','CV','CN','C2','C6','C1','C0',
+  'HM','HP','LF','LO','WP','RS','PB','TV',
+  'CI','WAH','EWPSOA','FA','TC','WWCC',
+  'LR','MR','HR','HC','MC');
 
 -- 2. The three rows. INSERT IGNORE so a re-run is a no-op rather than a
 --    duplicate-key abort on `uq_code`.
@@ -46,7 +68,8 @@ VALUES
   ('RSA',      'Responsible Service of Alcohol', 'Miscellaneous', 'date', NULL, 0, 1, 14020, NULL)
 ;
 
--- 3. Verify. Expect EXACTLY 44 rows and 15 groups.
+-- 3. Verify. groups_after MUST be 15. rows_after is rows_before + 3 — on a
+--    seed-only database 44, on smartst_test 46 while ZZTEST2/ZZPER2 remain.
 SELECT COUNT(*) AS rows_after, COUNT(DISTINCT `grp`) AS groups_after
 FROM `licence_catalogue`;
 
