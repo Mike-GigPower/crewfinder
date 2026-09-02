@@ -1,6 +1,6 @@
 {
-  "version": "5.24.0",
+  "version": "5.25.0",
   "release_date": "2026-09-02",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.24.0/TheGOAT.dmg",
-  "release_notes": "Calls can now be cancelled instead of deleted. Crew stay on the call as Cancelled so the roster survives as the billing record, and THE GOAT lists everyone who still needs telling — no notification is sent to crew automatically yet."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.25.0/TheGOAT.dmg",
+  "release_notes": "A cancelled call can now be reinstated. Anyone who was confirmed comes back unconfirmed and has to accept again — nobody is put back on a shift without agreeing to it — and THE GOAT lists everyone who still needs telling."
 }
