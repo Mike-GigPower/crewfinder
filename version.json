@@ -1,6 +1,6 @@
 {
-  "version": "5.26.0",
+  "version": "5.27.0",
   "release_date": "2026-09-02",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.26.0/TheGOAT.dmg",
-  "release_notes": "Crew are now told automatically when a call is stood down or reinstated, and the panel afterwards names anyone who could not be reached instead of telling you to ring everybody."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.27.0/TheGOAT.dmg",
+  "release_notes": "Open any call and choose Responses to see who accepted, when, how long they took, what else they are holding on that booking and their recent record — everything needed to judge who comes off a call, laid out without ranking anyone."
 }
