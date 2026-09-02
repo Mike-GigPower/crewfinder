@@ -134,7 +134,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.24.0"
+APP_VERSION    = "5.25.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -11868,6 +11868,67 @@ def api_schedule_clash_ack():
         return jsonify({"error": err}), 502
     _schedule_cache.clear()
     return jsonify(result)
+
+def ss_uncancel_call(ss, call_id):
+    """Reinstate a cancelled call via uncancel-call.php. Returns
+    (body, http_status, None), or (None, 0, error) when the request itself failed.
+
+    No payload: unlike cancellation, which needs a chargeable ruling and a reason,
+    reinstating restores a state that was already recorded. There is nothing to
+    decide, so there is nothing to send.
+
+    Non-200 bodies are passed through rather than flattened, same as
+    ss_cancel_call. The 409 here covers two unrelated situations -- an accounting
+    flag (named individually), or a call that has already started -- and they need
+    different follow-ups."""
+    url = f"{BASE_URL}/ajax/crew/uncancel-call.php"
+    try:
+        resp = ss.post(url, params={"id": int(call_id)}, timeout=60)
+    except Exception as e:
+        return None, 0, f"request failed: {e}"
+    try:
+        body = resp.json()
+    except Exception:
+        return None, resp.status_code, f"non-JSON response (HTTP {resp.status_code})"
+    return body, resp.status_code, None
+
+@app.route("/api/call/<booking_id>/<call_id>/reinstate", methods=["POST"])
+@require_cohort("admin")
+def api_call_reinstate(booking_id, call_id):
+    """Reinstate a cancelled call. The reverse of /cancel: the cancellation
+    fields are cleared, the "CANCELLED - " prefix comes off the name, and every
+    crew row at status 9 is restored. booking_id is taken for URL symmetry with
+    the other call routes.
+
+    NOBODY COMES BACK CONFIRMED. A crew member who was Confirmed (5) returns at
+    Unconfirmed (0) and has to accept again -- they may have been told the call
+    was off and taken other work. Backups stay backups: a backup restored to 0
+    who then accepts becomes Confirmed, silently promoting a standby into a
+    confirmed slot. The endpoint owns that map; this route does not second-guess
+    it.
+
+    THE RESPONSE CARRIES A `notify` ARRAY AND NOTHING HAS BEEN SENT TO THEM.
+    Render it as people who still need ringing. A reinstated call nobody hears
+    about looks staffed in the booking while everyone on it believes they are
+    free -- and it is short on the day, with the roster looking full."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body, status, err = ss_uncancel_call(ss, call_id)
+
+    if err:
+        return jsonify({"error": err}), 502
+
+    # Cleared on ANY success, unlike cancel. Reinstate has no no-op path: even an
+    # `already: true` may have swept status-9 rows left by a half-finished run,
+    # and the call reappearing IS a Schedule change.
+    if status == 200 and body.get("ok"):
+        _schedule_cache.clear()
+
+    # 409 carries either the accounting flag that blocked it or "already started",
+    # both shown to the operator verbatim.
+    return jsonify(body), status
 
 def ss_cancel_call(ss, call_id, payload):
     """Cancel a call via cancel-call.php. Returns (body, http_status, None) on a
