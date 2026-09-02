@@ -25,6 +25,11 @@
 	/*     offered   = responded + didnt_respond + pending
 	/*     responded = accepted  + declined            (accepted includes no_show)
 	/*
+	/* A CANCELLED row (status 9) is classified by prev_status — we stood them
+	/* down, they did not decline — so the identities hold across a cancellation
+	/* and no figure on this page counts it against the crew member. `cancelled`
+	/* sits outside both identities, like phone_*.
+	/*
 	/* phone_* sit OUTSIDE both identities — those rows were never offered
 	/* through the system at all.
 	/*
@@ -217,13 +222,30 @@
 			SUM(ccm.offered_at IS NOT NULL)                                   AS offered,
 			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL)  AS responded,
 
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND ccm.status IN (5,7,8))     AS accepted,
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND ccm.status = 6)            AS declined,
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND ccm.status = 8)            AS no_show,
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND ccm.status NOT IN (5,6,7,8)) AS unclassified,
+			/* A CANCELLED row (status 9) is classified by prev_status: WE stood them
+	   down, they did not decline. Cancelling must never count against a crew
+	   member in any figure on this page.
 
-			SUM(ccm.offered_at IS NULL AND ccm.status IN (5,7,8)) AS phone_accepted,
-			SUM(ccm.offered_at IS NULL AND ccm.status = 6)        AS phone_declined,
+	   COALESCE to -1 is load-bearing. prev_status can be NULL, and both
+	   `NULL IN (5,7,8)` and `NULL NOT IN (5,6,7,8)` evaluate to NULL — so
+	   without it a 9 carrying no prev_status would fall out of EVERY bucket
+	   below, including `unclassified`, which exists to catch precisely that.
+	   -1 matches nothing and lands there, loudly. */
+
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8))     AS accepted,
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 6)            AS declined,
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 8)            AS no_show,
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) NOT IN (5,6,7,8)) AS unclassified,
+
+			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8)) AS phone_accepted,
+			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 6)        AS phone_declined,
+
+			/* How many times WE stood this person down. Outside both identities,
+			   like phone_*, because it is not a response — it is something that
+			   happened to them. The one figure here that argues FOR keeping
+			   someone when a call is being reduced. */
+
+			SUM(ccm.status = 9)                                   AS cancelled,
 
 			MIN(CASE WHEN $timed_when THEN TIMESTAMPDIFF(SECOND, ccm.offered_at, ccm.responded_at) END) AS min_secs,
 			MAX(CASE WHEN $timed_when THEN TIMESTAMPDIFF(SECOND, ccm.offered_at, ccm.responded_at) END) AS max_secs,
@@ -289,6 +311,7 @@
 
 			'phone_accepted' => (int) $row->phone_accepted,
 			'phone_declined' => (int) $row->phone_declined,
+			'cancelled'      => (int) $row->cancelled,
 
 			'response_rate'  => null,
 
