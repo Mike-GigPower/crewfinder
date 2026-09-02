@@ -134,7 +134,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.26.0"
+APP_VERSION    = "5.27.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -11998,6 +11998,123 @@ def api_schedule_clash_ack():
         return jsonify({"error": err}), 502
     _schedule_cache.clear()
     return jsonify(result)
+
+# ── RESPONSE HISTORY ─────────────────────────────────────────────────────────
+# Read-only. Feeds the panel ops read when deciding who to cut from a call.
+# It informs a judgement; it does not rank. Nothing here sorts or scores.
+
+GP_CREW_STATS_TTL = 900          # seconds; the window is 90 days, it moves slowly
+GP_CREW_STATS_DAYS = 90          # matches worked_90d in get-call-responses.php
+
+_crew_stats_cache = {"at": 0.0, "by_user": None}
+
+def gp_crew_stats(ss, days=GP_CREW_STATS_DAYS):
+    """Per-crew reliability from get-crew-offer-stats.php, indexed by user_id.
+
+    Returns a dict, or **None meaning UNKNOWN** — never an empty dict on failure.
+    The distinction is the whole point: zeroes on this screen would read as
+    "never accepted anything, never declined anything", which is a damning and
+    false picture of someone, shown while a person decides whether to take work
+    off them. The caller must render an absent section rather than zeroes.
+
+    Cached because that endpoint answers for EVERY crew member over 90 days and
+    the panel needs a couple of dozen. A stale answer is better than none:
+    figures a few minutes old are fine, a blank gets misread."""
+    now = time.time()
+    cached = _crew_stats_cache.get("by_user")
+    if cached is not None and (now - _crew_stats_cache.get("at", 0)) < GP_CREW_STATS_TTL:
+        return cached
+
+    end   = time.strftime("%Y-%m-%d")
+    start = time.strftime("%Y-%m-%d", time.localtime(now - days * 86400))
+
+    try:
+        r = ss.get(f"{BASE_URL}/ajax/crew/get-crew-offer-stats.php",
+                   params={"start": start, "end": end}, timeout=30)
+        if r.status_code != 200:
+            app.logger.warning(f"[crew-stats] HTTP {r.status_code}")
+            return cached          # stale if we have it, else None
+        data = r.json()
+        rows = data.get("crew")
+        if not isinstance(rows, list):
+            app.logger.warning("[crew-stats] malformed response: 'crew' not a list")
+            return cached
+        by_user = {}
+        for c in rows:
+            uid = c.get("user_id")
+            if uid is None:
+                continue
+            by_user[str(uid)] = {
+                "offered":       c.get("offered", 0),
+                "responded":     c.get("responded", 0),
+                "accepted":      c.get("accepted", 0),
+                "declined":      c.get("declined", 0),
+                "no_show":       c.get("no_show", 0),
+                # Added 2 Sep: how many times WE stood them down. Absent on an
+                # environment running the older endpoint, hence the default.
+                "cancelled":     c.get("cancelled", 0),
+                "response_rate": c.get("response_rate"),
+            }
+        _crew_stats_cache["by_user"] = by_user
+        _crew_stats_cache["at"]      = now
+        return by_user
+    except Exception as e:
+        app.logger.warning(f"[crew-stats] fetch error: {e}")
+        return cached
+
+def ss_call_responses(ss, call_id):
+    """The per-call response history. Returns (body, http_status, None), or
+    (None, 0, error) when the request itself failed."""
+    url = f"{BASE_URL}/ajax/crew/get-call-responses.php"
+    try:
+        resp = ss.get(url, params={"id": int(call_id)}, timeout=30)
+    except Exception as e:
+        return None, 0, f"request failed: {e}"
+    try:
+        body = resp.json()
+    except Exception:
+        return None, resp.status_code, f"non-JSON response (HTTP {resp.status_code})"
+    return body, resp.status_code, None
+
+@app.route("/api/call/<booking_id>/<call_id>/responses")
+@require_cohort("admin")
+def api_call_responses(booking_id, call_id):
+    """Everything ops need to decide who comes off a call, in one payload.
+
+    Two sources, merged: the per-call history (timing, what else they hold on
+    this booking, how much work they have had) and the per-crew reliability
+    figures, which are READ from get-crew-offer-stats.php and never recomputed
+    here.
+
+    stats_available says whether the second source answered. When it is false
+    there are NO reliability fields on any crew member — deliberately, because a
+    zero would be read as a fact about the person rather than as a missing
+    fetch."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body, status, err = ss_call_responses(ss, call_id)
+
+    if err:
+        return jsonify({"error": err}), 502
+    if status != 200 or not body.get("ok"):
+        return jsonify(body), status
+
+    stats = gp_crew_stats(ss)
+    body["stats_available"] = stats is not None
+    body["stats_window_days"] = GP_CREW_STATS_DAYS
+
+    if stats is not None:
+        for c in (body.get("crew") or []):
+            s = stats.get(str(c.get("user_id")))
+            if s:
+                c["stats"] = s
+            # No entry means this crew member has no rows inside the window —
+            # which is a real answer, not a failure. Left absent; the panel
+            # shows "no history yet" rather than a row of zeroes.
+
+    return jsonify(body), status
 
 def ss_uncancel_call(ss, call_id):
     """Reinstate a cancelled call via uncancel-call.php. Returns
