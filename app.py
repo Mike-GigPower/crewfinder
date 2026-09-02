@@ -134,7 +134,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.23.1"
+APP_VERSION    = "5.24.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -11868,6 +11868,68 @@ def api_schedule_clash_ack():
         return jsonify({"error": err}), 502
     _schedule_cache.clear()
     return jsonify(result)
+
+def ss_cancel_call(ss, call_id, payload):
+    """Cancel a call via cancel-call.php. Returns (body, http_status, None) on a
+    reply we could parse, or (None, 0, error) when the request itself failed.
+
+    UNLIKE ss_remove_crew_from_call, a non-200 is NOT collapsed into an error
+    string. cancel-call.php answers with bodies worth reading at every status:
+    409 names WHICH accounting flag blocked the cancellation (lock, invoice,
+    payslips), 422 says chargeable was missing, and a 200 carrying ok:false is
+    the fed-calls warning with its crew counts. Flattening those to "502 error"
+    would throw away the only thing ops can act on."""
+    url = f"{BASE_URL}/ajax/crew/cancel-call.php"
+    try:
+        resp = ss.post(url, params={"id": int(call_id)}, json=payload, timeout=60)
+    except Exception as e:
+        return None, 0, f"request failed: {e}"
+    try:
+        body = resp.json()
+    except Exception:
+        return None, resp.status_code, f"non-JSON response (HTTP {resp.status_code})"
+    return body, resp.status_code, None
+
+@app.route("/api/call/<booking_id>/<call_id>/cancel", methods=["POST"])
+@require_cohort("admin")
+def api_call_cancel(booking_id, call_id):
+    """Cancel a whole call: it stays in the booking, its crew are stood down as
+    Cancelled (status 9) rather than deleted, and everything that reads calls
+    skips it. booking_id is taken for URL symmetry with the other call routes.
+
+    Body is passed through to the endpoint verbatim:
+        {"scope": "call", "chargeable": true|false, "reason": "...", "confirm": true}
+
+    `chargeable` is REQUIRED and has no default -- blackout terms vary by
+    customer, so it is a decision ops make every time. The endpoint 422s without
+    it, and this route does not paper over that.
+
+    THE RESPONSE CARRIES A `notify` ARRAY OF userIDs, AND NOTHING HAS BEEN SENT
+    TO THEM. There is no /api/push/cancel on the portal yet (see the module
+    docstring of the patch that added this). Slice F must render that list as
+    people who still need ringing -- NOT as people who were notified. A missed
+    offer costs an unfilled call; a missed cancellation puts someone in a car to
+    a venue for a shift that is not happening."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    payload = request.get_json(silent=True) or {}
+
+    body, status, err = ss_cancel_call(ss, call_id, payload)
+
+    if err:
+        return jsonify({"error": err}), 502
+
+    # Only invalidate the Schedule when something actually moved. The fed-calls
+    # warning is a 200 carrying ok:false and changes nothing, so clearing on it
+    # would throw the cache away every time ops are asked a question.
+    if status == 200 and body.get("ok") and not body.get("needs_confirm"):
+        _schedule_cache.clear()
+
+    # Status passed through deliberately: 409 and 422 carry messages the dialog
+    # shows verbatim, and a 200 with ok:false is the confirm prompt.
+    return jsonify(body), status
 
 def ss_remove_crew_from_call(ss, call_id, user_id):
     """Remove a crew member from a call ENTIRELY (not a status change) via
