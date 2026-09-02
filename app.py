@@ -14402,6 +14402,30 @@ def ss_get_visa(ss, user_id):
     return out, None
 
 
+def ss_list_documents(ss, user_id):
+    """One crew member's rows from user_documents via admin-get-documents.php, or
+    (None, err). Today that is the signed employment agreement convert-to-crew
+    pushed across; the table is keyed on (user, doc_type) so it can carry more.
+
+    An EMPTY list is a legitimate answer, not a failure — most of the roster
+    predates onboarding and will never have a contract. Same posture as
+    ss_get_visa returning visa: None."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-documents.php",
+                      params={"user": int(user_id)}, timeout=20)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return (out.get("documents") or []), None
+
+
 def ss_list_visa_workers(ss):
     """The visa register via list-visa-workers.php, or (None, err).
 
@@ -14551,6 +14575,54 @@ def api_crew_visa_file(user_id):
     try:
         resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-visa-file.php",
                       params={"user": int(user_id)}, timeout=60)
+    except Exception as e:
+        return jsonify({"error": f"request failed: {e}"}), 502
+    if resp.status_code != 200:
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+    ctype = (resp.headers.get("Content-Type") or "application/octet-stream").split(";")[0].strip()
+    return Response(resp.content, mimetype=ctype, headers={
+        "Content-Disposition": resp.headers.get("Content-Disposition", "inline"),
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
+@app.route("/api/crew/<int:user_id>/documents")
+@require_cohort("admin")
+def api_crew_documents_get(user_id):
+    """One crew member's stored documents, for the Manage Crew Documents section.
+
+    ADMIN ONLY, matching the visa read: an employment agreement carries the
+    person's name, signature and commencement terms. The PHP endpoint gates
+    independently, so this decorator is defence in depth, not the only control."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    docs, err = ss_list_documents(ss, user_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"documents": docs})
+
+
+@app.route("/api/crew/<int:user_id>/documents/file")
+@require_cohort("admin")
+def api_crew_document_file(user_id):
+    """Stream one stored document inline, straight through from
+    admin-get-document-file.php with the upstream content-type.
+
+    The client passes a user id and a doc_type and never handles a filename —
+    user_uploads/ is one flat directory of {user}_{time}.pdf files covering
+    licences, inductions, visas and contracts, so a client-supplied name would be
+    a client-guessable one. The endpoint resolves it from the row."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    doc_type = (request.args.get("doc_type") or "contract").strip()
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-document-file.php",
+                      params={"user": int(user_id), "doc_type": doc_type}, timeout=60)
     except Exception as e:
         return jsonify({"error": f"request failed: {e}"}), 502
     if resp.status_code != 200:
