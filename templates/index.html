@@ -10412,14 +10412,16 @@ async function openCrewEdit(id){
     + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
-  window._ceLoaded = {inductions:false, licences:false, visa:false, payslips:false, shifts:false, unavail:false};
+  window._ceLoaded = {inductions:false, licences:false, visa:false, documents:false, payslips:false, shifts:false, unavail:false};
 
   const ceTabBar =
       '<div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap">'
     + ([['details','Details'],['inductions','Inductions'],['licences','Licences']]
-        // Visa is ADMIN ONLY — passport and grant numbers are immigration PII and
-        // the tab is absent for every other cohort, not merely disabled.
-        .concat(window._cohort === 'admin' ? [['visa','Visa']] : [])
+        // Visa and Documents are ADMIN ONLY — passport and grant numbers are
+        // immigration PII, and an employment agreement carries the person's
+        // signature and commencement terms. Both tabs are absent for every other
+        // cohort, not merely disabled.
+        .concat(window._cohort === 'admin' ? [['visa','Visa'],['documents','Documents']] : [])
         .concat([['payslips','Payslips'],['shifts','Calls'],['unavail','Unavailability']])).map(function(t){
         return '<button type="button" id="ce-tabbtn-'+t[0]+'" onclick="ceShowTab(\''+String(c.id)+'\',\''+t[0]+'\')" '
           + 'style="background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:\'Rajdhani\',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer">'+t[1]+'</button>';
@@ -10433,6 +10435,7 @@ async function openCrewEdit(id){
     + '<div id="ce-panel-inductions" style="display:none"></div>'
     + '<div id="ce-panel-licences" style="display:none"></div>'
     + '<div id="ce-panel-visa" style="display:none"></div>'
+    + '<div id="ce-panel-documents" style="display:none"></div>'
     + '<div id="ce-panel-payslips" style="display:none"></div>'
     + '<div id="ce-panel-shifts" style="display:none"></div>'
     + '<div id="ce-panel-unavail" style="display:none"></div>';
@@ -10841,7 +10844,7 @@ async function submitCrewEdit(id){
 
 // ── Edit Crew Member: tabbed panels (Details / Inductions / Shifts / Unavailability) ──
 function ceShowTab(id, tab){
-  ['details','inductions','licences','visa','payslips','shifts','unavail'].forEach(function(t){
+  ['details','inductions','licences','visa','documents','payslips','shifts','unavail'].forEach(function(t){
     var panel = document.getElementById('ce-panel-'+t);
     var btn   = document.getElementById('ce-tabbtn-'+t);
     var on    = (t===tab);
@@ -10855,9 +10858,71 @@ function ceShowTab(id, tab){
   if(tab==='inductions' && !window._ceLoaded.inductions){ window._ceLoaded.inductions = true; ceLoadInductions(id); }
   if(tab==='licences'   && !window._ceLoaded.licences){   window._ceLoaded.licences = true;   ceLoadLicences(id); }
   if(tab==='visa'       && !window._ceLoaded.visa){       window._ceLoaded.visa = true;       ceLoadVisa(id); }
+  if(tab==='documents'  && !window._ceLoaded.documents){  window._ceLoaded.documents = true;  ceLoadDocuments(id); }
   if(tab==='payslips'   && !window._ceLoaded.payslips){   window._ceLoaded.payslips = true;   ceLoadPayslips(id); }
   if(tab==='shifts'     && !window._ceLoaded.shifts){     window._ceLoaded.shifts = true;     ceLoadShifts(id); }
   if(tab==='unavail'    && !window._ceLoaded.unavail){    window._ceLoaded.unavail = true;    ceLoadUnavail(id); }
+}
+
+// Manage Crew -> Documents. READ ONLY: the only writer is convert-to-crew, which
+// is idempotent per (user, doc_type). An upload control here would invite a
+// second contract of unknown provenance sitting beside the signed one, so there
+// isn't one.
+async function ceLoadDocuments(id){
+  var panel = document.getElementById('ce-panel-documents');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading documents\u2026</div>';
+  var data;
+  try{
+    var r = await fetch('/api/crew/'+encodeURIComponent(id)+'/documents');
+    data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.error || ('HTTP '+r.status));
+  }catch(e){
+    panel.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load documents: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+
+  var docs = data.documents || [];
+
+  // Empty is the COMMON case, not a failure: only crew who came through
+  // onboarding have a contract, and nobody who predates it ever will. Say so
+  // plainly rather than leaving an empty box that reads as a broken panel.
+  if(!docs.length){
+    panel.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">'
+      + 'No documents on file. A signed employment agreement is stored here when a '
+      + 'candidate is converted to crew.</div>';
+    return;
+  }
+
+  var LABELS = {contract: 'Employment agreement'};
+
+  panel.innerHTML = docs.map(function(d){
+    var label = LABELS[d.doc_type] || escapeHtml(String(d.doc_type||'Document'));
+    // signed_at is optional at the write end, so a missing one shows a dash
+    // rather than the push timestamp dressed up as a signing date.
+    var signed = d.signed_at ? _ceDocDate(d.signed_at) : '\u2014';
+    var ver    = d.version ? (' \u00b7 ' + escapeHtml(String(d.version))) : '';
+    var view   = d.has_pdf
+      ? '<a href="/api/crew/'+encodeURIComponent(id)+'/documents/file?doc_type='
+        + encodeURIComponent(d.doc_type) + '" target="_blank" rel="noopener" '
+        + 'style="color:var(--accent);text-decoration:none;font-weight:600">View \u2197</a>'
+      : '<span style="color:var(--muted);font-size:11px">no file on record</span>';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;'
+      + 'padding:9px 0;border-bottom:1px solid var(--border)">'
+      + '<div><div style="font-size:13px;color:var(--text);font-weight:600">'+label+'</div>'
+      + '<div style="font-size:11px;color:var(--muted);padding-top:2px">Signed '+signed+ver+'</div></div>'
+      + '<div>'+view+'</div></div>';
+  }).join('');
+}
+
+// "2026-08-14 09:31:00" or an ISO string -> "14 Aug 2026". Built from the parts
+// rather than new Date(s): a space-separated MySQL DATETIME parses inconsistently
+// across engines and can shift the day across a timezone.
+function _ceDocDate(s){
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s||''));
+  if(!m) return escapeHtml(String(s||'\u2014'));
+  var d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
+  return d.toLocaleDateString('en-AU', {day:'2-digit', month:'short', year:'numeric'});
 }
 
 async function ceLoadInductions(id){
