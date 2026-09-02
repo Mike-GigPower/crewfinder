@@ -647,6 +647,40 @@
 						continue;   /* already in the set */
 					}
 
+					/*
+					/* CANCELLED (9) IS NOT A COMMITMENT, so a decline cannot
+					/* break it. Ops already stood this crew member down; there
+					/* is nothing left to withdraw.
+					/*
+					/* This guard is load-bearing, not tidiness.
+					/* respond-to-call.php builds $breakCommitment from this
+					/* scope with `$st > 1`, and those rows bypass its status
+					/* guard entirely — by design, because un-confirming an
+					/* accepted shift is the whole point of that path. A 9
+					/* landing in that set is therefore rewritten to 6, which
+					/* DESTROYS the cancellation record and leaves the row
+					/* claiming the crew member declined a call while
+					/* prev_status still says they were confirmed when it was
+					/* cancelled. Silently, and it is the billing evidence.
+					/*
+					/* Fixed HERE rather than in respond-to-call.php because
+					/* this function is the single source shared with
+					/* goat_declining_withdraws(): patch only the endpoint and
+					/* the Crew Hub prompt would still warn about losing a call
+					/* that was cancelled last week and will not move.
+					/*
+					/* KNOWN, NOT FIXED HERE: status 8 (no-show) also passes
+					/* `$st > 1` and is rewritten to 6 by the same path. Same
+					/* shape, pre-existing, nothing to do with cancellation —
+					/* its own backlog item rather than a passenger in this
+					/* slice.
+					*/
+
+					if ((int) $heldStatus[$u] === 9)
+					{
+						continue;
+					}
+
 					$scope[$u] = $heldStatus[$u];
 				}
 			}

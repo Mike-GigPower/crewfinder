@@ -133,6 +133,24 @@
 	/*
 	/* ---- 1 of 6: CANDIDATE CALLS ----
 	/*
+	/* CANCELLED CALLS ARE EXCLUDED -- as DEFENCE IN DEPTH, not as the only
+	/* guard. The roster read at 3 of 6 is `ccm.status = 5`, and every row on a
+	/* cancelled call is status 9, so otl_needing() already returns 0 for it and
+	/* the call is dropped at 5 of 6 without this clause. That protection is
+	/* INCIDENTAL and would disappear the day the roster predicate widens. This
+	/* states the intent directly, and drops the row before the sibling, roster,
+	/* submission and boss queries run on it.
+	/*
+	/* No capability guard, unlike get-calls-bulk.php: the file rule above is
+	/* that a failed lookup is a 500, never an empty lane. A missing column here
+	/* SHOULD break loudly rather than report the all-clear this lane exists to
+	/* earn.
+	/*
+	/* The SIBLING path (2 of 6) needs nothing: the roster read is
+	/* `ccm.status = 5`, every row on a cancelled call is status 9, so
+	/* $confirmedOf is never populated for it and otl_needing() returns 0. A
+	/* cancelled sibling cannot raise sibling_times_pending.
+	/*
 	/* SQL PREFILTERS COARSELY ON start_date; PHP FILTERS EXACTLY ON THE END,
 	/* for the reason calls-awaiting-times.php sets out at length: start_date is
 	/* a unix timestamp at LOCAL MIDNIGHT and start_time a separate TIME column,
@@ -162,6 +180,7 @@
 		LEFT JOIN venues   v ON v.id = b.venueID
 		WHERE c.start_date >= " . (int) $scan_from . "
 		  AND c.start_date <= " . (int) $until . "
+		  AND c.cancelled_at IS NULL
 		ORDER BY c.start_date ASC, c.start_time ASC
 	";
 

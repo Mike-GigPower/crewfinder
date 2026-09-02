@@ -109,6 +109,21 @@
 	/*
 	/* ---- 1 of 4: CANDIDATE CALLS ----
 	/*
+	/* CANCELLED CALLS ARE EXCLUDED -- as DEFENCE IN DEPTH, not as the only
+	/* guard, and the difference matters to anyone changing this later.
+	/*
+	/* goat_outstanding_by_call() already counts `ccm.status = 5` only. Every row
+	/* on a cancelled call is status 9, so it finds no confirmed crew, the call
+	/* is dropped at step 2 below, and no boss is ever resolved or pushed. That
+	/* protection is INCIDENTAL, though: it holds only while that helper's
+	/* predicate stays status = 5. Widen it to include backups and it vanishes
+	/* silently, with no error and no signal. This clause states the intent
+	/* directly, and drops the row before three further queries run on it.
+	/*
+	/* No capability guard, unlike get-calls-bulk.php: the file rule above is
+	/* that a failed lookup is a 500, never an empty set. A missing column here
+	/* SHOULD break loudly rather than degrade to "nobody is owed anything".
+	/*
 	/* SQL PREFILTERS COARSELY ON start_date; PHP FILTERS EXACTLY ON THE END.
 	/*
 	/* The end of a call is start_date + start_time + est_length, and
@@ -145,6 +160,7 @@
 		LEFT JOIN venues   v ON v.id = b.venueID
 		WHERE c.start_date >= $scan_from
 		  AND c.start_date <= $until
+		  AND c.cancelled_at IS NULL
 		ORDER BY c.start_date ASC, c.start_time ASC
 	";
 

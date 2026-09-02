@@ -29,9 +29,15 @@
 	/* This returns other people's rows, so it must NOT use the self-scoping
 	/* goat_acting_user_id() model of the my-*.php endpoints.
 	/*
-	/* REQUIRES call_crew_map.created_at (see the open-offers handover, Part A).
-	/* Deploy this endpoint AFTER that ALTER has run on the same environment, or
-	/* every request fails with "Unknown column".
+	/* REQUIRES call_crew_map.created_at (see the open-offers handover, Part A)
+	/* AND calls.cancelled_at (MIGRATION-call-cancellation.sql). Deploy this
+	/* endpoint AFTER both ALTERs have run on the same environment, or every
+	/* request fails with "Unknown column".
+	/*
+	/* No capability guard here, unlike get-calls-bulk.php and get-booking.php.
+	/* This file already declares a hard schema requirement for created_at, so an
+	/* un-migrated environment fails regardless; guarding one column while another
+	/* stays unguarded would be worse than either rule applied consistently.
 	/*
 	/* PHP 5.x — mysql_* only, no ?? operator, no short [] arrays.
 	*/
@@ -182,6 +188,7 @@
 		  AND c.start_date <  $end_i
 		  AND (b.hidden IS NULL OR b.hidden = 0)
 		  AND b.status <> 1   /* exclude Completed bookings — match the admin /bookings view */
+		  AND c.cancelled_at IS NULL   /* a cancelled call has no outstanding offers to chase */
 		ORDER BY c.start_date ASC, c.start_time ASC
 	";
 

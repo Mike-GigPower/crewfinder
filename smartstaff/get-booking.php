@@ -85,10 +85,54 @@
 	/*
 	/* call_crew_map.status -> label (matches the booked-crew scraper's keywords)
 	/*   5 = confirmed, 1 = sent (SMS pending), 6 = declined, 8 = no-show,
-	/*   anything else (incl. just-added) = unconfirmed
+	/*   7 = backup, 9 = cancelled, anything else (incl. just-added) = unconfirmed
+	/*
+	/* 9 = CANCELLED means "WE stood them down", NOT "they said no" (6). The
+	/* distinction is what makes the row a billing record: a cancelled call may
+	/* still be chargeable to the customer, and who was committed at the moment of
+	/* cancellation is the evidence for that. Collapsing the two would also
+	/* corrupt crew response-rate stats, which read 6 as a crew DECISION.
 	*/
 
-	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 7 => 'backup', 0 => 'unconfirmed');
+	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 7 => 'backup', 9 => 'cancelled', 0 => 'unconfirmed');
+
+	/*
+	/* Capability checks for the cancellation columns, mirroring
+	/* goat_feeds_have_mode(). Selecting them outright would fail on any
+	/* environment where MIGRATION-call-cancellation.sql has not run -- and a
+	/* failed query HERE does not degrade to an empty list, it takes the entire
+	/* booking dialog down for Ops.
+	/*
+	/* Absent columns emit cancelled_at null / prev_status null, i.e. "not
+	/* cancelled" -- exactly what a never-written column means. The degradation
+	/* states nothing untrue.
+	*/
+
+	function goat_calls_have_cancelled()
+	{
+		static $has = null;
+
+		if ($has === null)
+		{
+			$r   = mysql_query("SHOW COLUMNS FROM calls LIKE 'cancelled_at'");
+			$has = ($r !== false && mysql_num_rows($r) > 0);
+		}
+
+		return $has;
+	}
+
+	function goat_ccm_have_prev_status()
+	{
+		static $has = null;
+
+		if ($has === null)
+		{
+			$r   = mysql_query("SHOW COLUMNS FROM call_crew_map LIKE 'prev_status'");
+			$has = ($r !== false && mysql_num_rows($r) > 0);
+		}
+
+		return $has;
+	}
 
 	/*
 	/* calls + per-call crew roster
@@ -210,8 +254,20 @@
 		}
 	}
 
+	/*
+	/* THIS ENDPOINT DOES NOT FILTER CANCELLED CALLS OUT -- deliberately, and it
+	/* is the only read that does not. A cancelled call stays in its booking: it
+	/* is part of that booking's history and possibly of its invoice. Every OTHER
+	/* read gains `cancelled_at IS NULL`; this one gains the FIELDS instead, so
+	/* the client can render the call greyed and struck through with its reason.
+	*/
+
+	$callCancelSel = goat_calls_have_cancelled()
+	               ? ', cancelled_at, cancelled_by, cancel_reason, cancel_charge'
+	               : '';
+
 	$calls = array();
-	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes, link_group
+	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes, link_group" . $callCancelSel . "
 	                     FROM calls
 	                     WHERE bookingID = " . $bookingID . "
 	                     ORDER BY start_date ASC, start_time ASC");
@@ -224,10 +280,13 @@
 			$crew      = array();
 			$booked    = 0;
 			$confirmed = 0;
+			$cancelled = 0;
+
+			$prevSel = goat_ccm_have_prev_status() ? ', call_crew_map.prev_status' : '';
 
 			$crres = mysql_query("SELECT users.id, users.firstname, users.lastname, users.mobile, users.phone,
 			                             users.ein, users.email,
-			                             call_crew_map.status, call_crew_map.is_call_boss,
+			                             call_crew_map.status, call_crew_map.is_call_boss" . $prevSel . ",
 			                             cca.id AS change_ack_id,
 			                             cpa.promoted_at AS promo_at,
 			                             cpa.acked_at    AS promo_acked_at
@@ -249,8 +308,20 @@
 					$st        = (int) $cr->status;
 					$statusStr = isset($crewStatusMap[$st]) ? $crewStatusMap[$st] : 'unconfirmed';
 					$booked++;
+
 					if ($st === 5)
 						$confirmed++;
+
+					/*
+					/* Counted SEPARATELY, and NOT deducted from $booked. $booked
+					/* has always been the raw assigned count including declined
+					/* and no-show; cancelled belongs in the same bucket. The
+					/* client needs the split so it can say "5 assigned, 2
+					/* cancelled" rather than silently shrinking a roster.
+					*/
+
+					if ($st === 9)
+						$cancelled++;
 
 					/*
 					/* Ops re-confirm badge: a call_change_ack row means this crew
@@ -280,6 +351,13 @@
 						'mobile'         => $cr->mobile,
 						'phone'          => $cr->phone,
 						'status'         => $statusStr,
+						/*
+						/* What they WERE when they were stood down; null on every
+						/* non-cancelled row. "Was this person CONFIRMED, or merely
+						/* offered, when we cancelled them?" is the first question
+						/* anyone raising the invoice asks.
+						*/
+						'prev_status'    => (isset($cr->prev_status) && $cr->prev_status !== null) ? (int) $cr->prev_status : null,
 						'is_call_boss'   => (int) $cr->is_call_boss,
 						'change_pending' => $changePending,
 						'promo_pending'  => $promoPending,
@@ -298,6 +376,16 @@
 				'required'   => (int) $call->required,
 				'notes'      => $call->notes,
 				'link_group' => ($call->link_group === null ? null : (int) $call->link_group),
+				/*
+				/* cancelled_at IS the predicate: null = live. The other three
+				/* carry the billing intent recorded at cancel time -- ops decide
+				/* chargeable every time, so cancel_charge is a decision, never a
+				/* default.
+				*/
+				'cancelled_at'   => (isset($call->cancelled_at) && $call->cancelled_at !== null) ? (int) $call->cancelled_at : null,
+				'cancelled_by'   => (isset($call->cancelled_by) && $call->cancelled_by !== null) ? (int) $call->cancelled_by : null,
+				'cancel_reason'  => isset($call->cancel_reason) ? $call->cancel_reason : '',
+				'cancel_charge'  => isset($call->cancel_charge) ? (int) $call->cancel_charge : 0,
 				'feeds'              => isset($feedsOf[$callID]) ? $feedsOf[$callID] : array(),
 				'fed_by'             => isset($fedByOf[$callID]) ? $fedByOf[$callID] : array(),
 				'feeds_recommended'  => isset($feedsRec[$callID]) ? $feedsRec[$callID] : array(),
@@ -318,6 +406,7 @@
 				'free_to_fill'       => $fc['free_to_fill'],
 				'booked'     => $booked,
 				'confirmed'  => $confirmed,
+				'cancelled'  => $cancelled,
 				'crew'       => $crew,
 			);
 		}

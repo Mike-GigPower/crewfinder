@@ -97,6 +97,46 @@
 		$status_clause = 'AND b.status <> 1';
 
 	/*
+	/* CANCELLED CALLS ARE EXCLUDED, and this is the single most important
+	/* clause in phase 1 of the cancellation work.
+	/*
+	/* A cancelled call keeps its `required` count (the historical requirement is
+	/* part of the record) and has zero confirmed crew, because every row moved to
+	/* status 9. Without this clause it therefore reads as a normal UNFILLED call
+	/* — and this endpoint feeds both the Schedule and the Crew Finder, so ops get
+	/* invited to crew a job that is not happening. Nothing errors; it simply
+	/* looks like work.
+	/*
+	/* Capability-guarded, mirroring goat_feeds_have_mode() below and
+	/* get-booking.php. Selecting the column outright would fail wherever
+	/* MIGRATION-call-cancellation.sql has not run, and a failed query here takes
+	/* the Schedule AND the Crew Finder down together. Absent column -> empty
+	/* clause -> exactly today's behaviour.
+	/*
+	/* function_exists() because get-booking.php declares the same helper and a
+	/* future include order might bring both into one request — the same
+	/* precaution goat_bulk_reaches() takes further down this file.
+	*/
+
+	if (!function_exists('goat_calls_have_cancelled'))
+	{
+		function goat_calls_have_cancelled()
+		{
+			static $has = null;
+
+			if ($has === null)
+			{
+				$r   = mysql_query("SHOW COLUMNS FROM calls LIKE 'cancelled_at'");
+				$has = ($r !== false && mysql_num_rows($r) > 0);
+			}
+
+			return $has;
+		}
+	}
+
+	$cancel_clause = goat_calls_have_cancelled() ? 'AND c.cancelled_at IS NULL' : '';
+
+	/*
 	/* process the request
 	/*
 	/* One query: every call whose date falls in the window, joined to its
@@ -156,6 +196,7 @@
 		  AND c.start_date <  $end_i
 		  AND (b.hidden IS NULL OR b.hidden = 0)
 		  $status_clause
+		  $cancel_clause
 		GROUP BY c.id
 		ORDER BY c.start_date ASC, c.start_time ASC
 	";
@@ -303,6 +344,7 @@
 		                     FROM calls c
 		                     LEFT JOIN call_crew_map ccm ON ccm.callID = c.id
 		                     WHERE c.id IN (" . $fList . ")
+		                       " . $cancel_clause . "
 		                     GROUP BY c.id");
 
 		if ($gres !== false)

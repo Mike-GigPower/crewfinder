@@ -42,6 +42,24 @@
 	/* KEEP IN SYNC with goatIsBossCallName() in templates/index.html.
 	*/
 
+	/*
+	/* THE 'cancel' TEST BELOW MUST NOT BE REMOVED when calls.cancelled_at
+	/* arrives. It is not superseded by the column; the two cover different
+	/* eras.
+	/*
+	/* Before the cancellation feature, ops cancelled a call by RENAMING it, and
+	/* production carries years of calls marked that way and no other -- "Crew
+	/* Boss Cancelled" is live data. The column catches cancellations made from
+	/* now on; this string catches every one made before. Swap one for the other
+	/* and every historical cancellation un-hides at once, each of them able to
+	/* win the overlap below and hand a crew member a contact who is not
+	/* attending.
+	/*
+	/* Nothing NEW may branch on this string -- the column is the machine-readable
+	/* truth. This clause is here to keep faith with the old data, and it should
+	/* outlive the feature.
+	*/
+
 	function goat_is_boss_call_name($name)
 	{
 		$n = strtolower(trim($name));
@@ -72,6 +90,37 @@
 		$endUnix   = $startUnix + (int) round(((double) $call->est_length) * 3600);
 
 		return array('start' => $startUnix, 'end' => $endUnix);
+	}
+
+	/*
+	/* Is calls.cancelled_at present on this environment?
+	/*
+	/* GUARDED, AND FOR A SHARPER REASON THAN THE OTHER READS. This file has no
+	/* error path: every query is wrapped in `if ($res !== false)` and a failure
+	/* silently skips the rung. On an environment without the column both
+	/* boss-call lookups below would fail, every crew member would fall through
+	/* to rung 3, and each one would be handed the ON-SITE CONTACT instead of
+	/* their boss -- with no error, no 500 and nothing to notice. The wrong name
+	/* on every shift card is the exact failure this file exists to prevent.
+	/*
+	/* function_exists() because get-booking.php and get-calls-bulk.php declare
+	/* the same helper, and supervision-graph.php includes this file.
+	*/
+
+	if (!function_exists('goat_calls_have_cancelled'))
+	{
+		function goat_calls_have_cancelled()
+		{
+			static $has = null;
+
+			if ($has === null)
+			{
+				$r   = mysql_query("SHOW COLUMNS FROM calls LIKE 'cancelled_at'");
+				$has = ($r !== false && mysql_num_rows($r) > 0);
+			}
+
+			return $has;
+		}
 	}
 
 	/*
@@ -181,6 +230,12 @@
 
 		$viewerOnBossCall = goat_is_boss_call_name($call->call_name);
 
+		/* A CANCELLED CALL CANNOT SUPERVISE ANYTHING. Applied to both rung-2
+		   lookups below, alongside -- never instead of -- the name test in
+		   goat_is_boss_call_name(). See the note on that function. */
+
+		$cancelSql = goat_calls_have_cancelled() ? ' AND cancelled_at IS NULL' : '';
+
 		/* resolved once; every rung below skips a contact that IS the viewer,
 		   whether by userID or by the same-human mobile match */
 
@@ -277,8 +332,20 @@
 				/* thing that did not work, and is the reason this table exists.
 				*/
 
+				/*
+				/* FILTERED, THOUGH IT LOOKS REDUNDANT. A cancelled boss call has
+				/* no confirmed crew -- every row is status 9 -- so the contact
+				/* query below returns nothing and the documented fall-through to
+				/* rung 3 takes over on its own.
+				/*
+				/* But D12 permits re-adding a cancelled crew member, which creates
+				/* a fresh status-0 row that can then be confirmed to 5. A cancelled
+				/* boss call can therefore carry a confirmed resource again, and
+				/* would hand that person out as the contact for a live call.
+				*/
+
 				$sres = mysql_query("SELECT id, call_name FROM calls
-				                     WHERE id = " . ((int) $supBoss) . " LIMIT 1");
+				                     WHERE id = " . ((int) $supBoss) . $cancelSql . " LIMIT 1");
 
 				if ($sres !== false)
 				{
@@ -298,7 +365,7 @@
 				                     FROM calls
 				                     WHERE bookingID  = " . ((int) $call->bookingID) . "
 				                       AND id        <> " . $callID . "
-				                       AND call_name LIKE '%boss%'
+				                       AND call_name LIKE '%boss%'" . $cancelSql . "
 				                     ORDER BY start_date ASC, start_time ASC");
 
 				if ($bres !== false)
