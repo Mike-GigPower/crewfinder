@@ -124,7 +124,8 @@
 
 	$call = $db->selectFirst(
 		'id, bookingID, call_name, required, call_locked, invoiceID,
-		 invoice_generated, payslips_generated, cancelled_at',
+		 invoice_generated, payslips_generated, cancelled_at,
+		 start_date, start_time',
 		'calls',
 		'id=' . $callID
 	);
@@ -461,11 +462,27 @@
 	/* logged into Crew Hub, and ops need to know who to ring.
 	*/
 
+	/*
+	/* Wall-clock ISO for the Crew Hub push -- "2026-09-03T08:00:00", no zone
+	/* suffix, matching what gp_notify_change already sends as `start`. The
+	/* portal's whenLabel() splits on "T" and reads the parts as literal numbers,
+	/* so an offset here would be ignored or would shift the displayed time.
+	/*
+	/* Empty when start_date is missing or zero, NEVER a fabricated date: the
+	/* portal drops the segment on an empty label, so the notification loses the
+	/* date rather than gaining a wrong one.
+	*/
+
+	$startIso = ((int) $call->start_date > 0)
+		? date('Y-m-d', (int) $call->start_date) . 'T' . $call->start_time
+		: '';
+
 	echo json_encode(array(
 		'ok'           => true,
 		'call_id'      => $callID,
 		'booking_id'   => (int) $call->bookingID,
 		'call_name'    => $newName,
+		'start'        => $startIso,
 		'cancelled_at' => $now,
 		'cancelled_by' => $actorID,
 		'chargeable'   => $chargeable,

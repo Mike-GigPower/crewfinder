@@ -354,12 +354,22 @@
 	/* crew array says what was actually done, and it is the field to read.
 	*/
 
+	/*
+	/* Wall-clock ISO for the Crew Hub push. The columns were already read for
+	/* the started-guard above; this only stops throwing them away.
+	*/
+
+	$startIso = ((int) $call->start_date > 0)
+		? date('Y-m-d', (int) $call->start_date) . 'T' . $call->start_time
+		: '';
+
 	echo json_encode(array(
 		'ok'             => true,
 		'already'        => !$wasCancelled,
 		'call_id'        => $callID,
 		'booking_id'     => (int) $call->bookingID,
 		'call_name'      => $newName,
+		'start'          => $startIso,
 		'reinstated_at'  => time(),
 		'reinstated_by'  => $actorID,
 		'restored'       => count($results),
