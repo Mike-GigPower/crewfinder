@@ -15127,6 +15127,10 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     + ((isCancelled || window._cohort !== 'admin')
         ? ''
         : entityBtn('⏹ Stand down', "openCallStandDown('"+bookingId+"','"+callId+"')", {title:'Cancel this call — crew are stood down, not removed'}))
+    // Offered on a cancelled call too, unlike Find Crew and Enter Times: this
+    // is read-only and cannot invite wrong work. Who was stood down and when
+    // they had accepted is exactly what someone asks afterwards.
+    + entityBtn('📋 Responses', "openCallResponses('"+bookingId+"','"+callId+"')", {title:'Who accepted, when, and what else they are holding'})
     + entityBtn('💬 Crew Notes', "openCrewNotes('"+bookingId+"','"+callId+"')", {title:'Post notes for crew on this call'})
     + entityBtn('Close', 'closeEntityModal()');
 }
@@ -15320,6 +15324,200 @@ function renderStandDownResult(bookingId, callId, j){
     + entityBtn('Close', 'closeEntityModal()');
 }
 
+
+// ── RESPONSE HISTORY ────────────────────────────────────────────────────────
+// Read-only. What ops read when deciding who comes off a call.
+//
+// IT INFORMS A JUDGEMENT; IT DOES NOT RANK. No score, no recommendation, no
+// highlighted row. Every column sorts so a person can look at the roster
+// whichever way their reasoning runs; the default is a starting view.
+//
+// Built for 95 rows. Production runs calls of 53, 95 and 109 — sortable headers
+// and a scroll region, not a list.
+
+var _respData = null;                                   // the last payload
+var _respSort = { key: 'responded_at', dir: 1 };        // first to accept, first
+
+/** "2026-09-02 12:50:19" -> "Tue 2 Sep 12:50". Wall clock, parsed by parts so
+ *  no timezone shift can creep in — same approach as the portal's whenLabel. */
+function goatFmtStamp(s){
+  if(!s) return '';
+  const parts = String(s).split(' ');
+  const d = (parts[0] || '').split('-').map(Number);
+  const t = (parts[1] || '00:00:00').split(':').map(Number);
+  if(!d[0] || !d[1] || !d[2]) return '';
+  const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const wd = WD[new Date(Date.UTC(d[0], d[1]-1, d[2])).getUTCDay()];
+  return wd+' '+d[2]+' '+MO[d[1]-1]+' '+String(t[0]||0).padStart(2,'0')+':'+String(t[1]||0).padStart(2,'0');
+}
+
+/** Seconds -> "43s" / "12m" / "3.5h" / "2d". Rounded on purpose: nobody is
+ *  deciding anything on the difference between 41 and 43 minutes. */
+function goatFmtElapsed(sec){
+  if(sec === null || sec === undefined) return '';
+  if(sec < 60)    return sec+'s';
+  if(sec < 3600)  return Math.round(sec/60)+'m';
+  if(sec < 86400) return (sec/3600).toFixed(1).replace(/\.0$/,'')+'h';
+  return Math.round(sec/86400)+'d';
+}
+
+async function openCallResponses(bookingId, callId){
+  document.getElementById('entity-modal-title').textContent = 'Response history';
+  document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+
+  try{
+    const r = await fetch('/api/call/'+bookingId+'/'+callId+'/responses');
+    const j = await r.json();
+    if(!r.ok || j.error){
+      document.getElementById('entity-modal-body').innerHTML =
+        '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(j.error || ('HTTP '+r.status))+'</div>';
+      document.getElementById('entity-modal-actions').innerHTML =
+          entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')")
+        + entityBtn('Close', 'closeEntityModal()');
+      return;
+    }
+    _respData = j;
+    _respSort = { key: 'responded_at', dir: 1 };
+    renderCallResponses(bookingId, callId);
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML =
+      '<div style="color:var(--conflict);font-size:12px">Couldn\'t load the history: '+escapeHtml(e.message||String(e))+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close', 'closeEntityModal()');
+  }
+}
+
+function goatRespSort(key){
+  if(_respSort.key === key) _respSort.dir = -_respSort.dir;
+  else                      _respSort = { key: key, dir: 1 };
+  const sub = document.getElementById('entity-modal-sub').textContent || '';
+  const m = sub.match(/#(\d+).*#(\d+)/);
+  renderCallResponses(m ? m[2] : '', m ? m[1] : '');
+}
+
+function renderCallResponses(bookingId, callId){
+  const j = _respData;
+  if(!j) return;
+
+  const crew = (j.crew || []).slice();
+
+  // Sort values. Nulls always sort LAST whichever direction is chosen — a
+  // missing value is not a small one, and burying "no data" at the top of a
+  // screen about cutting people would be its own kind of wrong.
+  function val(c, key){
+    if(key === 'name')            return ((c.firstname||'')+' '+(c.lastname||'')).toLowerCase();
+    if(key === 'responded_at')    return c.responded_at || null;
+    if(key === 'respond_seconds') return (c.respond_seconds === null || c.respond_seconds === undefined) ? null : c.respond_seconds;
+    if(key === 'booking')         return c.other_calls_on_booking || 0;
+    if(key === 'worked')          return c.worked_90d || 0;
+    if(key === 'declined')        return c.stats ? (c.stats.declined || 0) : null;
+    if(key === 'no_show')         return c.stats ? (c.stats.no_show || 0) : null;
+    return null;
+  }
+  crew.sort(function(a, b){
+    const va = val(a, _respSort.key), vb = val(b, _respSort.key);
+    if(va === null && vb === null) return 0;
+    if(va === null) return 1;
+    if(vb === null) return -1;
+    if(va < vb) return -1 * _respSort.dir;
+    if(va > vb) return  1 * _respSort.dir;
+    return 0;
+  });
+
+  function th(label, key, align){
+    const on = (_respSort.key === key);
+    const arrow = on ? (_respSort.dir === 1 ? ' ▲' : ' ▼') : '';
+    return '<th onclick="goatRespSort(\'' + key + '\')" style="text-align:'+(align||'left')+';font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+(on?'var(--accent)':'var(--muted)')+';font-weight:normal;padding:4px 6px;cursor:pointer;white-space:nowrap;border-bottom:1px solid var(--border)">'+label+arrow+'</th>';
+  }
+
+  // A missing accept time is never a blank. Each of these is a real, different
+  // state, and the difference matters to someone reading the row.
+  function whenCell(c){
+    if(c.responded_src === 'phone')
+      return '<span style="color:var(--muted)">by phone</span>'
+           + '<div style="color:var(--muted);font-size:10px;line-height:1.2">time not recorded</div>';
+    if(!c.responded_at){
+      const s = (c.status === 0 || c.status === 1);
+      return '<span style="color:'+(s ? '#f59e0b' : 'var(--muted)')+'">'+(s ? 'no response yet' : '—')+'</span>';
+    }
+    const when = escapeHtml(goatFmtStamp(c.responded_at));
+    // Stacked, not inline. This was the widest cell in the table, and the note
+    // qualifies the time rather than sitting alongside it.
+    if(c.responded_src === 'ops')
+      return when + '<div style="color:var(--muted);font-size:10px;line-height:1.2">recorded by ops</div>';
+    return when;
+  }
+
+  const rows = crew.map(function(c){
+    const name = escapeHtml(decodeEntities(((c.firstname||'')+' '+(c.lastname||'')).trim() || ('User #'+c.user_id)));
+    const boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
+    const st   = crewStatusBadge(CREW_STATUS_LABEL_BY_INT[c.status] || String(c.status));
+    const el   = (c.respond_seconds === null || c.respond_seconds === undefined)
+      ? '<span style="color:var(--muted)">—</span>'
+      : escapeHtml(goatFmtElapsed(c.respond_seconds));
+    const hist = c.stats
+      ? (c.stats.declined || 0) + ' dec · ' + (c.stats.no_show || 0) + ' n/s'
+        + ((c.stats.cancelled || 0) ? ' · <span title="times we stood them down">' + c.stats.cancelled + ' canc</span>' : '')
+      : (j.stats_available ? '<span style="color:var(--muted)">no history yet</span>'
+                           : '<span style="color:var(--muted)">unavailable</span>');
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      // The badge belongs with the person, not in a column of its own.
+      + '<td style="padding:5px 6px;font-size:12px;color:var(--text);white-space:nowrap">'+name+boss+' '+st+'</td>'
+      + '<td style="padding:5px 6px;font-size:11px;color:var(--text);white-space:nowrap">'+whenCell(c)+'</td>'
+      + '<td style="padding:5px 6px;font-size:11px;text-align:right;color:var(--text)">'+el+'</td>'
+      + '<td style="padding:5px 6px;font-size:11px;text-align:right;color:var(--text)">'+(c.other_calls_on_booking || 0)+'</td>'
+      + '<td style="padding:5px 6px;font-size:11px;text-align:right;color:var(--text)">'+(c.worked_90d || 0)+'</td>'
+      + '<td style="padding:5px 6px;font-size:11px;color:var(--muted);white-space:nowrap">'+hist+'</td>'
+      + '</tr>';
+  }).join('');
+
+  const since = escapeHtml(goatFmtStamp(String(j.tracking_since||'').replace('T',' ')));
+
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px">'
+    +   '<div style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(j.call_name||('Call #'+callId)))+'</div>'
+    +   '<div style="font-size:11px;color:var(--muted)">'+crew.length+' crew · '+(j.required||0)+' required</div>'
+    + '</div>'
+
+    // ALWAYS VISIBLE. This is the misreading that would do the most damage to a
+    // person, so it does not hide behind a disclosure triangle.
+    + '<div style="font-size:11px;color:var(--muted);border-left:2px solid var(--border);padding:2px 0 2px 8px;margin-bottom:10px">'
+    +   'Response tracking began '+since+'. Anything earlier has no timing — thin history here means little was measured, not that someone is unreliable.'
+    + '</div>'
+
+    + '<div style="overflow:auto;max-height:52vh;min-width:0;max-width:100%;border:1px solid var(--border);border-radius:4px">'
+    +   '<table style="min-width:100%;border-collapse:collapse">'
+    +     '<thead><tr>'
+    +       th('Crew','name') + th('Accepted','responded_at')
+    +       th('Took','respond_seconds','right') + th('Job','booking','right')
+    +       th('90d','worked','right') + th('Record','declined')
+    +     '</tr></thead>'
+    +     '<tbody>' + (rows || '<tr><td colspan="6" style="padding:10px;font-size:12px;color:var(--muted)">Nobody is on this call.</td></tr>') + '</tbody>'
+    +   '</table>'
+    + '</div>'
+
+    + '<details style="margin-top:10px">'
+    +   '<summary style="font-size:11px;color:var(--muted);cursor:pointer">How to read these numbers</summary>'
+    +   '<ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--muted);line-height:1.5">'
+    +     '<li><strong>This booking</strong> — other calls on this job they are still holding. Cutting someone from one call of a five-call booking is not the same as cutting their only shift.</li>'
+    +     '<li><strong>90d</strong> — calls they were confirmed on that have already started, in the last '+(j.work_window_days||90)+' days.</li>'
+    +     '<li><strong>History</strong> — declines and no-shows over '+(j.stats_window_days||90)+' days, and how many times <em>we</em> stood them down. Response rate is not shown: an ignored offer is usually reassigned, which deletes the record, so it reads high for almost everyone and only a low figure means anything.</li>'
+    +     '<li><strong>Crew removed from this call earlier do not appear.</strong> Removing someone deletes the record, so this list is who is on the call now — not everyone who ever was.</li>'
+    +     (j.stats_available ? '' : '<li style="color:#f59e0b"><strong>History figures are unavailable right now</strong> — the crew statistics could not be loaded. The columns are blank rather than zero on purpose.</li>')
+    +   '</ul>'
+    + '</details>';
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+// Status int -> the label crewStatusBadge() understands. The reverse of
+// crewStatusInt(); this endpoint returns ints where get-booking.php returns
+// strings.
+var CREW_STATUS_LABEL_BY_INT = {0:'unconfirmed',1:'pending',5:'confirmed',6:'declined',7:'backup',8:'noshow',9:'cancelled'};
 
 // ── WHO WAS ACTUALLY TOLD ───────────────────────────────────────────────────
 // Shared by the Stand down and Reinstate result panels. Both ask the same
