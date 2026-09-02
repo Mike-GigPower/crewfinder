@@ -15301,18 +15301,6 @@ function renderStandDownResult(bookingId, callId, j){
   const byId = {};
   (window._standDownCrew||[]).forEach(function(c){ byId[String(c.id)] = c; });
 
-  const ids  = j.notify || [];
-  const rows = ids.map(function(uid){
-    const c    = byId[String(uid)] || {};
-    const name = c.name ? escapeHtml(decodeEntities(c.name)) : ('User #'+escapeHtml(String(uid)));
-    const mob  = c.mobile
-      ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(c.mobile)+'</a>'
-      : '<span style="color:var(--muted);font-size:11px">no mobile on file</span>';
-    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'
-         +   '<span style="font-size:12px;color:var(--text)">'+name+'</span>'+mob
-         + '</div>';
-  }).join('');
-
   document.getElementById('entity-modal-title').textContent = 'Call stood down';
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px;margin-bottom:14px">'
@@ -15322,19 +15310,91 @@ function renderStandDownResult(bookingId, callId, j){
     +     'The call keeps its roster as the billing record.'
     +   '</div>'
     + '</div>'
-    + (ids.length
-        ? '<div style="border:1px solid #f59e0b;border-left:3px solid #f59e0b;background:rgba(245,158,11,0.12);border-radius:4px;padding:9px 11px">'
-          +   '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:2px">⚠ '+ids.length+' crew have NOT been told</div>'
-          +   '<div style="font-size:12px;color:var(--text)">No message has been sent — Crew Hub cannot receive cancellation notices yet. <strong>Ring them.</strong></div>'
-          + '</div>'
-          + '<div style="margin-top:10px">'+rows+'</div>'
-        : '<div style="font-size:12px;color:var(--muted)">Nobody was holding this call, so there is no one to tell.</div>');
+    + goatDeliveryPanel(
+        j, byId,
+        'They will not know the call is off unless you tell them.',
+        'Nobody was holding this call, so there is no one to tell.');
 
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
     + entityBtn('Close', 'closeEntityModal()');
 }
 
+
+// ── WHO WAS ACTUALLY TOLD ───────────────────────────────────────────────────
+// Shared by the Stand down and Reinstate result panels. Both ask the same
+// question — did the message reach these people? — and must not answer it in two
+// different ways.
+//
+// COUNT PEOPLE, NEVER SUM `sent`. `sent` is a DEVICE count: one crew member with
+// Crew Hub on a phone, a tablet and a laptop comes back sent:3. Summing it would
+// report "3 notified" for one person.
+//
+// A MISSING notify_results MEANS NOBODY WAS REACHED — app.py omits it when the
+// operation itself did not complete, and an older build never sets it. Reading
+// that as "everyone unreached" restores the old loud panel and the full phone
+// list. That is the safe direction: it costs phone calls, where the optimistic
+// reading costs someone their morning.
+function goatDeliveryPanel(j, byId, missedNote, emptyNote){
+  const ids = j.notify || [];
+  if(!ids.length){
+    return '<div style="font-size:12px;color:var(--muted)">'+emptyNote+'</div>';
+  }
+
+  const res = {};
+  (j.notify_results || []).forEach(function(r){ res[String(r.user_id)] = r; });
+
+  const reached = [], missed = [];
+  ids.forEach(function(uid){
+    const r = res[String(uid)];
+    if(r && r.reached){
+      reached.push({uid: uid, why: ''});
+    }else{
+      // No entry at all is not evidence of delivery — say so rather than
+      // leaving the reason blank.
+      missed.push({uid: uid, why: (r && r.why) || 'no confirmation from Crew Hub'});
+    }
+  });
+
+  function person(uid, note, dim){
+    const c    = byId[String(uid)] || {};
+    const name = c.name ? escapeHtml(decodeEntities(c.name)) : ('User #'+escapeHtml(String(uid)));
+    // Phone numbers only where there is ringing to do. On the notified list they
+    // would read as a to-do.
+    const mob  = dim ? ''
+      : (c.mobile
+          ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;white-space:nowrap">📱 '+escapeHtml(c.mobile)+'</a>'
+          : '<span style="color:var(--muted);font-size:11px;white-space:nowrap">no mobile on file</span>');
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">'
+         +   '<span style="font-size:12px;color:var(--text)">'+name
+         +     (note ? ' <span style="color:var(--muted);font-size:10px">'+escapeHtml(note)+'</span>' : '')
+         +   '</span>'+mob
+         + '</div>';
+  }
+
+  let out = '';
+
+  if(missed.length){
+    out += '<div style="border:1px solid #f59e0b;border-left:3px solid #f59e0b;background:rgba(245,158,11,0.12);border-radius:4px;padding:9px 11px">'
+        +    '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:2px">&#9888; '+missed.length+' could not be reached</div>'
+        +    '<div style="font-size:12px;color:var(--text)">'+missedNote+' <strong>Ring them.</strong></div>'
+        +  '</div>'
+        +  '<div style="margin-top:10px">'
+        +    missed.map(function(m){ return person(m.uid, m.why, false); }).join('')
+        +  '</div>';
+  }
+
+  if(reached.length){
+    out += '<div style="margin-top:'+(missed.length ? '14px' : '0')+';font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--available)">'
+        +    '&#10003; '+reached.length+' notified on Crew Hub'
+        +  '</div>'
+        +  '<div style="margin-top:2px;opacity:.55">'
+        +    reached.map(function(m){ return person(m.uid, '', true); }).join('')
+        +  '</div>';
+  }
+
+  return out;
+}
 
 // ── REINSTATE A CANCELLED CALL ──────────────────────────────────────────────
 // The reverse of Stand down. Clears the cancellation, strips the "CANCELLED - "
@@ -15458,18 +15518,6 @@ function renderReinstateResult(bookingId, callId, j){
   const byId = {};
   (window._reinstateCrew||[]).forEach(function(c){ byId[String(c.id)] = c; });
 
-  const ids  = j.notify || [];
-  const rows = ids.map(function(uid){
-    const c    = byId[String(uid)] || {};
-    const name = c.name ? escapeHtml(decodeEntities(c.name)) : ('User #'+escapeHtml(String(uid)));
-    const mob  = c.mobile
-      ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(c.mobile)+'</a>'
-      : '<span style="color:var(--muted);font-size:11px">no mobile on file</span>';
-    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'
-         +   '<span style="font-size:12px;color:var(--text)">'+name+'</span>'+mob
-         + '</div>';
-  }).join('');
-
   // Reported by the endpoint when a status-9 row carried no prev_status. Should
   // not happen; surfaced rather than swallowed, because the alternative was
   // leaving a cancelled row on a live call where no read would ever show it.
@@ -15489,13 +15537,12 @@ function renderReinstateResult(bookingId, callId, j){
           + unknown.length+' crew had no recorded prior status and came back as <strong>Unconfirmed</strong>. Check them against the booking before chasing.'
           + '</div>'
         : '')
-    + (ids.length
-        ? '<div style="border:1px solid #f59e0b;border-left:3px solid #f59e0b;background:rgba(245,158,11,0.12);border-radius:4px;padding:9px 11px">'
-          +   '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:2px">⚠ '+ids.length+' crew have NOT been told</div>'
-          +   '<div style="font-size:12px;color:var(--text)">Nobody is confirmed — they all have to accept again. No message has been sent; Crew Hub cannot receive these notices yet. <strong>Ring them.</strong></div>'
-          + '</div>'
-          + '<div style="margin-top:10px">'+rows+'</div>'
-        : '<div style="font-size:12px;color:var(--muted)">Nobody was stood down on this call, so there is no one to tell.</div>');
+    // Everyone here is Unconfirmed or Backup — nobody is booked. Someone who
+    // was not reached will not accept, and the call quietly stays short.
+    + goatDeliveryPanel(
+        j, byId,
+        'Nobody is confirmed — they all have to accept again, and these ones do not know the call is back on.',
+        'Nobody was stood down on this call, so there is no one to tell.');
 
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
