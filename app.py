@@ -134,7 +134,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.25.0"
+APP_VERSION    = "5.26.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -255,6 +255,136 @@ def gp_notify_change(crew_id, call, kind):
         )
     except Exception:
         pass   # never let a push break the call-edit response
+
+GP_CANCEL_URL = "https://crew.gigpower.com/api/push/cancel"
+
+# How long the WHOLE batch may take, however many crew are on the call. Not a
+# per-request timeout -- that stays at 4, matching the other pushes.
+GP_CANCEL_BATCH_TIMEOUT = 12   # seconds
+
+def gp_notify_cancel(crew_id, call, kind):
+    """Push to the Crew Hub when a call is stood down, or reinstated.
+
+    crew_id = SmartStaff internal userID (the portal resolves it to an EIN).
+    kind: 'cancelled' (they held a shift), 'withdrawn' (they only held an offer)
+    or 'reinstated' (the call is back on and they must accept again). The portal
+    REFUSES an unrecognised kind rather than defaulting -- the two things this
+    can say are "do not come" and "come if you can", and there is no safe third.
+
+    UNLIKE gp_notify_offer / _promotion / _change this RETURNS its result, and
+    does NOT dedup:
+
+      - returns, because design section 6.1 requires ops to be shown who could
+        not be reached. `sent: 0` is the portal saying this crew member has no
+        live device subscription, which is common, boring, and invisible unless
+        we surface it.
+      - no dedup, because nothing double-fires here (a repeat cancel returns
+        already:true with an empty notify), and suppressing a cancellation notice
+        is far worse than sending one twice.
+
+    Never raises. The cancellation already happened; a push failure must not turn
+    a successful write into an error page."""
+    out = {"user_id": crew_id, "sent": 0, "reached": False, "why": ""}
+    try:
+        r = http.post(
+            GP_CANCEL_URL,
+            json={
+                "user_id":   crew_id,
+                "call_id":   call.get("call_id"),
+                "call_name": call.get("call_name", ""),
+                "start":     call.get("start", ""),   # wall-clock ISO, from P0
+                "kind":      kind,
+            },
+            headers={"X-Push-Secret": GP_PUSH_SECRET},
+            timeout=4,
+        )
+        if r.status_code != 200:
+            out["why"] = "portal returned HTTP %s" % r.status_code
+            return out
+        data = r.json()
+        sent = int(data.get("sent") or 0)
+        out["sent"]    = sent
+        out["reached"] = sent > 0
+        if sent == 0:
+            out["why"] = "no notifications enabled on their phone"
+        return out
+    except Exception as e:
+        out["why"] = "could not send: %s" % e
+        return out
+
+def gp_notify_cancel_batch(targets, call):
+    """Fire one push per crew member CONCURRENTLY, under a single deadline.
+
+    targets: [(crew_id, kind), ...]. Returns one result dict per target.
+
+    Sequentially this would be len(targets) x 4 seconds worst case, with ops
+    watching a spinner on a screen they opened to deal with an emergency. One
+    deadline for the batch means a slow portal costs seconds regardless of how
+    many people are on the call.
+
+    ANYONE WHOSE RESULT HAS NOT ARRIVED BY THE DEADLINE IS REPORTED AS NOT
+    REACHED. That is the safe direction: a late success we stopped waiting for
+    costs one unnecessary phone call, while the opposite mistake means somebody
+    drives to a venue for a shift that is not happening.
+
+    shutdown(wait=False) matters -- the default context-manager exit blocks until
+    every future finishes, which would silently undo the deadline."""
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import wait as futures_wait
+
+    results = []
+    if not targets:
+        return results
+
+    ex = ThreadPoolExecutor(max_workers=min(8, len(targets)))
+    try:
+        futs = {}
+        for crew_id, kind in targets:
+            futs[ex.submit(gp_notify_cancel, crew_id, call, kind)] = crew_id
+
+        done, pending = futures_wait(list(futs.keys()), timeout=GP_CANCEL_BATCH_TIMEOUT)
+
+        for f in done:
+            try:
+                results.append(f.result())
+            except Exception as e:
+                results.append({"user_id": futs[f], "sent": 0, "reached": False,
+                                "why": "could not send: %s" % e})
+        for f in pending:
+            results.append({"user_id": futs[f], "sent": 0, "reached": False,
+                            "why": "took too long to confirm -- treat as not told"})
+    finally:
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            ex.shutdown(wait=False)      # Python < 3.9
+
+    return results
+
+def _gp_cancel_targets(body):
+    """(crew_id, kind) per person to tell, from a cancel-call.php response.
+
+    The kind is per PERSON, not per call: cancel-call.php records prev_status on
+    every row, so someone who held a confirmed shift is told it is CANCELLED
+    while someone who only ever had an outstanding offer is told it was
+    WITHDRAWN. They never had a shift to lose, and saying otherwise is wrong in a
+    small way that matters.
+
+    An unreadable prev_status falls to 'withdrawn' -- the weaker claim of the
+    two, which is the right way to be wrong."""
+    prev = {}
+    for c in (body.get("crew") or []):
+        prev[str(c.get("user_id"))] = c.get("prev_status")
+
+    out = []
+    for uid in (body.get("notify") or []):
+        p = prev.get(str(uid))
+        try:
+            p = int(p)
+        except (TypeError, ValueError):
+            p = None
+        out.append((uid, "cancelled" if p in (5, 7) else "withdrawn"))
+    return out
 
 def gp_fetch_push_reachable():
     """Distinct EINs with at least one live Crew Hub push subscription.
@@ -11925,6 +12055,11 @@ def api_call_reinstate(booking_id, call_id):
     # and the call reappearing IS a Schedule change.
     if status == 200 and body.get("ok"):
         _schedule_cache.clear()
+        # Everyone restored gets the same kind: the call is back on and they have
+        # to accept again. No per-person variation, because after a reinstatement
+        # nobody is confirmed -- there is only one thing to say.
+        body["notify_results"] = gp_notify_cancel_batch(
+            [(uid, "reinstated") for uid in (body.get("notify") or [])], body)
 
     # 409 carries either the accounting flag that blocked it or "already started",
     # both shown to the operator verbatim.
@@ -11987,6 +12122,11 @@ def api_call_cancel(booking_id, call_id):
     # would throw the cache away every time ops are asked a question.
     if status == 200 and body.get("ok") and not body.get("needs_confirm"):
         _schedule_cache.clear()
+        # Tell the crew. `notify_results` is one entry per person with `reached`
+        # and, when not reached, a plain-English `why` the dialog shows. The
+        # endpoint's own `notify` list stays untouched beside it, so the UI can
+        # still name everyone even if the portal was unreachable entirely.
+        body["notify_results"] = gp_notify_cancel_batch(_gp_cancel_targets(body), body)
 
     # Status passed through deliberately: 409 and 422 carry messages the dialog
     # shows verbatim, and a 200 with ok:false is the confirm prompt.
