@@ -15054,6 +15054,15 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
       +   (meta.length      ? '<div style="margin-top:5px;font-size:11px;color:var(--muted)">'+escapeHtml(meta.join(' · '))+'</div>' : '')
       +   (cx.cancel_reason ? '<div style="margin-top:5px;font-size:12px;color:var(--text)">'+escapeHtml(cx.cancel_reason)+'</div>' : '')
       +   (stoodDown        ? '<div style="margin-top:5px;font-size:11px;color:var(--muted)">'+stoodDown+' crew stood down — kept on the call as the billing record, not removed.</div>' : '')
+      // Reinstate sits HERE and not in the action strip. F2 emptied that strip
+      // on a cancelled call on purpose, so that nothing on the panel invites
+      // work; the one action that makes sense belongs attached to the notice
+      // explaining why the call is cancelled. Hidden when we are working off the
+      // name-prefix fallback -- without editSrc we cannot see the roster, and a
+      // reinstate preview that cannot list who comes back is not one to offer.
+      +   ((window._cohort === 'admin' && !cancelUnknown)
+            ? '<div style="margin-top:9px"><button type="button" onclick="openCallReinstate(\'' + bookingId + '\',\'' + callId + '\')" style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;background:rgba(100,116,139,0.16);border:1px solid #64748b;border-radius:3px;padding:4px 10px;font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&#8617; Reinstate call</button></div>'
+            : '')
       + '</div>';
   }
   // A dedicated Crew Boss call should carry exactly ONE resource — the crew-facing
@@ -15320,6 +15329,173 @@ function renderStandDownResult(bookingId, callId, j){
           + '</div>'
           + '<div style="margin-top:10px">'+rows+'</div>'
         : '<div style="font-size:12px;color:var(--muted)">Nobody was holding this call, so there is no one to tell.</div>');
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+
+// ── REINSTATE A CANCELLED CALL ──────────────────────────────────────────────
+// The reverse of Stand down. Clears the cancellation, strips the "CANCELLED - "
+// prefix, and restores every crew row that is at Cancelled (9).
+//
+// NOBODY COMES BACK CONFIRMED, and this screen exists mainly to say so.
+
+var GOAT_STATUS_LABEL = {0:'Unconfirmed', 1:'Pending', 5:'Confirmed', 6:'Declined', 7:'Backup', 8:'No-show', 9:'Cancelled'};
+
+function goatStatusLabel(i){
+  return GOAT_STATUS_LABEL[i] || ('Status ' + i);
+}
+
+// MIRRORS uncancel-call.php's restore map. That endpoint is authoritative; this
+// copy drives the preview only, and a preview that disagrees with the endpoint
+// is worse than none, because ops act on what they were shown.
+//
+//   5 -> 0   said yes; must say yes again
+//   7 -> 7   a backup restored to 0 who then accepts becomes CONFIRMED, quietly
+//            promoting a standby into a confirmed slot and over-booking the call
+//   rest     unchanged
+function goatReinstateTo(prev){
+  return (prev === 5) ? 0 : prev;
+}
+
+async function openCallReinstate(bookingId, callId){
+  document.getElementById('entity-modal-title').textContent = 'Reinstate call';
+  document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading roster…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+
+  let crew = [];
+  try{
+    const r = await fetch('/api/booking/'+bookingId);
+    const b = await r.json();
+    const m = (b.calls||[]).find(function(c){ return String(c.call_id) === String(callId); });
+    if(m && m.crew) crew = m.crew;
+  }catch(e){}
+  window._reinstateCrew = crew;
+
+  // Only status-9 rows are restored. Anyone else on this call was added
+  // deliberately AFTER the cancellation and is left exactly as they are — the
+  // endpoint does the same, and the preview must not imply otherwise.
+  const stood = crew.filter(function(c){ return (c.status||'').toLowerCase() === 'cancelled'; });
+
+  const rows = stood.length
+    ? stood.map(function(c){
+        const prev = (c.prev_status === null || c.prev_status === undefined) ? null : parseInt(c.prev_status, 10);
+        const to   = (prev === null) ? 0 : goatReinstateTo(prev);
+        const from = (prev === null)
+          ? '<span style="color:#f59e0b">prior status unknown</span>'
+          : escapeHtml(goatStatusLabel(prev));
+        const moved = (prev !== null && prev !== to);
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)">'
+             +   '<span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+'</span>'
+             +   '<span style="font-size:11px;color:var(--muted);white-space:nowrap">was '+from+' → <strong style="color:'+(moved ? '#f59e0b' : 'var(--muted)')+'">'+escapeHtml(goatStatusLabel(to))+'</strong></span>'
+             + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px">Nobody was stood down on this call.</div>';
+
+  const anyDemoted = stood.some(function(c){ return parseInt(c.prev_status, 10) === 5; });
+
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px;margin-bottom:14px">'
+    +   '<div style="font-size:11px;letter-spacing:.5px;color:#94a3b8;text-transform:uppercase;margin-bottom:4px">Reinstating this call</div>'
+    +   '<div style="font-size:12px;color:var(--text)">The cancellation is cleared, the name goes back to normal, and the call returns to the Schedule. It can be stood down again afterwards.</div>'
+    + '</div>'
+
+    + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Crew coming back ('+stood.length+')</div>'
+    + rows
+
+    // THE POINT OF THIS SCREEN. Ops are reinstating a call they may think is
+    // still staffed. Saying it once, in amber, before the button.
+    + (anyDemoted
+        ? '<div style="margin-top:12px;border:1px solid #f59e0b;border-left:3px solid #f59e0b;background:rgba(245,158,11,0.12);border-radius:4px;padding:9px 11px">'
+          +   '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:2px">This call will not be staffed</div>'
+          +   '<div style="font-size:12px;color:var(--text)">Anyone who was <strong>Confirmed</strong> comes back <strong>Unconfirmed</strong> and has to accept again. They may have been told the call was off and taken other work — nobody is put back on a shift without agreeing to it.</div>'
+          + '</div>'
+        : '')
+
+    + '<div id="ri-error" style="margin-top:10px"></div>';
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('↩ Reinstate call', "submitReinstate('"+bookingId+"','"+callId+"')", {primary:true})
+    + entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')")
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+function _riError(html){
+  const el = document.getElementById('ri-error');
+  if(el) el.innerHTML = '<div style="font-size:12px;color:var(--conflict);background:var(--conf-bg);border:1px solid var(--conflict);border-radius:4px;padding:7px 9px">'+html+'</div>';
+}
+
+async function submitReinstate(bookingId, callId){
+  _riError('Reinstating…');
+  try{
+    const r = await fetch('/api/call/'+bookingId+'/'+callId+'/reinstate', {method:'POST'});
+    const j = await r.json();
+
+    // 409 is either an accounting flag (named individually) or "this call has
+    // already started" — different follow-ups, so the endpoint's own sentence
+    // is shown rather than a status code.
+    if(!r.ok){
+      _riError(escapeHtml(j.error || ('HTTP '+r.status)));
+      return;
+    }
+
+    renderReinstateResult(bookingId, callId, j);
+  }catch(e){
+    _riError('Couldn\'t reinstate the call: '+escapeHtml(e.message||String(e)));
+  }
+}
+
+// The call is live again and NOBODY HAS BEEN TOLD.
+//
+// This is the more dangerous of the two panels. A cancelled call nobody hears
+// about costs a wasted trip. A reinstated call nobody hears about looks staffed
+// in the booking while every one of those people believes they are free — and it
+// is short on the day, with a roster that reads as full.
+function renderReinstateResult(bookingId, callId, j){
+  const byId = {};
+  (window._reinstateCrew||[]).forEach(function(c){ byId[String(c.id)] = c; });
+
+  const ids  = j.notify || [];
+  const rows = ids.map(function(uid){
+    const c    = byId[String(uid)] || {};
+    const name = c.name ? escapeHtml(decodeEntities(c.name)) : ('User #'+escapeHtml(String(uid)));
+    const mob  = c.mobile
+      ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(c.mobile)+'</a>'
+      : '<span style="color:var(--muted);font-size:11px">no mobile on file</span>';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'
+         +   '<span style="font-size:12px;color:var(--text)">'+name+'</span>'+mob
+         + '</div>';
+  }).join('');
+
+  // Reported by the endpoint when a status-9 row carried no prev_status. Should
+  // not happen; surfaced rather than swallowed, because the alternative was
+  // leaving a cancelled row on a live call where no read would ever show it.
+  const unknown = (j.crew||[]).filter(function(c){ return c.unknown_prev; });
+
+  document.getElementById('entity-modal-title').textContent = 'Call reinstated';
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px;margin-bottom:14px">'
+    +   '<div style="font-size:11px;letter-spacing:.5px;color:#94a3b8;text-transform:uppercase">'+escapeHtml(j.call_name || ('Call #'+callId))+' is back on</div>'
+    +   '<div style="margin-top:4px;font-size:12px;color:var(--text)">'
+    +     (j.restored ? j.restored+' crew restored. ' : '')
+    +     'The call is in the Schedule again and can be filled as normal.'
+    +   '</div>'
+    + '</div>'
+    + (unknown.length
+        ? '<div style="margin-bottom:12px;border:1px solid #f59e0b;border-radius:4px;background:rgba(245,158,11,0.12);padding:8px 10px;font-size:12px;color:var(--text)">'
+          + unknown.length+' crew had no recorded prior status and came back as <strong>Unconfirmed</strong>. Check them against the booking before chasing.'
+          + '</div>'
+        : '')
+    + (ids.length
+        ? '<div style="border:1px solid #f59e0b;border-left:3px solid #f59e0b;background:rgba(245,158,11,0.12);border-radius:4px;padding:9px 11px">'
+          +   '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:2px">⚠ '+ids.length+' crew have NOT been told</div>'
+          +   '<div style="font-size:12px;color:var(--text)">Nobody is confirmed — they all have to accept again. No message has been sent; Crew Hub cannot receive these notices yet. <strong>Ring them.</strong></div>'
+          + '</div>'
+          + '<div style="margin-top:10px">'+rows+'</div>'
+        : '<div style="font-size:12px;color:var(--muted)">Nobody was stood down on this call, so there is no one to tell.</div>');
 
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
