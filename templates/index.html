@@ -14606,11 +14606,29 @@ function crewStatusBadge(status){
   else if(s==='backup'){ color='#14b8a6'; bg='rgba(20,184,166,0.12)'; }
   else if(s==='declined'||s==='noshow'){ color='var(--conflict)'; bg='var(--conf-bg)'; }
   else if(s==='unconfirmed'||s==='sent'||s==='waiting'){ color='#f59e0b'; bg='rgba(245,158,11,0.12)'; }
+  // Slate, and EXPLICIT rather than left to fall through to the default below.
+  // The default is also what an unrecognised status gets, and "cancelled" must
+  // not be indistinguishable from "this UI does not know what this value is".
+  else if(s==='cancelled'){ color='#64748b'; bg='rgba(100,116,139,0.14)'; }
   return '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+color+';background:'+bg+';border-radius:3px;padding:2px 7px">'+escapeHtml(status||'—')+'</span>';
 }
 // ── Crew status editing (admin only) ─────────────────────────
 // Status labels <-> SmartStaff call_crew_map.status ints. The endpoint owns the
 // authoritative whitelist; this map only drives the select + its colour.
+//
+// 9 (CANCELLED) IS DELIBERATELY ABSENT AND MUST STAY ABSENT.
+//
+// This array drives a SETTER. An option here would let ops write status 9 from
+// the dropdown, producing a row with no prev_status, no cancel_reason, no
+// calendar cleared and no cancelled_at on the call -- a cancellation that exists
+// on one crew row and nowhere else, invisible to every read that filters on
+// calls.cancelled_at. Cancellation enters through cancel-call.php or not at all.
+//
+// Cancelled is RENDERABLE (crewStatusInt / crewStatusColors / crewStatusBadge
+// all know it) but never SETTABLE. crewStatusControl() returns the read-only
+// badge for it, which is required, not tidiness: with cur=9 and no matching
+// <option>, a <select> shows its FIRST option, so the dropdown would label a
+// cancelled crew member "Confirmed".
 var CREW_STATUS_OPTS = [[5,'Confirmed'],[7,'Backup'],[1,'Pending'],[6,'Declined'],[8,'No-show'],[0,'Unconfirmed']];
 
 function crewStatusInt(status){
@@ -14620,6 +14638,7 @@ function crewStatusInt(status){
   if(s==='sent'||s==='pending')   return 1;
   if(s==='declined')              return 6;
   if(s==='noshow'||s==='no-show') return 8;
+  if(s==='cancelled')             return 9;
   return 0;   // unconfirmed / waiting / unknown
 }
 
@@ -14640,6 +14659,7 @@ function crewStatusColors(v){
   if(v===7)        return ['#14b8a6','rgba(20,184,166,0.12)'];
   if(v===6||v===8) return ['var(--conflict)','var(--conf-bg)'];
   if(v===1||v===0) return ['#f59e0b','rgba(245,158,11,0.12)'];
+  if(v===9)        return ['#64748b','rgba(100,116,139,0.14)'];   // cancelled
   return ['var(--muted)','var(--surface2)'];
 }
 
@@ -14649,6 +14669,15 @@ function crewStatusColors(v){
 function crewStatusControl(c, bookingId, callId){
   if(window._cohort !== 'admin' || !c.id) return crewStatusBadge(c.status);
   var cur  = crewStatusInt(c.status);
+  // A CANCELLED ROW IS EVIDENCE, NOT A SETTING. Two reasons this is an early
+  // return and not an extra option:
+  //   1. changeCrewStatus() would rewrite status 9 to whatever was picked,
+  //      destroying the cancellation while prev_status still reads 5.
+  //   2. 9 is not in CREW_STATUS_OPTS, so a <select> built with cur=9 would
+  //      match no <option> and display its first one -- labelling a cancelled
+  //      crew member "Confirmed".
+  // To reverse a cancellation, un-cancel the CALL (DESIGN section 8.5).
+  if(cur === 9) return crewStatusBadge(c.status);
   var cols = crewStatusColors(cur);
   var opts = CREW_STATUS_OPTS.map(function(o){
     return '<option value="'+o[0]+'"'+(o[0]===cur?' selected':'')+'>'+o[1]+'</option>';
@@ -14704,6 +14733,11 @@ function refreshCallCrewSummary(callId){
 // also clears the calendar entry. Confirms first; reloads the dialog on success.
 function crewRemoveControl(c, bookingId, callId){
   if(window._cohort !== 'admin' || !c.id) return '';
+  // NO X ON A CANCELLED ROW. removeCrewFromCall() deletes the row outright, and
+  // that row is the billing record for the cancellation -- who was committed at
+  // the moment ops stood the call down. DESIGN section 1 is explicit that it is
+  // kept, never deleted, which is the whole reason cancelling is not deleting.
+  if(crewStatusInt(c.status) === 9) return '';
   return '<button type="button" class="crew-remove-btn" title="Remove from this call"'
     + ' data-name="'+escapeHtml(decodeEntities(c.name))+'"'
     + ' onclick="removeCrewFromCall(\''+bookingId+'\',\''+callId+'\','+c.id+',this)">&#10005;</button>';
@@ -14980,6 +15014,48 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   document.getElementById('entity-modal-sub').textContent = 'Call #'+callId+' · Booking #'+bookingId;
   const req = (editSrc && editSrc.required != null) ? editSrc.required : (d.crew_required || 0);
   const confirmedCount = crew.filter(function(c){ return (c.status||'').toLowerCase()==='confirmed'; }).length;
+  // ── CANCELLATION STATE ────────────────────────────────────────────────────
+  // The cancellation fields ride on the get-booking call object (editSrc), NOT
+  // on d (/api/call/<b>/<c>), which has never carried them.
+  //
+  // editSrc is null when the booking fetch fails or the call is not in it. The
+  // name-prefix fallback below exists for that case and fails in the SAFE
+  // direction: Find Crew and Enter Times go away even when the detail is
+  // unavailable, and the banner admits it rather than inventing a reason or a
+  // charge state. Without it, one flaky fetch draws a cancelled call as fully
+  // live with Find Crew as the primary action.
+  const cx = editSrc || {};
+  let isCancelled = !!cx.cancelled;
+  let cancelUnknown = false;
+  if(!editSrc && /^\s*cancelled\s*-/i.test(d.call_name || '')){
+    isCancelled   = true;
+    cancelUnknown = true;
+  }
+  const stoodDown = crew.filter(function(c){ return (c.status||'').toLowerCase()==='cancelled'; }).length;
+  let cancelBanner = '';
+  if(isCancelled){
+    const meta = [];
+    if(cx.cancelled_at) meta.push(new Date(cx.cancelled_at*1000).toLocaleString());
+    if(cx.cancelled_by) meta.push('by #'+cx.cancelled_by);
+    // CHARGEABLE is the money fact and gets the loud colour. "Detail
+    // unavailable" is shown INSTEAD of a charge state when we are working off
+    // the name prefix -- guessing "not chargeable" would lose a real invoice.
+    const chargeChip = cancelUnknown
+      ? '<span style="font-size:9px;letter-spacing:.5px;color:var(--muted);background:var(--surface2);border-radius:3px;padding:2px 7px">DETAIL UNAVAILABLE</span>'
+      : (cx.cancel_charge
+          ? '<span style="font-size:9px;letter-spacing:.5px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 7px">CHARGEABLE</span>'
+          : '<span style="font-size:9px;letter-spacing:.5px;color:var(--muted);background:var(--surface2);border-radius:3px;padding:2px 7px">NOT CHARGEABLE</span>');
+    cancelBanner =
+        '<div style="margin:0 0 12px;border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px">'
+      +   '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      +     '<span style="font-size:11px;letter-spacing:.5px;color:#94a3b8;text-transform:uppercase">This call is cancelled</span>'
+      +     chargeChip
+      +   '</div>'
+      +   (meta.length      ? '<div style="margin-top:5px;font-size:11px;color:var(--muted)">'+escapeHtml(meta.join(' · '))+'</div>' : '')
+      +   (cx.cancel_reason ? '<div style="margin-top:5px;font-size:12px;color:var(--text)">'+escapeHtml(cx.cancel_reason)+'</div>' : '')
+      +   (stoodDown        ? '<div style="margin-top:5px;font-size:11px;color:var(--muted)">'+stoodDown+' crew stood down — kept on the call as the billing record, not removed.</div>' : '')
+      + '</div>';
+  }
   // A dedicated Crew Boss call should carry exactly ONE resource — the crew-facing
   // contact hierarchy resolves through it, and two confirmed resources means every
   // crew member on the job sees two contacts instead of one. Flag it here, where
@@ -14997,24 +15073,256 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // change_pending, guarded to status 5/7).
         var chg = c.change_pending ? ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>' : '';
         var promo = crewPromoAckPill(c, bookingId, callId);
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId)+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+(isCancelled ? '' : crewBossControl(c, bookingId, callId))+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
-      entityRow('Date',  escapeHtml(d.date_str||'—'))
+      cancelBanner
+    + entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
     + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
-    + entityRow('Crew',  '<span id="call-confirmed-count-'+callId+'">'+confirmedCount+'</span> booked / '+req+' required <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>')
+    // "0 booked / 1 required" is arithmetically true and reads as a GAP TO FILL
+    // on a call that is not running. Cancelled calls state what the roster was
+    // instead. The id span is dropped with it -- refreshCallCrewSummary() only
+    // fires from the status selects, and slice F1 removed those for status 9.
+    + (isCancelled
+        ? entityRow('Crew', '<span style="color:var(--muted)">'+crew.length+' assigned when cancelled · none working</span>')
+        : entityRow('Crew', '<span id="call-confirmed-count-'+callId+'">'+confirmedCount+'</span> booked / '+req+' required <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>'))
     + bossCallWarn
     + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Booked Crew</div>'
     + crewRows;
+  // FIND CREW AND ENTER TIMES ARE REMOVED ON A CANCELLED CALL.
+  //
+  // Find Crew is primary-styled, so on a cancelled call the brightest thing on
+  // the panel invites ops to go staff a shift that is not happening.
+  //
+  // Enter Times opens a grid that refuses the work anyway (cancelled rows are
+  // read-only because they are not status 5) but explains itself with "1 crew is
+  // not confirmed ... Change their status on the call first if they worked" --
+  // wrong on both counts: he is cancelled, not unconfirmed, and changing his
+  // status would destroy the cancellation record. F1 made that impossible from
+  // this dialog, so it is now an instruction that cannot be followed. Closing
+  // the doorway is cheaper and safer than rewording the room.
+  //
+  // Nothing is primary on a cancelled call. There is no next action here.
+  //
+  // KEPT: SmartStaff, Edit and Crew Notes. None of them can damage the
+  // cancellation record, and Crew Notes is how ops tell the crew what happened
+  // until the portal has a push route (see the slice E patch).
   document.getElementById('entity-modal-actions').innerHTML =
-      entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true})
+      (isCancelled ? '' : entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true}))
     + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')")
     + (window._curCallEdit
         ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
-    + entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')")
+    + (isCancelled ? '' : entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')"))
+    + ((isCancelled || window._cohort !== 'admin')
+        ? ''
+        : entityBtn('⏹ Stand down', "openCallStandDown('"+bookingId+"','"+callId+"')", {title:'Cancel this call — crew are stood down, not removed'}))
     + entityBtn('💬 Crew Notes', "openCrewNotes('"+bookingId+"','"+callId+"')", {title:'Post notes for crew on this call'})
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+
+// ── STAND DOWN A CALL ───────────────────────────────────────────────────────
+// Cancel a whole call. NOT a delete and not a bigger Remove: the call stays in
+// the booking, its crew stay on it at Cancelled (status 9) with prev_status
+// recorded, and that roster is the billing record for a cancellation charge.
+//
+// Reuses the entity modal in place, the same way the times grid does, and offers
+// "‹ Back to call" so an ops person who opened this by accident has an obvious
+// way out that changes nothing.
+async function openCallStandDown(bookingId, callId){
+  document.getElementById('entity-modal-title').textContent = 'Stand down call';
+  document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading roster…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+
+  // Fetch the roster BEFORE anything changes: these are the people who will need
+  // telling, and the result panel names them from this copy.
+  let crew = [];
+  try{
+    const r = await fetch('/api/booking/'+bookingId);
+    const b = await r.json();
+    const m = (b.calls||[]).find(function(c){ return String(c.call_id) === String(callId); });
+    if(m && m.crew) crew = m.crew;
+  }catch(e){}
+  window._standDownCrew = crew;
+
+  // Everyone still holding a live assignment. Declined (6) and no-show (8) are
+  // shown greyed for completeness but are not people to ring about a shift they
+  // were never coming to.
+  const live = crew.filter(function(c){
+    const s = (c.status||'').toLowerCase();
+    return s !== 'declined' && s !== 'noshow' && s !== 'no-show' && s !== 'cancelled';
+  });
+
+  const roster = crew.length
+    ? crew.map(function(c){
+        const s    = (c.status||'').toLowerCase();
+        const dim  = (s==='declined'||s==='noshow'||s==='no-show');
+        const mob  = c.mobile ? '<span style="color:var(--muted);margin-left:8px">'+escapeHtml(c.mobile)+'</span>' : '';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)'+(dim?';opacity:.45':'')+'">'
+             +   '<span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+mob+'</span>'
+             +   crewStatusBadge(c.status)
+             + '</div>';
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px">No crew on this call.</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px;margin-bottom:14px">'
+    +   '<div style="font-size:11px;letter-spacing:.5px;color:#94a3b8;text-transform:uppercase;margin-bottom:4px">Standing down this call</div>'
+    +   '<div style="font-size:12px;color:var(--text)">The call stays in the booking and keeps its crew. Every assignment below becomes <strong>Cancelled</strong>, calendars are cleared, and the call drops out of the Schedule — but nothing is deleted, because the roster is the record of who was committed if the customer is billed.</div>'
+    + '</div>'
+
+    + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Crew on this call ('+live.length+' to stand down)</div>'
+    + roster
+
+    + '<div style="margin-top:16px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Is this cancellation chargeable?</div>'
+    + '<div style="display:flex;flex-direction:column;gap:6px">'
+    +   '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text);cursor:pointer"><input type="radio" name="sd-charge" value="1" style="margin-top:2px"><span><strong>Chargeable</strong> — cancelled inside the blackout period, the customer is billed.</span></label>'
+    +   '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text);cursor:pointer"><input type="radio" name="sd-charge" value="0" style="margin-top:2px"><span><strong>Not chargeable</strong> — no charge to the customer.</span></label>'
+    + '</div>'
+    + '<div style="margin-top:5px;font-size:10px;color:var(--muted)">No default — blackout terms vary by customer, so this is a decision every time.</div>'
+
+    + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Reason <span style="color:var(--conflict)">*</span></div>'
+    + '<textarea id="sd-reason" rows="2" placeholder="Why was it cancelled?" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:inherit;padding:6px 8px;outline:none"></textarea>'
+    + '<div style="margin-top:4px;font-size:10px;color:var(--muted)">Required. Quoted back if the charge — or the decision not to charge — is ever queried.</div>'
+
+    + '<div id="sd-error" style="margin-top:10px"></div>';
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('⏹ Stand down call', "submitStandDown('"+bookingId+"','"+callId+"',false)", {primary:true})
+    + entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')")
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+function _sdError(html){
+  const el = document.getElementById('sd-error');
+  if(el) el.innerHTML = '<div style="font-size:12px;color:var(--conflict);background:var(--conf-bg);border:1px solid var(--conflict);border-radius:4px;padding:7px 9px">'+html+'</div>';
+}
+
+// Two things are refused before anything is sent: a missing chargeable choice,
+// and an empty reason. Neither has a default and neither is inferred.
+//
+// confirmed=false on the first attempt. A call that feeds others comes back 200
+// with ok:false + needs_confirm and NOTHING CHANGED; ops see what is downstream
+// and choose again. Warn, never cascade.
+async function submitStandDown(bookingId, callId, confirmed){
+  const pick = document.querySelector('input[name="sd-charge"]:checked');
+  if(!pick){
+    // The endpoint 422s on a missing chargeable. Refusing here is the same rule,
+    // stated earlier and in words. NOT defaulted -- a wrong default is a wrong
+    // invoice, in whichever direction it falls.
+    _sdError('Choose whether this cancellation is <strong>chargeable</strong> before standing the call down.');
+    return;
+  }
+  const reasonEl = document.getElementById('sd-reason');
+  const reason   = reasonEl ? reasonEl.value.trim() : '';
+  if(!reason){
+    // MANDATORY WHETHER OR NOT IT IS CHARGEABLE. On a chargeable cancellation
+    // this is the justification quoted back when the customer queries the
+    // invoice. On a non-chargeable one it is the justification for forgoing
+    // revenue, questioned just as often but internally and much later.
+    //
+    // Enforced HERE only -- cancel-call.php requires `chargeable` and nothing
+    // else, so a console POST can still omit this. The endpoint should grow the
+    // same guard next time it is touched; until then this is a convention, not
+    // a constraint.
+    _sdError('Give a <strong>reason</strong> for the cancellation. It is quoted back if the charge — or the decision not to charge — is ever queried.');
+    return;
+  }
+  const payload = {
+    scope:      'call',
+    chargeable: pick.value === '1',
+    reason:     reason,
+    confirm:    !!confirmed
+  };
+  _sdError('Standing down…');
+  try{
+    const r = await fetch('/api/call/'+bookingId+'/'+callId+'/cancel', {
+      method:  'POST',
+      headers: {'Content-Type':'application/json'},
+      body:    JSON.stringify(payload)
+    });
+    const j = await r.json();
+
+    // 409 names WHICH accounting flag blocked it (locked / invoiced / payslips);
+    // 422 is the missing chargeable. Both carry a sentence worth showing verbatim
+    // -- that is why ss_cancel_call passes the body through instead of
+    // flattening a non-200 into "HTTP 409".
+    if(!r.ok){
+      _sdError(escapeHtml(j.error || ('HTTP '+r.status)));
+      return;
+    }
+
+    if(j.needs_confirm){
+      const el = document.getElementById('sd-error');
+      const feeds = (j.feeds||[]).map(function(f){
+        return '<li>'+escapeHtml(f.call_name || ('Call #'+f.call_id))+(f.crew != null ? ' — '+f.crew+' crew' : '')+'</li>';
+      }).join('');
+      el.innerHTML =
+          '<div style="font-size:12px;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:4px;padding:8px 10px">'
+        +   '<strong>Nothing has been cancelled yet.</strong> This call feeds other calls:'
+        +   '<ul style="margin:6px 0 6px 16px;padding:0">'+feeds+'</ul>'
+        +   'Those calls will <strong>not</strong> be cancelled — you will need to deal with them yourself. Stand down this one anyway?'
+        + '</div>';
+      document.getElementById('entity-modal-actions').innerHTML =
+          entityBtn('⏹ Stand down anyway', "submitStandDown('"+bookingId+"','"+callId+"',true)", {primary:true})
+        + entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')")
+        + entityBtn('Close', 'closeEntityModal()');
+      return;
+    }
+
+    renderStandDownResult(bookingId, callId, j);
+  }catch(e){
+    _sdError('Couldn\'t stand the call down: '+escapeHtml(e.message||String(e)));
+  }
+}
+
+// THE MOST IMPORTANT PANEL IN THIS FEATURE.
+//
+// The call is cancelled and NOBODY HAS BEEN TOLD. There is no /api/push/cancel
+// on the portal yet, so phase 1 sends nothing at all. This lists the people who
+// still need ringing, with tap-to-call numbers, under a heading that says so.
+//
+// It must never read like a confirmation. A missed offer costs an unfilled call;
+// a missed cancellation puts someone in a car to a venue for a shift that is not
+// happening.
+function renderStandDownResult(bookingId, callId, j){
+  const byId = {};
+  (window._standDownCrew||[]).forEach(function(c){ byId[String(c.id)] = c; });
+
+  const ids  = j.notify || [];
+  const rows = ids.map(function(uid){
+    const c    = byId[String(uid)] || {};
+    const name = c.name ? escapeHtml(decodeEntities(c.name)) : ('User #'+escapeHtml(String(uid)));
+    const mob  = c.mobile
+      ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(c.mobile)+'</a>'
+      : '<span style="color:var(--muted);font-size:11px">no mobile on file</span>';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'
+         +   '<span style="font-size:12px;color:var(--text)">'+name+'</span>'+mob
+         + '</div>';
+  }).join('');
+
+  document.getElementById('entity-modal-title').textContent = 'Call stood down';
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px;margin-bottom:14px">'
+    +   '<div style="font-size:11px;letter-spacing:.5px;color:#94a3b8;text-transform:uppercase">Call #'+escapeHtml(String(callId))+' is cancelled</div>'
+    +   '<div style="margin-top:4px;font-size:12px;color:var(--text)">'
+    +     (j.crew && j.crew.length ? j.crew.length+' crew stood down and their calendars cleared. ' : '')
+    +     'The call keeps its roster as the billing record.'
+    +   '</div>'
+    + '</div>'
+    + (ids.length
+        ? '<div style="border:1px solid #f59e0b;border-left:3px solid #f59e0b;background:rgba(245,158,11,0.12);border-radius:4px;padding:9px 11px">'
+          +   '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:2px">⚠ '+ids.length+' crew have NOT been told</div>'
+          +   '<div style="font-size:12px;color:var(--text)">No message has been sent — Crew Hub cannot receive cancellation notices yet. <strong>Ring them.</strong></div>'
+          + '</div>'
+          + '<div style="margin-top:10px">'+rows+'</div>'
+        : '<div style="font-size:12px;color:var(--muted)">Nobody was holding this call, so there is no one to tell.</div>');
+
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
     + entityBtn('Close', 'closeEntityModal()');
 }
 
@@ -15661,11 +15969,23 @@ async function abToggle(bookingId){
     const importBtn = '<div onclick="openEntityModal();openTimesImport(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📥 Import times</div>';
     body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+genBtn+gsheetBtn+importBtn+'</div>' + calls.map(function(c){
       const when = _abCallWhen(c.start_date, c.start_time);
-      const counts = (typeof c.booked !== 'undefined') ? (' · '+(c.confirmed||0)+'/'+(c.required||0)) : '';
-      return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-top:5px;cursor:pointer;background:var(--surface)">'
-        + '<span style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.call_name||'Call')+'</span>'
+      // Greyed, struck through, and NO Enter Times doorway -- see the call
+      // dialog for why that link is a trap on a cancelled call.
+      //
+      // Belt and braces on the test: the machine field IS the truth, but this
+      // list's endpoint has not been read end to end, and a `cancelled` that
+      // never arrives would leave this styling silently never applying -- a
+      // green that proves nothing. The name prefix is written by cancel-call.php
+      // and was observed rendering here, so it is the backstop.
+      const cxCancelled = !!c.cancelled || /^\s*cancelled\s*-/i.test(c.call_name||'');
+      // The counts go with it: "0/1" on a cancelled call reads as a gap to fill.
+      const counts = cxCancelled ? '' : ((typeof c.booked !== 'undefined') ? (' · '+(c.confirmed||0)+'/'+(c.required||0)) : '');
+      return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-top:5px;cursor:pointer;background:var(--surface)'+(cxCancelled?';opacity:.6':'')+'">'
+        + '<span style="font-size:12px;color:'+(cxCancelled?'var(--muted)':'var(--text)')+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis'+(cxCancelled?';text-decoration:line-through':'')+'">'+escapeHtml(c.call_name||'Call')+'</span>'
         + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">'+escapeHtml(when)+counts+'</span>'
-        + '<span style="font-size:10px;color:var(--accent);white-space:nowrap">⏱ Enter Times →</span>'
+        + (cxCancelled
+            ? '<span style="font-size:9px;letter-spacing:.5px;color:#64748b;background:rgba(100,116,139,0.14);border-radius:3px;padding:2px 7px;white-space:nowrap">CANCELLED</span>'
+            : '<span style="font-size:10px;color:var(--accent);white-space:nowrap">⏱ Enter Times →</span>')
         + '</div>';
     }).join('');
     body.setAttribute('data-loaded','1');
