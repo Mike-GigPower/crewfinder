@@ -1,6 +1,6 @@
 {
-  "version": "5.23.1",
-  "release_date": "2026-08-31",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.23.1/TheGOAT.dmg",
-  "release_notes": "Sending induction reminders to a large session no longer reports a failure when the emails have in fact gone out. THE GOAT now waits up to three minutes for a bulk send instead of 20 seconds."
+  "version": "5.24.0",
+  "release_date": "2026-09-02",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.24.0/TheGOAT.dmg",
+  "release_notes": "Calls can now be cancelled instead of deleted. Crew stay on the call as Cancelled so the roster survives as the billing record, and THE GOAT lists everyone who still needs telling — no notification is sent to crew automatically yet."
 }
