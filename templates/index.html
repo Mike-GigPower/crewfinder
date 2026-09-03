@@ -9558,6 +9558,19 @@ function renderInductionTable(){
 // export has always used here and it is proven against however this app's
 // webview handles a download. Not worth changing on a release about something
 // else.
+// YYYY-MM-DD in the VIEWER'S timezone, never UTC.
+//
+// toISOString() converts to UTC first, so in Melbourne (UTC+10) every export
+// before 10am is stamped with yesterday's date — caught on the 5.30.0 smoke
+// test, where a file exported at 09:20 on 4 Sep came out named 2026-09-03.
+// The whole argument for putting the scope in the filename is that the file
+// stays self-describing after it has been moved and emailed on, and a date that
+// is quietly a day behind undercuts exactly that.
+function _goatLocalISODate(d){
+  function p(n){ return (n < 10 ? '0' : '') + n; }
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
 function goatExportCSV(filenameBase, headers, rows){
   function cell(v){
     if(v === null || v === undefined) v = '';
@@ -9568,7 +9581,7 @@ function goatExportCSV(filenameBase, headers, rows){
     + '\r\n';
   var name = String(filenameBase || 'export')
     .replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase()
-    + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+    + '-' + _goatLocalISODate(new Date()) + '.csv';
   var a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
   a.download = name;
@@ -10850,11 +10863,13 @@ function _visaCsvDate(v){
   return m ? m[1] : '';
 }
 
-// updated_ts is INT(10) unix seconds, not a date string.
+// updated_ts is INT(10) unix seconds, not a date string. Rendered in local time
+// for the same reason the filename is: a write made at 8am Melbourne is not
+// "yesterday" to the person reading the file.
 function _visaCsvTs(ts){
   if(!ts) return '';
   var d = new Date(Number(ts) * 1000);
-  return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+  return isNaN(d.getTime()) ? '' : _goatLocalISODate(d);
 }
 
 // ── CREW VISA (admin) ────────────────────────────────────────────────────────
