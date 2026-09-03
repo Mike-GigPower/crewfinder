@@ -9535,24 +9535,57 @@ function renderInductionTable(){
     crew.length+' resources | '+totalExpired+' expired | '+totalIncomplete+' incomplete';
 }
 
+// ── CSV EXPORT ──────────────────────────────────────────────────────────────
+// The one CSV writer in THE GOAT. Every export goes through here so the next one
+// cannot quietly disagree with this one about what a CSV is.
+//
+// Three things this gets right that the hand-rolled version it replaces did not:
+//
+//  1. UTF-8 BOM. Without it Excel on Windows reads the file as the system
+//     codepage and Hurtado, Florez and dos Santos come out as mojibake. One
+//     character fixes it, and it is invisible everywhere else.
+//  2. null and undefined become '', never the literal strings 'null' or
+//     'undefined'. Almost every column this app exports is nullable.
+//  3. RFC 4180 quoting on every cell, unconditionally. `visa_conditions` is free
+//     text that contains commas by nature ("no more than 40 hours per
+//     fortnight, employer-specific") and a crew name can contain an apostrophe.
+//
+// DATES ARE THE CALLER'S JOB: pass ISO (YYYY-MM-DD), never the en-AU display
+// string. Excel sorts ISO as a date; it reads "12 Nov 26" as text, or under a US
+// locale as the wrong date entirely.
+//
+// data: URI rather than a Blob URL deliberately — it is what the inductions
+// export has always used here and it is proven against however this app's
+// webview handles a download. Not worth changing on a release about something
+// else.
+function goatExportCSV(filenameBase, headers, rows){
+  function cell(v){
+    if(v === null || v === undefined) v = '';
+    return '"' + String(v).replace(/"/g, '""') + '"';
+  }
+  var csv = '﻿'
+    + [headers].concat(rows).map(function(r){ return r.map(cell).join(','); }).join('\r\n')
+    + '\r\n';
+  var name = String(filenameBase || 'export')
+    .replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase()
+    + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+  var a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = name;
+  a.click();
+}
+
 function exportInductionCSV(){
   if(!_indData) return;
   const venues=(_indData.venues||[]).filter(v=>_selectedVenues.size===0||_selectedVenues.has(v));
-  const rows=[['Resource',...venues]];
-  _indData.crew.forEach(c=>{
-    rows.push([c.name||c.ein||c.id,...venues.map(v=>{
-      const vs=c.venue_status[v];
-      if(!vs) return '';
-      if(vs.status==='Complete') return 'Valid ('+vs.expiry+')';
-      if(vs.status==='Expired') return 'Expired ('+vs.expiry+')';
-      return 'Incomplete';
-    })]);
-  });
-  const csv=rows.map(r=>r.map(cell=>'"'+String(cell).replace(/"/g,'""')+'"').join(',')).join('\n');
-  const a=document.createElement('a');
-  a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
-  a.download='inductions-'+new Date().toISOString().slice(0,10)+'.csv';
-  a.click();
+  const rows=(_indData.crew||[]).map(c=>[c.name||c.ein||c.id,...venues.map(v=>{
+    const vs=c.venue_status[v];
+    if(!vs) return '';
+    if(vs.status==='Complete') return 'Valid ('+vs.expiry+')';
+    if(vs.status==='Expired') return 'Expired ('+vs.expiry+')';
+    return 'Incomplete';
+  })]);
+  goatExportCSV('inductions', ['Resource',...venues], rows);
 }
 
 // ── IMPORT TAB ──────────────────────────────────────────────────────────────
@@ -10543,6 +10576,18 @@ function _ceVisaBadge(c){
 
 var _visaRows = [];
 var _visaFilter = '';
+var _visaGroup = false;          // group the rows by subclass — off by default
+
+// Filter key → the words that go in an exported filename. A file called
+// export.csv is unattributable in six months; visa-register-expired-2026-09-03
+// still says what it is after it has been moved, renamed and emailed on.
+var _VISA_FILTER_SLUG = {
+  expired:   'expired',
+  soon:      'expiring-90-days',
+  unchecked: 'vevo-never-checked',
+  offroster: 'not-on-roster',
+  nodate:    'no-expiry-recorded'
+};
 
 function adminVisaRegister(){ openVisaRegisterModal(); }
 
@@ -10550,7 +10595,7 @@ async function openVisaRegisterModal(){
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Visa Register';
   document.getElementById('entity-modal-sub').textContent   = 'Working-visa crew, soonest expiry first';
-  document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+  _renderVisaRegisterActions(0);
   document.getElementById('entity-modal-body').innerHTML =
       '<div id="visa-reg-chips" style="display:flex;gap:6px;flex-wrap:wrap;padding-bottom:10px"></div>'
     + '<div id="visa-reg-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>'
@@ -10561,6 +10606,7 @@ async function openVisaRegisterModal(){
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
     _visaRows = d.rows || [];
     _visaFilter = '';
+    _visaGroup  = false;
     _renderVisaRegister();
   }catch(e){
     document.getElementById('visa-reg-rows').innerHTML =
@@ -10571,6 +10617,64 @@ async function openVisaRegisterModal(){
 function visaRegFilter(f){
   _visaFilter = (_visaFilter === f) ? '' : f;   // click again to clear
   _renderVisaRegister();
+}
+
+function visaRegToggleGroup(){
+  _visaGroup = !_visaGroup;
+  _renderVisaRegister();
+}
+
+// The rows currently on screen, in the order they appear. One definition, used
+// by both the renderer and the export — so the file can never contain a row the
+// operator could not see, which is how a compliance export ends up carrying more
+// than the person who sent it had checked.
+function _visaVisibleRows(){
+  var rows = _visaRows.filter(function(r){ return _visaMatches(r, _visaFilter); });
+  if(!_visaGroup) return rows;
+  return _visaGroupRows(rows).reduce(function(acc, g){ return acc.concat(g.rows); }, []);
+}
+
+// Bucket by subclass, biggest cohort first.
+//
+// Not sorted alphabetically: 417 before 462 before 482 is a numeric accident,
+// not information. "What do most of our visa workers hold" is the question
+// grouping exists to answer, so size leads and the subclass only breaks ties —
+// which also keeps the order stable between renders.
+//
+// The no-subclass bucket is ALWAYS LAST AND ALWAYS SHOWN. It is missing data on
+// a compliance surface, which is a finding rather than an absence, and it is the
+// same rule the "No expiry recorded" chip already follows. Bridging visas land
+// here too (see FINDINGS-visa-notes-extraction-2026-08-31 §7.3) — worth knowing
+// when reading the count, because that bucket holds two different facts.
+function _visaGroupRows(rows){
+  var buckets = {}, order = [];
+  rows.forEach(function(r){
+    var k = String(r.visa_subclass || '').trim();
+    if(!buckets[k]){ buckets[k] = []; order.push(k); }
+    buckets[k].push(r);
+  });
+  return order.sort(function(a, b){
+    if(a === '') return 1;
+    if(b === '') return -1;
+    if(buckets[b].length !== buckets[a].length) return buckets[b].length - buckets[a].length;
+    return a.localeCompare(b, undefined, {numeric: true});
+  }).map(function(k){ return {key: k, rows: buckets[k]}; });
+}
+
+// Export is disabled rather than hidden when there is nothing to export. A
+// missing button reads as a missing feature; a disabled one with a reason reads
+// as an empty register, which is the true fact — and on this screen an empty
+// register most likely means the seed has not run, not that nobody holds a visa.
+function _renderVisaRegisterActions(shown){
+  var el = document.getElementById('entity-modal-actions');
+  if(!el) return;
+  el.innerHTML =
+      entityBtn('Export CSV', 'exportVisaRegisterCSV()', {
+        disabled: !shown,
+        title: shown ? ('Download the ' + shown + ' row' + (shown === 1 ? '' : 's') + ' shown')
+                     : 'Nothing to export'
+      })
+    + entityBtn('Close', 'closeEntityModal()');
 }
 
 function _visaMatches(row, f){
@@ -10600,12 +10704,20 @@ function _renderVisaRegister(){
     ['nodate',    'No expiry recorded']
   ];
   if(chipsEl){
-    chipsEl.innerHTML = defs.map(function(d){
+    var chips = defs.map(function(d){
       var n = _visaRows.filter(function(r){ return _visaMatches(r, d[0]); }).length;
       var on = (_visaFilter === d[0]);
       return '<button type="button" class="group-chip'+(on?' active':'')+'" onclick="visaRegFilter(\'' + d[0] + '\')">'
            + escapeHtml(d[1]) + ' · ' + n + '</button>';
-    }).join('');
+    });
+    // The grouping toggle sits after a divider, because it is a different kind
+    // of control: the chips above it decide WHICH rows are shown, this one only
+    // rearranges them. Off by default — the ungrouped, soonest-expiry-first view
+    // is the compliance order and the one that cannot hide a lapsed visa.
+    chips.push('<span style="width:1px;background:var(--border);margin:0 3px"></span>');
+    chips.push('<button type="button" class="group-chip'+(_visaGroup?' active':'')+'" onclick="visaRegToggleGroup()">'
+             + 'Group by subclass</button>');
+    chipsEl.innerHTML = chips.join('');
   }
 
   var rows = _visaRows.filter(function(r){ return _visaMatches(r, _visaFilter); });
@@ -10616,6 +10728,8 @@ function _renderVisaRegister(){
       + (_visaFilter ? '  ·  showing ' + rows.length : '');
   }
 
+  _renderVisaRegisterActions(rows.length);
+
   if(!_visaRows.length){
     rowsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No visa records on file yet.</div>';
     return;
@@ -10625,31 +10739,122 @@ function _renderVisaRegister(){
     return;
   }
 
-  rowsEl.innerHTML = rows.map(function(r){
-    var roster = (r.roster_flag === 'active')
-      ? ''
-      : '<span style="font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:20px;padding:1px 7px;margin-left:6px">'
-        + (r.roster_flag === 'inactive' ? 'inactive' : 'not on roster') + '</span>';
-    var lim = (r.has_work_limitation === true)
-      ? '<span style="color:var(--warn)">restricted</span>' + (r.visa_conditions ? ' · '+escapeHtml(r.visa_conditions) : '')
-      : (r.has_work_limitation === false ? 'no limitation' : '<span style="color:var(--muted)">limitation unclear</span>');
-    return ''
-      + '<div style="border-bottom:1px solid var(--border);padding:9px 0">'
-      +   '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">'
-      +     '<div style="font-size:13px">'
-      +       '<button type="button" onclick="closeEntityModal();openCrewEdit(' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
-      +         escapeHtml(r.name || ('#'+r.user_id)) + '</button>'
-      +       '<span style="color:var(--muted);font-size:11px;margin-left:7px">EIN ' + escapeHtml(String(r.ein||'')) + '</span>'
-      +       roster
-      +     '</div>'
-      +     '<div style="font-size:12px">' + _visaExpiryHtml(r.visa_expiry) + '</div>'
-      +   '</div>'
-      +   '<div style="font-size:11px;color:var(--muted);padding-top:4px">'
-      +     (r.visa_subclass ? 'Subclass ' + escapeHtml(r.visa_subclass) + ' · ' : '')
-      +     lim + ' · ' + _vevoHtml(r)
-      +   '</div>'
-      + '</div>';
+  if(!_visaGroup){
+    rowsEl.innerHTML = rows.map(function(r){ return _visaRowHtml(r, false); }).join('');
+    return;
+  }
+
+  // Grouped. Counts are computed from the FILTERED set, not the whole register —
+  // so "Expired" + grouped answers "which subclasses do the expired people
+  // hold", which is the view worth having and falls out for free.
+  //
+  // Headers do not collapse. A collapsed group on this screen is a hidden
+  // expired visa, and the whole register is 20-30 rows.
+  rowsEl.innerHTML = _visaGroupRows(rows).map(function(g){
+    var label = g.key ? ('Subclass ' + escapeHtml(g.key)) : 'No subclass recorded';
+    return '<div style="position:sticky;top:0;z-index:1;background:var(--surface);'
+         +   'font-family:\'Share Tech Mono\',monospace;font-size:10px;letter-spacing:.08em;'
+         +   'text-transform:uppercase;color:var(--accent);border-bottom:1px solid var(--border-gold);'
+         +   'padding:9px 0 5px;margin-top:8px">'
+         +   label + ' · ' + g.rows.length
+         + '</div>'
+      // Subclass is suppressed on the row inside a group: repeating "Subclass
+      // 482 ·" under a header that already says it is noise, and the space is
+      // better spent on the limitation and the VEVO state.
+         + g.rows.map(function(r){ return _visaRowHtml(r, true); }).join('');
   }).join('');
+}
+
+function _visaRowHtml(r, hideSubclass){
+  var roster = (r.roster_flag === 'active')
+    ? ''
+    : '<span style="font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:20px;padding:1px 7px;margin-left:6px">'
+      + (r.roster_flag === 'inactive' ? 'inactive' : 'not on roster') + '</span>';
+  var lim = (r.has_work_limitation === true)
+    ? '<span style="color:var(--warn)">restricted</span>' + (r.visa_conditions ? ' · '+escapeHtml(r.visa_conditions) : '')
+    : (r.has_work_limitation === false ? 'no limitation' : '<span style="color:var(--muted)">limitation unclear</span>');
+  return ''
+    + '<div style="border-bottom:1px solid var(--border);padding:9px 0">'
+    +   '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">'
+    +     '<div style="font-size:13px">'
+    +       '<button type="button" onclick="closeEntityModal();openCrewEdit(' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
+    +         escapeHtml(r.name || ('#'+r.user_id)) + '</button>'
+    +       '<span style="color:var(--muted);font-size:11px;margin-left:7px">EIN ' + escapeHtml(String(r.ein||'')) + '</span>'
+    +       roster
+    +     '</div>'
+    +     '<div style="font-size:12px">' + _visaExpiryHtml(r.visa_expiry) + '</div>'
+    +   '</div>'
+    +   '<div style="font-size:11px;color:var(--muted);padding-top:4px">'
+    +     ((!hideSubclass && r.visa_subclass) ? 'Subclass ' + escapeHtml(r.visa_subclass) + ' · ' : '')
+    +     lim + ' · ' + _vevoHtml(r)
+    +   '</div>'
+    + '</div>';
+}
+
+// ── VISA REGISTER EXPORT ─────────────────────────────────────────────────────
+// WHAT IS ON SCREEN, AND NOTHING MORE. Not the whole register: an "Expired"
+// export should be the expired people, or the chip is decorative — and a file
+// that silently carries rows the operator never saw is how a compliance export
+// ends up on someone's desk with more in it than anybody checked.
+//
+// NO PASSPORT NUMBER AND NO TRN, and this is deliberate rather than an omission.
+// 5.23.0 kept both off the list endpoint on the grounds that identity documents
+// belong behind a deliberate click on one person's record, not in a list open on
+// a second monitor. A file is strictly worse than a screen on that argument: it
+// lands in Downloads, gets attached to an email and outlives the laptop. Anyone
+// who needs a passport number opens the crew record.
+//
+// If a column is ever added here, that is the test it has to pass.
+function exportVisaRegisterCSV(){
+  var rows = _visaVisibleRows();
+  if(!rows.length) return;
+
+  var headers = ['EIN', 'Name', 'Roster', 'Subclass', 'Granted', 'Expires',
+                 'Days to expiry', 'Work limitation', 'Conditions',
+                 'VEVO verified', 'VEVO by', 'Visa document', 'Last updated'];
+
+  var body = rows.map(function(r){
+    var days = _visaDays(r.visa_expiry);
+    return [
+      r.ein || '',
+      r.name || '',
+      r.roster_flag || '',
+      r.visa_subclass || '',
+      _visaCsvDate(r.visa_grant_date),
+      _visaCsvDate(r.visa_expiry),
+      (days === null ? '' : days),
+      (r.has_work_limitation === true  ? 'restricted'
+       : r.has_work_limitation === false ? 'none'
+       : 'unclear'),
+      r.visa_conditions || '',
+      _visaCsvDate(r.vevo_verified_at),
+      r.vevo_verified_by || '',
+      (r.has_pdf ? 'yes' : 'no'),
+      _visaCsvTs(r.updated_ts)
+    ];
+  });
+
+  // The scope goes in the FILENAME, never in a preamble row inside the file. A
+  // "generated on / filtered by" line above the header breaks Excel's column
+  // detection and turns a clean import into a manual fix; a filename survives
+  // being moved and still says what the file is.
+  goatExportCSV('visa-register' + (_visaFilter ? '-' + (_VISA_FILTER_SLUG[_visaFilter] || _visaFilter) : ''),
+                headers, body);
+}
+
+// DATE / DATETIME columns from SmartStaff, reduced to a bare ISO date. The
+// screen renders en-AU via _visaNice() because people read it; the file carries
+// YYYY-MM-DD because Excel sorts that as a date and reads "12 Nov 26" as text.
+function _visaCsvDate(v){
+  var m = String(v || '').match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : '';
+}
+
+// updated_ts is INT(10) unix seconds, not a date string.
+function _visaCsvTs(ts){
+  if(!ts) return '';
+  var d = new Date(Number(ts) * 1000);
+  return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
 }
 
 // ── CREW VISA (admin) ────────────────────────────────────────────────────────
