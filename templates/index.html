@@ -1071,6 +1071,8 @@ body.cohort-readonly #unavail-add-section{display:none}
 /* "Working visa" row chip — at-a-glance flag that this applicant holds a working
    visa (so ops knows work rights need a VEVO check before convert). Amber/warn,
    distinct from the status pills and the ✓ badges. Non-PII: just the category. */
+.recruit-mvl{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;white-space:nowrap;color:#e31e24;border:1px solid #e31e24;background:rgba(227,30,36,0.10)}
+.recruit-mop{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;white-space:nowrap;color:#58a6ff;border:1px solid #58a6ff;background:rgba(88,166,255,0.10)}
 .recruit-visa{display:inline-block;margin-left:6px;vertical-align:middle;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:2px 9px;border-radius:20px;color:var(--warn);border:1px solid var(--warn);background:rgba(245,158,11,0.10);white-space:nowrap}
 /* Confirmation pills — the tick-group answers in a candidate's Confirmations
    block. Same shape/typography as the "Submitted ✓" / "EH ✓" row badges, so the
@@ -7995,6 +7997,68 @@ function recruitVisaBadge(c){
   if(!c || !c.working_visa) return '';
   return '<span class="recruit-visa" title="Holds a working visa — verify work rights via VEVO before converting">Working visa</span>';
 }
+// Australian phone numbers, formatted for DISPLAY ONLY.
+//
+//   mobile    04xx xxx xxx   -> "0412 345 678"
+//   landline  (0x) xxxx xxxx -> "(03) 9376 9500"
+//
+// +61 forms are folded to their local shape first, so a number stored as
+// "+61 411 567 123" and one stored as "0411 567 123" render identically.
+//
+// This is NEVER used for a tel: href, for search matching, or for anything
+// copied to the clipboard. Those keep the raw stored value deliberately: a
+// number with spaces in it is worse to dial and worse to match on, and the
+// clipboard path feeds tools we do not control.
+//
+// Anything it cannot place confidently is returned UNCHANGED rather than
+// guessed at.
+//
+// One limit worth stating rather than hiding: a foreign number that happens to
+// fit the Australian shape is indistinguishable from a local one by digits
+// alone. Applicant GPX-260824-011 has a French mobile, 0782915605, which this
+// will render as "(07) 8291 5605". That is a misleading LABEL, not corrupted
+// data — the stored value is untouched and the tel: link still dials what they
+// actually typed. Fixing it properly needs a country recorded at entry, not a
+// cleverer regex.
+function fmtPhone(v){
+  const raw = String(v == null ? '' : v).trim();
+  if(!raw) return '';
+  const compact = raw.replace(/[\s()\-]/g, '');
+  let d = compact.replace(/\D/g, '');
+  if(/^\+?61/.test(compact) && d.indexOf('61') === 0) d = '0' + d.slice(2);
+  if(d.length !== 10 || d.charAt(0) !== '0') return raw;
+  if(d.charAt(1) === '4') return d.slice(0,4) + ' ' + d.slice(4,7) + ' ' + d.slice(7);
+  if('2378'.indexOf(d.charAt(1)) !== -1) return '(' + d.slice(0,2) + ') ' + d.slice(2,6) + ' ' + d.slice(6);
+  return raw;
+}
+
+// Red MVL / blue MOP chips for applicants who have submitted their Marvel and
+// Melbourne Park inductions. Both read induction_codes off the list feed — the
+// venue codes stored on cert_details.inductions, which is the same field
+// convert-to-crew reads, so the chip and the eventual SmartStaff push agree by
+// construction rather than by coincidence.
+//
+// A missing field and an empty array both render nothing, and here that is
+// correct for both: an older feed that predates induction_codes, and an
+// applicant holding neither induction. Unlike recruitNotesBadge there is no
+// "zero" to mis-state — an absent chip only ever means "not shown", never
+// "confirmed none", so the two cases need not be distinguished.
+//
+// MOP's tooltip spells out Melbourne Park and its arenas on purpose: MOPT
+// Catwalk is a SEPARATE induction with its own code in the dropdown, and MOP
+// sitting alone in a row is the one place the two could be confused.
+// Display only.
+function recruitInductionPills(c){
+  const codes = (c && Array.isArray(c.induction_codes)) ? c.induction_codes : null;
+  if(!codes || !codes.length) return '';
+  let out = '';
+  if(codes.indexOf('Marvel') !== -1)
+    out += '<span class="recruit-mvl" title="Marvel Stadium induction submitted">MVL</span>';
+  if(codes.indexOf('MELB_PARK') !== -1)
+    out += '<span class="recruit-mop" title="Melbourne Park induction submitted \u2014 Rod Laver, Margaret Court, John Cain, Centrepiece and AAMI Park. Not MOPT Catwalk, which is a separate induction.">MOP</span>';
+  return out;
+}
+
 // Build TWO table rows for one applicant: a clickable summary row and a hidden
 // detail row (spanning all columns) that expands inline. `i` is the applicant's
 // index in the currently-visible list, used to pair the two rows for toggling.
@@ -8188,7 +8252,7 @@ function renderRecruitRow(c, i){
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
       <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}${c.is_test ? ' <span title="Test fixture — badged, not hidden (decision 19)" style="font-size:8px;letter-spacing:.5px;background:var(--border-gold,#8a6d1a);color:#000;padding:1px 4px;border-radius:3px;vertical-align:middle;text-transform:uppercase;font-weight:700">Test</span>' : ''}<span class="rc-chevron">▾</span></td>
-      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}<span id="recruit-notes-badge-${i}">${recruitNotesBadge(c)}</span>${flags}</td>
+      <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${recruitInductionPills(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}<span id="recruit-notes-badge-${i}">${recruitNotesBadge(c)}</span>${flags}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
       <td class="rc-ref">${recruitEsc(c.reference || '—')}</td>
@@ -8210,7 +8274,7 @@ function renderRecruitRow(c, i){
             ${allDocsDetail}
             ${crewIdDetail}
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
-            <div><span class="recruit-label">Phone</span>${recruitEsc(c.phone || '—')}</div>
+            <div><span class="recruit-label">Phone</span>${c.phone ? recruitEsc(fmtPhone(c.phone)) : '—'}</div>
             <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
             <div><span class="recruit-label">Tickets</span>${ticketsFull}</div>
           </div>${withdrawnBlock}
@@ -8278,7 +8342,7 @@ function recruitRenderDetail(d, i){
   const contact = `
     <div class="recruit-detail-grid">
       <div><span class="recruit-label">Email</span>${val(d.email)}</div>
-      <div><span class="recruit-label">Phone</span>${val(d.phone)}</div>
+      <div><span class="recruit-label">Phone</span>${val(fmtPhone(d.phone))}</div>
       <div><span class="recruit-label">Date of birth</span>${d.dob ? recruitDate(d.dob) : '—'}</div>
       <div><span class="recruit-label">Address</span>${recruitAddress(d)}</div>
       <div><span class="recruit-label">Emergency contact</span>${recruitEmergency(d)}</div>
@@ -11749,7 +11813,7 @@ function _renderCrewList(){
           : '<span style="color:var(--muted);font-size:11px">Inactive</span>';
         const tel = (c.phone||'').replace(/\s+/g,'');
         const phoneHtml = c.phone
-          ? ' \u00b7 <a href="tel:'+escapeHtml(tel)+'" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">'+escapeHtml(c.phone)+'</a>'
+          ? ' \u00b7 <a href="tel:'+escapeHtml(tel)+'" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">'+escapeHtml(fmtPhone(c.phone))+'</a>'
           : '';
         return '<div onclick="openCrewEdit(\''+String(c.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
           + '<div style="flex:1;min-width:0">'
@@ -15140,7 +15204,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     : '';
   const crewRows = crew.length
     ? crew.map(function(c){
-        var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(c.mobile)+'</a>' : '';
+        var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(fmtPhone(c.mobile))+'</a>' : '';
         var boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
         // A confirmed/backup crew member with an outstanding timing change hasn't
         // re-confirmed yet — the filling risk ops watch for (get-booking.php sets
@@ -15238,7 +15302,7 @@ async function openCallStandDown(bookingId, callId){
     ? crew.map(function(c){
         const s    = (c.status||'').toLowerCase();
         const dim  = (s==='declined'||s==='noshow'||s==='no-show');
-        const mob  = c.mobile ? '<span style="color:var(--muted);margin-left:8px">'+escapeHtml(c.mobile)+'</span>' : '';
+        const mob  = c.mobile ? '<span style="color:var(--muted);margin-left:8px">'+escapeHtml(fmtPhone(c.mobile))+'</span>' : '';
         return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)'+(dim?';opacity:.45':'')+'">'
              +   '<span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+mob+'</span>'
              +   crewStatusBadge(c.status)
@@ -15626,7 +15690,7 @@ function goatDeliveryPanel(j, byId, missedNote, emptyNote){
     // would read as a to-do.
     const mob  = dim ? ''
       : (c.mobile
-          ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;white-space:nowrap">📱 '+escapeHtml(c.mobile)+'</a>'
+          ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;white-space:nowrap">📱 '+escapeHtml(fmtPhone(c.mobile))+'</a>'
           : '<span style="color:var(--muted);font-size:11px;white-space:nowrap">no mobile on file</span>');
     return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">'
          +   '<span style="font-size:12px;color:var(--text)">'+name
@@ -17057,7 +17121,7 @@ async function openBookingDialog(bookingId){
 function bkPhoneBits(o){
   if(!o) return '';
   var bits = [];
-  if(o.mobile) bits.push('<a href="tel:'+escapeHtml(o.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(o.mobile)+'</a>');
+  if(o.mobile) bits.push('<a href="tel:'+escapeHtml(o.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(fmtPhone(o.mobile))+'</a>');
   if(o.phone)  bits.push('<a href="tel:'+escapeHtml(o.phone)+'" style="color:var(--muted);text-decoration:none">☎ '+escapeHtml(o.phone)+'</a>');
   return bits.length ? '<div style="margin-top:3px;font-size:11px">'+bits.join(' &nbsp;&nbsp; ')+'</div>' : '';
 }
