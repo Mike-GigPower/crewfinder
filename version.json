@@ -1,6 +1,6 @@
 {
-  "version": "5.27.0",
-  "release_date": "2026-09-02",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.27.0/TheGOAT.dmg",
-  "release_notes": "Open any call and choose Responses to see who accepted, when, how long they took, what else they are holding on that booking and their recent record — everything needed to judge who comes off a call, laid out without ranking anyone."
+  "version": "5.28.0",
+  "release_date": "2026-09-03",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.28.0/TheGOAT.dmg",
+  "release_notes": "Manage Crew now has a Documents tab showing a crew member's signed employment agreement — when they signed it, which version, and a link to open the PDF. Admin only."
 }
