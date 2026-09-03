@@ -1,6 +1,6 @@
 {
-  "version": "5.28.0",
+  "version": "5.29.0",
   "release_date": "2026-09-03",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.28.0/TheGOAT.dmg",
-  "release_notes": "Manage Crew now has a Documents tab showing a crew member's signed employment agreement — when they signed it, which version, and a link to open the PDF. Admin only."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.29.0/TheGOAT.dmg",
+  "release_notes": "Red MVL and blue MOP chips show which applicants have submitted their Marvel and Melbourne Park inductions, and phone numbers now read as 0412 345 678 or (03) 9376 9500 wherever they appear."
 }
