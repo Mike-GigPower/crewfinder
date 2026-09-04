@@ -45,7 +45,7 @@
 		        u.`ein`, u.`firstname`, u.`lastname`, u.`active`, u.`usergroupID`,
 		        v.`work_eligibility_status`, v.`visa_subclass`, v.`visa_grant_date`,
 		        v.`visa_expiry`, v.`visa_conditions`, v.`has_work_limitation`,
-		        v.`vevo_verified_at`, v.`vevo_verified_by`, v.`visa_pdf`,
+		        v.`vevo_verified_at`, v.`vevo_verified_by`, v.`visa_pdf`, v.`vevo_pdf`,
 		        v.`updated_ts`
 		 FROM `user_visa` v
 		 INNER JOIN `users` u ON u.`id` = v.`user`
@@ -92,6 +92,7 @@
 			'vevo_verified_at'        => $r->vevo_verified_at,
 			'vevo_verified_by'        => $r->vevo_verified_by,
 			'has_pdf'                 => ($r->visa_pdf !== null && $r->visa_pdf !== ''),
+			'has_vevo_pdf'            => ($r->vevo_pdf !== null && $r->vevo_pdf !== ''),
 			'updated_ts'              => ($r->updated_ts !== null) ? (int) $r->updated_ts : null
 		);
 	}

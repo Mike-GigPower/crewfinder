@@ -40,7 +40,7 @@
 
 	$res = mysql_query(
 		"SELECT `id`, `user`, `work_eligibility_status`, `is_visa_worker`,
-		        `passport_number`, `passport_country`, `visa_subclass`,
+		        `passport_number`, `passport_country`, `visa_subclass`, `vevo_pdf`,
 		        `visa_grant_number`, `trn`, `visa_grant_date`, `visa_expiry`,
 		        `visa_conditions`, `has_work_limitation`, `vevo_verified_at`,
 		        `vevo_verified_by`, `visa_pdf`, `updated_ts`
@@ -78,6 +78,9 @@
 			'passport_number'         => $r->passport_number,
 			'passport_country'        => $r->passport_country,
 			'visa_subclass'           => $r->visa_subclass,
+			/* Presence only, never the filename: the client passes a user id to
+			/* admin-get-vevo-file.php and that endpoint resolves the name itself. */
+			'has_vevo_pdf'            => ($r->vevo_pdf !== null && $r->vevo_pdf !== ''),
 			'visa_grant_number'       => $r->visa_grant_number,
 			'trn'                     => $r->trn,
 			'visa_grant_date'         => $r->visa_grant_date,

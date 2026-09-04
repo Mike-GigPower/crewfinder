@@ -149,15 +149,29 @@
 	}
 
 	/*
-	/* 8. PDF handling — optional. Require the %PDF- magic bytes if present. */
+	/* 8. PDF handling — optional, and now TWO optional files:
+	/*      visa_pdf — the visa document itself (in practice the IMMI grant
+	/*                 notification), unchanged from 5.23.0
+	/*      vevo_pdf — the VEVO Visa Details Check, new in 5.31.0
+	/*
+	/* BOTH ARE VALIDATED BEFORE EITHER IS MOVED. Validating and moving one at a
+	/* time means a bad second file leaves the first already sitting in
+	/* user_uploads/ referenced by nothing — an orphan step 11 never sees,
+	/* because that only unlinks a PDF which a SUCCESSFUL write replaced.
+	*/
 
-	$savedName = null;
-	$savedPath = null;
-
-	if (isset($_FILES['visa_pdf']) && is_uploaded_file($_FILES['visa_pdf']['tmp_name']))
+	function gp_visa_check_upload($key)
 	{
+		/* true when the field carries a usable PDF, false when it is absent.
+		/* Dies on a present-but-unusable file. Never moves anything. */
+
+		if (!isset($_FILES[$key]) || !is_uploaded_file($_FILES[$key]['tmp_name']))
+		{
+			return false;
+		}
+
 		$head = '';
-		$fh   = fopen($_FILES['visa_pdf']['tmp_name'], 'rb');
+		$fh   = fopen($_FILES[$key]['tmp_name'], 'rb');
 		if ($fh)
 		{
 			$head = fread($fh, 5);
@@ -167,28 +181,68 @@
 		if ($head != '%PDF-')
 		{
 			http_response_code(400);
-			die('{"ok":false,"error":"not a pdf"}');
+			die('{"ok":false,"error":"not a pdf: ' . $key . '"}');
 		}
 
-		if ((int) $_FILES['visa_pdf']['size'] > 10 * 1024 * 1024)
+		if ((int) $_FILES[$key]['size'] > 10 * 1024 * 1024)
 		{
 			http_response_code(400);
-			die('{"ok":false,"error":"file too large"}');
+			die('{"ok":false,"error":"file too large: ' . $key . '"}');
 		}
 
+		return true;
+	}
+
+	$haveVisaPdf = gp_visa_check_upload('visa_pdf');
+	$haveVevoPdf = gp_visa_check_upload('vevo_pdf');
+
+	$savedName = null;
+	$savedPath = null;
+	$vevoName  = null;
+	$vevoPath  = null;
+
+	if ($haveVisaPdf || $haveVevoPdf)
+	{
 		$targetdir = BASEPATH . 'user_uploads/';
 		if (!is_dir($targetdir))
 		{
 			@mkdir($targetdir, 0775, true);
 		}
 
-		$savedName = $user . '_' . time() . '.pdf';
-		$savedPath = $targetdir . $savedName;
-
-		if (!move_uploaded_file($_FILES['visa_pdf']['tmp_name'], $savedPath))
+		if ($haveVisaPdf)
 		{
-			http_response_code(500);
-			die('{"ok":false,"error":"file write failed"}');
+			$savedName = $user . '_' . time() . '.pdf';
+			$savedPath = $targetdir . $savedName;
+
+			if (!move_uploaded_file($_FILES['visa_pdf']['tmp_name'], $savedPath))
+			{
+				http_response_code(500);
+				die('{"ok":false,"error":"file write failed"}');
+			}
+		}
+
+		if ($haveVevoPdf)
+		{
+			/* '_vevo' in the name for two reasons: user_uploads/ is one flat
+			/* directory shared with licence, induction, contract and visa PDFs,
+			/* so the two documents for one crew member must be tellable apart;
+			/* and time() alone COLLIDES when both files arrive in the same
+			/* request, which is the normal case here. */
+
+			$vevoName = $user . '_' . time() . '_vevo.pdf';
+			$vevoPath = $targetdir . $vevoName;
+
+			if (!move_uploaded_file($_FILES['vevo_pdf']['tmp_name'], $vevoPath))
+			{
+				/* The visa PDF may already be on disk and is about to be
+				/* referenced by nothing. Remove it rather than leave an orphan. */
+				if ($savedPath !== null && is_file($savedPath))
+				{
+					@unlink($savedPath);
+				}
+				http_response_code(500);
+				die('{"ok":false,"error":"vevo file write failed"}');
+			}
 		}
 	}
 
@@ -198,23 +252,38 @@
 
 	$existId  = 0;
 	$oldPdf   = null;
-	$existRes = mysql_query("SELECT id, visa_pdf FROM user_visa WHERE `user` = " . $user . " LIMIT 1");
+	$oldVevo  = null;
+	$existRes = mysql_query("SELECT id, visa_pdf, vevo_pdf FROM user_visa WHERE `user` = " . $user . " LIMIT 1");
 	if ($existRes !== false && mysql_num_rows($existRes) > 0)
 	{
 		$erow    = mysql_fetch_object($existRes);
 		$existId = (int) $erow->id;
 		$oldPdf  = $erow->visa_pdf;
+		$oldVevo = $erow->vevo_pdf;
 	}
 
 	/*
-	/* visa_pdf SET clause: only touch the column when a new file was uploaded.
-	/* On INSERT with no file, it is NULL; on UPDATE with no file, it is left as-is. */
+	/* visa_pdf / vevo_pdf SET clauses: only touch a column when a new file was
+	/* uploaded for it. On INSERT with no file it is NULL; on UPDATE with no file
+	/* it is left as-is, so saving the form without re-attaching a document never
+	/* clears the one already on file. The two are independent — attaching a VEVO
+	/* check must not disturb the visa document, which is the normal case when
+	/* the two documents arrive on different days. */
+
 	$visaPdfAssign = '';
 	$visaPdfInsert = 'NULL';
 	if ($savedName !== null)
 	{
 		$visaPdfAssign = ", visa_pdf = '" . mysql_real_escape_string($savedName) . "'";
 		$visaPdfInsert = "'" . mysql_real_escape_string($savedName) . "'";
+	}
+
+	$vevoPdfAssign = '';
+	$vevoPdfInsert = 'NULL';
+	if ($vevoName !== null)
+	{
+		$vevoPdfAssign = ", vevo_pdf = '" . mysql_real_escape_string($vevoName) . "'";
+		$vevoPdfInsert = "'" . mysql_real_escape_string($vevoName) . "'";
 	}
 
 	if ($existId === 0 && $patch)
@@ -268,7 +337,7 @@
 		/* that did not carry one, in either mode. */
 
 		mysql_query(
-			"UPDATE user_visa SET " . implode(", ", $set) . $visaPdfAssign .
+			"UPDATE user_visa SET " . implode(", ", $set) . $visaPdfAssign . $vevoPdfAssign .
 			" WHERE id = " . $existId
 		);
 	}
@@ -279,13 +348,13 @@
 				(`user`, work_eligibility_status, is_visa_worker, passport_number,
 				 passport_country, visa_subclass, visa_grant_number, trn,
 				 visa_grant_date, visa_expiry, visa_conditions, has_work_limitation,
-				 vevo_verified_at, vevo_verified_by, visa_pdf, updated_ts)
+				 vevo_verified_at, vevo_verified_by, visa_pdf, vevo_pdf, updated_ts)
 			 VALUES (" . $user . ", " . $statusSql . ", " . $isVisaWorker . ", "
 				 . $passportNumberSql . ", " . $passportCountrySql . ", "
 				 . $subclassSql . ", " . $grantNumberSql . ", " . $trnSql . ", "
 				 . $grantDateSql . ", " . $expirySql . ", " . $conditionsSql . ", "
 				 . $limitSql . ", " . $vevoAtSql . ", " . $vevoBySql . ", "
-				 . $visaPdfInsert . ", " . time() . ")"
+				 . $visaPdfInsert . ", " . $vevoPdfInsert . ", " . time() . ")"
 		);
 	}
 
@@ -298,6 +367,10 @@
 		if ($savedPath !== null && is_file($savedPath))
 		{
 			@unlink($savedPath);
+		}
+		if ($vevoPath !== null && is_file($vevoPath))
+		{
+			@unlink($vevoPath);
 		}
 		http_response_code(500);
 		die('{"ok":false,"error":"write failed"}');
@@ -315,6 +388,15 @@
 		if (is_file($oldPath))
 		{
 			@unlink($oldPath);
+		}
+	}
+
+	if ($vevoName !== null && $oldVevo !== null && $oldVevo !== '' && $oldVevo !== $vevoName)
+	{
+		$oldVevoPath = BASEPATH . 'user_uploads/' . basename($oldVevo);
+		if (is_file($oldVevoPath))
+		{
+			@unlink($oldVevoPath);
 		}
 	}
 
@@ -336,7 +418,8 @@
 		'updated'        => ($existId > 0),
 		'id'             => $rowId,
 		'is_visa_worker' => $isVisaWorker,
-		'visa_pdf'       => ($savedName !== null) ? $savedName : null
+		'visa_pdf'       => ($savedName !== null) ? $savedName : null,
+		'vevo_pdf'       => ($vevoName !== null) ? $vevoName : null
 	));
 
 ?>
