@@ -1,6 +1,6 @@
 {
-  "version": "5.29.0",
-  "release_date": "2026-09-03",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.29.0/TheGOAT.dmg",
-  "release_notes": "Red MVL and blue MOP chips show which applicants have submitted their Marvel and Melbourne Park inductions, and phone numbers now read as 0412 345 678 or (03) 9376 9500 wherever they appear."
+  "version": "5.30.0",
+  "release_date": "2026-09-04",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.30.0/TheGOAT.dmg",
+  "release_notes": "The Visa Register can now be grouped by visa subclass and exported to CSV, and the export downloads exactly the rows on screen — filters included. Accented names no longer come through garbled when an export is opened in Excel."
 }
