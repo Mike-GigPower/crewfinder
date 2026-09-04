@@ -55,6 +55,7 @@ def _no_store_api(resp):
 # ─── PATHS ────────────────────────────────────────────────────────────────────
 
 import sys as _sys
+import visa_extract
 # When running inside a PyInstaller bundle, use the executable's directory
 # When running as a script, use the script's directory
 if getattr(_sys, 'frozen', False):
@@ -5785,7 +5786,8 @@ def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version):
     return out, None
 
 
-def ss_push_visa(ss, user_id, fields, pdf_bytes, mode=None, send_empty=False):
+def ss_push_visa(ss, user_id, fields, pdf_bytes, mode=None, send_empty=False,
+                 vevo_pdf_bytes=None):
     """POST the visa record to admin-set-visa.php on the shared admin session `ss`
     (admin-gated, explicit target user). Upserts user_visa and sets the
     users.is_visa_worker flag. The visa PDF is optional. Mirrors ss_push_licence.
@@ -5804,7 +5806,13 @@ def ss_push_visa(ss, user_id, fields, pdf_bytes, mode=None, send_empty=False):
 
     `mode="patch"` asks the endpoint to assign only the posted columns. Use it for
     a deliberate partial write — recording a VEVO check — never for the edit form,
-    which is a full replace by design."""
+    which is a full replace by design.
+
+    `vevo_pdf_bytes` attaches the VEVO Visa Details Check. It defaults to None and
+    is the LAST parameter, so convert-B's call is byte-identical and was not
+    re-tested — the same discipline 5.23.0 used when it added `mode` and
+    `send_empty` to this function. The two documents are independent at the
+    endpoint: sending one never disturbs the other."""
     data = {"user": str(user_id)}
     if mode:
         data["mode"] = str(mode)
@@ -5813,12 +5821,14 @@ def ss_push_visa(ss, user_id, fields, pdf_bytes, mode=None, send_empty=False):
             v = ""
         if send_empty or v != "":
             data[k] = str(v)
-    files = None
+    files = {}
     if pdf_bytes:
-        files = {"visa_pdf": ("visa.pdf", pdf_bytes, "application/pdf")}
+        files["visa_pdf"] = ("visa.pdf", pdf_bytes, "application/pdf")
+    if vevo_pdf_bytes:
+        files["vevo_pdf"] = ("vevo-check.pdf", vevo_pdf_bytes, "application/pdf")
     try:
         resp = ss.post(f"{BASE_URL}/ajax/crew/admin-set-visa.php",
-                       data=data, files=files, allow_redirects=True)
+                       data=data, files=(files or None), allow_redirects=True)
     except Exception as e:
         return None, f"request failed: {e}"
     try:
@@ -14521,10 +14531,112 @@ def api_crew_visa_save(user_id):
         if not (pdf_bytes or b"")[:5] == b"%PDF-":
             return jsonify({"error": "That file isn't a PDF"}), 400
 
-    out, err = ss_push_visa(ss, user_id, fields, pdf_bytes, send_empty=True)
+    # ── the VEVO check, and the stamp that comes with it ─────────────────────
+    #
+    # 5.23.0's rule was that vevo_verified_at is stamped server-side and never
+    # taken from the browser, because a self-asserted verifier is not a record of
+    # anything. An uploaded VEVO check is not an exception to that rule, it is
+    # the strongest form of it: the timestamp is printed on a document produced
+    # by the system of record, it is READ HERE rather than sent by the client,
+    # and the document itself is stored in the same POST as the stamp.
+    #
+    # THE STAMP AND THE FILE GO TOGETHER OR NOT AT ALL. Both ride on the single
+    # admin-set-visa.php call below, so there is no window in which a stamp
+    # exists with no document behind it.
+    vevo_bytes = None
+    vevo_note = None
+    upv = request.files.get("vevo_pdf")
+    if upv and upv.filename:
+        vevo_bytes = upv.read()
+        if not (vevo_bytes or b"")[:5] == b"%PDF-":
+            return jsonify({"error": "That VEVO file isn't a PDF"}), 400
+
+        parsed = visa_extract.extract_visa_document(vevo_bytes)
+        if not parsed.get("ok") or parsed.get("kind") != visa_extract.KIND_VEVO:
+            return jsonify({"error": "That doesn't look like a VEVO Visa Details "
+                                     "Check. Attach the VEVO PDF, not the grant "
+                                     "notification."}), 400
+
+        checked_at = (parsed.get("fields") or {}).get("vevo_verified_at")
+        if not checked_at:
+            return jsonify({"error": "Couldn't read the check date from that VEVO "
+                                     "document, so it can't be recorded as a "
+                                     "verification."}), 400
+
+        # Never move the stamp backwards. Uploading an older check alongside a
+        # newer one must not un-verify work rights that have since been
+        # re-confirmed; the document is still stored, the stamp just stays put.
+        prev_at = (prev.get("vevo_verified_at") or "").strip()
+        if prev_at and prev_at >= checked_at:
+            vevo_note = ("Kept the existing VEVO stamp of %s — the document "
+                         "attached was checked earlier (%s)." % (prev_at, checked_at))
+        else:
+            ident = current_identity() or {}
+            fields["vevo_verified_at"] = checked_at
+            # WHO FILED IT still comes from the session, not the document. When
+            # the check was run and who put it on the record are different facts
+            # and only the server knows the second.
+            fields["vevo_verified_by"] = str(
+                ident.get("name") or ident.get("ein") or "admin").strip()
+
+    out, err = ss_push_visa(ss, user_id, fields, pdf_bytes, send_empty=True,
+                            vevo_pdf_bytes=vevo_bytes)
     if err:
         return jsonify({"error": err}), 502
+    if vevo_note:
+        out["note"] = vevo_note
     return jsonify(out)
+
+
+@app.route("/api/crew/<int:user_id>/visa/extract", methods=["POST"])
+@require_cohort("admin")
+def api_crew_visa_extract(user_id):
+    """Read a visa document and return what it says. WRITES NOTHING.
+
+    Extraction and persistence are deliberately two clicks. This route parses an
+    uploaded PDF in memory and hands back the fields; saving is the existing form
+    POST, after the operator has read them. A route that extracted and saved in
+    one step would put an unreviewed parse straight into a compliance record.
+
+    The PDF is never written to disk here — it only lands on the server when the
+    operator saves the form.
+
+    `crew_name` is optional and used only to warn about a name mismatch. The
+    holder's name is returned either way and shown in the panel, so a human sees
+    whose document this is whatever the client sent."""
+    up = request.files.get("file")
+    if not up or not up.filename:
+        return jsonify({"error": "No file received"}), 400
+
+    result = visa_extract.extract_visa_document(
+        up.read(), crew_name=(request.form.get("crew_name") or "").strip() or None)
+    return jsonify(result)
+
+
+@app.route("/api/crew/<int:user_id>/visa/vevo-file")
+@require_cohort("admin")
+def api_crew_visa_vevo_file(user_id):
+    """Stream one crew member's stored VEVO check inline, straight through from
+    admin-get-vevo-file.php. The client passes a user id and never handles a
+    filename."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-get-vevo-file.php",
+                      params={"user": int(user_id)}, timeout=60)
+    except Exception as e:
+        return jsonify({"error": f"request failed: {e}"}), 502
+    if resp.status_code != 200:
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+    ctype = (resp.headers.get("Content-Type") or "application/octet-stream").split(";")[0].strip()
+    return Response(resp.content, mimetype=ctype, headers={
+        "Content-Disposition": resp.headers.get("Content-Disposition", "inline"),
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.route("/api/crew/<int:user_id>/visa/vevo", methods=["POST"])
