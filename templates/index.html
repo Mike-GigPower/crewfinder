@@ -1105,6 +1105,19 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-we-v{color:var(--text);font-weight:600}
 /* AI-suggested visa facts — must READ as tentative, never verified. Muted, boxed,
    with an explicit "verify via VEVO" heading. */
+/* Facts READ FROM AN UPLOADED DOCUMENT in Manage Crew -> Visa. Same dashed,
+   muted treatment as .recruit-we-ai below, because it is the same kind of claim:
+   read off a document, not yet confirmed by a person. The heading differs —
+   nothing here was suggested by anything, and the thing to check it against is
+   the document in the operator's hand. */
+.cv-read{margin-top:10px;border:1px dashed var(--border);border-radius:6px;padding:9px 11px;background:var(--surface2)}
+.cv-read-head{font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--warn);margin-bottom:7px}
+.cv-read-row{display:flex;gap:10px;font-size:12px;padding:2px 0;color:var(--text)}
+.cv-read-k{min-width:132px;color:var(--muted)}
+.cv-read-note{font-size:11px;color:var(--muted);padding-top:6px}
+/* A warning that must be read before saving — wrong person, expired, no work
+   rights. Never blocks the save; legal and rostered names genuinely differ. */
+.cv-read-warn{margin-top:8px;border-left:2px solid var(--accent2);padding:4px 0 4px 9px;font-size:12px;color:var(--accent2);line-height:1.45}
 .recruit-we-ai{margin-top:10px;border:1px dashed var(--border);border-radius:6px;padding:9px 11px;background:var(--surface2)}
 .recruit-we-ai-head{font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--warn);margin-bottom:7px}
 .recruit-we-ai .recruit-we-k{min-width:150px}
@@ -10824,7 +10837,8 @@ function exportVisaRegisterCSV(){
 
   var headers = ['EIN', 'Name', 'Roster', 'Subclass', 'Granted', 'Expires',
                  'Days to expiry', 'Work limitation', 'Conditions',
-                 'VEVO verified', 'VEVO by', 'Visa document', 'Last updated'];
+                 'VEVO verified', 'VEVO by', 'Visa document', 'VEVO document',
+                 'Last updated'];
 
   var body = rows.map(function(r){
     var days = _visaDays(r.visa_expiry);
@@ -10843,6 +10857,7 @@ function exportVisaRegisterCSV(){
       _visaCsvDate(r.vevo_verified_at),
       r.vevo_verified_by || '',
       (r.has_pdf ? 'yes' : 'no'),
+      (r.has_vevo_pdf ? 'yes' : 'no'),
       _visaCsvTs(r.updated_ts)
     ];
   });
@@ -10925,6 +10940,9 @@ function _vevoHtml(v){
 async function ceLoadVisa(id){
   var panel = document.getElementById('ce-panel-visa');
   if(!panel) return;
+  // Drop anything read for a previous crew member. Carrying an extraction
+  // across records is how one person's visa facts land on another's form.
+  _cvRead = {grant:null, vevo:null};
   panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading visa record…</div>';
   try{
     var r = await fetch('/api/crew/'+encodeURIComponent(id)+'/visa');
@@ -10973,9 +10991,15 @@ function _ceRenderVisaForm(id){
                                  + '<div style="font-size:10px;color:var(--muted);padding-top:3px">The date work rights end. This is what the register and the booking warning read.</div>')
     +   efRow('Work limitation', limSel)
     +   efRow('Conditions',     efTextarea('cv-conditions', v.visa_conditions || ''))
-    +   efRow('Visa PDF',       '<input id="cv-pdf" type="file" accept="application/pdf,.pdf" style="'+EF_INPUT_STYLE+'">'
+    +   efRow('Visa PDF',       '<input id="cv-pdf" type="file" accept="application/pdf,.pdf" onchange="ceVisaExtract(\'' + String(id) + '\', \'cv-pdf\')" style="'+EF_INPUT_STYLE+'">'
+                                 + '<div style="font-size:10px;color:var(--muted);padding-top:3px">The IMMI grant notification. Attaching it also reads the subclass, grant number, TRN and conditions.</div>'
                                  + (v.has_pdf ? '<div style="font-size:10px;padding-top:4px"><a href="/api/crew/'+encodeURIComponent(id)+'/visa/file" target="_blank" style="color:var(--accent)">View the document on file</a></div>'
                                               : '<div style="font-size:10px;color:var(--muted);padding-top:3px">No document on file.</div>'))
+    +   efRow('VEVO check PDF', '<input id="cv-vevo-pdf" type="file" accept="application/pdf,.pdf" onchange="ceVisaExtract(\'' + String(id) + '\', \'cv-vevo-pdf\')" style="'+EF_INPUT_STYLE+'">'
+                                 + '<div style="font-size:10px;color:var(--muted);padding-top:3px">The VEVO Visa Details Check. This is what sets the work limitation and the verification stamp — the stamp is read from the document itself, and saved with it.</div>'
+                                 + (v.has_vevo_pdf ? '<div style="font-size:10px;padding-top:4px"><a href="/api/crew/'+encodeURIComponent(id)+'/visa/vevo-file" target="_blank" style="color:var(--accent)">View the VEVO check on file</a></div>'
+                                                   : '<div style="font-size:10px;color:var(--muted);padding-top:3px">No VEVO check on file.</div>'))
+    +   '<div id="cv-read"></div>'
     + '</div>';
 
   var vevoBlock = '';
@@ -11013,6 +11037,167 @@ function ceVisaStatusChange(){
   if(det) det.style.display = (sel && sel.value === 'working_visa') ? 'block' : 'none';
 }
 
+// ── READING A VISA DOCUMENT ──────────────────────────────────────────────────
+// Attaching a PDF also reads it. The read fills the form; it NEVER saves. The
+// operator reviews and presses Save, which is the same Save that was always
+// there — extraction and persistence are deliberately two clicks, because a
+// record written straight from an unreviewed parse is a compliance record
+// nobody checked.
+//
+// Both documents are held here and re-applied together on every read, grant
+// first and VEVO second. That is what makes VEVO win on the overlap REGARDLESS
+// OF UPLOAD ORDER: a grant letter records what was granted and cannot know about
+// a later variation or cancellation; VEVO is current as at the moment it was run.
+
+var _cvRead = {grant:null, vevo:null};
+
+var _CV_FIELD_INPUT = {
+  visa_subclass:       'cv-subclass',
+  visa_grant_number:   'cv-grant-no',
+  passport_number:     'cv-passport',
+  passport_country:    'cv-country',
+  trn:                 'cv-trn',
+  visa_grant_date:     'cv-granted',
+  visa_expiry:         'cv-expiry',
+  visa_conditions:     'cv-conditions',
+  has_work_limitation: 'cv-limit'
+};
+
+var _CV_FIELD_LABEL = {
+  visa_subclass:'Subclass', visa_grant_number:'Grant number', passport_number:'Passport no.',
+  passport_country:'Passport country', trn:'TRN', visa_grant_date:'Granted',
+  visa_expiry:'Work rights end', visa_conditions:'Conditions',
+  has_work_limitation:'Work limitation', vevo_verified_at:'VEVO run',
+  work_entitlement:'Work entitlement'
+};
+
+async function ceVisaExtract(id, inputId){
+  var input = document.getElementById(inputId);
+  var host  = document.getElementById('cv-read');
+  if(!input || !host) return;
+  if(!(input.files && input.files[0])) return;
+
+  host.innerHTML = '<div class="cv-read"><div class="cv-read-head">Reading the document…</div></div>';
+
+  var fd = new FormData();
+  fd.append('file', input.files[0]);
+  // Only ever used to warn about a mismatch. The holder's name is shown in the
+  // panel regardless of what is sent here, so a human sees whose document this
+  // is even if this value is wrong or missing.
+  fd.append('crew_name', window._crewEditName || '');
+
+  var d;
+  try{
+    var r = await fetch('/api/crew/'+encodeURIComponent(id)+'/visa/extract', {method:'POST', body:fd});
+    d = await r.json();
+    if(!r.ok) throw new Error(d && d.error ? d.error : ('HTTP '+r.status));
+  }catch(e){
+    host.innerHTML = '<div class="cv-read"><div class="cv-read-head">Couldn’t read the document</div>'
+      + '<div class="cv-read-note">'+escapeHtml(e.message)+' — the file is still attached and will be saved. Enter the details manually.</div></div>';
+    return;
+  }
+
+  if(!d.ok){
+    host.innerHTML = '<div class="cv-read"><div class="cv-read-head">Couldn’t read the document</div>'
+      + (d.warnings||[]).map(function(w){ return '<div class="cv-read-note">'+escapeHtml(w)+'</div>'; }).join('')
+      + '<div class="cv-read-note">The file is still attached and will be saved when you press Save.</div></div>';
+    return;
+  }
+
+  // The endpoint reports what the document IS, not which box it was dropped in.
+  // A VEVO check attached in the visa slot is still read as a VEVO check, and
+  // the operator is told the file is in the wrong field — because the FILE is
+  // what gets stored under that name, and only they can move it.
+  _cvRead[d.kind] = d;
+  var expected = (inputId === 'cv-vevo-pdf') ? 'vevo' : 'grant';
+  var slipped  = (d.kind !== expected);
+
+  _cvApplyRead();
+  _cvRenderRead(slipped ? (expected === 'vevo'
+      ? 'This is a grant notification, not a VEVO check — attach it in the Visa PDF field instead so it is filed correctly.'
+      : 'This is a VEVO check, not a grant notification — attach it in the VEVO check PDF field instead so it is filed correctly.') : null);
+}
+
+// Re-apply BOTH documents from scratch, grant then VEVO, so the result does not
+// depend on which was attached first.
+function _cvApplyRead(){
+  ['grant','vevo'].forEach(function(kind){
+    var d = _cvRead[kind];
+    if(!d || !d.fields) return;
+    Object.keys(_CV_FIELD_INPUT).forEach(function(key){
+      if(!(key in d.fields)) return;
+      var el = document.getElementById(_CV_FIELD_INPUT[key]);
+      if(!el) return;
+      var v = d.fields[key];
+      if(key === 'has_work_limitation') v = (v === 1 || v === true) ? '1' : '0';
+      el.value = (v === null || v === undefined) ? '' : String(v);
+    });
+  });
+}
+
+function _cvRenderRead(slipNote){
+  var host = document.getElementById('cv-read');
+  if(!host) return;
+
+  var blocks = ['grant','vevo'].map(function(kind){
+    var d = _cvRead[kind];
+    if(!d) return '';
+    var title = (kind === 'vevo') ? 'Read from the VEVO check' : 'Read from the grant notification';
+    var rows = Object.keys(d.fields || {}).map(function(k){
+      var v = d.fields[k];
+      if(k === 'has_work_limitation') v = (v === 1 || v === true) ? 'restricted' : 'no limitation';
+      return '<div class="cv-read-row"><span class="cv-read-k">'
+           + escapeHtml(_CV_FIELD_LABEL[k] || k) + '</span><span>' + escapeHtml(String(v)) + '</span></div>';
+    }).join('');
+
+    var who = d.holder_name
+      ? '<div class="cv-read-row"><span class="cv-read-k">Name on document</span><span>'+escapeHtml(d.holder_name)+'</span></div>'
+      : '';
+
+    // Named, not silently blank: the operator needs to tell "the document
+    // doesn't say" from "the parser missed it".
+    var unread = (d.unread && d.unread.length)
+      ? '<div class="cv-read-note">Not found in this document: '
+        + escapeHtml(d.unread.map(function(k){ return _CV_FIELD_LABEL[k] || k; }).join(', '))
+        + ' — type these in if you need them.</div>'
+      : '';
+
+    var warns = (d.warnings || []).map(function(w){
+      return '<div class="cv-read-warn">'+escapeHtml(w)+'</div>';
+    }).join('');
+
+    return '<div class="cv-read"><div class="cv-read-head">'+title+' — verify before saving</div>'
+         + who + rows + unread + warns + '</div>';
+  }).join('');
+
+  // Two documents that disagree get shown disagreeing. VEVO's value is the one
+  // now in the form; the letter's is displayed so the operator can see what was
+  // overridden rather than wondering why a field changed.
+  var conflicts = '';
+  var g = _cvRead.grant, v = _cvRead.vevo;
+  if(g && v && g.fields && v.fields){
+    var rows = Object.keys(v.fields).filter(function(k){
+      return (k in g.fields) && String(g.fields[k]) !== String(v.fields[k]);
+    }).map(function(k){
+      return '<div class="cv-read-row"><span class="cv-read-k">'+escapeHtml(_CV_FIELD_LABEL[k] || k)+'</span>'
+           + '<span>letter says ' + escapeHtml(String(g.fields[k]))
+           + ' · VEVO says <b>' + escapeHtml(String(v.fields[k])) + '</b></span></div>';
+    });
+    if(rows.length){
+      conflicts = '<div class="cv-read"><div class="cv-read-head">The two documents disagree</div>'
+        + rows.join('')
+        + '<div class="cv-read-note">VEVO has been used, because a grant notification records what was granted and cannot know about a later variation or cancellation.</div></div>';
+    }
+    if(g.fields.passport_number && v.fields.passport_number
+       && g.fields.passport_number !== v.fields.passport_number){
+      conflicts += '<div class="cv-read"><div class="cv-read-warn">These two documents name different passports. That is either two different people or a renewed passport — check before saving.</div></div>';
+    }
+  }
+
+  host.innerHTML = (slipNote ? '<div class="cv-read"><div class="cv-read-warn">'+escapeHtml(slipNote)+'</div></div>' : '')
+                 + blocks + conflicts;
+}
+
 async function ceVisaSave(id){
   var err = document.getElementById('cv-error');
   var btn = document.getElementById('cv-save');
@@ -11042,6 +11227,11 @@ async function ceVisaSave(id){
     fd.append('has_work_limitation', val('cv-limit'));
     var f = document.getElementById('cv-pdf');
     if(f && f.files && f.files[0]) fd.append('visa_pdf', f.files[0]);
+    // The VEVO check rides on the same POST as the stamp it produces, so a
+    // stamp can never exist with no document behind it. The server re-reads
+    // the date out of this file rather than trusting anything sent from here.
+    var fv = document.getElementById('cv-vevo-pdf');
+    if(fv && fv.files && fv.files[0]) fd.append('vevo_pdf', fv.files[0]);
   }else{
     // Citizen / PR: everything else is cleared deliberately. Leaving a stale
     // subclass and expiry on somebody recorded as a citizen is worse than blank.
