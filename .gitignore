@@ -41,3 +41,9 @@ after_inc.json
 # Same reason as the get-calls-bulk dumps above: this repo is public.
 visa-draft-register.csv
 visa-*-register.csv
+
+# Real Home Affairs documents used by test_visa_extract.py's fixture tests.
+# These are live immigration records for real crew and this repo is PUBLIC.
+# The tests skip when the directory is absent, so it exists only on the build
+# machine and must never be committed.
+fixtures/
