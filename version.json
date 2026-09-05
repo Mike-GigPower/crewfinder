@@ -1,6 +1,6 @@
 {
-  "version": "5.31.0",
-  "release_date": "2026-09-04",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.31.0/TheGOAT.dmg",
-  "release_notes": "Attach a crew member's IMMI grant notification or VEVO check in Manage Crew → Visa and THE GOAT reads it — subclass, grant number, TRN, passport, dates and conditions — for you to check before saving. The VEVO check is now kept on the record, and the verification stamp comes from the document itself rather than being typed."
+  "version": "5.31.1",
+  "release_date": "2026-09-05",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.31.1/TheGOAT.dmg",
+  "release_notes": "Crew who declined a shift are no longer blocked from other calls over that time. Confirmed shifts and unavailability still block; being a backup does not."
 }
