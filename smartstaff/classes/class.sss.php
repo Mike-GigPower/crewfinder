@@ -136,12 +136,37 @@
 				$overlap = '((' . implode(') OR (', $overlap) . '))';
 
 				/*
-				/* count clashes */
+				/* count clashes
+				/*
+				/* A `calendars` row is written when a crew member confirms, and is
+				/* DELIBERATELY left in place when they later decline, no-show or are
+				/* stood down (see update-crew-status.php) - a declined entry at a given
+				/* time is what tells the operator not to re-offer a clashing call.
+				/*
+				/* This check used to count EVERY overlapping row, so a shift the crew
+				/* member had turned down still refused an add, reported to ops as
+				/* "clashes with an existing confirmed shift". Only a shift they are
+				/* actually holding should block.
+				/*
+				/* `type` <> 2 rather than `type` = 1 is load-bearing: unavailability
+				/* rows (type 1) carry no `call_crew_map` row at all, so testing status
+				/* alone would silently stop unavailability blocking anything. Written
+				/* as <> 2 so any future or unknown calendar type keeps blocking by
+				/* default.
+				/*
+				/* Blocking set is status 5 only. Backup (7) is excluded per ops
+				/* decision (Rich, 5 Sep 2026): being a backup must not stop crew being
+				/* booked for other calls. */
+
+				$held = '`call` IN (SELECT `callID` FROM `call_crew_map`'
+				      . ' WHERE `userID` = ' . $this->db->sc($crewID)
+				      . ' AND `status` = 5)';
 
 				$clashes = $this->db->selectFirst(
 					'COUNT(*) AS `num`',
 					'calendars',
 					'user=' . $this->db->sc($crewID) . ' AND ' . $overlap
+						. ' AND (`type` <> 2 OR ' . $held . ')'
 				);
 
 				if ($clashes->num)
