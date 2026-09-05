@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.31.0"
+APP_VERSION    = "5.31.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -10585,7 +10585,7 @@ def api_goat_add_crew():
                     "call":     call_by_id[cid].get("call_name", cid),
                     "success":  ok,
                     "verified": verified,
-                    "error":    None if ok else "Unavailable — clashes with an existing confirmed shift",
+                    "error":    None if ok else "SmartStaff refused this call — check for a calendar clash",
                     "note":     None if verified else "Could not verify — check the call before relying on this",
                 })
                 # Crew Hub push: an offer row was just written at status 0.
@@ -10693,7 +10693,7 @@ def api_goat_send_sms():
                         "crew":    c["name"],
                         "call":    call_by_id[cid].get("call_name", cid),
                         "success": False,
-                        "error":   "Unavailable — clashes with an existing confirmed shift",
+                        "error":   "SmartStaff refused this call — check for a calendar clash",
                     })
                 else:
                     sms_ok[cid].add(crew_id)
