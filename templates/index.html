@@ -6851,8 +6851,41 @@ async function recruitSetStatus(id, status, btn){
 // state, so a refetch would flash the whole table for nothing. Because nothing
 // rebuilds, the button re-enables on EVERY path including success — otherwise it
 // would be a dead control until the operator collapsed and reopened the row.
+async function recruitResend(id, kind, btn){
+  var label = (kind === 'contract') ? 'contract' : 'details form';
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch('/api/recruitment/resend', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({candidate_id: id, kind: kind})
+    });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert(r.status === 403
+        ? 'You do not have access to resend applicant emails.'
+        : (body.error || 'Could not resend. Please try again.'));
+      if(btn) btn.disabled = false;
+      return;
+    }
+    if(body.outcome === 'sent'){
+      alert('Sent — their ' + label + ' link is on its way.');
+    } else if(body.outcome === 'deduped'){
+      alert('Already resent today. Try again tomorrow if it still has not arrived —\n'
+        + 'if the first one did not land, the address or their spam filter is the likely cause.');
+    } else if(body.outcome === 'blocked'){
+      alert('Blocked — email sending is currently switched off (EMAIL_LIVE).');
+    } else {
+      alert('The send failed. The reason is recorded against this applicant in the email log.');
+    }
+  }catch(e){
+    alert('Could not resend. Please try again.');
+  }
+  if(btn) btn.disabled = false;
+}
+
 // Deliberately resend the Crew Hub welcome email to a converted crew member.
-// Separate from recruitResend() below because this one emails a LOGIN rather than
+// Separate from recruitResend() above because this one emails a LOGIN rather than
 // a link, which is why it confirms first: it should be re-sent because it did not
 // arrive, not because someone clicked the wrong row. Everything that decides
 // whether it may go out — active_crew, the stored EIN, the per-day dedupe, the
@@ -6892,38 +6925,6 @@ async function recruitResendWelcome(id, btn){
   if(btn) btn.disabled = false;
 }
 
-async function recruitResend(id, kind, btn){
-  var label = (kind === 'contract') ? 'contract' : 'details form';
-  if(btn) btn.disabled = true;
-  try{
-    const r = await fetch('/api/recruitment/resend', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({candidate_id: id, kind: kind})
-    });
-    const body = await r.json().catch(() => ({}));
-    if(!r.ok){
-      alert(r.status === 403
-        ? 'You do not have access to resend applicant emails.'
-        : (body.error || 'Could not resend. Please try again.'));
-      if(btn) btn.disabled = false;
-      return;
-    }
-    if(body.outcome === 'sent'){
-      alert('Sent — their ' + label + ' link is on its way.');
-    } else if(body.outcome === 'deduped'){
-      alert('Already resent today. Try again tomorrow if it still has not arrived —\n'
-        + 'if the first one did not land, the address or their spam filter is the likely cause.');
-    } else if(body.outcome === 'blocked'){
-      alert('Blocked — email sending is currently switched off (EMAIL_LIVE).');
-    } else {
-      alert('The send failed. The reason is recorded against this applicant in the email log.');
-    }
-  }catch(e){
-    alert('Could not resend. Please try again.');
-  }
-  if(btn) btn.disabled = false;
-}
 
 // Ops enter the commencement date DAY-FIRST (DD-MM-YYYY). Everything downstream —
 // storage, the edge function, the contract merge — stays ISO, so we convert at the
