@@ -1,6 +1,6 @@
 {
-  "version": "5.32.0",
+  "version": "5.33.0",
   "release_date": "2026-09-07",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.32.0/TheGOAT.dmg",
-  "release_notes": "New crew members are now emailed their Crew Hub login automatically when they are converted to crew — their EIN, the temporary password and a link to the portal. Converted rows carry a Resend welcome email button."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.33.0/TheGOAT.dmg",
+  "release_notes": "Applicants who couldn't check in at the induction can now be marked attended from any pile before attendance — New, Invited, Booked or Hold — not just Invited and Booked. The button confirms first, because marking someone attended emails them their details form."
 }
