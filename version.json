@@ -1,6 +1,6 @@
 {
-  "version": "5.31.1",
-  "release_date": "2026-09-05",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.31.1/TheGOAT.dmg",
-  "release_notes": "Crew who declined a shift are no longer blocked from other calls over that time. Confirmed shifts and unavailability still block; being a backup does not."
+  "version": "5.32.0",
+  "release_date": "2026-09-07",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.32.0/TheGOAT.dmg",
+  "release_notes": "New crew members are now emailed their Crew Hub login automatically when they are converted to crew — their EIN, the temporary password and a link to the portal. Converted rows carry a Resend welcome email button."
 }
