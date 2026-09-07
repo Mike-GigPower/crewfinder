@@ -1,6 +1,6 @@
 {
-  "version": "5.33.0",
+  "version": "5.34.0",
   "release_date": "2026-09-07",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.33.0/TheGOAT.dmg",
-  "release_notes": "Applicants who couldn't check in at the induction can now be marked attended from any pile before attendance — New, Invited, Booked or Hold — not just Invited and Booked. The button confirms first, because marking someone attended emails them their details form."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.34.0/TheGOAT.dmg",
+  "release_notes": "Maintenance update. Nothing changes in how anything works — please update when it suits."
 }
