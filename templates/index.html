@@ -6843,6 +6843,23 @@ async function recruitSetStatus(id, status, btn){
   }
 }
 
+// "Mark attended" — the manual override for someone who could not check in at the
+// session. Confirms first, because a FRESH transition into "attended" emails the
+// applicant their details-form link (recruitment-set-status, kind:'details'), and
+// the button is now offered from New and Hold as well as Invited/Booked — so a
+// mis-click while triaging would email someone who never attended.
+//
+// The automatic send is once-ever (dedupeKey null). If they have already had a
+// details email, this button will NOT produce another one: "Resend details form"
+// is the lever for that.
+async function recruitMarkAttended(id, btn){
+  const cand  = _recruitRows.find(c => String(c.id) === String(id)) || {};
+  const name  = cand.name  || 'this applicant';
+  const email = cand.email || '(no email on file)';
+  if(!confirm(`Mark ${name} as attended?\n\nThis emails their details form to ${email}.`)) return;
+  await recruitSetStatus(id, 'attended', btn);
+}
+
 // Resend outcomes all arrive as HTTP 200 — the outcome string is the result, not
 // the status code. "deduped" in particular is a correct outcome (the per-day key
 // did its job) and must not be reported as a failure.
@@ -8266,9 +8283,26 @@ function renderRecruitRow(c, i){
     // "Mark booked" is only offered to someone currently Invited (they've
     // confirmed an induction slot). Hidden for every other pile. Reuses set-status.
     if(s === 'booked' && cur !== 'invited_to_induction') return '';
-    // "Mark attended" is offered once they're Invited OR Booked (they turned up
-    // to the induction; booked -> attended is a normal step). Hidden otherwise.
-    if(s === 'attended' && cur !== 'invited_to_induction' && cur !== 'booked') return '';
+    // "Mark attended" is the manual override for anyone who could not check in at
+    // the session itself — the QR would not scan, they lost their reference, or they
+    // walked in without a booking. Offered from EVERY pile before attendance: New,
+    // Invited, Booked and Hold. It used to be Invited/Booked only, which left a
+    // walk-in or a held applicant with no route to Attended at all.
+    //
+    // Not offered from Not suitable (Return to New first — deliberately two steps),
+    // and never from a stage at or past Attended.
+    //
+    // It gets its own handler rather than the generic relabel because a FRESH
+    // transition into "attended" emails the applicant their details-form link
+    // (recruitment-set-status → sendEmail kind:'details'). Reachable now from New and
+    // Hold, which are piles an operator triages quickly, so it confirms first — same
+    // reasoning as the invite button.
+    if(s === 'attended'){
+      if(cur !== 'applied' && cur !== 'invited_to_induction'
+         && cur !== 'booked' && cur !== 'on_hold') return '';
+      return `<button class="recruit-action" onclick="recruitMarkAttended('${id}',this)">`
+        + `${RECRUIT_MOVE_LABELS[s]}</button>`;
+    }
     // "Send to EH" is offered once they're Attended OR Details Submitted —
     // the normal path is attended → details_submitted (auto, on form submit) →
     // sent_to_eh, but we keep it available straight from Attended too so an
