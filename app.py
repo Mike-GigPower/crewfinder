@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.31.1"
+APP_VERSION    = "5.32.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -430,6 +430,13 @@ RECRUITMENT_INVITE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/
 # commencement_date for contract) — bouncing a status no longer re-fires them.
 # Per-day dedupe inside the function: a double-click is deduped, not double-sent.
 RECRUITMENT_RESEND_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-resend-email"
+# The Crew Hub welcome email — EIN (their username) + the temp password we set —
+# sent when a candidate is converted to crew. Its own function rather than a
+# resend-email kind because the credentials it renders come from the SmartStaff
+# write convert has just done, not from a token already on the candidate row.
+# Dedupes once-ever on the automatic send, per-day on a deliberate resend, so a
+# re-run of convert never emails a second copy of someone's login.
+RECRUITMENT_WELCOME_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-welcome"
 # Same base URL: REVIEWABLE detail for ONE candidate (the expanded panel in the
 # Recruitment tab). Returns an allowlisted set of fields — deliberately NO health
 # data — plus short-lived signed URLs for the headshot/licence files, so the
@@ -6598,6 +6605,80 @@ def api_recruitment_convert_preview(cand_id):
     })
 
 
+# ─── WELCOME EMAIL (Crew Hub credentials) ─────────────────────────────────────
+# Sent at the end of convert, and again on demand from the active_crew panel.
+# Everything about the send itself — the branded template, the EMAIL_LIVE guard,
+# the audit row in induction_emails_sent and the dedupe — lives in the
+# recruitment-welcome edge function. This is the caller: it supplies the two
+# values only THE GOAT knows (the EIN SmartStaff just assigned, and the temp
+# password we set with it) and hands back the outcome verbatim.
+#
+# NEVER RAISES. Both call sites treat a welcome-email problem the same way they
+# treat a licence or induction push that fails: the crew member exists, their
+# login works, and an email that did not send is fixed with the Resend button.
+# Losing the conversion over it would be the far worse outcome.
+def _send_welcome_email(cand_id, ein, resend=False):
+    """POST the welcome email to the recruitment-welcome edge function.
+
+    Returns a dict the UI renders directly:
+      {"ok": bool, "outcome": "sent"|"deduped"|"blocked"|"failed", "error": str|None}
+    'blocked' is not an error in the transport sense — it means the send guard
+    (EMAIL_LIVE) is off, nothing reached an inbox, and the operator must be told
+    exactly that rather than shown a tick."""
+    if not GOAT_RECRUITMENT_KEY:
+        return {"ok": False, "outcome": "failed",
+                "error": "Recruitment key not configured"}
+    try:
+        r = http.post(
+            RECRUITMENT_WELCOME_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json={"id": str(cand_id),
+                  "ein": str(ein or ""),
+                  "temp_password": NEW_CREW_TEMP_PASSWORD,
+                  "resend": bool(resend)},
+            timeout=20,
+        )
+    except Exception as e:
+        print(f"[recruitment] welcome email request failed: {e}")
+        return {"ok": False, "outcome": "failed",
+                "error": "Email service unavailable"}
+    try:
+        body = r.json()
+    except Exception:
+        body = {}
+    if r.status_code != 200:
+        err = body.get("error") or f"HTTP {r.status_code}"
+        print(f"[recruitment] welcome email returned {r.status_code}: {err}")
+        return {"ok": False, "outcome": "failed", "error": err}
+    outcome = str(body.get("outcome") or "failed")
+    return {"ok": bool(body.get("ok")), "outcome": outcome,
+            "error": body.get("error")}
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/welcome-email", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_recruitment_welcome_email(cand_id):
+    """Deliberately (re)send the Crew Hub welcome email to a converted crew member.
+
+    The manual counterpart to the automatic send inside convert. Reached from the
+    active_crew panel, for the two cases the automatic send cannot cover: it was
+    blocked or failed at conversion time, or the crew member never found it.
+
+    NO EIN IS SENT FROM THE BROWSER. The edge function reads the one stored on the
+    candidate row, which convert stamped — the browser cannot nominate a username
+    for someone else's welcome email. Everything else (active_crew precondition,
+    per-day dedupe, the send guard) is enforced there too; this route is auth plus
+    a pass-through of the outcome."""
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    res = _send_welcome_email(cand_id, "", resend=True)
+    if not res.get("ok"):
+        return jsonify({"error": res.get("error") or "Could not send the welcome email",
+                        "outcome": res.get("outcome")}), 502
+    return jsonify(res)
+
+
 @app.route("/api/recruitment/candidate/<cand_id>/convert", methods=["POST"])
 @require_cohort("admin", "operations")
 def api_recruitment_convert(cand_id):
@@ -6808,6 +6889,28 @@ def api_recruitment_convert(cand_id):
             print(f"[recruitment] convert visa push crashed: {e}")
             visa_result = {"ok": False, "error": "visa push crashed"}
 
+    # 12. The welcome email: the crew member's EIN (their Crew Hub username) and
+    #     the temp password we just set, sent to the address on their application.
+    #     LAST on purpose — every SmartStaff write is done by now, so the email
+    #     only ever goes out about a record that fully exists.
+    #
+    #     Best-effort like the pushes above, and for the same reason: the crew
+    #     member is real and their login works whether or not the email left the
+    #     building. A blocked or failed send is reported in the modal and resent
+    #     with one click from the active_crew panel — it never costs the operator
+    #     the conversion. The once-ever dedupe lives in the edge function, so
+    #     re-running convert to retry a licence push cannot double-send this.
+    #
+    #     The EIN is passed rather than read back from Supabase because step 7's
+    #     stamp is itself allowed to fail (stamp_warning): SmartStaff has the EIN
+    #     either way, and this is the value it just gave us.
+    try:
+        welcome_result = _send_welcome_email(cand_id, ein)
+    except Exception as e:
+        print(f"[recruitment] convert welcome email crashed: {e}")
+        welcome_result = {"ok": False, "outcome": "failed",
+                          "error": "welcome email crashed"}
+
     return jsonify({
         "ok":       True,
         "id":       uid,
@@ -6821,6 +6924,7 @@ def api_recruitment_convert(cand_id):
         "inductions": induction_results,
         "contract": contract_result,
         "visa":     visa_result,
+        "welcome":  welcome_result,
     })
 
 
