@@ -6851,6 +6851,47 @@ async function recruitSetStatus(id, status, btn){
 // state, so a refetch would flash the whole table for nothing. Because nothing
 // rebuilds, the button re-enables on EVERY path including success — otherwise it
 // would be a dead control until the operator collapsed and reopened the row.
+// Deliberately resend the Crew Hub welcome email to a converted crew member.
+// Separate from recruitResend() below because this one emails a LOGIN rather than
+// a link, which is why it confirms first: it should be re-sent because it did not
+// arrive, not because someone clicked the wrong row. Everything that decides
+// whether it may go out — active_crew, the stored EIN, the per-day dedupe, the
+// EMAIL_LIVE guard — is enforced server-side; this only reports the answer.
+async function recruitResendWelcome(id, btn){
+  const cand = (_recruitRows || []).find(c => String(c.id) === String(id)) || {};
+  const who  = cand.name || 'this crew member';
+  const to   = cand.email || '(no email on file)';
+  if(!confirm('Email ' + who + ' their Crew Hub login again?\n\n'
+    + 'Goes to ' + to + ' and includes their EIN and the temporary password.')) return;
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/welcome-email', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({})
+    });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert(r.status === 403
+        ? 'You do not have access to send crew welcome emails.'
+        : (body.error || 'Could not send the welcome email. Please try again.'));
+      if(btn) btn.disabled = false;
+      return;
+    }
+    if(body.outcome === 'deduped'){
+      alert('Already resent today. Try again tomorrow if it still has not arrived \u2014\n'
+        + 'if neither landed, the address or their spam filter is the likely cause.');
+    } else if(body.outcome === 'blocked'){
+      alert('Blocked \u2014 email sending is currently switched off (EMAIL_LIVE).');
+    } else {
+      alert('Sent \u2014 their Crew Hub login is on its way.');
+    }
+  }catch(e){
+    alert('Could not send the welcome email. Please try again.');
+  }
+  if(btn) btn.disabled = false;
+}
+
 async function recruitResend(id, kind, btn){
   var label = (kind === 'contract') ? 'contract' : 'details form';
   if(btn) btn.disabled = true;
@@ -7212,6 +7253,28 @@ async function recruitConvertSubmit(id, ackRequired){
         + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Visa</div>'
         + vl + '</div>';
     }
+    // Welcome-email outcome. d.welcome is {ok, outcome, error} — the credentials
+    // email carrying their EIN and temp password. Reported honestly and always:
+    // an operator who is not told a send was blocked will assume the crew member
+    // has their login, and will find out otherwise on the day of a shift.
+    // 'blocked' means EMAIL_LIVE is off — nothing reached an inbox — so it reads
+    // as a warning, not a tick, and points at the button that fixes it.
+    let welHtml = '';
+    if(d.welcome){
+      const w = d.welcome;
+      const wl = (w.outcome === 'sent')
+          ? '<div>\u2713 Welcome email \u2014 sent</div>'
+        : (w.outcome === 'deduped')
+          ? '<div>\u2022 Welcome email \u2014 already sent to them earlier</div>'
+        : (w.outcome === 'blocked')
+          ? '<div style="color:var(--warn)">\u26a0 Welcome email \u2014 blocked: email sending is switched off (EMAIL_LIVE). '
+            + 'They do NOT have their login \u2014 use \u201cResend welcome email\u201d once it is on.</div>'
+          : '<div>\u2717 Welcome email \u2014 <span style="color:var(--conflict)">failed: '
+            + escapeHtml(w.error || 'error') + '</span> \u2014 use \u201cResend welcome email\u201d on their row.</div>';
+      welHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
+        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Welcome email</div>'
+        + wl + '</div>';
+    }
     document.getElementById('entity-modal-title').textContent = 'Crew member created';
     document.getElementById('entity-modal-sub').textContent   = '';
     document.getElementById('entity-modal-body').innerHTML =
@@ -7219,7 +7282,7 @@ async function recruitConvertSubmit(id, ackRequired){
       + escapeHtml(d.name || (first + ' ' + last)) + ' was added to SmartStaff.<br>'
       + 'EIN / username: <b style="color:var(--accent)">' + escapeHtml(String(d.ein)) + '</b><br>'
       + 'Temp password: <b>' + escapeHtml(String(d.temp_password || '')) + '</b> &mdash; they should change it on first login.'
-      + '</div>' + warnHtml + licHtml + indHtml + conHtml + visaHtml;
+      + '</div>' + warnHtml + licHtml + indHtml + conHtml + visaHtml + welHtml;
     document.getElementById('entity-modal-actions').innerHTML = entityBtn('Done','closeEntityModal()',{primary:true});
     await loadRecruitment();   // candidate moves to the Active crew pile
   }catch(e){
@@ -7309,6 +7372,17 @@ function recruitResendButtons(c){
   if((c.status === 'sent_to_eh' || c.status === 'all_docs_received') && c.commencement_date){
     out += '<button class="recruit-action" onclick="recruitResend(\'' + id + '\',\'contract\',this)" '
         +  'title="Email this applicant their contract-signing link again">Resend contract</button>';
+  }
+  // Welcome email (EIN + temp password): converted crew only, and only once an EIN
+  // is on the row — that EIN is the username the email states, and the edge
+  // function reads it from Supabase rather than trusting this button, so without
+  // one there is nothing to send. Offered on every converted candidate, not only
+  // those whose automatic send failed: "it never arrived" reaches ops days later,
+  // long after the convert modal has been closed.
+  if(c.status === 'active_crew' && c.ein != null && String(c.ein).trim()){
+    out += '<button class="recruit-action" onclick="recruitResendWelcome(\'' + id + '\',this)" '
+        +  'title="Email this crew member their Crew Hub login again (EIN + temp password)">'
+        +  'Resend welcome email</button>';
   }
   return out;
 }
