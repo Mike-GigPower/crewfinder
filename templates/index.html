@@ -7143,7 +7143,7 @@ function recruitConvertRender(p){
   document.getElementById('entity-modal-body').innerHTML =
       efRow('First name *', efInput('rc-conv-first', p.proposed_firstname || ''))
     + efRow('Last name *',  efInput('rc-conv-last',  p.proposed_lastname  || ''))
-    + '<div style="font-size:10px;color:var(--muted);padding:0 0 4px 122px">Edit the split if needed (e.g. “Mary Jane Watson”, “de Silva”).</div>'
+    + nameSourceHint(p.name_source)
     + warn + ackHtml
     + '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">What will be sent to SmartStaff</div>' + sendSummary + '</div>'
     + '<div id="rc-conv-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
@@ -7160,6 +7160,27 @@ function recruitConvertRender(p){
                 {primary:true, id:'rc-conv-submit'});
   recruitConvertRecheck();
   setTimeout(function(){ var f=document.getElementById('rc-conv-first'); if(f) f.focus(); }, 50);
+}
+
+// Tell ops where the pre-filled split came from, because the two cases deserve
+// different amounts of attention.
+//
+// "applicant" — both parts are the applicant's own answer from the application
+// or details form, so there is nothing to second-guess and the old "edit the
+// split" nudge would just be noise on every single candidate.
+// Anything else — we derived at least one part from the single free-text name
+// (an older application, or one of the people who only ever gave one word), so
+// the split is our guess and ops should read it before creating a payroll
+// record. That is the case the original hint was written for.
+function nameSourceHint(source){
+  const style = 'font-size:10px;padding:0 0 4px 122px';
+  if(source === 'applicant'){
+    return '<div style="' + style + ';color:var(--muted)">'
+         + 'First and last name as the applicant entered them.</div>';
+  }
+  return '<div style="' + style + ';color:var(--warn)">'
+       + 'No separate name on file \u2014 this split is a guess. '
+       + 'Check it (e.g. \u201cMary Jane Watson\u201d, \u201cde Silva\u201d).</div>';
 }
 
 // Enable "Create" only when both names are filled AND (if any warning) the
