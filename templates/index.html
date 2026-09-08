@@ -1353,6 +1353,45 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-ack-err{font-size:11px;color:var(--accent2)}
 .ops-row.ops-row--static{cursor:default}
 .ops-row.ops-row--static:hover{border-color:var(--border)}
+/* ── Calls to fill: calendar view ───────────────────────────────────────────
+   The second view of one lane, so it reuses the lane's tokens and palette
+   rather than inventing any. Hand-rolled grid, no library and no CDN — THE
+   GOAT runs in a WKWebView and must work offline.
+   Cell anatomy, fixed by the brief: ASSIGNED top-left, REQUIRED bottom-right,
+   date number top-right out of both their ways. */
+.ops-cal{padding:2px 0 12px}
+.ops-cal-bar{display:flex;align-items:center;gap:10px;padding:0 2px 10px}
+.ops-cal-nav{background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:5px;width:24px;height:24px;line-height:1;cursor:pointer;font-size:13px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;transition:border-color .12s}
+.ops-cal-nav:hover{border-color:var(--accent)}
+.ops-cal-nav:disabled{opacity:.35;cursor:default;border-color:var(--border)}
+.ops-cal-month{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;color:var(--text);min-width:132px;text-align:center}
+.ops-cal-note{font-size:11px;color:var(--muted);margin-left:auto;text-align:right}
+.ops-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.ops-cal-dow{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);font-weight:600;text-align:center;padding:0 0 2px}
+.ops-cal-cell{position:relative;min-height:54px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);padding:3px 5px}
+.ops-cal-cell.pad{background:none;border-color:transparent}
+.ops-cal-cell.today{border-color:var(--accent)}
+.ops-cal-cell.has-calls{cursor:pointer;transition:border-color .12s}
+.ops-cal-cell.has-calls:hover{border-color:var(--accent)}
+.ops-cal-cell.on{background:var(--accent-bg);outline:1px solid var(--accent)}
+.ops-cal-cell.outside{opacity:.55}
+.ops-cal-num{position:absolute;top:3px;right:6px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted)}
+.ops-cal-cell.today .ops-cal-num{color:var(--accent)}
+/* Assigned — top-left. Colour carries the day's state: green fully crewed,
+   amber partly, red nobody on. */
+.ops-cal-asg{position:absolute;top:2px;left:6px;font-family:'Share Tech Mono',monospace;font-size:16px;line-height:1.25;font-weight:600}
+/* Required — bottom-right. Always neutral: it is the target, not the verdict. */
+.ops-cal-req{position:absolute;bottom:2px;right:6px;font-family:'Share Tech Mono',monospace;font-size:16px;line-height:1.25;color:var(--text)}
+.ops-cal-cell.outside-window .ops-cal-asg,.ops-cal-cell.outside-window .ops-cal-req{opacity:.75}
+.ops-cal-key{display:flex;flex-wrap:wrap;gap:14px;padding:11px 2px 0;font-size:11px;color:var(--muted)}
+.ops-cal-key b{font-family:'Share Tech Mono',monospace;font-weight:400;color:var(--text)}
+.ops-cal-status{font-size:11px;color:var(--muted);padding:8px 2px 0}
+.ops-cal-status.err{color:var(--warn)}
+/* Donuts / Calendar switch, sitting above whichever view is showing. */
+.ops-view-switch{display:inline-flex;gap:0;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin:2px 0 4px}
+.ops-view-switch button{background:none;border:none;color:var(--muted);font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;letter-spacing:.04em;padding:4px 14px;cursor:pointer;transition:background .12s,color .12s}
+.ops-view-switch button:hover{color:var(--text)}
+.ops-view-switch button.on{background:var(--accent-bg);color:var(--accent)}
 /* ── PERFORMANCE TAB (GM Performance, Release 1) ────────────────────────────
    Panel/toolbar mirror .ops-* so the two Today views feel like one screen. The
    charts are hand-rolled SVG (see recruit-age-chart) — no charting library and
@@ -19816,8 +19855,11 @@ function toggleSchedBack(){
 const OPS_LANES = [
   { key:'confirmations', label:'Confirmations to chase',
     load: loadOpsOffers, render: renderOpsOffers, list: renderOpsList, dims:['status','age'] },
+  // 'day' is a dimension with no donut: the calendar view sets it when a date is
+  // clicked. Declaring it here is what makes the chips bar, the window subhead
+  // and the clear-on-close in closeOpsDetail handle it without naming it.
   { key:'calls_to_fill', label:'Calls to fill',
-    load: loadOpsCalls, render: renderOpsCalls, list: renderOpsCallsList, dims:['fill','lead'] },
+    load: loadOpsCalls, render: renderOpsCalls, list: renderOpsCallsList, dims:['fill','lead','day'] },
   { key:'acks', label:'Acknowledgements outstanding',
     load: loadOpsAcks, render: renderOpsAcks, list: renderOpsAcksList, dims:['kind','lead'] },
   // The backward-looking lane, sitting with the other work queues rather than
@@ -19939,8 +19981,21 @@ const OPS_DIM_LABELS = {
   status: OPS_STATUS_LABELS, age: OPS_AGE_LABELS,
   fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS,
   kind:   OPS_KIND_LABELS,   risk: OPS_RISK_LABELS,
-  venue:  OPS_VENUE_LABELS
+  venue:  OPS_VENUE_LABELS,
+  // A date has no fixed segment list, so this entry is a FORMATTER rather than a
+  // map. opsDimLabel() below is the single reader that knows the difference, so
+  // every existing dim keeps working untouched. (Hoisted declaration — naming it
+  // above its definition is fine.)
+  day:    opsCalChipLabel
 };
+
+// The one place a dim + segment becomes display text. Handles both shapes of
+// OPS_DIM_LABELS entry (map or formatter) and falls back to the raw segment.
+function opsDimLabel(dim, seg){
+  const m = OPS_DIM_LABELS[dim];
+  if(typeof m === 'function') return m(seg);
+  return ((m || {})[seg]) || seg;
+}
 
 // Serial by design: one SmartStaff request at a time. Awaiting each lane in
 // OPS_LANES order keeps the per-session PHP file lock happy AND guarantees
@@ -19948,7 +20003,26 @@ const OPS_DIM_LABELS = {
 // overlap disclosure. Still progressive — the frame and every lane shell draw
 // up-front, each lane fills as it resolves — and each await is wrapped so one
 // lane failing soft-fails only that lane and never blocks the next.
+// ONE SmartStaff request at a time — ACROSS entry points, not just within one
+// cycle (CLAUDE.md: a per-session PHP file lock makes concurrent /ajax/crew/
+// calls hang). loadOps was already serial inside itself, but the calendar's
+// month navigation is a SECOND entry point that can fire mid-cycle. Every
+// SmartStaff-backed fetch on this tab queues through opsGated, so the lock only
+// ever sees one caller. Rejections are absorbed: a failed fetch must not wedge
+// the queue for everything behind it.
+let _opsGate = Promise.resolve();
+function opsGated(fn){
+  const run  = function(){ return fn(); };
+  const next = _opsGate.then(run, run);
+  _opsGate = next.then(function(){}, function(){});
+  return next;
+}
+
 async function loadOps(force){
+  return opsGated(function(){ return loadOpsCycle(force); });
+}
+
+async function loadOpsCycle(force){
   renderOpsFrame();
   setOpsAsAt(null);                 // stamp the moment we asked; server time overwrites on resolve
   // One cache clear per cycle so a forced Refresh refetches each shared source
@@ -20106,7 +20180,7 @@ function opsDetailSub(lane){
   const on = [];
   lane.dims.forEach(function(d){
     const seg = st.chips && st.chips[d];
-    if(seg) on.push(((OPS_DIM_LABELS[d] || {})[seg]) || seg);
+    if(seg) on.push(opsDimLabel(d, seg));
   });
   return String(st.total || 0) + (on.length ? ' · filtered: ' + on.join(' + ') : '');
 }
@@ -20251,7 +20325,7 @@ function opsChipsBar(lane){
   const chips = [];
   lane.dims.forEach(function(dim){
     const seg = st.chips[dim];
-    if(seg) chips.push({ dim:dim, label:((OPS_DIM_LABELS[dim] || {})[seg]) || seg });
+    if(seg) chips.push({ dim:dim, label:opsDimLabel(dim, seg) });
   });
   const inner = chips.map(function(c){
     return '<span class="ops-chip">'+escapeHtml(c.label)
@@ -20403,6 +20477,10 @@ function opsRowTarget(offer){ openCallDialog(offer.booking_id, offer.call_id); }
 // as the confirmations lane doesn't.
 async function loadOpsCalls(lane, force){
   const st = _opsLaneState[lane.key];
+  // A Refresh must not leave yesterday's day totals on the calendar. Everything
+  // the calendar knows is dropped here and re-seeded below, so the two views of
+  // this lane are always as at the same moment.
+  if(force) opsCalReset();
   try{
     const r = await fetch('/api/ops/calls');
     const d = await r.json();
@@ -20412,6 +20490,11 @@ async function loadOpsCalls(lane, force){
     }
     st.status = 'ready'; st.data = d;
     if(d && d.generated_at) setOpsAsAt(d.generated_at);
+    // The route hands back day totals for its own window alongside the rows, so
+    // switching to the calendar draws something immediately. It is only a PART
+    // of any month, though, so no month is marked complete from it — the month
+    // fetch still runs and overwrites.
+    opsCalSeed(d && d.days);
     renderOpsCalls(lane);
   }catch(e){
     st.status = 'unavailable'; st.error = e.message || 'load failed';
@@ -20430,12 +20513,30 @@ function renderOpsCalls(lane){
   const body  = document.getElementById('ops-body-'+lane.key);
   // Badge counts CALLS, never positions — a badge of 34 over a list of 12 cards
   // reads as a bug (§3.2). Positions live in the subhead as secondary text.
+  // The badge is the LANE's count and stays the unfilled count in both views:
+  // the calendar is a second reading of the same lane, not a second lane.
   if(badge) badge.textContent = total;
   if(!body) return;
-  // Empty is the SUCCESS state here — calm, normal text, not an error.
-  if(total === 0){
-    body.innerHTML = '<div class="ops-empty">Nothing needs attention right now.</div>';
+  const cal = (_opsCalView === 'calendar');
+  // Empty is the SUCCESS state here — calm, normal text, not an error. It still
+  // wins in the donut view. In the calendar view it does not: "no calls need
+  // filling" and "what does each day look like" are different questions, and the
+  // user has explicitly asked the second one. There is still nothing to drill
+  // into, so the caret stays hidden either way.
+  if(total === 0 && !cal){
+    body.innerHTML = opsViewSwitch()
+      + '<div class="ops-empty">Nothing needs attention right now.</div>';
     setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
+    return;
+  }
+  if(cal){
+    // Kick the month fetch BEFORE building the HTML: it flips _opsCalBusy
+    // synchronously, so the markup below already carries the "Loading…" line and
+    // no second render is needed just to show it.
+    opsCalEnsureMonth();
+    body.innerHTML = opsViewSwitch() + opsCalendarHtml(lane, total, positions);
+    setOpsLaneDetail(lane, total > 0);
     opsSyncDetail(lane);
     return;
   }
@@ -20448,6 +20549,7 @@ function renderOpsCalls(lane){
              color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
   });
   body.innerHTML = ''
+    + opsViewSwitch()
     + '<div class="ops-subhead">'+total+' call'+(total===1?'':'s')+' · '
     +   positions+' position'+(positions===1?'':'s')+'</div>'
     + '<div class="ops-donuts">'
@@ -20461,11 +20563,15 @@ function renderOpsCalls(lane){
 // Filter on the server's fill_state / lead_bucket tags — never a recomputed
 // lead-time boundary. If a list length ever disagrees with a donut segment, this
 // rule was broken.
+//
+// `day` obeys the same rule: it matches on date_iso, the endpoint's own computed
+// start date, and never on a date re-derived from the start timestamp here.
 function opsFilteredCalls(lane){
   const st = _opsLaneState[lane.key];
   let rows = (st.data && st.data.calls) ? st.data.calls.slice() : [];
   if(st.chips.fill) rows = rows.filter(function(o){ return o.fill_state === st.chips.fill; });
   if(st.chips.lead) rows = rows.filter(function(o){ return o.lead_bucket === st.chips.lead; });
+  if(st.chips.day)  rows = rows.filter(function(o){ return o.date_iso === st.chips.day; });
   return rows;
 }
 
@@ -20551,6 +20657,227 @@ function opsCallCard(o, laneKey, offered){
     +   '</div>'
     +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
     + '</div>';
+}
+
+// ── Lane 1, second view: the calendar ───────────────────────────────────────
+// Same lane, different question. The donuts answer "what still needs work" and
+// are built from the unfilled rows the route returns. The calendar answers "what
+// does each day look like" and is built from `days` — the server's aggregate
+// over EVERY call in the window, fully-crewed ones included (ops_day_totals in
+// app.py). The two therefore describe different populations ON PURPOSE; the bar
+// says so out loud, because an unexplained mismatch reads as a bug.
+//
+// Cell anatomy is fixed by the brief: ASSIGNED top-left, REQUIRED bottom-right.
+//
+// Hand-rolled, like the donuts: no charting or date library, no CDN — THE GOAT
+// runs in a WKWebView and must work offline.
+
+let _opsCalView   = 'donuts';   // 'donuts' | 'calendar' — survives a Refresh
+let _opsCalMonth  = null;       // 'YYYY-MM' on screen; set on first calendar draw
+let _opsCalDays   = {};         // 'YYYY-MM-DD' -> {booked, required, calls, unfilled}
+let _opsCalFull   = {};         // 'YYYY-MM' -> true once that whole month is loaded
+let _opsCalFailed = {};         // 'YYYY-MM' -> true; stops a failed month retrying forever
+let _opsCalBusy   = false;
+let _opsCalError  = '';
+
+const OPS_CAL_DOW   = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const OPS_CAL_MON   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const OPS_CAL_MONTHS= ['January','February','March','April','May','June','July',
+                       'August','September','October','November','December'];
+
+// ALWAYS build dates from components, NEVER new Date('YYYY-MM-DD') — that form
+// is parsed as UTC and lands on the previous day in some local frames. Every
+// date in this module is a local wall-clock date, matching the Melbourne frame
+// the server emits date_iso in.
+function opsCalParse(iso){
+  if(!iso || iso.length < 10) return null;
+  const y = +iso.slice(0,4), m = +iso.slice(5,7), d = +iso.slice(8,10);
+  if(!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function opsCalMonthKey(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function opsCalDateKey(d){  return opsCalMonthKey(d)+'-'+String(d.getDate()).padStart(2,'0'); }
+
+// The `day` chip's display text — see OPS_DIM_LABELS.
+function opsCalChipLabel(iso){
+  const d = opsCalParse(iso);
+  if(!d) return iso;
+  return OPS_CAL_DOW[(d.getDay()+6)%7]+' '+d.getDate()+' '+OPS_CAL_MON[d.getMonth()];
+}
+
+function opsCalReset(){
+  _opsCalDays = {}; _opsCalFull = {}; _opsCalFailed = {}; _opsCalError = '';
+}
+
+// Merge the lane response's own `days` block in. Deliberately does NOT mark any
+// month complete: the lane's window is a slice of two or three months, so the
+// month fetch must still run and overwrite.
+function opsCalSeed(days){
+  if(!days) return;
+  for(const k in days) _opsCalDays[k] = days[k];
+}
+
+function opsCalEnsureMonth(){
+  if(!_opsCalMonth) _opsCalMonth = opsCalMonthKey(new Date());
+  const mk = _opsCalMonth;
+  if(_opsCalFull[mk] || _opsCalFailed[mk] || _opsCalBusy) return;
+  opsCalFetchMonth(mk);      // async; flips _opsCalBusy synchronously first
+}
+
+// One month, one SmartStaff request, queued behind anything else this tab is
+// asking for (opsGated). Soft-fails to a status line: a month that will not load
+// must never take the lane, or the donuts, down with it.
+async function opsCalFetchMonth(mk){
+  _opsCalBusy  = true;
+  _opsCalError = '';
+  const y = +mk.slice(0,4), m = +mk.slice(5,7);
+  const last = new Date(y, m, 0).getDate();          // day 0 of next month = last of this
+  const url  = '/api/ops/calls-calendar?start='+mk+'-01&end='+mk+'-'+String(last).padStart(2,'0');
+  try{
+    const d = await opsGated(function(){
+      return fetch(url).then(function(r){ return r.json(); });
+    });
+    if(d && d.unavailable){
+      _opsCalFailed[mk] = true;
+      _opsCalError = d.error || 'unavailable';
+    } else {
+      // Authoritative for the whole month: drop what we had for it first, so a
+      // day that has since emptied disappears instead of lingering from the
+      // lane's partial seed.
+      for(const k in _opsCalDays){ if(k.slice(0,7) === mk) delete _opsCalDays[k]; }
+      const days = (d && d.days) || {};
+      for(const k in days) _opsCalDays[k] = days[k];
+      _opsCalFull[mk] = true;
+    }
+  }catch(e){
+    _opsCalFailed[mk] = true;
+    _opsCalError = (e && e.message) || 'load failed';
+  }
+  _opsCalBusy = false;
+  const lane = opsCallsLane();
+  const st   = lane && _opsLaneState[lane.key];
+  if(lane && st && st.status === 'ready' && _opsCalView === 'calendar') renderOpsCalls(lane);
+}
+
+function opsCallsLane(){
+  return OPS_LANES.find(function(l){ return l.key === 'calls_to_fill'; });
+}
+
+function opsViewSwitch(){
+  const d = (_opsCalView === 'donuts');
+  return '<div class="ops-view-switch">'
+    +   '<button class="'+(d?'on':'')+'" onclick="opsSetCallsView(\'donuts\')">Donuts</button>'
+    +   '<button class="'+(d?'':'on')+'" onclick="opsSetCallsView(\'calendar\')">Calendar</button>'
+    + '</div>';
+}
+
+function opsSetCallsView(v){
+  if(_opsCalView === v) return;
+  _opsCalView = v;
+  const lane = opsCallsLane();
+  const st   = lane && _opsLaneState[lane.key];
+  if(lane && st && st.status === 'ready') renderOpsCalls(lane);
+}
+
+function opsCalStep(n){
+  if(_opsCalBusy) return;                       // one month in flight at a time
+  if(!_opsCalMonth) _opsCalMonth = opsCalMonthKey(new Date());
+  const y = +_opsCalMonth.slice(0,4), m = +_opsCalMonth.slice(5,7);
+  _opsCalMonth = opsCalMonthKey(new Date(y, m - 1 + n, 1));
+  _opsCalError = '';
+  const lane = opsCallsLane();
+  if(lane) renderOpsCalls(lane);
+}
+
+// Assigned carries the day's verdict; required stays neutral, because it is the
+// target rather than the judgement. Colours are the lane's own: red = nobody on,
+// amber = partly, green = the "over168"/comfortable green used by the donuts.
+function opsCalAsgColor(d){
+  if(!d || !d.required)        return 'var(--muted)';
+  if(d.booked >= d.required)   return '#22c55e';
+  if(d.booked === 0)           return 'var(--accent2)';
+  return 'var(--warn)';
+}
+
+function opsCalendarHtml(lane, total, positions){
+  const st  = _opsLaneState[lane.key];
+  const win = (st.data && st.data.window) || {};
+  if(!_opsCalMonth) _opsCalMonth = opsCalMonthKey(new Date());
+  const mk = _opsCalMonth;
+  const y  = +mk.slice(0,4), m = +mk.slice(5,7);
+  const firstDow = (new Date(y, m - 1, 1).getDay() + 6) % 7;   // Monday-start
+  const lastNum  = new Date(y, m, 0).getDate();
+  const todayKey = opsCalDateKey(new Date());
+  const sel      = st.chips.day || null;
+
+  let cells = OPS_CAL_DOW.map(function(d){
+    return '<div class="ops-cal-dow">'+d+'</div>';
+  }).join('');
+  for(let i = 0; i < firstDow; i++) cells += '<div class="ops-cal-cell pad"></div>';
+
+  for(let n = 1; n <= lastNum; n++){
+    const key = mk+'-'+String(n).padStart(2,'0');
+    const d   = _opsCalDays[key];
+    // The drill-down can only show rows the lane actually loaded. A day outside
+    // that window is drawn — its totals are real — but is not clickable, because
+    // filtering to it would produce an empty list that looks like a fault. Same
+    // for a day with nothing left to fill: there is no unfilled call behind it.
+    const inWin     = !!(win.start && win.end && key >= win.start && key <= win.end);
+    const clickable = !!(d && d.unfilled > 0 && inWin);
+    const cls = ['ops-cal-cell'];
+    if(key === todayKey) cls.push('today');
+    if(clickable)        cls.push('has-calls');
+    if(sel === key)      cls.push('on');
+    if(d && !inWin)      cls.push('outside-window');
+    let tip = '';
+    if(d){
+      tip = d.calls+' call'+(d.calls===1?'':'s')+' · '+d.booked+' of '+d.required+' assigned';
+      if(!d.unfilled)      tip += ' · fully crewed';
+      else if(!inWin)      tip += ' · outside the drill-down window';
+      else                 tip += ' · click to list the '+d.unfilled+' still to fill';
+    }
+    cells += '<div class="'+cls.join(' ')+'"'
+      + (clickable ? ' onclick="opsCalDayClick(\''+key+'\')"' : '')
+      + (tip ? ' title="'+escapeHtml(tip)+'"' : '')
+      + '>'
+      +   '<span class="ops-cal-num">'+n+'</span>'
+      +   (d ? '<span class="ops-cal-asg" style="color:'+opsCalAsgColor(d)+'">'+d.booked+'</span>'
+              +'<span class="ops-cal-req">'+d.required+'</span>'
+            : '')
+      + '</div>';
+  }
+  const trail = (7 - ((firstDow + lastNum) % 7)) % 7;
+  for(let i = 0; i < trail; i++) cells += '<div class="ops-cal-cell pad"></div>';
+
+  let status = '';
+  if(_opsCalBusy)        status = '<div class="ops-cal-status">Loading '+OPS_CAL_MONTHS[m-1]+'…</div>';
+  else if(_opsCalError)  status = '<div class="ops-cal-status err">Day totals unavailable ('+escapeHtml(_opsCalError)+')</div>';
+
+  return '<div class="ops-subhead">'+total+' call'+(total===1?'':'s')+' to fill · '
+    +   positions+' position'+(positions===1?'':'s')+'</div>'
+    + '<div class="ops-cal">'
+    +   '<div class="ops-cal-bar">'
+    +     '<button class="ops-cal-nav" onclick="opsCalStep(-1)" title="Previous month"'+(_opsCalBusy?' disabled':'')+'>‹</button>'
+    +     '<span class="ops-cal-month">'+OPS_CAL_MONTHS[m-1]+' '+y+'</span>'
+    +     '<button class="ops-cal-nav" onclick="opsCalStep(1)" title="Next month"'+(_opsCalBusy?' disabled':'')+'>›</button>'
+    +     '<span class="ops-cal-note">every call that day, fully crewed ones included</span>'
+    +   '</div>'
+    +   '<div class="ops-cal-grid">'+cells+'</div>'
+    +   '<div class="ops-cal-key">'
+    +     '<span><b>assigned</b> top-left</span>'
+    +     '<span><b>required</b> bottom-right</span>'
+    +     '<span>click a day to list its unfilled calls</span>'
+    +   '</div>'
+    +   status
+    + '</div>';
+}
+
+// A day click is just another chip on this lane, so it reuses opsToggleChip
+// wholesale — which means it combines with the fill and lead chips, opens the
+// drill-down, shows a clearable chip, and clears itself when the window closes,
+// all without this function knowing any of that.
+function opsCalDayClick(dateIso){
+  opsToggleChip('calls_to_fill', 'day', dateIso);
 }
 
 // ── Lane 3: Acknowledgements outstanding ────────────────────────────────────
