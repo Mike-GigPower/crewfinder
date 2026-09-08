@@ -1,6 +1,6 @@
 {
-  "version": "5.35.0",
-  "release_date": "2026-09-08",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.35.0/TheGOAT.dmg",
-  "release_notes": "Convert to crew now fills in the applicant's own first and last name instead of guessing where the split falls, and flags the older records where it still has to guess."
+  "version": "5.36.0",
+  "release_date": "2026-09-09",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.36.0/TheGOAT.dmg",
+  "release_notes": "The Calls to fill card now switches between the donuts and a month calendar, showing the crew assigned and required for each day. Click a date to see that day's calls still needing crew."
 }
