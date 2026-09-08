@@ -8251,6 +8251,73 @@ def fetch_calls_for_ops(ss, start, end):
     return rows, None
 
 
+def ops_day_totals(rows):
+    """Ops landing — the per-day aggregate behind the 'Calls to fill' calendar
+    view. Deliberately computed over EVERY row get-calls-bulk.php returned, not
+    just the lane's unfilled subset:
+
+      the donuts answer "what still needs work"; the calendar answers "what does
+      each day look like". A day whose calls are all fully crewed is a real
+      answer to the second question, so it must show 6/6 rather than read as a
+      blank day. This is the ONE place in the lane where the two views describe
+      different populations, and the card's own subhead says so out loud.
+
+    Keyed on `date_iso` — the endpoint's own computed START date for the call —
+    so "calls starting that day" is the endpoint's date arithmetic, never
+    re-derived here. Cancelled calls are already excluded upstream by
+    get-calls-bulk.php's cancelled_at clause, so they cannot inflate a day.
+
+    `booked` (not `committed`) is the assigned figure, because that is the same
+    field the lane's shortfall pill and fill_state are built from — a day cell
+    and a call card must never disagree about how many people are on a job.
+
+    Returns { "YYYY-MM-DD": {"booked": B, "required": R, "calls": N,
+                             "unfilled": U} }
+    where `unfilled` is the count of that day's calls still short of crew — the
+    same booked < required predicate the lane uses, so a day cell can be shaded
+    without the client re-deriving the boundary."""
+    days = {}
+    for r in rows:
+        key = r.get("date_iso")
+        if not key:
+            continue
+        required = int(r.get("required") or 0)
+        booked   = int(r.get("booked") or 0)
+        d = days.get(key)
+        if d is None:
+            d = days[key] = {"booked": 0, "required": 0, "calls": 0, "unfilled": 0}
+        d["booked"]   += booked
+        d["required"] += required
+        d["calls"]    += 1
+        if required > 0 and booked < required:
+            d["unfilled"] += 1
+    return days
+
+
+def ops_calendar_window(default_days=28):
+    """Shared window parser for the two calls routes. Returns (start, end, error).
+
+    The calendar's month navigation lets the browser ask for a window the lane
+    itself never requests, so the span is validated and capped HERE rather than
+    trusted: a malformed or absurd range reaching get-calls-bulk.php is one
+    session-locking request we can decline for free. Format is re-validated by
+    the PHP as well; this is the cheap first gate, not the only one."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = request.args.get("start") or today.strftime("%Y-%m-%d")
+    end   = request.args.get("end")   or (today + timedelta(days=default_days)).strftime("%Y-%m-%d")
+    try:
+        s_dt = datetime.strptime(start, "%Y-%m-%d")
+        e_dt = datetime.strptime(end,   "%Y-%m-%d")
+    except Exception:
+        return None, None, "bad date format (expected YYYY-MM-DD)"
+    span = (e_dt - s_dt).days
+    if span < 0:
+        return None, None, "end is before start"
+    if span > 92:
+        return None, None, "window too wide (max 92 days)"
+    return start, end, None
+
+
 @app.route("/api/ops/calls", methods=["GET"])
 @require_cohort(*READ_ALL_COHORTS)
 def api_ops_calls():
@@ -8358,6 +8425,47 @@ def api_ops_calls():
         "window":       {"start": start, "end": end},
         "calls":        out,
         "counts":       counts,
+        # Additive: the calendar view's per-day aggregate for THIS window, so the
+        # card can switch views with no second request. `days` spans all calls in
+        # the window; `calls`/`counts` remain the unfilled subset above. Nothing
+        # that existed before this block reads it.
+        "days":         ops_day_totals(rows),
+    })
+
+
+@app.route("/api/ops/calls-calendar", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_calls_calendar():
+    """Ops landing — the 'Calls to fill' CALENDAR view's month navigation.
+
+    Returns the per-day aggregate ONLY, for an arbitrary window. Paging to a new
+    month must not disturb the lane: `calls` and `counts` are deliberately absent
+    so a month fetch can never silently replace the rows the donuts and the
+    drill-down list are built from. The card's initial calendar comes from
+    /api/ops/calls's own `days` block — this route is hit only when the user
+    pages away from the default window.
+
+    ONE SmartStaff request, same as the lane: get-calls-bulk.php holds the
+    per-session PHP file lock, so the browser serialises this behind the ops load
+    cycle (opsGated in the template). Gated and soft-failing exactly like
+    /api/ops/calls."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    start, end, werr = ops_calendar_window()
+    if werr is not None:
+        return jsonify({"unavailable": True, "error": werr})
+
+    rows, err = fetch_calls_for_ops(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-calls-calendar] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+
+    return jsonify({
+        "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "window":       {"start": start, "end": end},
+        "days":         ops_day_totals(rows),
     })
 
 
