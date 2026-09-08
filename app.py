@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.34.1"
+APP_VERSION    = "5.35.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6201,6 +6201,35 @@ def _recruit_split_name(full):
     return parts[0], " ".join(parts[1:])
 
 
+def _recruit_proposed_name(feed_row, detail):
+    """The first/last split to pre-fill the convert modal with, and where it came
+    from.
+
+    Since Sep 2026 both application forms ask for first and last name as separate
+    required fields, so `candidates.first_name` / `last_name` carry the
+    APPLICANT'S OWN answer — use it verbatim rather than re-deriving it. The
+    detail feed (recruitment-candidate-detail) is what carries them; the list feed
+    does not select them.
+
+    Older rows, and the 57 people who only ever gave a one-word name, have no
+    stored surname. Those still fall back to _recruit_split_name's guess — the
+    very guess this function exists to replace, kept because for them it remains
+    the only thing available.
+
+    Returns (first, last, source); source is "applicant" only when BOTH parts came
+    from the stored columns, otherwise "guessed". A partial is deliberately called
+    "guessed": a real given name beside a guessed surname is still a split ops
+    should eyeball, and one honest flag beats two that need combining at every
+    call site."""
+    detail = detail or {}
+    first = str(detail.get("first_name") or "").strip()
+    last  = str(detail.get("last_name")  or "").strip()
+    if first and last:
+        return first, last, "applicant"
+    g_first, g_last = _recruit_split_name(feed_row.get("name") or "")
+    return (first or g_first), (last or g_last), "guessed"
+
+
 def _recruit_norm_name(s):
     """Lowercase, drop punctuation, collapse whitespace — for tolerant name
     comparison ("de Silva" == "De  Silva.")."""
@@ -6543,7 +6572,7 @@ def api_recruitment_convert_preview(cand_id):
                                  f"(this one is '{status or 'unknown'}')."}), 409
 
     name = feed_row.get("name") or ""
-    first, last = _recruit_split_name(name)
+    first, last, name_source = _recruit_proposed_name(feed_row, detail)
     email  = detail.get("email")  or feed_row.get("email")  or ""
     phone  = detail.get("phone")  or feed_row.get("phone")  or ""
     worked = _recruit_worked_before(feed_row, detail)
@@ -6595,6 +6624,10 @@ def api_recruitment_convert_preview(cand_id):
         "name":               name,
         "proposed_firstname": first,
         "proposed_lastname":  last,
+        # "applicant" = both parts are the applicant's own answer, so the modal
+        # drops the "edit the split" nudge; "guessed" = we derived at least one
+        # part from the single name field and ops should check it.
+        "name_source":        name_source,
         "will_send":          will_send,
         "headshot_present":   bool(detail.get("headshot_url")),
         "worked_with_gigpower": worked,
@@ -6722,9 +6755,11 @@ def api_recruitment_convert(cand_id):
                                  f"(now '{status or 'unknown'}') — refusing to "
                                  "convert."}), 409
 
-    # 2. Name fallback (if the client somehow sent blanks, use the default split).
+    # 2. Name fallback (if the client somehow sent blanks, fall back to the SAME
+    #    proposal the modal was pre-filled with — the applicant's own split where
+    #    we have it, the derived guess only where we don't).
     if not first or not last:
-        d_first, d_last = _recruit_split_name(feed_row.get("name") or "")
+        d_first, d_last, _src = _recruit_proposed_name(feed_row, detail)
         first = first or d_first
         last  = last  or d_last
     if not first or not last:
