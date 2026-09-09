@@ -1,6 +1,6 @@
 {
-  "version": "5.37.0",
+  "version": "5.38.0",
   "release_date": "2026-09-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.37.0/TheGOAT.dmg",
-  "release_notes": "Crew with a fatigue or venue-change warning now appear in Crew Finder with an amber warning instead of being hidden — you decide whether it works. Genuine clashes and unavailability still block, and the minimum-rating filter opens at 1 so new starters show up."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.38.0/TheGOAT.dmg",
+  "release_notes": "The booking dialog is wider and now shows each call's notes from SmartStaff in full, so you can read the site instructions without opening every call. Dialogs also nest — open a call from a booking and ✕ or Esc takes you back to the booking, scrolled right where you left it."
 }
