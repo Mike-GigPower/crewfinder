@@ -3593,12 +3593,25 @@ def ss_create_contact(ss, customer_id, data):
 # instead (e.g. CONFIG.get("new_crew_temp_password", "12345")).
 NEW_CREW_TEMP_PASSWORD = "12345"
 
+# The rate a conversion-created crew member starts on. add-crew.php's own form
+# offers 10 (T1) / 25 (T1A) / 26 (T1B) and nothing else, so this must stay inside
+# that set. NOT optional: users.paygradeID is int NOT NULL with no column default,
+# so anything we do not send is stored as 0 — a crew member with no rate, which the
+# UI then hides by rendering the first dropdown option. Every crew member created
+# by the conversion before 9 Sep 2026 landed that way; see
+# claude/FINDINGS-import-times-invents-rates-2026-09-09.md
+DEFAULT_NEW_CREW_PAYGRADE = 10   # T1
+
 
 def ss_create_crew(ss, data, ein, password, photo=None):
     """Create a crew member (usergroupID 3) via SmartStaff crew/add in ajax mode.
     Username is set to the EIN and a temp password applied. add-crew.php force-sets
-    usergroupID=3, active=1, rating=1, start_date and new_employee on the add path;
-    we supply the person fields, crew-group memberships and credentials.
+    usergroupID=3, start_date and new_employee on the add path; we supply the person
+    fields, crew-group memberships, credentials and the starting paygrade.
+
+    paygradeID is sent DELIBERATELY. add-crew.php writes that column from POST
+    unconditionally, and users.paygradeID has no column default, so omitting the
+    key stored 0 — every conversion-created crew member landed with no rate.
     Returns (user_id, error_str). A non-numeric body is a failure — the patched
     add-crew.php returns 'ERROR: ...' for a username/EIN collision."""
     post = {
@@ -3609,6 +3622,7 @@ def ss_create_crew(ss, data, ein, password, photo=None):
         "ein":               str(ein),
         "active":            "1",
         "rating":            "1",
+        "paygradeID":        str(data.get("paygradeID") or DEFAULT_NEW_CREW_PAYGRADE),
         "firstname":         data.get("firstname", ""),
         "lastname":          data.get("lastname", ""),
         "mobile":            data.get("mobile", ""),
@@ -6781,9 +6795,11 @@ def api_recruitment_convert(cand_id):
                                  "create a new record anyway.",
                         "needs_ack": True}), 409
 
-    # 4. Map candidate -> crew fields (NO paygrade/tax — SmartStaff defaults stand,
-    #    matching the manual process). notes = the provenance line plus whichever
-    #    ops notes were ticked to carry.
+    # 4. Map candidate -> crew fields. Tax fields are left to SmartStaff, but the
+    #    PAYGRADE IS NOT OPTIONAL — see ss_create_crew. The manual Add Crew form
+    #    makes a human pick one from T1/T1A/T1B; there is no column default behind
+    #    it, so "leave it out and let SmartStaff decide" silently stored 0.
+    #    notes = the provenance line plus whichever ops notes were ticked to carry.
     #
     #    THE NOTES FETCH IS BEST-EFFORT, DELIBERATELY. By this point the duplicate
     #    guard has passed and an EIN is about to be assigned, so aborting here over
