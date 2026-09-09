@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.36.1"
+APP_VERSION    = "5.37.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -7360,19 +7360,40 @@ def api_availability():
         crew_lic     = crew.get("licences") or []
 
         call_results = []
-        any_conflict = False
         for t in targets:
             # Exclude this target call's own shifts so a crew member already
             # booked on this call doesn't trigger a self-conflict (they're
             # already surfaced in the "Already Booked" section at the top).
             shifts_for_target = [s for s in shifts if str(s.get("call_id")) != str(t["call_id"])]
-            conflict, reason, _ = check_conflict(shifts_for_target, t["start"], t["end"], t["venue"])
+            # Rule 1 and unavailability are the ONLY hard blocks here, because they
+            # are exactly what sss::addToCall refuses at write time: a half-open
+            # overlap, and any calendar row with type <> 2. Rules 2/3/4 are policy
+            # positions ops may legitimately override with knowledge the system does
+            # not have - DESIGN-clash-warnings-v0_1 D1 classified them as warnings in
+            # Aug 2026, but only the Schedule ever honoured it. Until now the Finder
+            # dropped warned crew into the conflicts bucket, which renders no
+            # checkbox at all: a warning that silently prevented the work.
+            conflict, reason, _ = check_conflict(
+                shifts_for_target, t["start"], t["end"], t["venue"], rules=(1,))
             if not conflict:
                 for u in unavails:
                     if datetime.fromisoformat(u["start"]) <= t["end"] and datetime.fromisoformat(u["end"]) >= t["start"]:
                         conflict = True
                         reason   = f"Unavailable: {u.get('reason','Leave/unavailable')}"
                         break
+
+            # Advisory pass, only for crew who are actually bookable - a blocked row
+            # must never also carry a warning, or the detail cell reads as two
+            # competing reasons. check_conflict returns on the FIRST rule that fires,
+            # so someone tripping both 2 and 3 shows one reason; same as today.
+            conflict_warning = ""
+            warning_rule     = 0
+            if not conflict:
+                warned, warn_reason, warn_rule = check_conflict(
+                    shifts_for_target, t["start"], t["end"], t["venue"], rules=(2, 3, 4))
+                if warned:
+                    conflict_warning = warn_reason
+                    warning_rule     = warn_rule
 
             # Induction check — controlled AND published venues only; the gate is
             # precomputed per target above. "Complete" was already being returned
@@ -7416,10 +7437,10 @@ def api_availability():
                 "detail":            reason,
                 "induction_warning": induction_warning,
                 "induction_current": induction_current,
+                "conflict_warning":  conflict_warning,
+                "warning_rule":      warning_rule,
                 "licence_status":    lic_status,
             })
-            if conflict and not t.get("soft"):
-                any_conflict = True
 
         # Availability splits along hard vs soft. The partial bucket and the
         # "x/y calls" label are about the calls actually being filled (hard), so
@@ -7459,6 +7480,12 @@ def api_availability():
         # Collect all induction warnings across calls (deduplicated)
         induction_warnings = list(dict.fromkeys(
             r["induction_warning"] for r in call_results if r["induction_warning"]
+        ))
+
+        # Same shape as induction_warnings above: a per-crew advisory list the UI
+        # renders without it ever touching availability.
+        conflict_warnings = list(dict.fromkeys(
+            r["conflict_warning"] for r in call_results if r["conflict_warning"]
         ))
 
         # Kept in a SEPARATE list from induction_warnings on purpose. The
@@ -7530,6 +7557,7 @@ def api_availability():
             "free_of":             len(targets),
             "detail":              conflict_details,
             "induction_warnings":  induction_warnings,
+            "conflict_warnings":   conflict_warnings,
             "induction_currents":  induction_currents,
             "licence_summary":     licence_summary,
         }
@@ -9811,7 +9839,7 @@ GOAT_TOOLS = [
     },
     {
         "name": "search_availability",
-        "description": "Search crew availability for one or more specific calls. Returns available crew, conflicts, and skipped crew with their ratings, groups, and shift timeline.",
+        "description": "Search crew availability for one or more specific calls. Returns available crew, conflicts, and skipped crew with their ratings, groups, and shift timeline. An available crew member may carry a 'warnings' list - fatigue, venue-change or 24-hour-load advisories (conflict rules 2, 3 and 4). A warning does NOT make them unavailable and must never be reported as a conflict, but always state it when you name that crew member, so the operator can judge it.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -10271,21 +10299,32 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
                         continue
                 shifts = [s for s in shifts_by_name.get(crew["name"], []) if s.get("status") == 5]
                 conflict = False
+                warnings = []
                 for t in targets:
                     # Exclude this target call's own shifts so a crew member already
                     # booked on this call doesn't trigger a self-conflict.
                     shifts_for_target = [s for s in shifts if str(s.get("call_id")) != str(t.get("call_id"))]
-                    c_flag, reason, _ = check_conflict(shifts_for_target, t["start"], t["end"], t.get("venue",""))
+                    # Same severity split as api_search. THE GOAT and the Finder
+                    # must agree about who is available; two layers applying
+                    # different rules to the same data is the failure that cost a
+                    # day on booking 12034 (9 Sep 2026).
+                    c_flag, reason, _ = check_conflict(
+                        shifts_for_target, t["start"], t["end"], t.get("venue",""), rules=(1,))
                     if c_flag:
                         results["conflicts"].append({"name": crew["name"], "reason": reason})
                         conflict = True
                         break
+                    w_flag, w_reason, _ = check_conflict(
+                        shifts_for_target, t["start"], t["end"], t.get("venue",""), rules=(2, 3, 4))
+                    if w_flag and w_reason not in warnings:
+                        warnings.append(w_reason)
                 if not conflict:
                     entry = {
                         "name": crew["name"],
                         "id": cid,
                         "rating": crew_rating,
-                        "groups": crew_groups
+                        "groups": crew_groups,
+                        "warnings": warnings
                     }
                     if crew_distance is not None:
                         entry["distance_km"] = crew_distance
