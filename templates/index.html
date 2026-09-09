@@ -15140,11 +15140,90 @@ function resetManualBooking(){
 
 window._bookingIndex = window._bookingIndex || {};   // booking_id -> {name, venue, calls:[{call_id, call_name}]}
 
-function openEntityModal(){ document.getElementById('entity-modal').style.display = 'flex'; }
+// ── Dialog back-stack ───────────────────────────────────────────────────────
+// The shell is a single element, so opening a call from a booking REPLACES the
+// booking rather than covering it. This stack is what makes that feel nested:
+// before a view opens a child view it pushes how to get back to itself and how
+// far it was scrolled, and X / Esc / backdrop pop one level instead of
+// dismissing. A frame carries a key so a view re-entered by its own
+// "< Back to ..." button trims its own stale frame instead of stacking a
+// duplicate. The Close BUTTON is still a hard dismiss -- X steps back, Close is
+// done -- and every hard close empties the stack.
+var _entityStack = [];
+
+function _entityPanel(){ return document.getElementById('entity-modal-panel'); }
+
+function entityStackPush(key, label, reopen){
+  var top = _entityStack[_entityStack.length - 1];
+  if(top && top.key === key) return;          // already the thing we'd return to
+  var p = _entityPanel();
+  _entityStack.push({key: key, label: label, reopen: reopen, scroll: p ? p.scrollTop : 0});
+}
+
+// Re-entering a view (its own Back button, a save that re-renders it) drops the
+// frame for that view and anything pushed after it, so the stack always matches
+// what is actually on screen.
+function entityStackTrim(key){
+  for(var i = 0; i < _entityStack.length; i++){
+    if(_entityStack[i].key === key){
+      window._entityRestoreScroll = _entityStack[i].scroll;   // a "< Back to ..." button
+      _entityStack.length = i;
+      return;
+    }
+  }
+}
+
+function entityStackTop(){ return _entityStack[_entityStack.length - 1] || null; }
+
+function entityStackBack(){
+  var f = _entityStack.pop();
+  if(!f) return false;
+  window._entityRestoreScroll = f.scroll;
+  f.reopen();
+  return true;
+}
+
+// Put the parent back where it was. Called at the end of a view's render, once
+// the real content is in the DOM -- until then the panel is short and any
+// scrollTop we set would clamp to 0. Set twice: now, and after the browser has
+// laid the content out.
+function entityRestoreScroll(){
+  var y = window._entityRestoreScroll;
+  if(y == null) return;
+  window._entityRestoreScroll = null;
+  var p = _entityPanel();
+  if(!p) return;
+  p.scrollTop = y;
+  if(window.requestAnimationFrame) requestAnimationFrame(function(){ p.scrollTop = y; });
+  setTimeout(function(){ p.scrollTop = y; }, 0);
+}
+
+// X, Esc and the backdrop: step back if there is somewhere to step back to.
+function entityBack(){
+  if(window._keypay && window._keypay.writing) return;   // same guard as closeEntityModal
+  if(_entityStack.length){ entityStackBack(); return; }
+  closeEntityModal();
+}
+
+// The shared dialog shell opens at ENTITY_MODAL_W. A view that needs more room
+// widens it for its own render — today only the booking view, whose call rows
+// carry notes. Every open resets it first, so a wide view never leaks its width
+// into the next dialog to use the shell.
+var ENTITY_MODAL_W = 560;
+var ENTITY_MODAL_W_BOOKING = 760;
+function entityModalWidth(px){
+  var p = document.getElementById('entity-modal-panel');
+  if(p) p.style.width = (px || ENTITY_MODAL_W) + 'px';
+}
+function openEntityModal(){
+  entityModalWidth(ENTITY_MODAL_W);
+  document.getElementById('entity-modal').style.display = 'flex';
+}
 function closeEntityModal(){
   // Never dismiss while a KeyPay payroll write is in flight (§8) — closing mid-write
   // would drop the outcome screen. Applies to the ✕, backdrop click and global Esc.
   if(window._keypay && window._keypay.writing) return;
+  _entityStack = [];
   document.getElementById('entity-modal').style.display = 'none';
   goatHarryStop();
 }
@@ -15165,7 +15244,7 @@ document.addEventListener('keydown', function(e){
 document.addEventListener('keydown', function(e){
   if(e.key === 'Escape'){
     const m = document.getElementById('entity-modal');
-    if(m && m.style.display === 'flex') closeEntityModal();
+    if(m && m.style.display === 'flex') entityBack();
   }
 });
 
@@ -15687,6 +15766,7 @@ function goatHarryStop(){
 
 async function openCallDialog(bookingId, callId){
   openEntityModal();
+  entityStackTrim('call:'+bookingId+':'+callId);
   document.getElementById('entity-modal-title').textContent = 'Call';
   var _hb = window._bookingIndex[bookingId];
   if(_hb) goatHarryCheck(_hb.name);
@@ -15845,8 +15925,11 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   // KEPT: SmartStaff, Edit and Crew Notes. None of them can damage the
   // cancellation record, and Crew Notes is how ops tell the crew what happened
   // until the portal has a push route (see the slice E patch).
+  entityRestoreScroll();   // stepped back into this view -- put it where it was
+  var _backTo = entityStackTop();
   document.getElementById('entity-modal-actions').innerHTML =
-      (isCancelled ? '' : entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true}))
+      (_backTo ? entityBtn('‹ Back to '+_backTo.label, 'entityBack()') : '')
+    + (isCancelled ? '' : entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true}))
     + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')")
     + (window._curCallEdit
         ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
@@ -15873,6 +15956,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
 // "‹ Back to call" so an ops person who opened this by accident has an obvious
 // way out that changes nothing.
 async function openCallStandDown(bookingId, callId){
+  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
   document.getElementById('entity-modal-title').textContent = 'Stand down call';
   document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading roster…</div>';
@@ -16091,6 +16175,7 @@ function goatFmtElapsed(sec){
 }
 
 async function openCallResponses(bookingId, callId){
+  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
   document.getElementById('entity-modal-title').textContent = 'Response history';
   document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
@@ -16612,6 +16697,7 @@ function _ctUnbookedNote(){
 }
 
 async function openCallTimes(bookingId, callId){
+  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
   document.getElementById('entity-modal-title').textContent = 'Enter Times';
   document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading times…</div>';
@@ -17169,6 +17255,8 @@ function _abCallWhen(startUnix, startTime){
 // (get-booking.php), which now carries ein + email on each crew member.
 
 function openCrewLists(bookingId){
+  entityModalWidth(ENTITY_MODAL_W);
+  entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
   // Remembered per-person choices. The object below is the FIRST-RUN default —
   // what a fresh install shows before anyone has generated a list. Anything the
   // operator picked last time overrides it. `who` is validated because storage
@@ -17394,6 +17482,8 @@ function _clHdrRow(label, value){
 let _tiState = null;  // {bookingId, data, include:{call_id:bool}}
 
 function openTimesImport(bookingId){
+  entityModalWidth(ENTITY_MODAL_W);
+  entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
   document.getElementById('entity-modal-title').textContent = 'Import Times';
   document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML =
@@ -17698,8 +17788,16 @@ async function generateGoogleSheet(bookingId){
   }
 }
 
+// Opening a call from inside a booking: remember the booking (and where it was
+// scrolled) so X / Esc come back to it instead of dismissing everything.
+function entityOpenCall(bookingId, callId){
+  entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
+  openCallDialog(bookingId, callId);
+}
+
 async function openBookingDialog(bookingId){
   openEntityModal();
+  entityStackTrim('booking:'+bookingId);
   _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
   _bkSupMode  = false; _bkSupBoss = null; _bkSupSel  = {};
   const cached = window._bookingIndex[bookingId];
@@ -17867,6 +17965,13 @@ function bkCallRow(bookingId, c, maps, smaps){
   var whenLine = when
     ? '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(when)+'</div>'
     : '';
+  // Call notes, straight from SmartStaff's call record. Shown in full and
+  // wrapped rather than clipped -- they carry site instructions ops need before
+  // they open the call.
+  var cnotes = decodeEntities(c.notes || '').replace(/\s+$/, '');
+  var notesLine = cnotes
+    ? '<div style="font-size:11px;color:var(--muted);margin-top:4px;white-space:pre-wrap;overflow-wrap:anywhere">'+escapeHtml(cnotes)+'</div>'
+    : '';
 
   if(_bkFeedMode){
     var isSrc = (_bkFeedSrc !== null && String(_bkFeedSrc) === String(c.call_id));
@@ -17967,17 +18072,18 @@ function bkCallRow(bookingId, c, maps, smaps){
   }
 
   // Normal mode.
-  return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" '
+  return '<div onclick="entityOpenCall(\''+bookingId+'\',\''+c.call_id+'\')" '
     + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
     + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
     + 'background:var(--surface2)" '
     + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
     + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
-    + '<div style="min-width:0">'
+    + '<div style="flex:1;min-width:0">'
     +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
     +   whenLine
+    +   notesLine
     + '</div>'
-    + '<span style="display:flex;align-items:center">'+bkFeedCount(c)
+    + '<span style="display:flex;align-items:center;flex-shrink:0;margin-left:10px">'+bkFeedCount(c)
     + '<span style="font-size:10px;color:var(--accent)">view \u2192</span></span></div>';
 }
 function bkCallsSection(bookingId, d){
@@ -18415,6 +18521,7 @@ async function bkSupClear(bookingId, childId){
 }
 
 function renderBookingDialog(bookingId, d, cached){
+  entityModalWidth(ENTITY_MODAL_W_BOOKING);   // room for the call notes
   window._curBookingEdit = d || null;
   var name = (d && d.name) || (cached && cached.name) || 'Booking';
   document.getElementById('entity-modal-title').textContent = name;
@@ -18439,13 +18546,14 @@ function renderBookingDialog(bookingId, d, cached){
   } else {
     var calls = (cached && cached.calls) || [];
     var cachedList = calls.length
-      ? calls.map(function(c){ return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+'</span><span style="font-size:10px;color:var(--accent)">view →</span></div>'; }).join('')
+      ? calls.map(function(c){ return '<div onclick="entityOpenCall(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+'</span><span style="font-size:10px;color:var(--accent)">view →</span></div>'; }).join('')
       : '<div style="color:var(--muted);font-size:12px">No calls cached — open from the Schedule or Crew Finder to list calls.</div>';
     callsSection = '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>' + cachedList;
   }
   document.getElementById('entity-modal-body').innerHTML =
       rows
     + '<div id="bk-calls-wrap">' + callsSection + '</div>';
+  entityRestoreScroll();   // stepped back into this view -- put it where it was
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
     + (d
@@ -18521,6 +18629,8 @@ function efSelect(id, items, currentId, placeholder){
 // ---- booking edit ----
 
 async function openBookingEditForm(bookingId){
+  entityModalWidth(ENTITY_MODAL_W);
+  entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
   var d = window._curBookingEdit;
   if(!d) return;
   document.getElementById('entity-modal-title').textContent = 'Edit booking';
@@ -18597,6 +18707,7 @@ async function saveBookingEdit(bookingId){
 // ---- call edit ----
 
 function openCallEditForm(bookingId, callId){
+  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
   var m = window._curCallEdit;
   if(!m) return;
   document.getElementById('entity-modal-title').textContent = 'Edit call';
@@ -18681,6 +18792,8 @@ function acToggleOther(){
 }
 
 function openAddCallForm(bookingId){
+  entityModalWidth(ENTITY_MODAL_W);
+  entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
   document.getElementById('entity-modal-title').textContent = 'Add call';
   document.getElementById('entity-modal-sub').textContent   = 'New call \u00b7 Booking #'+bookingId;
   var today = new Date().toISOString().slice(0,10);
@@ -24855,6 +24968,12 @@ function toggleSchedBooking(bid){
 // so it uses isReadOnlyCohort (the existing leadership-class helper) rather
 // than the _cohort !== 'admin' test the neighbours use. Not an oversight.
 function openCrewNotes(bookingId, callId){
+  // Reached from the booking (no callId) and from a call. Remember whichever
+  // one sent us here.
+  entityStackPush(callId ? 'call:'+bookingId+':'+callId : 'booking:'+bookingId,
+                  callId ? 'call' : 'booking',
+                  callId ? function(){ openCallDialog(bookingId, callId); }
+                         : function(){ openBookingDialog(bookingId); });
   if(!bookingId) return;
   if(window._cohort !== 'admin' && !window.isReadOnlyCohort()) return;
   // A callId targets that call's notes panel: the portal auto-expands it,
@@ -25196,8 +25315,8 @@ function applyGoldRows(){
 </div>
 
 <div id="entity-modal" style="display:none;position:fixed;inset:0;z-index:99991;
-     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeEntityModal()">
-  <div style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)entityBack()">
+  <div id="entity-modal-panel" style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
               width:560px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
                 border-bottom:1px solid var(--border);background:#0a0a0a">
@@ -25205,7 +25324,7 @@ function applyGoldRows(){
         <div id="entity-modal-title" style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.06em;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
         <div id="entity-modal-sub" style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace"></div>
       </div>
-      <button onclick="closeEntityModal()" style="background:none;border:none;color:var(--muted);
+      <button onclick="entityBack()" style="background:none;border:none;color:var(--muted);
               font-size:20px;cursor:pointer;line-height:1;flex-shrink:0;margin-left:12px">✕</button>
     </div>
     <div id="entity-modal-body" style="padding:16px 18px"></div>
