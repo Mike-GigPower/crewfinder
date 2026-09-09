@@ -143,15 +143,9 @@
 				'emergency_contact'	=> $db->sc(filter_var($_POST['emergency_contact'], FILTER_SANITIZE_STRING, FILTER_FLAG_NO_ENCODE_QUOTES)),
 				'emergency_phone'	=> $db->sc(filter_var($_POST['emergency_phone'], FILTER_SANITIZE_STRING)),
 				
-				'paygradeID'	=> $db->sc(filter_var($_POST['paygradeID'], FILTER_SANITIZE_STRING)),
-				
-				'tax_file_no_supplied'	=> $db->sc(filter_var($_POST['tax_file_no_supplied'], FILTER_SANITIZE_STRING)),
-				'tax_free_threshold'	=> $db->sc(filter_var($_POST['tax_free_threshold'], FILTER_SANITIZE_STRING)),
-				'tfn'					=> $db->sc(filter_var($_POST['tfn'], FILTER_SANITIZE_STRING)),
 				//'union'					=> $db->sc(filter_var($_POST['union'], FILTER_SANITIZE_STRING)),
 				
 				//'super'					=> $db->sc(filter_var($_POST['super'], FILTER_SANITIZE_STRING)),
-				'tax_scale'				=> $db->sc(filter_var($_POST['tax_scale'], FILTER_SANITIZE_STRING)),
 				
 				// old variables imported over
 				//'subcontractor'			=> $db->sc(filter_var($_POST['subcontractor'], FILTER_SANITIZE_STRING)),
@@ -159,6 +153,32 @@
 				//'pp_post'				=> $db->sc(filter_var($_POST['pp_post'], FILTER_SANITIZE_STRING)),
 				//'pp_mod_employee'		=> $db->sc(filter_var($_POST['pp_mod_employee'], FILTER_SANITIZE_STRING)),
 			);
+
+			/*
+			/* Fields the ajax (GOAT) add path does not necessarily send. Writing them
+			/* unconditionally pushed '' into paygradeID -- an int NOT NULL column with
+			/* no default -- which MySQL stores as 0, i.e. a crew member with no rate
+			/* that the UI then disguises by rendering the first dropdown option.
+			/* Only write what was actually posted.
+			*/
+
+			$optionalFields = array('paygradeID', 'tax_file_no_supplied',
+			                        'tax_free_threshold', 'tfn', 'tax_scale');
+
+			foreach($optionalFields as $optField)
+			{
+
+				if(!isset($_POST[$optField]))
+					continue;
+
+				/* an empty paygrade is never a valid grade -- never store it */
+
+				if($optField == 'paygradeID' && trim($_POST[$optField]) === '')
+					continue;
+
+				$dataArray[$optField] = $db->sc(filter_var($_POST[$optField], FILTER_SANITIZE_STRING));
+
+			}
 
 			/*
 			/* update password if set */
@@ -244,7 +264,15 @@
 					'info_hash'     => $newInfoHash,
 					'updated'       => TRUE
 				);
-			
+
+				/*
+				/* never insert a crew member with no rate -- users.paygradeID has no
+				/* column default, so an omitted value would be stored as 0.
+				*/
+
+				if(!isset($dataArray['paygradeID']))
+					$dataArray['paygradeID'] = $db->sc(10);   /* T1 */
+
 				$db->insert('users', $dataArray);
 				$savedUserID = $db->insert_id();
 
