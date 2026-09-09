@@ -25,6 +25,7 @@
   --conflict:#e31e24;
   --conf-bg:rgba(227,30,36,0.1);
   --warn:#f59e0b;
+--warn-bg:rgba(245,158,11,0.1);
   --shift-bar:#d4af37;
   --target-green:#d4af37;
 }
@@ -131,6 +132,7 @@ input[type=range]{flex:1;accent-color:var(--accent)}
    pill — greyed and dimmed so it never competes with the induction/conflict
    badges, which block a booking; this one only informs. */
 .push-warn{color:var(--muted);opacity:.55;filter:grayscale(1);font-size:11px;margin-left:5px;cursor:default}
+.clash-warn{color:var(--warn);font-size:11px;margin-left:5px;cursor:help}
 .cd-push-warn{color:var(--muted);font-size:11px;margin-top:3px}
 .crew-remove-btn{background:none;border:none;color:var(--muted);font-size:13px;line-height:1;cursor:pointer;padding:0 4px;border-radius:3px;opacity:.6}
 .crew-remove-btn:hover{color:#ef4444;background:rgba(239,68,68,0.12);opacity:1}
@@ -145,6 +147,7 @@ tr.partial .name-cell{border-left-color:var(--warn)}
 .cb-pill.ok{color:var(--available);background:var(--avail-bg)}
 .cb-pill.no{color:var(--conflict);background:var(--conf-bg)}
 .cb-pill.soft{color:var(--suggest);background:var(--suggest-bg)}
+.cb-pill.warn{color:var(--warn);background:var(--warn-bg)}
 .call-card-top{display:flex;align-items:center;gap:7px;margin-bottom:3px}
 .call-num{font-size:10px;color:var(--muted)}
 .call-name{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
@@ -1653,8 +1656,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
           <div class="cf-dd-sec">
             <div class="cf-dd-lbl">Minimum rating</div>
             <div class="rating-row">
-              <input type="range" id="rating-slider" min="1" max="10" value="2" oninput="document.getElementById('rating-val').textContent=this.value;cfRenderChips()" onchange="cfReSearchIfActive()">
-              <span class="rating-val" id="rating-val">2</span>
+              <input type="range" id="rating-slider" min="1" max="10" value="1" oninput="document.getElementById('rating-val').textContent=this.value;cfRenderChips()" onchange="cfReSearchIfActive()">
+              <span class="rating-val" id="rating-val">1</span>
             </div>
           </div>
           <div class="cf-dd-sec">
@@ -4348,6 +4351,16 @@ function pushDetailHtml(crew){
   if(!crew || crew.push_ok !== false) return '';
   return '<div class="cd-push-warn">No Crew Hub push notifications</div>';
 }
+// Crew who ARE bookable but carry a Rule 2/3/4 advisory - fatigue gap, venue
+// change, or 24hr load. Rule 1 and unavailability never reach here: those block,
+// and the row renders under CONFLICTS with no checkbox. This marker is
+// deliberately louder than pushWarnHtml's, which is greyed out on purpose: this
+// one is a safety rail we chose to make overridable, so it must not be missable.
+function conflictWarnHtml(crew){
+  const w = crew && crew.conflict_warnings;
+  if(!w || !w.length) return '';
+  return '<span class="clash-warn" title="'+escapeHtml(w.join('\n'))+'">\u26A0</span>';
+}
 function breakdownHtml(crew){
   if(!crew.call_results||crew.call_results.length<=1)return '';
   return '<div class="call-breakdown">'+crew.call_results.map(function(r){
@@ -4355,10 +4368,13 @@ function breakdownHtml(crew){
     // Conflict beats mode: a clash stays red (.no) even when it's a soft call.
     // A soft call the crew is free for is violet (.soft, ranked-against, not
     // searched). The ~ prefix marks the soft call in either case.
-    var cls = r.available ? (soft?'soft':'ok') : 'no';
+    // A bookable-but-warned call is amber (.warn) and keeps its checkbox.
+    var cls = r.available ? (r.conflict_warning ? 'warn' : (soft?'soft':'ok')) : 'no';
     var tip = (soft?'Considered (ranked, not searched) — ':'')
-            + (r.available?'Available':'Conflict: '+r.detail);
-    return '<span class="cb-pill '+cls+'" title="'+tip+'">'+(soft?'~':'')+'#'+r.call_num+'</span>';
+            + (r.available
+                 ? (r.conflict_warning ? 'Warning: '+r.conflict_warning : 'Available')
+                 : 'Conflict: '+r.detail);
+    return '<span class="cb-pill '+cls+'" title="'+escapeHtml(tip)+'">'+(soft?'~':'')+'#'+r.call_num+'</span>';
   }).join('')+'</div>';
 }
 
@@ -4434,7 +4450,8 @@ function addTableRow(tbody,crew,status,targets){
   const isSelectable=status==='available'||status==='partial';
   const isGoat = crew._isGoat === true;
   const tr=document.createElement('tr');
-  tr.className=status==='partial'?'partial available':status;
+  const isWarned=!!(crew.conflict_warnings&&crew.conflict_warnings.length);
+  tr.className=(status==='partial'?'partial available':status)+(isWarned?' warned':'');
   if(isGoat) tr.style.cssText='background:rgba(212,175,55,0.08);box-shadow:inset 0 0 0 1px rgba(212,175,55,0.3)';
   const cbTd=document.createElement('td');cbTd.className='cb-cell';
   if(isSelectable){
@@ -4450,7 +4467,7 @@ function addTableRow(tbody,crew,status,targets){
   tr.appendChild(cbTd);
   function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
   const ph=phoneLink(crew.phone);
-  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew);
+  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew);
   const nameTd=mkTd('name-cell',nameHtml);
   if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
   tr.appendChild(nameTd);
@@ -4464,8 +4481,9 @@ function addTableRow(tbody,crew,status,targets){
   tr.appendChild(mkTd('rating-cell',crew.rating));
   tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
   const detailParts=(crew.call_results||[]).filter(r=>r.detail).map(r=>'#'+r.call_num+': '+r.detail);
+  const warnParts=(crew.call_results||[]).filter(r=>r.conflict_warning).map(r=>'#'+r.call_num+': '+r.conflict_warning);
   const indParts=(crew.induction_warnings||[]);
-  const detail=[...detailParts,...indParts].join(' | ')||(crew.detail||crew.reason||'');
+  const detail=[...detailParts,...warnParts,...indParts].join(' | ')||(crew.detail||crew.reason||'');
   tr.appendChild(mkTd('detail-cell'+(status==='skipped'?' skip':''),detail,detail));
   tbody.appendChild(tr);
 }
@@ -4561,7 +4579,8 @@ function renderTimeline(result,details,targets){
 
   function addTlRow(crew,status){
     const isSelectable=status==='available'||status==='partial';
-    const tr=document.createElement('tr');tr.className=status==='partial'?'partial available':status;
+    const isWarned=!!(crew.conflict_warnings&&crew.conflict_warnings.length);
+    const tr=document.createElement('tr');tr.className=(status==='partial'?'partial available':status)+(isWarned?' warned':'');
     const cbTd=document.createElement('td');cbTd.className='cb-cell';
     if(isSelectable){
       const cb=document.createElement('input');cb.type='checkbox';
@@ -4576,7 +4595,7 @@ function renderTimeline(result,details,targets){
     tr.appendChild(cbTd);
     function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
     const ph=phoneLink(crew.phone);
-    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew));
+    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew));
     tr.appendChild(nameTd);
     attachCrewCardHover(nameTd,crew);
     tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
@@ -4666,8 +4685,9 @@ function renderTimeline(result,details,targets){
     bodyInners.push(inner); bodyCells.push(tlTd);
 
     const detailParts=(crew.call_results||[]).filter(r=>r.detail).map(r=>'#'+r.call_num+': '+r.detail);
+    const warnParts=(crew.call_results||[]).filter(r=>r.conflict_warning).map(r=>'#'+r.call_num+': '+r.conflict_warning);
     const indParts=(crew.induction_warnings||[]);
-    const detail=[...detailParts,...indParts].join(' | ')||(crew.detail||crew.reason||'');
+    const detail=[...detailParts,...warnParts,...indParts].join(' | ')||(crew.detail||crew.reason||'');
     const dtd=document.createElement('td');
     dtd.className='detail-cell'+(status==='skipped'?' skip':'');
     dtd.title=detail;dtd.textContent=detail;
@@ -4755,7 +4775,7 @@ function removeChip(name){
   });
   updateSelCount();
 }
-function selectAll(){document.querySelectorAll('tr.available input[type=checkbox], tr.partial input[type=checkbox]').forEach(cb=>{if(!cb.checked){cb.checked=true;cb.dispatchEvent(new Event('change'))}})}
+function selectAll(){document.querySelectorAll('tr.available:not(.warned) input[type=checkbox], tr.partial:not(.warned) input[type=checkbox]').forEach(cb=>{if(!cb.checked){cb.checked=true;cb.dispatchEvent(new Event('change'))}})}
 function clearAll(){document.querySelectorAll('input[type=checkbox]').forEach(cb=>{cb.checked=false;cb.closest('tr')?.classList.remove('row-selected')});selected.clear();updateSelCount()}
 function copyNames(){navigator.clipboard.writeText([...selected.keys()].join('\n'));showFeedback('Copied')}
 function copyPhones(){navigator.clipboard.writeText([...selected.values()].map(c=>c.name+'\t'+c.phone).join('\n'));showFeedback('Copied with phones')}
