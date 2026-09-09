@@ -1,6 +1,6 @@
 {
-  "version": "5.36.0",
+  "version": "5.36.1",
   "release_date": "2026-09-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.36.0/TheGOAT.dmg",
-  "release_notes": "The Calls to fill card now switches between the donuts and a month calendar, showing the crew assigned and required for each day. Click a date to see that day's calls still needing crew."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.36.1/TheGOAT.dmg",
+  "release_notes": "Crew created through the applicant conversion, or Administration → Add Crew Member, now start on a T1 pay rate instead of no rate at all. The crew already affected and their upcoming bookings have been corrected."
 }
