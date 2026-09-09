@@ -125,15 +125,24 @@
 				$callInfo->end   = date('Y-m-d G:i:s', $callInfo->end);
 
 				/*
-				/* build where clauses for checking for clashes */
+								/*
+				/* Build the clash WHERE clause.
+				/*
+				/* Half-open comparison: a row clashes only if it genuinely covers
+				/* time this call also covers. The previous four-clause BETWEEN form
+				/* was inclusive at both ends, so a shift ending at exactly 12:00
+				/* "clashed" with a call starting at exactly 12:00 - back-to-back
+				/* calls refused each other at write time, while check_conflict's
+				/* Rule 1 (strict) passed them. The Finder said available and the
+				/* write said no. Raised 9 Sep 2026 on booking 12034 call 38643.
+				/*
+				/* Equivalent to the old form for every genuine overlap, including
+				/* containment in either direction. Verified against type = 1
+				/* unavailability rows, which carry real durations on this data
+				/* (all-day is 00:00:00-23:59:00), so unavailability keeps blocking. */
 
-				$overlap = array(
-					'`start` BETWEEN ' . $this->db->sc($callInfo->start) . ' AND ' . $this->db->sc($callInfo->end),
-					'`end`   BETWEEN ' . $this->db->sc($callInfo->start) . ' AND ' . $this->db->sc($callInfo->end),
-					$this->db->sc($callInfo->start) . ' BETWEEN `start` AND `end`',
-					$this->db->sc($callInfo->end)   . ' BETWEEN `start` AND `end`'
-				);
-				$overlap = '((' . implode(') OR (', $overlap) . '))';
+				$overlap = '(`start` < ' . $this->db->sc($callInfo->end)
+				         . ' AND `end` > ' . $this->db->sc($callInfo->start) . ')';
 
 				/*
 				/* count clashes
