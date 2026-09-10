@@ -282,32 +282,98 @@
 		}
 
 		/*
-		/* callID -> how many CONFIRMED crew members have NO live submission.
+		/* Does this call_crew_map row have TIMES KEYED against it?
+		/*
+		/* THE SECOND OF THE TWO ROUTES A CALL'S TIMES CAN ARRIVE BY, and the one
+		/* this file did not know about until 10 Sep 2026. Times reach SmartStaff
+		/* either as a boss SUBMISSION (call_time_submissions) or KEYED straight
+		/* into call_crew_map — by Ops in THE GOAT's grid, by SmartStaff's own call
+		/* form, or by the Google Form timesheet import, which is how they actually
+		/* arrive today. A reader that knows only about submissions reports a
+		/* fully-entered call as entirely outstanding: on 8 Sep that was nine calls,
+		/* 111 of 112 crew keyed, a badge saying all of them, and five escalations
+		/* to one crew boss in fifteen hours.
+		/*
+		/* THIS IS THE SINGLE IMPLEMENTATION OF THE KEYED TEST.
+		/* ops-times-outstanding.php had it inline first and now calls this. Do not
+		/* write a third copy — two copies is exactly what produced the defect this
+		/* exists to fix.
+		/*
+		/* IT DIFFERS FROM THE OLD INLINE COPY IN ONE CASE, DELIBERATELY. That one
+		/* read an empty column as keyed, because '' is not '00:00:00'. A row with
+		/* nothing in it is the opposite of a row with times in it. Here a row
+		/* counts only when at least one end holds a real, non-zero time.
+		/*
+		/* On live data the two agree: `on` and `off` are both `time NOT NULL`
+		/* (verified on prod, 10 Sep 2026), so the empty case is unreachable and the
+		/* guard is insurance rather than behaviour.
+		*/
+
+		function goat_time_is_set($v)
+		{
+			$v = trim((string) $v);
+
+			if ($v === '')         return false;
+			if ($v === '00:00:00') return false;
+			if ($v === '00:00')    return false;
+
+			return true;
+		}
+
+		function goat_times_keyed($on, $off)
+		{
+			if (goat_time_is_set($on))  return true;
+			if (goat_time_is_set($off)) return true;
+
+			return false;
+		}
+
+		/*
+		/* callID -> how many CONFIRMED crew members have NO TIMES BY EITHER ROUTE
+		/* — no live submission AND nothing keyed in call_crew_map.
 		/*
 		/* THIS IS THE SINGLE IMPLEMENTATION OF "who still owes times".
 		/* goat_calls_awaiting_times() below is the boolean form of the same
 		/* question and DELEGATES here rather than asking it again. Two
-		/* implementations would eventually disagree, and the disagreement
-		/* would surface as a badge saying "4 still to enter" beside a list
-		/* showing none — which reads as a broken page rather than a bug.
+		/* implementations would eventually disagree, and the disagreement would
+		/* surface as a badge saying "4 still to enter" beside a list showing none
+		/* — which reads as a broken page rather than a bug.
 		/*
-		/* Takes an ARRAY so a caller can pass a boss's whole scope in one
-		/* pass rather than N. Returns array() for empty input — the guard is
-		/* not politeness, an empty IN () list is a SQL syntax error.
+		/* ITS TWO READERS ARE CREW-FACING: the "still to enter" badge on Your Crew
+		/* (my-boss-calls.php) and the push cron (calls-awaiting-times.php). Both
+		/* are corrected by editing this function; neither needs a deploy of its
+		/* own. That is the whole reason the helper exists.
+		/*
+		/* A CALL Ops HAVE TICKED IS ABSENT FROM THE RESULT, not zero — both
+		/* callers already read a missing entry as 0. times_filled is THE
+		/* AUTHORITATIVE DONE-TICK (Mike, 10 Sep 2026) and is checked first.
+		/*
+		/* IT IS NOT THE ONLY TEST, AND THE REASON MATTERS. times_filled is an OPS
+		/* REVIEW FLAG: update-call-times.php deliberately never sets it, so only an
+		/* accept in THE GOAT or a hand-tick on SmartStaff's call form does. This
+		/* function's readers chase the BOSS. Gating his prompt on a flag only Ops
+		/* can set means nagging him for work Ops have not got to, which he cannot
+		/* clear by doing anything. Call 38370 on 8 Sep is the case in point: 48 of
+		/* 48 crew keyed, times_filled = 0, escalated at 03:00. So a call falls
+		/* through to the per-person test when the tick is absent.
+		/*
+		/* Takes an ARRAY so a caller can pass a boss's whole scope in one pass
+		/* rather than N. Returns array() for empty input — the guard is not
+		/* politeness, an empty IN () list is a SQL syntax error.
 		/*
 		/* A call with NO confirmed crew counts 0, never "awaiting". There is
-		/* nobody whose times are missing, so reporting it would put a
-		/* permanent badge on every unstaffed call.
+		/* nobody whose times are missing, so reporting it would put a permanent
+		/* badge on every unstaffed call.
 		/*
-		/* ONLY CONFIRMED CREW (status 5) ARE COUNTED. A standby who did not
-		/* work has no times to enter; counting them would mean the badge never
-		/* reached zero. An unbooked person is not in call_crew_map at all, so
-		/* they cannot be "missing" — they are known only because a boss typed
-		/* them in.
+		/* ONLY CONFIRMED CREW (status 5) ARE COUNTED. A standby who did not work
+		/* has no times to enter; counting them would mean the badge never reached
+		/* zero. An unbooked person is not in call_crew_map at all, so they cannot
+		/* be "missing" — they are known only because a boss typed them in.
 		/*
 		/* A VOIDED submission does not count as done: voiding is how a boss
-		/* retracts an entry, and the call goes back to awaiting. A SUPERSEDED
-		/* one does — the person was submitted for, then corrected.
+		/* retracts an entry, and the call goes back to awaiting — unless the times
+		/* are keyed, which is a statement by someone else and stands on its own. A
+		/* SUPERSEDED one does count: the person was submitted for, then corrected.
 		*/
 
 		function goat_outstanding_by_call($callIDs)
@@ -340,11 +406,37 @@
 
 			$idList = implode(',', array_map('intval', array_keys($ids)));
 
-			/* 1. confirmed crew per call */
+			/* 0. calls Ops have already ticked — dropped before anything else runs
+			      on them. Cast in PHP, never compared in SQL: these flags are
+			      written by SmartStaff's own form and "= 1" is not reliable. */
 
-			$crew = array();
+			$filled = array();
 
-			$cres = mysql_query("SELECT ccm.callID AS callID, ccm.userID AS userID
+			$fres = mysql_query("SELECT id, times_filled
+			                     FROM calls
+			                     WHERE id IN (" . $idList . ")");
+
+			if ($fres === false)
+			{
+				return $out;
+			}
+
+			while ($row = mysql_fetch_object($fres))
+			{
+				if ((int) $row->times_filled === 1)
+				{
+					$filled[(int) $row->id] = true;
+				}
+			}
+
+			/* 1. confirmed crew per call, and which of them already have times
+			      KEYED against them — one query, not two */
+
+			$crew  = array();
+			$keyed = array();
+
+			$cres = mysql_query("SELECT ccm.callID AS callID, ccm.userID AS userID,
+			                            ccm.`on`   AS on_time, ccm.`off` AS off_time
 			                     FROM call_crew_map ccm
 			                     INNER JOIN calls c ON c.id = ccm.callID
 			                     WHERE ccm.callID IN (" . $idList . ")
@@ -365,12 +457,23 @@
 					continue;
 				}
 
+				if (isset($filled[$cid]))
+				{
+					continue;
+				}
+
 				if (!isset($crew[$cid]))
 				{
-					$crew[$cid] = array();
+					$crew[$cid]  = array();
+					$keyed[$cid] = array();
 				}
 
 				$crew[$cid][$uid] = true;
+
+				if (goat_times_keyed($row->on_time, $row->off_time))
+				{
+					$keyed[$cid][$uid] = true;
+				}
 			}
 
 			/* 2. who already has a live submission */
@@ -402,7 +505,7 @@
 				$done[$cid][$uid] = true;
 			}
 
-			/* 3. count the confirmed crew nobody has submitted for */
+			/* 3. count the confirmed crew with times by NEITHER route */
 
 			foreach ($crew as $cid => $members)
 			{
@@ -410,10 +513,10 @@
 
 				foreach ($members as $uid => $ignored)
 				{
-					if (!isset($done[$cid][$uid]))
-					{
-						$n++;
-					}
+					if (isset($done[$cid][$uid]))  continue;
+					if (isset($keyed[$cid][$uid])) continue;
+
+					$n++;
 				}
 
 				$out[$cid] = $n;

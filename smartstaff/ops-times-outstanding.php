@@ -366,10 +366,17 @@
 
 		$confirmedOf[$cid][$uid] = true;
 
-		$on  = trim((string) $rrow->on_time);
-		$off = trim((string) $rrow->off_time);
+		/*
+		/* THE KEYED TEST IS goat_times_keyed(), shared with
+		/* goat_outstanding_by_call() since 10 Sep 2026. It lived inline here
+		/* and ONLY here, which is why the Your Crew badge and the push cron
+		/* never had it and reported a fully-keyed booking as entirely
+		/* outstanding. Identical behaviour on live data — `on` and `off` are
+		/* `time NOT NULL` — except on an empty column, which the helper reads
+		/* as NOT keyed and the old inline test read as keyed.
+		*/
 
-		if (!($on === '00:00:00' && $off === '00:00:00'))
+		if (goat_times_keyed($rrow->on_time, $rrow->off_time))
 		{
 			$keyedOf[$cid][$uid] = true;
 		}
