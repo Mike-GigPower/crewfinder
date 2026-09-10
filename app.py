@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.40.0"
+APP_VERSION    = "5.41.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -8884,6 +8884,282 @@ def api_ops_times():
         app.logger.warning(f"[ops-times] unavailable: {err}")
         return jsonify({"unavailable": True, "error": err})
     return jsonify(data)
+
+
+# ─── OPS LANDING — PUSH REACHABILITY GAP ─────────────────────────────────────
+# "Who is booked to work, and cannot be told anything about it."
+#
+# Crew Hub push is the only channel left once SMS is retired, so a CONFIRMED
+# crew member with no push subscription cannot be reached about a time change, a
+# venue change or a cancellation. That — not the coverage percentage — is the
+# lane's predicate and the whole of its badge. The roster totals underneath are
+# context: they describe how we are going, not what anyone has to do today, and
+# the lane keeps them out of the badge for exactly that reason.
+#
+# Four sources, all read live rather than from cache:
+#   • list-crew-bulk.php  — the ACTIVE roster (usergroupID 3 AND active = '1').
+#     crew_cache.json already carries push_ok and would have been free, but the
+#     cache MERGES INTO ITSELF on every rebuild (_do_cache_refresh: new_cache =
+#     dict(cache)) and never drops a crew member who has since been deactivated.
+#     Its 452 entries are therefore "everyone we have ever seen active", which
+#     drifts further from the truth every month. A headline denominator cannot be
+#     built on that.
+#   • /api/push/reachable — distinct EINs with at least one live subscription.
+#   • get-open-offers-bulk.php — unanswered offers inside the window, the
+#     same feed the Confirmations lane reads.
+#   • get-shifts-bulk.php — confirmed assignments inside the window.
+#
+# Three SmartStaff calls, issued STRICTLY ONE AFTER ANOTHER. All three sit behind
+# the same per-session PHP file lock every other /ajax/crew/ read does, so a
+# thread pool here would hang the session rather than speed it up. This is why
+# the lane is last in OPS_LANES: the rest of the page fills before it.
+def fetch_confirmed_shifts_by_user(ss, start, end):
+    """{user_id: [shift, ...]} for CONFIRMED assignments only, in [start, end).
+
+    fetch_shifts_bulk() keys its result by DISPLAY NAME, which suits the conflict
+    checker (it is already holding a name) but not this lane, which joins against
+    the roster's user id — and two crew members can share a display name. Same one
+    HTTP call, keyed by the field that is actually unique.
+
+    CONFIRMED means call_crew_map.status == 5. A calendars type=2 row also exists
+    for offered and for-information assignments, so filtering on the row's mere
+    existence would sweep in the unanswered offers that already have their own
+    lane. _coerce_status is used rather than a bare == because get-shifts-bulk.php
+    can emit the status as the JSON string "5".
+
+    Each user's shifts come back sorted by start, so [0] is their next call.
+
+    Returns (by_user_id, error). On any failure by_user_id is None."""
+    url = f"{BASE_URL}/ajax/crew/get-shifts-bulk.php?start={start}&end={end}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+
+    by_uid = {}
+    for s in data.get("shifts", []):
+        if _coerce_status(s.get("status")) != 5:
+            continue
+        uid = str(s.get("user_id") or "").strip()
+        if not uid or uid == "0":
+            continue
+        by_uid.setdefault(uid, []).append({
+            "start":        s.get("start", "") or "",
+            "call_id":      s.get("call_id"),
+            "booking_id":   s.get("booking_id"),
+            "call_name":    s.get("call_name", "") or "",
+            "booking_name": s.get("booking_name", "") or "",
+            "venue":        s.get("venue", "") or "",
+        })
+    for shifts in by_uid.values():
+        shifts.sort(key=lambda x: x.get("start") or "")
+    return by_uid, None
+
+
+@app.route("/api/ops/push-gaps", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_push_gaps():
+    """Ops landing — the 'Not reachable by push' lane: active crew with no Crew
+    Hub push subscription on file who have something riding on it in the next 28
+    days, being EITHER an unanswered open offer OR a confirmed call.
+
+    Both halves matter, and they are different failures:
+      • an UNANSWERED OFFER to an unreachable crew member is already dead — we
+        are waiting on a reply from someone who was never told we asked, and the
+        Confirmations lane will keep counting it until somebody rings them;
+      • a CONFIRMED CALL to an unreachable crew member is a live risk — a time
+        change, a venue change or a cancellation has no way of reaching them.
+    They are separated by the `exposure` tag rather than merged, because the
+    remedy differs: the first is a call to make today, the second is a gap to
+    close before something changes.
+
+    Same window default as the other forward lanes (today → today + 28), and the
+    offers come from the same endpoint the Confirmations lane reads, so "open
+    offers" here is the same number that lane's badge shows.
+
+    THE UNAVAILABLE CASE IS THE IMPORTANT ONE. gp_fetch_push_reachable() returns
+    None — not an empty set — for every failure, precisely so a Crew Hub or
+    Supabase blip cannot be read as "nobody is reachable". This route honours that
+    by soft-failing the whole lane: rendering 163 people as unreachable because
+    Vercel was down for six seconds would send Rich and Monty chasing a phantom.
+    An empty set, by contrast, is a real answer and renders as a real (alarming)
+    count.
+
+    Dual-gated exactly like the other read lanes: @require_cohort(*READ_ALL_COHORTS)
+    mirrors goat_can_read_all(). Soft-fails with HTTP 200 {"unavailable": true} so
+    the lane renders 'unavailable' and never takes the page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = request.args.get("start") or today.strftime("%Y-%m-%d")
+    end   = request.args.get("end")   or (today + timedelta(days=28)).strftime("%Y-%m-%d")
+
+    # 1. The roster. SmartStaff call one of three, and they are STRICTLY SERIAL:
+    #    all three sit behind the same per-session PHP file lock, so a thread pool
+    #    here would hang the session rather than speed it up.
+    try:
+        roster = _get_all_crew(ss)
+    except Exception as e:
+        app.logger.warning(f"[ops-push] roster unavailable: {e}")
+        return jsonify({"unavailable": True, "error": f"crew list failed: {e}"})
+    if not roster:
+        return jsonify({"unavailable": True, "error": "crew list empty"})
+
+    # 2. Push reachability. None means UNKNOWN and must never be read as "none".
+    reachable = gp_fetch_push_reachable()
+    if reachable is None:
+        app.logger.warning("[ops-push] unavailable: push reachability unknown")
+        return jsonify({"unavailable": True,
+                        "error": "Crew Hub push reachability unavailable"})
+
+    # 3. Unanswered offers. SmartStaff call two of three.
+    offers_data, err = fetch_open_offers_bulk(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-push] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    offer_rows   = offers_data.get("offers") or []
+    # The endpoint's own total, not len() — it is the number the Confirmations
+    # lane's badge shows, and the two must never disagree on the same page.
+    offers_total = ((offers_data.get("counts") or {}).get("total"))
+    if offers_total is None:
+        offers_total = len(offer_rows)
+
+    offers_by_uid = {}
+    for o in offer_rows:
+        uid = str(o.get("user_id") or "").strip()
+        if not uid or uid == "0":
+            continue
+        offers_by_uid.setdefault(uid, []).append(o)
+    for lst in offers_by_uid.values():
+        lst.sort(key=lambda x: x.get("start") or "")
+
+    # 4. Confirmed shifts. SmartStaff call three of three.
+    shifts_by_uid, err = fetch_confirmed_shifts_by_user(ss, start, end)
+    if err is not None:
+        app.logger.warning(f"[ops-push] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+
+    # One 'now', Melbourne wall-clock, computed once above the loop so two crew
+    # either side of a lead-time boundary cannot be judged against different nows.
+    # Mirrors the calls lane exactly, and the boundaries are the same 48h/168h the
+    # OPS_LEAD_* palette is already labelled with.
+    now = datetime.now()
+
+    rows           = []
+    c_lead         = {"under48": 0, "from48to168": 0, "over168": 0}
+    c_exposure     = {"offer": 0, "both": 0, "booked": 0}
+    with_push      = 0
+    no_push        = 0
+    offers_no_push = 0
+
+    for c in roster:
+        ein = str(c.get("ein") or "").strip()
+        # An empty EIN can never be "in reachable" — guard it explicitly rather
+        # than relying on the set not containing '', or a crew member with no EIN
+        # would silently flip to reachable the day a blank row appears upstream.
+        if ein and ein in reachable:
+            with_push += 1
+            continue
+        no_push += 1
+
+        uid    = str(c.get("id") or c.get("manage_id") or "").strip()
+        shifts = shifts_by_uid.get(uid) or []
+        offers = offers_by_uid.get(uid) or []
+        if not shifts and not offers:
+            continue          # no push AND nothing on — counted, not listed
+
+        offers_no_push += len(offers)
+
+        # The next COMMITMENT, whichever kind comes first: the row's date, its
+        # lead bucket and its drill-down all point at the same call, so the card
+        # can never say "in 6 hours" and open a call three weeks away.
+        candidates = [s for s in shifts if s.get("start")] + \
+                     [o for o in offers if o.get("start")]
+        candidates.sort(key=lambda x: x.get("start") or "")
+        nxt = candidates[0] if candidates else (shifts + offers)[0]
+
+        # The client reads this tag and never recomputes the boundary. A start
+        # that will not parse falls to the least-urgent bucket so the row still
+        # counts rather than vanishing; the identities below stay exact.
+        lead_bucket = "over168"
+        if nxt.get("start"):
+            try:
+                start_dt = datetime.strptime(nxt["start"], "%Y-%m-%dT%H:%M:%S")
+                lead     = (start_dt - now).total_seconds()
+                if lead < 172800:        # < 48h
+                    lead_bucket = "under48"
+                elif lead < 604800:      # 48h–168h (2–7 days)
+                    lead_bucket = "from48to168"
+                else:                    # > 168h
+                    lead_bucket = "over168"
+            except Exception:
+                lead_bucket = "over168"
+
+        exposure = "both" if (offers and shifts) else ("offer" if offers else "booked")
+
+        c_lead[lead_bucket] += 1
+        c_exposure[exposure] += 1
+
+        rows.append({
+            "user_id":      uid,
+            "ein":          ein,
+            "name":         c.get("name", "") or "",
+            "phone":        c.get("phone", "") or "",
+            "offer_count":  len(offers),
+            "call_count":   len(shifts),
+            "exposure":     exposure,
+            "lead_bucket":  lead_bucket,
+            "start":        nxt.get("start", ""),
+            "call_id":      nxt.get("call_id"),
+            "booking_id":   nxt.get("booking_id"),
+            "call_name":    nxt.get("call_name", "") or "",
+            "booking_name": nxt.get("booking_name", "") or "",
+            "venue":        nxt.get("venue", "") or "",
+        })
+
+    # Soonest commitment first — the order they need ringing in.
+    rows.sort(key=lambda r: (r.get("start") or "9999", r.get("name") or ""))
+
+    return jsonify({
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "window":       {"start": start, "end": end},
+        "rows":         rows,
+        "counts": {
+            "total":    len(rows),
+            "lead":     c_lead,
+            "exposure": c_exposure,
+        },
+        # Zone 2. Deliberately NOT a set of donut dimensions: these describe the
+        # whole roster and every open offer, while every row in `rows` is by
+        # definition one no-push crew member, so a "has push" segment could never
+        # filter the list without the count and the list disagreeing. It renders
+        # as a caption + bar instead.
+        #
+        # offers_no_push counts OFFERS, not people — one crew member can be
+        # sitting on three of them — and only offers made to someone on the ACTIVE
+        # roster, which is the only population the coverage figures describe.
+        "coverage": {
+            "active":         with_push + no_push,
+            "with_push":      with_push,
+            "without_push":   no_push,
+            "with_work":      len(rows),
+            "no_work":        no_push - len(rows),
+            "offers_total":   offers_total,
+            "offers_no_push": offers_no_push,
+        },
+    })
 
 
 def fetch_performance(ss, weeks):
