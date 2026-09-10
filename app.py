@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.39.0"
+APP_VERSION    = "5.40.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -13132,16 +13132,31 @@ def _call_sched_dt(c):
     return datetime(d.year, d.month, d.day, hh, mm)
 
 
-def _build_import_preview(ss, booking_id, parsed):
+def _build_import_preview(ss, booking_id, parsed, manual_map=None):
     """Shared matcher / preview-shaper for BOTH import sources. `parsed` is the
     {tabs, skipped_tabs} structure produced by timesheet_import.parse_timesheet_workbook
     (file upload) OR timesheet_gsheet_read.read_timesheet (live sheet). Each tab may
     carry an explicit `call_id` (generated sheets) -> maps EXACTLY; otherwise falls
     back to EIN-overlap + nearest-time (hand-made sheets). Read-only.
 
+    manual_map: optional {tab_name: call_id} of operator choices for tabs that
+    classify_tab returned as 'no_id' (a call tab with no usable stamp). Applied as
+    if the tab had been stamped, so a manually-mapped tab goes through the exact
+    same matcher as every other card.
+
     Returns (preview_dict, None) or (None, error_str). Output keys are unchanged from
-    the original inline route, plus per-call `map_by` and a top-level `foreign_tabs`
-    (the round-trip guard: a stamped Call ID that isn't a call on this booking)."""
+    the original inline route, plus per-call `map_by` and four top-level buckets that
+    say WHY a tab did not become a card:
+
+      foreign_tabs    stamped Call ID that isn't a call on this booking
+      duplicate_tabs  two or more tabs claiming the SAME Call ID — all blocked
+      needs_call_tabs looks like a call tab, has crew, but carries no Call ID
+      unmapped_tabs   no stamp, and no EIN overlap with any call on this booking
+
+    plus recovered_tabs, which DID import but with the A1 label missing (Call ID
+    read from B1 alone). Before 5.40.0 the first four collapsed into skipped_tabs,
+    rendered as a grey "Ignored support tabs" line — which is how booking 11952's
+    Tue 1300 tab lost 79 crew and their times without anyone being told."""
     booking, err = fetch_booking_bulk(ss, booking_id)
     if err:
         return None, "Couldn't load booking: %s" % err
@@ -13184,10 +13199,77 @@ def _build_import_preview(ss, booking_id, parsed):
             return v
 
     out_calls, unmapped, foreign = [], [], []
+    duplicates, needs_call, recovered, skipped_extra = [], [], [], []
 
+    # Apply the operator's manual tab -> call choices for tabs classify_tab returned
+    # as 'no_id'. Treated exactly as a stamp, so the rows they tick come out of the
+    # same matcher as every other card rather than a second, parallel path.
+    _manual = {str(k): v for k, v in (manual_map or {}).items()}
+    tabs_in = []
     for tab in parsed.get("tabs", []):
+        t = dict(tab)
+        if t.get("call_id") is None:
+            mv = _manual.get(str(t.get("tab_name")))
+            if mv is not None:
+                t["call_id"] = mv
+                t["id_source"] = "manual"
+        tabs_in.append(t)
+
+    # A crew boss duplicating a tab to make a new call, and not changing B1, is the
+    # one failure mode that used to write silently WRONG data: both tabs mapped to
+    # the same call and the second write overwrote the first, with nothing on screen
+    # to say so. Resolve the whole set FIRST, then block every tab in any colliding
+    # group — the app cannot know which of the two is real, and guessing costs
+    # someone their pay.
+    _claims = {}
+    for tab in tabs_in:
         if not tab.get("rows"):
-            continue  # empty / master template tab
+            continue
+        cid = tab.get("call_id")
+        if cid is None:
+            continue
+        _claims.setdefault(_norm_id(cid), []).append(tab["tab_name"])
+    _dup_ids = set(cid for cid, names in _claims.items() if len(names) > 1)
+    for cid in sorted(_dup_ids, key=str):
+        duplicates.append({"call_id": cid, "tab_names": _claims[cid],
+                           "call_name": (by_id.get(cid) or {}).get("call_name")})
+
+    for tab in tabs_in:
+        if not tab.get("rows"):
+            # The leftover Master template and any blank tab. classify_tab already
+            # files those as support on both read paths, so reaching here means an
+            # empty STAMPED tab — a generated call nobody filled in. Report it as
+            # skipped rather than letting it vanish from every bucket, which is what
+            # happened before 5.40.0.
+            if tab.get("call_id") is not None:
+                skipped_extra.append(tab["tab_name"])
+            continue
+
+        if tab.get("call_id") is not None and _norm_id(tab["call_id"]) in _dup_ids:
+            continue  # already reported in duplicates; never write a contested tab
+
+        if tab.get("call_id") is None and tab.get("id_source") is None \
+           and not tab.get("call_time"):
+            # classify_tab said 'no_id': row-16 header and crew, but no stamp and no
+            # J2 time either. Someone built this tab by hand. We will not guess — but
+            # every call's roster is already in `rosters`, so we can cheaply tell the
+            # operator which calls actually share crew with it and let them choose.
+            # The `call_time` clause keeps genuinely hand-made .xlsx tabs (which do
+            # carry a J2 time, and have always been auto-mapped) on their old path.
+            tab_eins_ni = set(r["ein"] for r in tab["rows"] if r.get("ein") is not None)
+            cands = []
+            for ci in call_index:
+                ov = len(tab_eins_ni & ci["eins"])
+                if ov > 0:
+                    cands.append({"call_id": ci["call_id"], "call_name": ci["call_name"],
+                                  "call_time": ci["iso"], "overlap": ov,
+                                  "roster_size": len(ci["eins"])})
+            cands.sort(key=lambda c: -c["overlap"])
+            needs_call.append({"tab_name": tab["tab_name"],
+                               "crew_count": len(tab["rows"]),
+                               "ein_count": len(tab_eins_ni),
+                               "candidates": cands})
+            continue
 
         tab_eins = set(r["ein"] for r in tab["rows"] if r.get("ein") is not None)
 
@@ -13207,6 +13289,14 @@ def _build_import_preview(ss, booking_id, parsed):
             best, map_by = ci, "call_id"
             best_overlap = len(tab_eins & ci["eins"])   # informational only
             best_delta = None
+            if tab.get("id_source") == "b1_only":
+                # A1 label missing but B1 intact — someone has edited row 1 of this
+                # tab. We import it, but the operator is told, because it is the only
+                # signal we get that crew bosses are clearing the stamp.
+                recovered.append({"tab_name": tab["tab_name"],
+                                  "call_id": ci["call_id"],
+                                  "call_name": ci["call_name"],
+                                  "crew_count": len(tab["rows"])})
         else:
             # Legacy: most shared EINs, tie-break / fallback on closest start time.
             map_by = "ein_overlap"
@@ -13235,19 +13325,16 @@ def _build_import_preview(ss, booking_id, parsed):
                     best, best_overlap, best_delta = ci, overlap, delta
 
             if best is None or best_overlap <= 0:
-                nearest, nd = None, None
-                for ci in call_index:
-                    d = _delta(ci)
-                    if d is None:
-                        continue
-                    if nearest is None or d < nd:
-                        nearest, nd = ci, d
-                if nearest is None:
-                    unmapped.append({"tab_name": tab["tab_name"],
-                                     "call_time": tab.get("call_time"),
-                                     "crew_count": len(tab["rows"])})
-                    continue
-                best, best_overlap, best_delta = nearest, 0, nd
+                # Was: fall back to whichever call started nearest in time, with
+                # overlap 0. That mapping is never real — rows match on EIN against
+                # the chosen call's roster, so a zero-overlap tab matches nobody and
+                # writes nothing. All it produced was a confident-looking card with
+                # an empty match list, which reads as "this call had no times"
+                # rather than "we could not place this tab". Report it instead.
+                unmapped.append({"tab_name": tab["tab_name"],
+                                 "call_time": tab.get("call_time"),
+                                 "crew_count": len(tab["rows"])})
+                continue
 
         roster_ein = rosters.get(best["call_id"], {})
         matched_eins = set()
@@ -13306,17 +13393,55 @@ def _build_import_preview(ss, booking_id, parsed):
         "calls":           out_calls,
         "unmapped_tabs":   unmapped,
         "foreign_tabs":    foreign,
-        "skipped_tabs":    parsed.get("skipped_tabs", []),
+        "duplicate_tabs":  duplicates,
+        "needs_call_tabs": needs_call,
+        "recovered_tabs":  recovered,
+        "skipped_tabs":    list(parsed.get("skipped_tabs", [])) + skipped_extra,
         "available_calls": [{"call_id": ci["call_id"], "call_name": ci["call_name"],
                              "call_time": ci["iso"]} for ci in call_index],
     }, None)
+
+def _manual_map_from_request():
+    """The operator's tab -> call choices from the review screen, as REPEATED `map`
+    params shaped `<tab name>:<call id>`.
+
+    Repeated params rather than one comma-joined value, and rpartition on the LAST
+    colon rather than split on the first, because tab names legitimately contain
+    both characters — booking 11952 has a tab called "Thurs 18:00 Site". Anything
+    that doesn't end in an integer is ignored rather than guessed at."""
+    out = {}
+    vals = list(request.args.getlist("map"))
+    try:
+        vals += list(request.form.getlist("map"))
+    except Exception:
+        pass
+    for raw in vals:
+        s = (raw or "").strip()
+        if ":" not in s:
+            continue
+        name, _, cid = s.rpartition(":")
+        name = name.strip()
+        try:
+            cid = int(str(cid).strip())
+        except (TypeError, ValueError):
+            continue
+        if name:
+            out[name] = cid
+    return out
+
 
 @app.route("/api/booking/<booking_id>/import-times/preview", methods=["POST"])
 @require_cohort("admin")
 def api_import_times_preview(booking_id):
     """Parse an uploaded timesheet workbook (.xlsx) and build a per-call preview
-    against this booking. Read-only. Generated sheets exported to .xlsx still carry
-    the A1/B1 Call ID, so they map exactly; hand-made sheets fall back to EIN-overlap."""
+    against this booking. Read-only.
+
+    Since 5.40.0 this path actually READS the A1/B1 Call ID, so an exported
+    generated sheet maps exactly and the foreign-tab round-trip guard works here
+    too. It never did before: parse_timesheet_workbook did not set call_id, so
+    every upload — generated or not — fell through to EIN-overlap matching, and
+    this docstring claimed otherwise for six months. Genuinely hand-made sheets
+    still fall back to EIN-overlap on their J2 call time."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
@@ -13331,7 +13456,8 @@ def api_import_times_preview(booking_id):
     except Exception as e:
         return jsonify({"error": "Couldn't read workbook: %s" % e}), 400
 
-    preview, err = _build_import_preview(ss, booking_id, parsed)
+    preview, err = _build_import_preview(ss, booking_id, parsed,
+                                         _manual_map_from_request())
     if err:
         return jsonify({"error": err}), 502
     return jsonify(preview)
@@ -13365,7 +13491,8 @@ def api_import_times_preview_live(booking_id):
     except Exception as e:
         return jsonify({"error": "Couldn't read the Google Sheet: %s" % e}), 502
 
-    preview, err = _build_import_preview(ss, booking_id, parsed)
+    preview, err = _build_import_preview(ss, booking_id, parsed,
+                                         _manual_map_from_request())
     if err:
         return jsonify({"error": err}), 502
 
