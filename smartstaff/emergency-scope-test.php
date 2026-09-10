@@ -45,6 +45,19 @@
 
 	header('Content-Type: text/plain');
 
+	/*
+	/* ADMIN ONLY. This is a test file, but it sits on a webserver and it
+	/* prints user ids and call ids. A diagnostic without a gate is how a
+	/* diagnostic quietly becomes an endpoint. Requires a logged-in admin
+	/* session on the box you are running it against.
+	*/
+
+	if (goat_user_cohort() !== 'admin')
+	{
+		header('HTTP/1.1 403 Forbidden');
+		die("Admin only.\n");
+	}
+
 	$pass = 0; $fail = 0; $skip = 0;
 
 	function t($label, $got, $wantAllowed, $wantReason)
