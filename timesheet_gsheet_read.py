@@ -24,15 +24,20 @@ second auth story to maintain and no new dependency.
 """
 
 from timesheet_common import (
-    HEADER_ROW, FIRST_DATA_ROW, header_map, parse_crew_row, coerce_ein,
+    HEADER_ROW, FIRST_DATA_ROW, header_map, parse_crew_row, classify_tab,
 )
 
 # Generation (timesheet_gsheet.py) writes ["GOAT Call ID", call_id] into A1, so
-# A1 = this label and B1 = the numeric Call ID. The label in A1 is also our tab
-# gate: a tab with it is a generated call tab, everything else (the leftover Master
-# template, DATA LIST, Schedule, …) is skipped — no header sniffing needed.
-CALLID_LABEL = "GOAT Call ID"
-CALLID_RC    = (0, 1)        # (row 0, col 1) -> B1
+# A1 = this label and B1 = the numeric Call ID.
+#
+# Until 5.40.0 the A1 label was the SOLE tab gate — no header sniffing. That was
+# wrong: A1 is plain editable text in the corner of a sheet handed to crew bosses,
+# and on booking 11952 someone deleted it from a tab carrying 79 crew and their
+# times. B1 was untouched, but B1 was never read unless A1 passed first, so the
+# tab was reported as an ignored support tab alongside DATA LIST. Classification
+# now lives in timesheet_common.classify_tab and weighs A1, B1 and the row-16
+# header together, shared with the .xlsx reader so the two cannot drift apart.
+CALLID_RC = (0, 1)           # (row 0, col 1) -> B1
 
 READ_RANGE = "A1:Z500"       # A..Z covers STATUS(A) … NOTES(Z); 500 rows is ample
                              # for one call's crew (a single call never has 480+).
@@ -76,21 +81,23 @@ def read_timesheet(spreadsheet_id, token_path):
 def _parse_grid(titles, value_ranges):
     """Pure parse: (tab titles, the batchGet `valueRanges`) -> {tabs, skipped_tabs}.
 
-    No network here, so it's unit-testable with a synthetic API response. A tab is a
-    call tab iff A1 == "GOAT Call ID"; its Call ID is B1, crew run from row 17 down
-    until the block ends (parse_crew_row returns None past the crew)."""
+    No network here, so it's unit-testable with a synthetic API response. Crew run
+    from row 17 down until the block ends (parse_crew_row returns None past the
+    crew). What each tab IS — call / no_id / support — is decided by
+    timesheet_common.classify_tab; see there for the rules.
+
+    Crew are parsed BEFORE classification (the empty-Master rule needs the crew
+    count), so every tab in the sheet is now parsed rather than only the stamped
+    ones. That is pure in-memory work on data already fetched: READ_RANGE is
+    A1:Z500 on every tab and the batchGet returned all of it. No extra API calls.
+    """
     tabs, skipped = [], []
 
     for title, vr in zip(titles, value_ranges):
         rows = vr.get("values", [])            # list of rows; each row a list of strings
 
-        if _at(rows, 0, 0) != CALLID_LABEL:
-            skipped.append(title)
-            continue
-
-        call_id = coerce_ein(_at(rows, *CALLID_RC))           # B1 -> int (or None)
-        header  = rows[HEADER_ROW - 1] if len(rows) >= HEADER_ROW else []
-        col     = header_map(header)
+        header = rows[HEADER_ROW - 1] if len(rows) >= HEADER_ROW else []
+        col    = header_map(header)
 
         crew = []
         for r in rows[FIRST_DATA_ROW - 1:]:
@@ -99,10 +106,18 @@ def _parse_grid(titles, value_ranges):
                 continue                                      # past the crew block
             crew.append(row)
 
+        kind, call_id, id_source = classify_tab(
+            _at(rows, 0, 0), _at(rows, *CALLID_RC), header, crew)
+
+        if kind == "support":
+            skipped.append(title)
+            continue
+
         tabs.append({
             "tab_name":  title,
             "call_time": None,        # live path maps by call_id; J2 not needed
-            "call_id":   call_id,
+            "call_id":   call_id,     # None when kind == "no_id"
+            "id_source": id_source,
             "rows":      crew,
         })
 

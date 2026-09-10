@@ -11,27 +11,23 @@ xlsx export, but their last-computed values do). Clock times come through as
 datetimes with sub-second float dust from the sheet's CEILING rounding (e.g.
 22:59:59.712 means 23:00), so on/off are rounded to the nearest minute.
 
-The column map and per-cell parsing now live in timesheet_common, shared with the
-live Google Sheets reader so the two import sources can't drift. This module keeps
-only the openpyxl-specific bits: detecting a call tab and reading J2 for the
-tab->call auto-map tie-break.
+The column map, per-cell parsing and tab classification now live in
+timesheet_common, shared with the live Google Sheets reader so the two import
+sources can't drift. This module keeps only the openpyxl-specific bits: reading
+the header row, the A1/B1 stamp, and J2 for the tab->call auto-map tie-break.
+
+5.40.0: this reader now reads the A1/B1 Call ID stamp, which it never did before.
+The route's docstring had claimed since 3.14.0 that an exported generated sheet
+"maps exactly" — but parse_timesheet_workbook never set call_id, so every upload
+fell through to EIN-overlap matching and the round-trip foreign-tab guard could
+never fire on this path at all.
 """
 
 from io import BytesIO
 
 from timesheet_common import (
-    HEADER_ROW, FIRST_DATA_ROW, _LABELS, header_map, parse_crew_row,
+    HEADER_ROW, FIRST_DATA_ROW, _LABELS, header_map, parse_crew_row, classify_tab,
 )
-
-
-def _is_call_tab(ws):
-    """A call tab has STATUS / Start Time / EIN / LAST NAME on the header row."""
-    labels = set()
-    for c in range(1, ws.max_column + 1):
-        val = ws.cell(HEADER_ROW, c).value
-        if isinstance(val, str):
-            labels.add(val.strip().lower())
-    return {"ein", "start time", "last name"}.issubset(labels)
 
 
 def _header_cells(ws):
@@ -51,10 +47,11 @@ def _call_time_iso(ws):
 def parse_timesheet_workbook(source):
     """Parse a timesheet workbook (path or bytes) into per-call-tab time rows.
 
-    Returns:
+    Returns the SAME shape as timesheet_gsheet_read.read_timesheet:
       {
         "tabs": [
-          { "tab_name", "call_time" (iso|None),
+          { "tab_name", "call_time" (iso|None), "call_id" (int|None),
+            "id_source" ('stamp'|'b1_only'|None),
             "rows": [ {ein, lastname, firstname, status, on, off,
                        break, break_night, late, note, no_show} ] }
         ],
@@ -71,11 +68,8 @@ def parse_timesheet_workbook(source):
     tabs, skipped = [], []
 
     for ws in wb.worksheets:
-        if not _is_call_tab(ws):
-            skipped.append(ws.title)
-            continue
-
-        col = header_map(_header_cells(ws))
+        header = _header_cells(ws)
+        col = header_map(header)
         rows = []
 
         for r in range(FIRST_DATA_ROW, ws.max_row + 1):
@@ -86,9 +80,20 @@ def parse_timesheet_workbook(source):
                 continue  # past the crew block
             rows.append(row)
 
+        # Crew are parsed before classification because the empty-Master rule needs
+        # the crew count. A1 = the label, B1 = the Call ID (timesheet_gsheet.py).
+        kind, call_id, id_source = classify_tab(
+            ws.cell(1, 1).value, ws.cell(1, 2).value, header, rows)
+
+        if kind == "support":
+            skipped.append(ws.title)
+            continue
+
         tabs.append({
             "tab_name":  ws.title,
             "call_time": _call_time_iso(ws),
+            "call_id":   call_id,     # None when kind == "no_id"
+            "id_source": id_source,
             "rows":      rows,
         })
 

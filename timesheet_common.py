@@ -1,5 +1,6 @@
 """
-Gig Power timesheet — shared column map + cell parsing (single source of truth).
+Gig Power timesheet — shared tab classification, column map + cell parsing
+(single source of truth).
 
 Both timesheet importers read the SAME crew-master layout (header on row 16, crew
 from row 17 down, EIN the match key), so the column understanding lives here once
@@ -12,6 +13,11 @@ and neither path can drift from the other:
 
 The converters below accept BOTH shapes, so parse_crew_row() is identical for each
 source; only how a cell is fetched differs (the caller passes a get_cell accessor).
+
+classify_tab() decides what a tab IS — call / no_id / support — from its A1/B1
+stamp and its row-16 header. It lives here for the same reason: until 5.40.0 the
+two readers each had their own tab test and they disagreed, which is how a call
+tab full of times could be visible to one path and invisible to the other.
 
 Column -> SmartStaff field:
   EIN          -> match key (users.ein)
@@ -43,6 +49,72 @@ _LABELS = {
 }
 
 _HHMM = re.compile(r"^(\d{1,2}):(\d{2})")
+
+# The stamp generation writes into A1/B1 of every call tab (timesheet_gsheet.py
+# step 4): A1 = this literal label, B1 = the numeric Call ID.
+CALLID_LABEL = "GOAT Call ID"
+
+# The row-16 labels that identify the crew-master layout. Deliberately a SUBSET of
+# _LABELS: these three have never moved across event templates, so a tab carrying
+# all three is a call tab even when its stamp is gone.
+_CALL_TAB_SIGNATURE = {"ein", "start time", "last name"}
+
+
+def is_call_tab(header_cells):
+    """True if this tab's row-16 header carries the crew-master signature.
+
+    header_cells: the header row's values as a list, column A first — the same
+    shape header_map() takes, so callers pass the identical list to both.
+
+    This is the SECOND opinion on a tab, used when the A1/B1 stamp is missing or
+    unusable. Before 5.40.0 the live Google reader had no second opinion at all:
+    booking 11952's "Tue 1300" tab (79 crew, all with times) was reported as an
+    ignored support tab because someone had deleted the A1 label, even though B1
+    still held its Call ID.
+    """
+    labels = set()
+    for v in header_cells:
+        if isinstance(v, str):
+            labels.add(v.strip().lower())
+    return _CALL_TAB_SIGNATURE.issubset(labels)
+
+
+def classify_tab(a1, b1, header_cells, crew_rows):
+    """Decide what a tab IS, from its stamp, its header and its crew.
+
+    Returns (kind, call_id, id_source):
+
+      kind        'call'    — import it. call_id is set.
+                  'no_id'   — looks like a call tab, has crew, but no usable Call
+                              ID. Must be surfaced for a manual call choice and
+                              NEVER filed under skipped/support.
+                  'support' — genuinely not a call tab, or the empty Master
+                              template.
+
+      call_id     int, or None for 'no_id' / 'support'.
+
+      id_source   'stamp'   — A1 label present and B1 parsed. The normal case.
+                  'b1_only' — A1 blank or wrong, B1 parsed anyway. RECOVERED; the
+                              caller must tell the operator, because it means a
+                              human has edited row 1 of that tab.
+                  None      — no id.
+
+    B1 is tested BEFORE the header so a stamped tab is still accepted if a future
+    template renames a header column.
+
+    An empty-but-headed tab is 'support' on purpose: that is the leftover Master
+    template every generated sheet carries. Classifying it 'no_id' would prompt
+    the operator to map the template onto a real call on every single import.
+
+    Shared by both readers — timesheet_import (openpyxl) and timesheet_gsheet_read
+    (Sheets API) — so the two can never again disagree about what a call tab is.
+    """
+    call_id = coerce_ein(b1)
+    if call_id is not None:
+        return "call", call_id, ("stamp" if a1 == CALLID_LABEL else "b1_only")
+    if crew_rows and is_call_tab(header_cells):
+        return "no_id", None, None
+    return "support", None, None
 
 
 def header_map(header_cells):
