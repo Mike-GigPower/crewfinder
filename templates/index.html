@@ -17603,7 +17603,36 @@ function _clHdrRow(label, value){
 // each call, then write the matched rows through the proven /api/call/<b>/<c>/times
 // endpoint. Reuses escapeHtml / entityBtn / openBookingDialog / closeEntityModal.
 
-let _tiState = null;  // {bookingId, data, include:{call_id:bool}}
+let _tiState = null;  // {bookingId, data, include:{call_id:bool}, manual:{tab_name:call_id}, file}
+
+// Progress/error line. On the chooser screen that element is #ti-status; once the
+// review screen has replaced the modal body it is #ti-result. Reloading the preview
+// after the operator maps a tab by hand happens FROM the review screen, so writing
+// blind to #ti-status would throw on a null.
+function _tiSay(msg, col){
+  const el = document.getElementById('ti-result') || document.getElementById('ti-status');
+  if(el){ el.style.color = col || 'var(--muted)'; el.textContent = msg; }
+}
+
+// Manual tab -> call choices, as repeated `map` params shaped `<tab name>:<call id>`.
+// Repeated rather than comma-joined, and the server splits on the LAST colon,
+// because tab names contain both characters — booking 11952 has a "Thurs 18:00 Site".
+function _tiMapPairs(manual){
+  const m = manual || {};
+  return Object.keys(m).map(function(k){ return k + ':' + m[k]; });
+}
+
+// Carry the operator's include/untick choices across a reload, so mapping one tab
+// by hand doesn't silently re-tick rows they had already excluded.
+function _tiSeedInclude(data, keep){
+  const inc = {};
+  (data.calls||[]).forEach(function(c){
+    inc[c.call_id] = (keep && keep.include && (c.call_id in keep.include))
+      ? keep.include[c.call_id]
+      : (c.matched.length > 0);
+  });
+  return inc;
+}
 
 function openTimesImport(bookingId){
   entityModalWidth(ENTITY_MODAL_W);
@@ -17622,42 +17651,52 @@ function openTimesImport(bookingId){
       entityBtn('‹ Back to booking',"openBookingDialog('"+bookingId+"')") + entityBtn('Close','closeEntityModal()');
 }
 
-async function tiLoadLive(bookingId){
-  const status = document.getElementById('ti-status');
-  if(status){ status.style.color = 'var(--muted)'; status.textContent = 'Reading the Google Sheet…'; }
+async function tiLoadLive(bookingId, manual, keep){
+  _tiSay('Reading the Google Sheet…');
   try{
-    const res  = await fetch('/api/booking/'+bookingId+'/import-times/preview-live');
+    const qs  = _tiMapPairs(manual).map(function(p){ return 'map='+encodeURIComponent(p); });
+    const url = '/api/booking/'+bookingId+'/import-times/preview-live' + (qs.length ? '?'+qs.join('&') : '');
+    const res  = await fetch(url);
     const data = await res.json();
     if(res.status === 404 && data.error === 'no_linked_sheet'){
-      if(status){ status.style.color='var(--conflict)'; status.textContent = data.message || 'No generated Google Sheet is linked to this booking on this machine. Generate one first, or upload the finished workbook below.'; }
+      _tiSay(data.message || 'No generated Google Sheet is linked to this booking on this machine. Generate one first, or upload the finished workbook below.', 'var(--conflict)');
       return;
     }
-    if(data.error){ if(status){ status.style.color='var(--conflict)'; status.textContent = data.error; } return; }
-    _tiState = {bookingId: bookingId, data: data, include: {}, rowOff: {}, source: 'gsheet'};
-    (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
+    if(data.error){ _tiSay(data.error, 'var(--conflict)'); return; }
+    _tiState = {bookingId: bookingId, data: data, include: _tiSeedInclude(data, keep),
+                rowOff: (keep && keep.rowOff) || {}, source: 'gsheet',
+                manual: manual || {}, file: null};
     renderTimesheetImportPreview();
   }catch(e){
-    if(status){ status.style.color='var(--conflict)'; status.textContent = 'Couldn\'t read the sheet: ' + e.message; }
+    _tiSay('Couldn\'t read the sheet: ' + e.message, 'var(--conflict)');
   }
 }
 
 async function tiHandleFile(input, bookingId){
   if(!input.files || !input.files[0]) return;
-  const status = document.getElementById('ti-status');
-  status.style.color = 'var(--muted)';
-  status.textContent = 'Reading ' + input.files[0].name + '…';
+  tiLoadFile(bookingId, input.files[0], null, null);
+}
+
+// Split out from tiHandleFile so a manual tab->call choice can re-post the SAME
+// workbook without asking the operator to pick the file again. The re-preview goes
+// through the server's matcher rather than being assembled client-side, so a
+// manually-mapped tab's rows come out of exactly the same code as every other card.
+async function tiLoadFile(bookingId, file, manual, keep){
+  if(!file) return;
+  _tiSay('Reading ' + file.name + '…');
   try{
     const fd = new FormData();
-    fd.append('file', input.files[0]);
+    fd.append('file', file);
+    _tiMapPairs(manual).forEach(function(p){ fd.append('map', p); });
     const res  = await fetch('/api/booking/'+bookingId+'/import-times/preview', {method:'POST', body: fd});
     const data = await res.json();
-    if(data.error){ status.style.color='var(--conflict)'; status.textContent = data.error; return; }
-    _tiState = {bookingId: bookingId, data: data, include: {}, rowOff: {}, source: 'file'};
-    (data.calls||[]).forEach(function(c){ _tiState.include[c.call_id] = (c.matched.length > 0); });
+    if(data.error){ _tiSay(data.error, 'var(--conflict)'); return; }
+    _tiState = {bookingId: bookingId, data: data, include: _tiSeedInclude(data, keep),
+                rowOff: (keep && keep.rowOff) || {}, source: 'file',
+                manual: manual || {}, file: file};
     renderTimesheetImportPreview();
   }catch(e){
-    status.style.color = 'var(--conflict)';
-    status.textContent = 'Upload failed: ' + e.message;
+    _tiSay('Upload failed: ' + e.message, 'var(--conflict)');
   }
 }
 
@@ -17683,6 +17722,69 @@ function _tiRowOn(s, callId, m){
 
 function _tiCallRows(s, c){
   return (c.matched || []).filter(function(m){ return _tiRowOn(s, c.call_id, m); });
+}
+
+// ── Tabs that did NOT become cards, and why ──────────────────────────────────
+// Before 5.40.0 every one of these collapsed into the grey "Ignored support tabs"
+// line at the bottom of the review, indistinguishable from DATA LIST. That is how
+// booking 11952's "Tue 1300" tab lost 79 crew and their times with nothing said.
+// Each block below is deliberately louder than that line.
+
+// Two or more tabs stamped with the same Call ID. All of them are blocked: the app
+// cannot know which is the real one, and writing the wrong one costs someone's pay.
+function _tiDuplicateBlock(d){
+  const dup = d.duplicate_tabs || [];
+  if(!dup.length) return '';
+  return '<div style="font-size:11px;color:var(--conflict);border:1px solid var(--conflict);border-radius:6px;padding:8px 10px;margin-bottom:8px">'
+    + dup.map(function(t){
+        // Escape each name, THEN join with the markup — joining first and escaping
+        // the result escapes our own tags and prints them at the operator.
+        const names = (t.tab_names || []).map(escapeHtml);
+        const joined = names.length > 1
+          ? names.slice(0, -1).join('</b>, <b>') + '</b> and <b>' + names[names.length - 1]
+          : (names[0] || '');
+        const many = names.length > 2;
+        return '⛔ <b>'+joined+'</b> '+(many?'all carry':'both carry')+' Call ID '+escapeHtml(String(t.call_id))
+             + (t.call_name ? ' ('+escapeHtml(t.call_name)+')' : '')
+             + ' — '+(many?'none were':'neither was')+' imported. Fix B1 so each tab has its own, and re-import.';
+      }).join('<div style="height:6px"></div>')
+    + '</div>';
+}
+
+// Looks like a call tab — row-16 crew header, crew on it — but carries no Call ID.
+// A hand-made tab. We don't guess: the operator picks, from the calls that actually
+// share crew with it.
+function _tiNeedsCallBlock(d){
+  const nc = d.needs_call_tabs || [];
+  if(!nc.length) return '';
+  return '<div style="font-size:11px;color:var(--warn,#f59e0b);border:1px solid var(--warn,#f59e0b);border-radius:6px;padding:8px 10px;margin-bottom:8px">'
+    + nc.map(function(t){
+        const head = '⚠ <b>'+escapeHtml(t.tab_name)+'</b> looks like a call tab ('+t.crew_count+' crew) but has no Call ID.';
+        if(!t.candidates || !t.candidates.length){
+          return head + ' No call on this booking shares any crew with it, so it can\'t be placed — check the tab, or add its Call ID to B1.';
+        }
+        const opts = ['<option value="">Pick the call it belongs to…</option>'].concat(
+          t.candidates.map(function(c){
+            return '<option value="'+c.call_id+'">'+escapeHtml((c.call_name||('Call '+c.call_id))
+                 + ' — '+c.overlap+' of '+t.ein_count+' crew match')+'</option>';
+          })).join('');
+        return head
+          + '<div style="padding-top:6px"><select onchange="tiPickCall(this)" data-tab="'+escapeHtml(t.tab_name)+'" '
+          + 'style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px">'
+          + opts + '</select></div>';
+      }).join('<div style="height:8px"></div>')
+    + '</div>';
+}
+
+// Imported fine, but the "GOAT Call ID" label had been deleted from A1 and the ID
+// was read from B1 alone. Informational — it is the only signal we get that someone
+// is clearing the stamp, and the next edit may take B1 with it.
+function _tiRecoveredBlock(d){
+  const rec = d.recovered_tabs || [];
+  if(!rec.length) return '';
+  return '<div style="font-size:11px;color:var(--muted);padding-bottom:8px">ℹ Call ID recovered from B1 — the "GOAT Call ID" label is missing from A1 on '
+    + escapeHtml(rec.map(function(t){ return t.tab_name; }).join(', '))
+    + '. Imported normally; worth restoring the label in the sheet.</div>';
 }
 
 function renderTimesheetImportPreview(){
@@ -17748,6 +17850,9 @@ function renderTimesheetImportPreview(){
     + (d.unmapped_tabs && d.unmapped_tabs.length
         ? '<div style="font-size:11px;color:var(--conflict);padding-bottom:8px">Tabs with no matching call: '+escapeHtml(d.unmapped_tabs.map(function(t){return t.tab_name;}).join(', '))+'</div>'
         : '')
+    + _tiDuplicateBlock(d)
+    + _tiNeedsCallBlock(d)
+    + _tiRecoveredBlock(d)
     + flagNote
     + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found.</div>')
     + '<div style="font-size:11px;color:var(--muted);padding-top:4px">Ignored support tabs: '+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>';
@@ -17760,6 +17865,29 @@ function renderTimesheetImportPreview(){
 
 function tiToggleCall(callId, el){
   if(_tiState){ _tiState.include[callId] = el.checked; renderTimesheetImportPreview(); }
+}
+
+// The operator has chosen which call an unstamped tab belongs to. Re-run the WHOLE
+// preview with that choice attached rather than assembling the card here: the rows
+// they are about to tick then come from the same server-side matcher as every other
+// card, instead of a second implementation that can drift from it.
+function tiPickCall(sel){
+  if(!_tiState) return;
+  const tabName = sel.getAttribute('data-tab');
+  const callId  = Number(sel.value);
+  if(!tabName || !callId) return;
+  const manual = Object.assign({}, _tiState.manual || {});
+  manual[tabName] = callId;
+  const keep = {include: _tiState.include, rowOff: _tiState.rowOff};
+  if(_tiState.source === 'file'){
+    if(!_tiState.file){
+      _tiSay('The workbook is no longer in memory — upload it again to map that tab.', 'var(--conflict)');
+      return;
+    }
+    tiLoadFile(_tiState.bookingId, _tiState.file, manual, keep);
+  } else {
+    tiLoadLive(_tiState.bookingId, manual, keep);
+  }
 }
 
 function tiToggleRow(callId, userId, el){
