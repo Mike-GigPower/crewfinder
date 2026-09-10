@@ -120,12 +120,11 @@
 
 				$callInfo = $this->db->selectFirst('`start_date`, TIME_TO_SEC(`start_time`) AS `start_time`, `est_length`', 'calls', 'id='. $this->db->sc($callID));
 				$callInfo->start = $callInfo->start_date + $callInfo->start_time;
-								$callInfo->end   = $callInfo->start + (int) round($callInfo->est_length * 3600);
+				$callInfo->end   = $callInfo->start + (int) round($callInfo->est_length * 3600);
 				$callInfo->start = date('Y-m-d G:i:s', $callInfo->start);
 				$callInfo->end   = date('Y-m-d G:i:s', $callInfo->end);
 
 				/*
-								/*
 				/* Build the clash WHERE clause.
 				/*
 				/* Half-open comparison: a row clashes only if it genuinely covers
@@ -289,7 +288,8 @@
 				'user'  => $this->db->sc($crewID),
 				'title' => $this->db->sc($booking->name . ' - ' . $call->call_name),
 				'start' => 'ADDTIME(FROM_UNIXTIME('. intval($call->start_date) .'), '. $this->db->sc($call->start_time) .')',
-								/* est_length is a double and half-hour lengths are the norm here.
+				/*
+				/* est_length is a double and half-hour lengths are the norm here.
 				/* This used to read intval($call->est_length) * 3600 - truncate THEN
 				/* multiply - so a 5.5h call wrote a 5h row and anything under an hour
 				/* wrote a ZERO-length one. calendars is what every clash check reads,
