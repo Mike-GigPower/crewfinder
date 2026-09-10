@@ -556,6 +556,15 @@ body.cf-focus .subtab-bar{display:none}
 .import-calls-table td{padding:7px 10px;border-bottom:1px solid var(--border);color:var(--text);vertical-align:top}
 .import-calls-table tr:last-child td{border-bottom:none}
 .import-calls-table .td-notes{font-size:10px;color:var(--muted);font-style:italic}
+.import-calls-table input,.import-calls-table select{font-size:11px;color:var(--text);background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-family:'Share Tech Mono',monospace;outline:none;width:100%;box-sizing:border-box}
+.import-calls-table input:focus,.import-calls-table select:focus{border-color:var(--accent)}
+.import-calls-table td.ic-narrow{width:1%;white-space:nowrap}
+.ic-rm{background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:12px;padding:3px 8px;line-height:1.3}
+.ic-rm:hover{border-color:var(--conflict);color:var(--conflict)}
+.ic-add{width:100%;background:none;border:1px dashed var(--border);color:var(--accent);border-radius:4px;cursor:pointer;font-size:11px;padding:8px;font-family:'Share Tech Mono',monospace}
+.ic-add:hover{border-color:var(--accent)}
+.ic-added-tag{color:var(--accent);font-size:10px}
+.ic-daycap,.mbc-daycap{font-size:10px;color:var(--muted);font-style:italic;margin-top:3px;padding-left:2px;white-space:nowrap;min-height:12px}
 .import-actions{display:flex;gap:8px;align-items:center;flex-shrink:0;margin-top:4px}
 .btn-import{background:var(--accent);color:#000;border:none;border-radius:4px;padding:9px 20px;font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;transition:all .15s;white-space:nowrap}
 .btn-import:hover{background:#c9a227;box-shadow:0 0 12px rgba(212,175,55,0.3)}
@@ -1922,7 +1931,7 @@ a.recruit-action{text-decoration:none;display:inline-block}
           <div class="import-section-body">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
               <div class="import-field"><label>Booking Name *</label><input id="mb-name" oninput="updateManualReadiness()" placeholder="e.g. Lil' Kim - Festival Hall"></div>
-              <div class="import-field"><label>Booking Date</label><input id="mb-date" type="date"></div>
+              <div class="import-field"><label>Booking Date</label><input id="mb-date" type="date" onchange="onManualBookingDateChange()"></div>
               <div class="import-field"><label>Invoice Reference</label><input id="mb-reference" placeholder="optional"></div>
               <div class="import-field"><label>&nbsp;</label><div style="font-size:10px;color:var(--muted);align-self:center;padding:6px 0">Created as <b>Active</b>.</div></div>
             </div>
@@ -2103,10 +2112,14 @@ a.recruit-action{text-decoration:none;display:inline-block}
                       <th>Duration</th>
                       <th>Qty</th>
                       <th>Notes</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody id="import-calls-tbody"></tbody>
                 </table>
+                <div style="padding:8px 12px">
+                  <button class="ic-add" onclick="icAddCall()">+ Add call</button>
+                </div>
               </div>
             </div>
 
@@ -9970,46 +9983,13 @@ function renderImportPreview(data){
       '<span class="import-match-warn">⚠ select manually</span>';
   }
 
-  const CALL_NAMES = [
-    'Load In','Load Out','LX','SX','VX','Backline','Show Call',
-    'FOH Spot','Truss Spot','Wardrobe','Steel','Fork','Truck','EWP',
-    'Crown Hand','Crew Boss','Site','Utility','General','Other'
-  ];
-
-  // Calls table — one dropdown per line
+  // Calls table — every field editable, plus add and delete (5.39.0).
+  // Row order is the creation order; MB_CALL_NAMES is shared with the manual
+  // Booking form so both modes offer the same list.
   const tbody = document.getElementById('import-calls-tbody');
-  tbody.innerHTML = p.calls.map(c => {
-    // Include the JSON call_name as an extra option if it's not in VALID_CALL_NAMES
-    const extraOpt = c.call_name && !CALL_NAMES.includes(c.call_name)
-      ? `<option value="${c.call_name}" selected>${c.call_name}</option>` : '';
-    const opts = CALL_NAMES.map(n =>
-      `<option value="${n}"${!extraOpt && n === c.call_name ? ' selected' : ''}>${n}</option>`
-    ).join('');
-    return `
-    <tr>
-      <td style="color:var(--muted);font-size:10px">${c.crew_type}</td>
-      <td>
-        <select class="call-name-select" data-line-id="${c.line_id}"
-                style="font-size:11px;background:var(--surface2);border:1px solid var(--border);
-                       border-radius:4px;padding:4px 6px;color:var(--text);
-                       font-family:'Share Tech Mono',monospace;outline:none;cursor:pointer;width:120px"
-                onchange="updateImportReadiness()">
-          <option value="">-- select --</option>
-          ${extraOpt}
-          ${opts}
-        </select>
-      </td>
-      <td>${formatDisplayDate(c.date)}</td>
-      <td>${c.start_time}</td>
-      <td>${c.duration_hours}h</td>
-      <td>${c.quantity}</td>
-      <td class="td-notes">${c.shift_notes || '<span style="opacity:.4">—</span>'}</td>
-    </tr>`;
-  }).join('');
-  document.getElementById('prev-calls-summary').textContent =
-    p.call_count + ' call' + (p.call_count!==1?'s':'') + ' · ' +
-    [...new Set(p.calls.map(c=>c.date))].length + ' date' +
-    ([...new Set(p.calls.map(c=>c.date))].length!==1?'s':'');
+  _icAddSeq = 0;
+  tbody.innerHTML = (p.calls || []).map(c => icRowHtml(c)).join('');
+  icUpdateSummary();
 
   // Non-labour items table (schema 1.1)
   const nlSection = document.getElementById('import-non-labour-section');
@@ -10059,28 +10039,146 @@ function formatDisplayDate(d){
   }catch(e){ return d; }
 }
 
+// ── ESTIMATE CALLS — editable rows (5.39.0) ─────────────────────────────────
+// The imported labour lines are no longer a read-only preview: every field is
+// editable and rows can be added or removed. The edits are posted as `call_edits`
+// and merged server-side back onto the file's labour lines, so the public-holiday
+// flags (which drive penalty rates) never pass through the client.
+// Non-labour items are deliberately NOT part of this table — they keep their own
+// read-only section and their existing "Other" call handling.
+
+let _icAddSeq = 0;   // counter for operator-added rows, reset on each preview
+
+// A native date input can only render 12/12/2026. The weekday is what makes a
+// wrong date obvious on a call sheet — the read-only preview this table replaced
+// showed "Sat 12 Dec" — so it goes back as a caption under the field. Same
+// formatter the import and creation logs use, so all three read alike.
+function dateCaption(d){
+  return d ? formatDisplayDate(d) : '';
+}
+
+function icOnDate(el){
+  const cap = el.parentElement && el.parentElement.querySelector('.ic-daycap');
+  if(cap) cap.textContent = dateCaption(el.value);
+  updateImportReadiness();
+}
+
+function icRows(){
+  return [...document.querySelectorAll('#import-calls-tbody tr.ic-row')];
+}
+
+function icRowHtml(c){
+  const lid   = (c.line_id == null) ? '' : String(c.line_id);
+  const isNew = !!c.is_new;
+  const nm    = c.call_name || '';
+  // A call name from the file that isn't in the standard list stays selectable —
+  // same rule the server applies when validating an edited name.
+  const extraOpt = (nm && !MB_CALL_NAMES.includes(nm))
+    ? `<option value="${escapeHtml(nm)}" selected>${escapeHtml(nm)}</option>` : '';
+  const opts = MB_CALL_NAMES.map(n =>
+    `<option value="${n}"${!extraOpt && n === nm ? ' selected' : ''}>${n}</option>`
+  ).join('');
+  return `
+    <tr class="ic-row" data-line-id="${escapeHtml(lid)}">
+      <td style="color:var(--muted);font-size:10px">${isNew ? '<span class="ic-added-tag">added</span>' : escapeHtml(c.crew_type || '—')}</td>
+      <td style="min-width:130px">
+        <select class="ic-name" onchange="updateImportReadiness()">
+          <option value="">-- select --</option>${extraOpt}${opts}
+        </select>
+      </td>
+      <td style="min-width:140px">
+        <input class="ic-date" type="date" value="${escapeHtml(c.date || '')}" onchange="icOnDate(this)">
+        <div class="ic-daycap">${escapeHtml(dateCaption(c.date || ''))}</div>
+      </td>
+      <td style="min-width:112px"><input class="ic-time" type="text" placeholder="e.g. 8.30pm" value="${escapeHtml(c.start_time || '')}" onblur="normalizeMbcTime(this);updateImportReadiness()" oninput="updateImportReadiness()"></td>
+      <td style="min-width:76px"><input class="ic-length" type="number" min="0" step="0.5" value="${c.duration_hours == null ? '' : c.duration_hours}"></td>
+      <td style="min-width:68px"><input class="ic-required" type="number" min="0" step="1" value="${c.quantity == null ? '' : c.quantity}"></td>
+      <td style="min-width:150px"><input class="ic-notes" type="text" placeholder="optional" value="${escapeHtml(c.shift_notes || '')}"></td>
+      <td class="ic-narrow"><button class="ic-rm" onclick="icRemoveCall(this)" title="Remove call">✕</button></td>
+    </tr>`;
+}
+
+function icAddCall(){
+  const tbody = document.getElementById('import-calls-tbody');
+  if(!tbody) return;
+  const rows = icRows();
+  const last = rows[rows.length - 1];
+  const d = last ? last.querySelector('.ic-date').value
+                 : (_importPreview?.preview?.calls?.[0]?.date || '');
+  _icAddSeq++;
+  tbody.insertAdjacentHTML('beforeend', icRowHtml({
+    line_id: '', is_new: true, crew_type: '', call_name: '',
+    date: d, start_time: '08:00', duration_hours: 4, quantity: 1, shift_notes: ''
+  }));
+  updateImportReadiness();
+}
+
+function icRemoveCall(btn){
+  const tr = btn.closest('tr.ic-row');
+  if(tr) tr.remove();
+  updateImportReadiness();
+}
+
+function icUpdateSummary(){
+  const rows  = icRows();
+  const dates = [...new Set(rows.map(r => r.querySelector('.ic-date').value).filter(Boolean))];
+  const sEl = document.getElementById('prev-calls-summary');
+  if(sEl) sEl.textContent =
+    rows.length + ' call' + (rows.length!==1?'s':'') + ' · ' +
+    dates.length + ' date' + (dates.length!==1?'s':'');
+  const nl  = (_importPreview?.preview?.non_labour_count) || 0;
+  const cEl = document.getElementById('prev-call-count');
+  if(cEl){
+    const total = rows.length + nl;
+    cEl.textContent = nl
+      ? total + ' call' + (total!==1?'s':'') + ' (' + rows.length + ' labour + ' + nl + ' non-labour)'
+      : rows.length + ' call' + (rows.length!==1?'s':'');
+  }
+}
+
+// The payload the server merges onto the file's labour lines. line_id null means
+// "operator added this row"; the server gives it a new-N id of its own.
+function icCollectEdits(){
+  return icRows().map(r => {
+    const len = r.querySelector('.ic-length').value;
+    const qty = r.querySelector('.ic-required').value;
+    return {
+      line_id:        r.dataset.lineId || null,
+      call_name:      r.querySelector('.ic-name').value,
+      date:           r.querySelector('.ic-date').value,
+      start_time:     parseFlexTime(r.querySelector('.ic-time').value) || '',
+      duration_hours: len === '' ? 0 : parseFloat(len),
+      quantity:       qty === '' ? 0 : parseInt(qty, 10),
+      shift_notes:    r.querySelector('.ic-notes').value || '',
+    };
+  });
+}
+
 function updateImportReadiness(){
   const custOk  = !!document.getElementById('match-customer')?.value;
   const venueOk = !!document.getElementById('match-venue')?.value;
-  const selects = document.querySelectorAll('.call-name-select');
-  // Labour calls each need a name. A booking may legitimately have zero labour
-  // calls (non-labour only), in which case there's nothing to name.
+  const rows    = icRows();
+  // A booking may legitimately have zero labour calls (non-labour only), so an
+  // empty table is only an error when there are no non-labour items either.
   const hasNonLabour = (_importPreview?.preview?.non_labour_count || 0) > 0;
-  const allCallsNamed = selects.length === 0
-    ? hasNonLabour
-    : [...selects].every(s => s.value);
-  const btn = document.getElementById('btn-start-import');
+  const unnamed = rows.filter(r => !r.querySelector('.ic-name').value).length;
+  const undated = rows.filter(r => !r.querySelector('.ic-date').value).length;
+  const badTime = rows.filter(r => !parseFlexTime(r.querySelector('.ic-time').value)).length;
+  const rowsOk  = rows.length === 0 ? hasNonLabour : !(unnamed || undated || badTime);
+  const btn  = document.getElementById('btn-start-import');
+  const note = document.getElementById('import-action-note');
   if(!btn) return;
-  btn.disabled = !(custOk && venueOk && allCallsNamed && _importPayload);
-  if(!custOk || !venueOk){
-    document.getElementById('import-action-note').textContent = 'Select customer and venue to continue';
-  } else if(selects.length > 0 && ![...selects].every(s => s.value)){
-    const missing = [...selects].filter(s=>!s.value).length;
-    document.getElementById('import-action-note').textContent =
-      `Select a call name for all lines (${missing} remaining)`;
-  } else {
-    document.getElementById('import-action-note').textContent = '';
+  btn.disabled = !(custOk && venueOk && rowsOk && _importPayload);
+  if(note){
+    if(!custOk || !venueOk)  note.textContent = 'Select customer and venue to continue';
+    else if(!rows.length && !hasNonLabour)
+                             note.textContent = 'No calls left — add a call or re-drop the estimate';
+    else if(unnamed)         note.textContent = `Select a call name for all lines (${unnamed} remaining)`;
+    else if(undated)         note.textContent = `${undated} call${undated!==1?'s':''} missing a date`;
+    else if(badTime)         note.textContent = `${badTime} call${badTime!==1?'s':''} with an invalid start time`;
+    else                     note.textContent = '';
   }
+  icUpdateSummary();
 }
 
 async function startImport(){
@@ -10091,12 +10189,9 @@ async function startImport(){
   const venueId          = document.getElementById('match-venue').value;
   if(!customerId || !venueId){ alert('Select customer and venue first'); return; }
 
-  // Collect operator-selected call names — only send non-blank values
-  // (server falls back to JSON call_name for any line not present here)
-  const callNames = {};
-  document.querySelectorAll('.call-name-select').forEach(s => {
-    if(s.dataset.lineId && s.value) callNames[s.dataset.lineId] = s.value;
-  });
+  // The edited call sheet, in display order. The server merges this back onto
+  // the file's labour lines — see apply_call_edits.
+  const callEdits = icCollectEdits();
 
   document.getElementById('btn-start-import').disabled = true;
   document.getElementById('import-progress-panel').style.display = '';
@@ -10116,7 +10211,7 @@ async function startImport(){
         contact_id:        contactId,
         onsite_contact_id: onsiteContactId,
         venue_id:          venueId,
-        call_names:        callNames,
+        call_edits:        callEdits,
       })
     });
     const data = await resp.json();
@@ -14980,10 +15075,36 @@ function normalizeMbcTime(el){
   if(p){ el.value=p; el.classList.remove('mbc-time-bad'); }
   else if(el.value.trim()){ el.classList.add('mbc-time-bad'); }
 }
+// A call row's date follows the Booking Date until someone edits that row by
+// hand, at which point data-user-set pins it — so a deliberate day-2 date on a
+// multi-day booking survives a later change to the Booking Date.
+function mbSetDateCap(el){
+  const cap = el && el.parentElement && el.parentElement.querySelector('.mbc-daycap');
+  if(cap) cap.textContent = dateCaption(el.value);
+}
+
+function onManualCallDate(el){
+  if(el) el.dataset.userSet = '1';
+  mbSetDateCap(el);
+  updateManualReadiness();
+}
+
+function onManualBookingDateChange(){
+  const d = document.getElementById('mb-date')?.value || '';
+  if(d){
+    document.querySelectorAll('#mb-calls .mb-call-row .mbc-date').forEach(el => {
+      if(el.dataset.userSet !== '1') el.value = d;
+      mbSetDateCap(el);   // rows re-dated programmatically need the caption too
+    });
+  }
+  updateManualReadiness();
+}
+
 function addManualCall(){
   const wrap = document.getElementById('mb-calls');
-  const lastDate = wrap.querySelector('.mb-call-row:last-child .mbc-date')?.value
-                 || document.getElementById('mb-date')?.value || '';
+  // Booking Date first, falling back to the row above only when it's blank.
+  const lastDate = document.getElementById('mb-date')?.value
+                 || wrap.querySelector('.mb-call-row:last-child .mbc-date')?.value || '';
   const opts = '<option value="">-- select --</option>' +
     MB_CALL_NAMES.map(n => `<option value="${n}">${n}</option>`).join('');
   const row = document.createElement('div');
@@ -14993,7 +15114,10 @@ function addManualCall(){
        <select class="mbc-name" onchange="onManualCallName(this)">${opts}</select>
        <input class="mbc-name-free" placeholder="custom name" style="display:none;margin-top:4px" oninput="updateManualReadiness()">
      </div>
-     <input class="mbc-date" type="date" value="${lastDate}" onchange="updateManualReadiness()">
+     <div>
+       <input class="mbc-date" type="date" value="${lastDate}" onchange="onManualCallDate(this)">
+       <div class="mbc-daycap">${escapeHtml(dateCaption(lastDate))}</div>
+     </div>
      <input class="mbc-time" type="text" placeholder="e.g. 8.30pm or 2030" value="08:00" onblur="normalizeMbcTime(this)">
      <input class="mbc-length" type="number" min="0" step="0.5" value="4">
      <input class="mbc-required" type="number" min="0" step="1" value="1">
