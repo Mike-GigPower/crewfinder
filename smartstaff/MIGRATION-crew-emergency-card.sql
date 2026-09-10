@@ -99,6 +99,13 @@ CREATE TABLE IF NOT EXISTS crew_emergency_entry (
 -- same precedence goat_boss_claim() applies -- so the log speaks the same
 -- language as the resolver that granted the access. A second vocabulary for
 -- one concept is how the five supervision-blindness instances happened.
+--
+-- boss_unattributed is the exception, and it SHOULD BE UNREACHABLE. It means
+-- goat_boss_scope() granted a call that goat_bosses_by_call() cannot attribute
+-- to that viewer. Both are built on the same relations, so a single row of it
+-- is a real disagreement between two functions that must agree -- worth being
+-- able to query for, and far better than writing a guessed reason into an
+-- audit column.
 
 CREATE TABLE IF NOT EXISTS crew_emergency_access_log (
   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -116,7 +123,8 @@ CREATE TABLE IF NOT EXISTS crew_emergency_access_log (
   CONSTRAINT chk_ceal_surface CHECK (surface IN ('goat','crewhub')),
   CONSTRAINT chk_ceal_reason  CHECK (
     grant_reason IN ('self','cohort_admin','cohort_operations',
-                     'boss_direct','boss_container','boss_supervisory')
+                     'boss_direct','boss_container','boss_supervisory',
+                     'boss_unattributed')
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
