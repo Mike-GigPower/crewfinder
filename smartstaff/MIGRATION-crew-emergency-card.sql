@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS crew_emergency_entry (
 -- grant_reason is the column that makes this an audit trail rather than a
 -- list. It records WHY access was allowed, so a later reader can check the
 -- rule was applied correctly -- not merely that somebody looked.
+--
+-- The boss_* values are NOT invented here. They mirror supervision-graph.php's
+-- existing `how` vocabulary exactly -- direct > container > supervisory, the
+-- same precedence goat_boss_claim() applies -- so the log speaks the same
+-- language as the resolver that granted the access. A second vocabulary for
+-- one concept is how the five supervision-blindness instances happened.
 
 CREATE TABLE IF NOT EXISTS crew_emergency_access_log (
   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -110,7 +116,7 @@ CREATE TABLE IF NOT EXISTS crew_emergency_access_log (
   CONSTRAINT chk_ceal_surface CHECK (surface IN ('goat','crewhub')),
   CONSTRAINT chk_ceal_reason  CHECK (
     grant_reason IN ('self','cohort_admin','cohort_operations',
-                     'in_call_boss','supervision')
+                     'boss_direct','boss_container','boss_supervisory')
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
