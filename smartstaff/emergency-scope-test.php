@@ -85,6 +85,34 @@
 		}
 	}
 
+	/*
+	/* Like t(), but asserts the reason STARTS WITH $wantPrefix. Exists because
+	/* the first version of test 9 printed a complaint that the reason was
+	/* wrong and then reported PASS anyway -- which is how a test that has
+	/* never once exercised its subject can look green for an afternoon.
+	*/
+
+	function tpre($label, $got, $wantPrefix)
+	{
+		global $pass, $fail;
+
+		$ok = ($got['allowed'] === true)
+		      && (strpos($got['reason'], $wantPrefix) === 0);
+
+		if ($ok) { $pass++; $tag = 'PASS'; } else { $fail++; $tag = 'FAIL'; }
+
+		echo str_pad($tag, 6) . str_pad($label, 46)
+		   . 'allowed=' . var_export($got['allowed'], true)
+		   . ' reason=' . $got['reason']
+		   . ' call=' . var_export($got['call_id'], true) . "\n";
+
+		if (!$ok)
+		{
+			echo '      ^ wanted allowed=true and reason starting "'
+			   . $wantPrefix . '"' . "\n";
+		}
+	}
+
 	function skipt($label, $why)
 	{
 		global $skip;
@@ -135,6 +163,20 @@
 			$cid = (int) $row->callID;
 			$uid = (int) $row->userID;
 
+			/*
+			/* THE BOSS FIXTURE MUST NOT BE admin OR operations. Rules 2 and 3
+			/* match on cohort and return before rule 4 is ever reached, so a
+			/* boss who is also an ops user tests the cohort branch and calls
+			/* it a boss test. That is exactly what happened on the first run:
+			/* the scan picked userID 9734, who resolves to `operations` on
+			/* test, and test 9 reported reason=cohort_operations in BOTH
+			/* window modes. leadership and crew are both fine -- neither
+			/* matches an earlier rule, so both fall through to rule 4.
+			*/
+
+			$bc = goat_cohort_for_user($uid);
+			if ($bc === 'admin' || $bc === 'operations') continue;
+
 			$r2 = mysql_query("SELECT userID FROM call_crew_map
 			                   WHERE callID = $cid AND status = 5
 			                     AND userID <> $uid LIMIT 1");
@@ -150,7 +192,8 @@
 		}
 	}
 
-	echo "boss fixture: boss=$bossUser subject=$bossSubject call=$bossCall\n";
+	echo "boss fixture: boss=$bossUser (" . ($bossUser > 0 ? goat_cohort_for_user($bossUser) : '-')
+	   . ") subject=$bossSubject call=$bossCall\n";
 	echo str_repeat('-', 100) . "\n";
 
 	/* ---------- rules 1-3 and the negatives ---------- */
@@ -186,12 +229,8 @@
 
 		if ($mode === 'wide')
 		{
-			t('9  boss sees own crew (wide window)', $got, true, null);
+			tpre('9  boss sees own crew (wide window)', $got, 'boss_');
 
-			if ($got['allowed'] && strpos($got['reason'], 'boss_') !== 0)
-			{
-				echo "      ^ reason should start boss_\n";
-			}
 			if ($got['allowed'] && $got['reason'] === 'boss_unattributed')
 			{
 				echo "      ^ NOTE boss_unattributed: goat_boss_scope() and\n"
