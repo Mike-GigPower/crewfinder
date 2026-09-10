@@ -1,6 +1,6 @@
 {
-  "version": "5.40.0",
+  "version": "5.41.0",
   "release_date": "2026-09-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.40.0/TheGOAT.dmg",
-  "release_notes": "Importing times from a Google Sheet no longer silently skips a call tab. A deleted Call ID label is recovered, hand-made tabs can be mapped to a call yourself, and two tabs sharing a Call ID are blocked instead of overwriting each other."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.41.0/TheGOAT.dmg",
+  "release_notes": "A new Shadowlands lane on the Operations tab: active crew with no Crew Hub push notifications who have an unanswered offer or a confirmed call in the next four weeks. Click it for their EIN, name and number, soonest first."
 }
