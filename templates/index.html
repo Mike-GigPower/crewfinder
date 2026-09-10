@@ -10838,7 +10838,13 @@ async function openCrewEdit(id){
 
   // header carries name + EIN + ID
   document.getElementById('entity-modal-title').textContent = (window._crewEditNameLF || window._crewEditName || 'Edit Crew Member');
-  document.getElementById('entity-modal-sub').textContent   = 'EIN '+String(c.ein||'')+' \u00b7 ID '+String(c.id);
+  // innerHTML rather than textContent so the emergency marker can sit beside
+  // the EIN/ID. Both values are escaped; neither is free text today, but the
+  // escaping does not depend on that staying true.
+  document.getElementById('entity-modal-sub').innerHTML =
+      'EIN '+escapeHtml(String(c.ein||''))+' \u00b7 ID '+escapeHtml(String(c.id))
+    + '<span id="ce-emg-flag"></span>';
+  ceMarkEmergency(c.id);
 
   // \u2500\u2500 header banner: reliability + Work Visa flag (left), photo (right) \u2500\u2500
   const _cePhoto = (c.id != null)
@@ -12056,6 +12062,44 @@ async function ceLoadEmergency(id){
 
   panel.innerHTML = html;
 }
+
+// The emergency marker beside the EIN/ID: shown ONLY when the crew member has
+// declared something. `declared` is the only state that can carry entries — the
+// write endpoint refuses `declared` with none — so it means exactly "there is
+// content here beyond an emergency contact", which every crew member has.
+//
+// PRESENCE, NOT CONTENT, and it writes NO access-log row. That is what
+// emergency-flags.php is for: a row per crew member per modal open would bury
+// the reveals that matter under thousands of glances. Opening the tab is the
+// disclosure; noticing the marker is not.
+//
+// Silent on every failure. A marker that cannot be drawn must not become an
+// error message in a header, and its absence already reads as "nothing
+// declared" — the safe reading when we could not check.
+async function ceMarkEmergency(id){
+  var slot = document.getElementById('ce-emg-flag');
+  if(!slot) return;
+  try{
+    var r = await fetch('/api/admin/emergency-flags', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ user_ids: [Number(id)] })
+    });
+    if(!r.ok) return;
+    var d = await r.json();
+    if((d.flags||{})[String(id)] !== 'declared') return;
+  }catch(e){ return; }
+
+  slot.innerHTML =
+      '<span onclick="ceShowTab(\'' + String(id) + '\',\'emergency\')" '
+    + 'title="Emergency information recorded — click to open" '
+    + 'style="cursor:pointer;display:inline-flex;align-items:center;margin-left:10px;vertical-align:-4px">'
+    + '<svg width="17" height="17" viewBox="0 0 18 18" role="img" aria-label="Emergency information recorded">'
+    +   '<rect x="0" y="0" width="18" height="18" rx="3" fill="#ffffff"/>'
+    +   '<path d="M7.15 2.8h3.7v4.35H15.2v3.7h-4.35V15.2h-3.7v-4.35H2.8v-3.7h4.35z" fill="#d81e2c"/>'
+    + '</svg></span>';
+}
+
 
 function ceEmergencyLabel(code){
   // Must stay in step with goat_emergency_categories() and lib/emergency.ts.
