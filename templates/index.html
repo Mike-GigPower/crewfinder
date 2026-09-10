@@ -12022,11 +12022,17 @@ async function ceLoadEmergency(id){
 
   if(card.state === 'declared' && entries.length){
     html += entries.map(function(e){
+      // WHERE the thing is kept is not a footnote. In the first ten seconds it
+      // matters as much as knowing the pen exists, so it is body text and only
+      // the word "Kept:" is chrome.
       var where = e.medication_location
-        ? '<div style="font-size:11px;color:var(--muted);padding-top:3px">Kept: '+escapeHtml(e.medication_location)+'</div>' : '';
+        ? '<div style="font-size:12.5px;color:var(--text);padding-top:5px"><span style="color:var(--muted)">Kept:</span> '+escapeHtml(e.medication_location)+'</div>' : '';
       return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">'
-        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">'+escapeHtml(ceEmergencyLabel(e.category))+'</div>'
-        + '<div style="font-size:13px;color:var(--text);line-height:1.5">'+escapeHtml(e.action_note||'')+'</div>'
+        // The category is the HEADLINE of the entry, not a caption. Tiny grey
+        // uppercase is the house style for a field label and it is wrong here:
+        // grey is chrome, and nothing a responder needs should be chrome.
+        + '<div style="font-size:14px;font-weight:600;color:var(--text);padding-bottom:5px">'+escapeHtml(ceEmergencyLabel(e.category))+'</div>'
+        + '<div style="font-size:13.5px;color:var(--text);line-height:1.55">'+escapeHtml(e.action_note||'')+'</div>'
         + where + '</div>';
     }).join('');
   } else if(card.state === 'nothing_to_declare'){
