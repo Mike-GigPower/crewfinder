@@ -120,7 +120,7 @@
 
 				$callInfo = $this->db->selectFirst('`start_date`, TIME_TO_SEC(`start_time`) AS `start_time`, `est_length`', 'calls', 'id='. $this->db->sc($callID));
 				$callInfo->start = $callInfo->start_date + $callInfo->start_time;
-				$callInfo->end   = $callInfo->start + intval($callInfo->est_length * 60 * 60);
+								$callInfo->end   = $callInfo->start + (int) round($callInfo->est_length * 3600);
 				$callInfo->start = date('Y-m-d G:i:s', $callInfo->start);
 				$callInfo->end   = date('Y-m-d G:i:s', $callInfo->end);
 
@@ -289,7 +289,15 @@
 				'user'  => $this->db->sc($crewID),
 				'title' => $this->db->sc($booking->name . ' - ' . $call->call_name),
 				'start' => 'ADDTIME(FROM_UNIXTIME('. intval($call->start_date) .'), '. $this->db->sc($call->start_time) .')',
-				'end'   => 'ADDTIME(FROM_UNIXTIME('. (intval($call->start_date) + (intval($call->est_length) * 3600)) .'), '. $this->db->sc($call->start_time) .')',
+								/* est_length is a double and half-hour lengths are the norm here.
+				/* This used to read intval($call->est_length) * 3600 - truncate THEN
+				/* multiply - so a 5.5h call wrote a 5h row and anything under an hour
+				/* wrote a ZERO-length one. calendars is what every clash check reads,
+				/* so the error was always in the unsafe direction: shifts looked
+				/* shorter than they were and overlaps went undetected. Must stay
+				/* identical to the expression in addToCall above; their disagreement
+				/* was the bug. See FINDINGS-addtocalendar-est-length-truncation-2026-09-10.md */
+				'end'   => 'ADDTIME(FROM_UNIXTIME('. (intval($call->start_date) + (int) round($call->est_length * 3600)) .'), '. $this->db->sc($call->start_time) .')',
 				'type'  => '2',
 				'call'  => $this->db->sc($callID)
 			);
