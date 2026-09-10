@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.38.0"
+APP_VERSION    = "5.39.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4008,6 +4008,154 @@ def ss_ack_clash(ss, payload):
         return resp.json(), None
     except Exception:
         return None, "bad JSON from ack-clash.php"
+
+def _edit_num(v):
+    """Coerce a JSON value to a number, or None if it isn't one. Booleans are
+    rejected explicitly — bool is a subclass of int and True would sail through."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    try:
+        return float(str(v).strip())
+    except Exception:
+        return None
+
+
+def _edit_int(v):
+    """Coerce a JSON value to a whole number, or None. 2.5 crew is not a thing."""
+    n = _edit_num(v)
+    if n is None:
+        return None
+    try:
+        if float(n) != int(n):
+            return None
+        return int(n)
+    except Exception:
+        return None
+
+
+def _edit_hhmm(v):
+    """Normalise a time to HH:MM. Accepts HH:MM:SS from a client that sent the
+    manual form's shape. _build_import_payload appends ':00', so anything longer
+    than HH:MM here would produce HH:MM:SS:00."""
+    s = str(v or "").strip()
+    if len(s) == 8 and s[2] == ":" and s[5] == ":":
+        s = s[:5]
+    return s
+
+
+def apply_call_edits(original_lines, edits):
+    """Merge the operator's edits from the Create Booking preview onto the
+    estimate's labour lines, returning a list of THE SAME SHAPE as
+    payload["labour_lines"].
+
+    That shape is the point. resolved_call_names, earliest_date,
+    _build_import_payload and both creation paths all consume labour-line dicts;
+    handing them a second shape would mean four call sites to keep in step,
+    including the legacy scrape path that only runs with
+    USE_CREATE_BOOKING_ENDPOINT off and so gets tested least.
+
+      - An edit carrying a line_id present in the file overwrites only the six
+        editable fields on a COPY of that line. Everything else survives, which
+        is how public_holiday_same_day / public_holiday_next_day stay correct
+        without the client ever handling them. Those two drive penalty rates, so
+        the client is deliberately not trusted with them.
+      - An edit with no line_id is an operator-added call: a new line with
+        line_id "new-N" and both public-holiday flags False.
+      - A file line absent from the edits was deleted in the UI, so it simply
+        isn't returned. No tombstone needed.
+
+    Order is preserved — the edits list is the creation order.
+    """
+    by_id = {}
+    for ll in original_lines or []:
+        lid = ll.get("line_id")
+        if lid is not None:
+            by_id[str(lid)] = ll
+
+    merged  = []
+    added_n = 0
+    for e in edits or []:
+        if not isinstance(e, dict):
+            continue
+        raw_lid = e.get("line_id")
+        lid = "" if raw_lid in (None, "") else str(raw_lid)
+        if lid and lid in by_id:
+            line = dict(by_id[lid])
+        else:
+            added_n += 1
+            line = {
+                "line_id":                 "new-%d" % added_n,
+                "crew_type":               "",
+                "public_holiday_same_day": False,
+                "public_holiday_next_day": False,
+            }
+        line["call_name"]      = str(e.get("call_name") or "").strip()
+        line["date"]           = str(e.get("date") or "").strip()
+        line["start_time"]     = _edit_hhmm(e.get("start_time"))
+        line["duration_hours"] = _edit_num(e.get("duration_hours"))
+        line["quantity"]       = _edit_int(e.get("quantity"))
+        line["shift_notes"]    = e.get("shift_notes") or ""
+        merged.append(line)
+    return merged
+
+
+def validate_call_edits(lines, original_lines):
+    """Validate operator-edited and operator-added labour calls.
+
+    Mirrors validate_payload's labour-line rules with two deliberate
+    relaxations — quantity >= 0 and duration >= 0, rather than >= 1 and > 0.
+    A FILE carrying a zero-crew or zero-length labour line is a broken export
+    and validate_payload still rejects it; a PERSON typing one is doing exactly
+    what the manual Booking form already allows (a placeholder call to be crewed
+    later). Holding the estimate path to the stricter rule would make it fussier
+    than the manual path for no reason ops would recognise.
+    """
+    errors = []
+    original_names = {}
+    for ll in original_lines or []:
+        lid = ll.get("line_id")
+        if lid is not None:
+            original_names[str(lid)] = ll.get("call_name") or ""
+
+    seen = set()
+    for i, ll in enumerate(lines):
+        lid   = ll.get("line_id", "?")
+        label = "Call %d (%s)" % (i + 1, lid)
+
+        if lid in seen:
+            errors.append("Duplicate line_id: %s" % lid)
+        seen.add(lid)
+
+        cn = ll.get("call_name") or ""
+        if not cn:
+            errors.append("%s: call name is required" % label)
+        elif cn not in VALID_CALL_NAMES and cn != original_names.get(str(lid), ""):
+            errors.append("%s: invalid call name '%s'" % (label, cn))
+
+        try:
+            datetime.strptime(ll.get("date", ""), "%Y-%m-%d")
+        except Exception:
+            errors.append("%s: invalid date '%s' (expected YYYY-MM-DD)"
+                          % (label, ll.get("date", "")))
+
+        try:
+            datetime.strptime(ll.get("start_time", ""), "%H:%M")
+        except Exception:
+            errors.append("%s: invalid start time '%s' (expected HH:MM)"
+                          % (label, ll.get("start_time", "")))
+
+        dur = ll.get("duration_hours")
+        if dur is None or dur < 0:
+            errors.append("%s: invalid length (must be a number >= 0)" % label)
+
+        qty = ll.get("quantity")
+        if qty is None or qty < 0:
+            errors.append("%s: invalid crew required (must be a whole number >= 0)" % label)
+
+    return errors
+
 
 def _build_import_payload(booking_data, lines, non_labour, resolved_call_names, earliest_date):
     """Map the import's booking_data + labour lines + non-labour items into the
@@ -11458,16 +11606,36 @@ def api_import_start():
     onsite_contact_id = body.get("onsite_contact_id", "")
     venue_id          = body.get("venue_id")
     call_names        = body.get("call_names", {})  # {line_id: call_name} — operator-selected (may be partial)
+    call_edits        = body.get("call_edits")     # 5.39.0+ full per-call edits; None from an older client
 
     if not payload or not customer_id or not venue_id:
         return jsonify({"error": "Missing payload, customer_id, or venue_id"}), 400
+
+    original_lines = payload.get("labour_lines", [])
+
+    # Operator edits from the Create Booking preview (5.39.0+). Merged onto the
+    # file's labour lines so that everything downstream keeps working on the
+    # original shape. A client that omits call_edits entirely runs the import on
+    # exactly the pre-5.39.0 path, so an older build cannot break here.
+    if call_edits is not None:
+        if not isinstance(call_edits, list):
+            return jsonify({"error": "call_edits must be a list"}), 400
+        lines = apply_call_edits(original_lines, call_edits)
+        edit_errors = validate_call_edits(lines, original_lines)
+        if edit_errors:
+            return jsonify({"error": "; ".join(edit_errors[:5]),
+                            "errors": edit_errors}), 400
+        if not lines and not extract_non_labour(payload):
+            return jsonify({"error": "No calls left to create — add a call or reload the estimate"}), 400
+    else:
+        lines = original_lines
 
     # Resolve final call name per line: operator selection → JSON field → missing
     # JSON call_name values are always accepted even if not in VALID_CALL_NAMES
     resolved_call_names = {}
     missing_names = []
     invalid_names = []
-    for ll in payload.get("labour_lines", []):
+    for ll in lines:
         lid     = ll.get("line_id", "?")
         json_cn = ll.get("call_name") or ""
         op_cn   = call_names.get(lid) or ""
@@ -11491,7 +11659,8 @@ def api_import_start():
 
     est   = payload["estimate"]
     event = payload["event"]
-    lines = payload.get("labour_lines", [])
+    # NB: `lines` is already resolved above — either the merged edit result or
+    # the file's own labour_lines. Do not re-read it from the payload here.
     non_labour = extract_non_labour(payload)
 
     dates = [ll["date"] for ll in lines if ll.get("date")]
