@@ -1,6 +1,6 @@
 {
-  "version": "5.38.0",
-  "release_date": "2026-09-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.38.0/TheGOAT.dmg",
-  "release_notes": "The booking dialog is wider and now shows each call's notes from SmartStaff in full, so you can read the site instructions without opening every call. Dialogs also nest — open a call from a booking and ✕ or Esc takes you back to the booking, scrolled right where you left it."
+  "version": "5.39.0",
+  "release_date": "2026-09-10",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.39.0/TheGOAT.dmg",
+  "release_notes": "Calls imported from a GigPower estimate can now be edited, added to or removed before the booking is created, and manual call rows follow the Booking Date. Every date field now shows its weekday, so a wrong date is obvious before the calls exist."
 }
