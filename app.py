@@ -15077,6 +15077,135 @@ def api_admin_crew_payslip_pdf(crew_id, week_ending):
 
 
 # ── Manage Crew: Licences ─────────────────────────────────────────────────────
+# ── Emergency information (Manage Crew -> Emergency tab) ──────────────────────
+# Two READ routes proxying smartstaff/emergency-*.php on the OPERATOR'S OWN
+# SmartStaff session. Gated here to admin + operations, and again at the PHP
+# boundary by goat_emergency_scope(), which is the authority.
+#
+# NOT READ_ALL_COHORTS. That tuple includes `leadership`, which this feature
+# deliberately refuses (design D11/D15). Widening this to the familiar constant
+# would silently hand every leadership user the whole estate's medical data.
+#
+# WHY THESE REFUSE WHILE ELEVATED (design D16). /api/elevate swaps
+# _ss_sessions[sid] for a SEPARATE admin session, so every SmartStaff call after
+# it carries the admin account's cookie -- and emergency-get.php derives the
+# viewer for its access log from exactly that session. An elevated read would be
+# logged against the admin account instead of the human who clicked, and the
+# crew member reading their own log would see the wrong name. That is the single
+# failure a transparency feature cannot have.
+#
+# _write_audit() dodges this for payslips by POSTING the actor as data, resolved
+# from _pre_elevation. This cannot: the viewer is derived server-side from the
+# session ON PURPOSE, and the only way to assert it instead would be the
+# SmartStaff service key -- which would then have to ship inside a distributed
+# DMG, granting read/write as any crew member to anyone who opens the bundle.
+# Refusing is the cheaper answer, and costs almost nothing: operations users
+# hold the cohort directly and never need to elevate for this.
+
+
+def _emergency_elevation_block():
+    """409 while this session is elevated, else None. See D16."""
+    if session.get("sid") in _pre_elevation:
+        return jsonify({
+            "error": "Drop admin elevation before opening emergency information "
+                     "\u2014 the access log has to name you, not the admin account."
+        }), 409
+    return None
+
+
+def ss_emergency_card(ss, subject_id):
+    """One crew member's emergency card via emergency-get.php. Returns
+    (dict, error).
+
+    READING IS THE DISCLOSURE: this endpoint writes an access-log row every
+    time it succeeds. Never call it to 'check whether' something exists, and
+    never call it to warm a cache -- use ss_emergency_flags() for presence."""
+    url = f"{BASE_URL}/ajax/crew/emergency-get.php"
+    try:
+        resp = ss.get(url, params={"subject": int(subject_id)}, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code == 403:
+        return None, "Not permitted"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and data.get("error"):
+        return None, data["error"]
+    return data, None
+
+
+def ss_emergency_flags(ss, user_ids):
+    """Presence only -- {user_id: state} -- for drawing the icon on a list.
+    Returns (dict, error). Writes NO audit row, by design: one row per crew
+    member per render would bury the reveals that matter."""
+    url = f"{BASE_URL}/ajax/crew/emergency-flags.php"
+    ids = []
+    for raw in (user_ids or []):
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            ids.append(n)
+    if not ids:
+        return {}, None
+    try:
+        resp = ss.post(url, json={"user_ids": ids}, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and data.get("error"):
+        return None, data["error"]
+    return (data.get("flags") or {}), None
+
+
+@app.route("/api/admin/crew/<crew_id>/emergency")
+@require_cohort("admin", "operations")
+def api_admin_crew_emergency(crew_id):
+    """Open one crew member's emergency card. THIS IS A DISCLOSURE and is
+    logged server-side; the crew member can see the row in Crew Hub."""
+    blocked = _emergency_elevation_block()
+    if blocked:
+        return blocked
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_emergency_card(ss, crew_id)
+    if err:
+        return jsonify({"error": err}), (403 if err == "Not permitted" else 502)
+    return jsonify(data)
+
+
+@app.route("/api/admin/emergency-flags", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_admin_emergency_flags():
+    """Presence for many crew at once, for list icons. Its own path rather than
+    /api/admin/crew/<crew_id>/... so it can never be shadowed by the string
+    <crew_id> rule above it."""
+    body = request.get_json(silent=True) or {}
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    flags, err = ss_emergency_flags(ss, body.get("user_ids"))
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify({"flags": flags})
+
+
 # Admin licence CRUD for the Manage Crew -> Licences tab. Each route proxies to
 # one smartstaff/admin-*-license*.php endpoint on the admin session, exactly like
 # the Manage Venues / Manage Crew routes above. All are admin-gated both here
