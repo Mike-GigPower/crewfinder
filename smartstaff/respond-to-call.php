@@ -115,6 +115,7 @@
 				'changed'       => false,
 				'changed_calls' => array(),
 				'changed_names' => array(),
+				'statuses'      => array(),
 				'unconfirmed'   => array(),
 				'package'       => array($callID),
 				'linked'        => false
@@ -240,82 +241,190 @@
 		}
 	}
 
-	/*
-	/* Capacity — checked on the package ROOTS.
-	/*
-	/* A root is a call in the package that no other package member feeds. It
-	/* is a call the crew member is being booked onto directly, so its
-	/* `required` must be honoured. Non-root members keep the DESIGN §3.3
-	/* bypass: those crew were promised the slot upstream and must never be
-	/* written as Backup because a receiving call was overfilled by direct
-	/* booking.
-	/*
-	/* ALL-OR-NOTHING: if any root is full the WHOLE response becomes Backup,
-	/* matching the linked-call behaviour shipped in v3.18.1 slice A. A
-	/* `locked` package is answered as one unit, so it carries one status.
-	/*
-	/* A single unfed call has itself as its only root, so this path is
-	/* byte-identical to the previous behaviour and to sms-cron.php — the
-	/* no-regression case.
-	*/
-
-	$effectiveStatus = $callStatus;   /* 5 or 6 — may become 7 below */
-
-	if ($callStatus == 5)
+	if (!function_exists('goat_rtc_root_is_full'))
 	{
-		/* targets of locked edges that START inside the package */
+		/*
+		/* Is this call at or over its number, counting CONFIRMED rows only?
+		/*
+		/* Body copied verbatim from the pre-peel check so the predicate is
+		/* byte-identical to what shipped in August, including `>= required`
+		/* and the required=0 edge where a call needing no crew reads as full.
+		/* It matches sms-cron.php for the same reason. Do not "tidy" it.
+		/*
+		/* Memoised per request because the peel can offer the same call as a
+		/* root on more than one pass, and this is two queries a time.
+		*/
 
-		$fedInside  = array();
-		$downstream = goat_feed_step($callIDs, 'down');
-
-		foreach ($downstream as $d)
+		function goat_rtc_root_is_full($callID, &$memo)
 		{
-			if (in_array((int) $d, $callIDs))
+			$callID = (int) $callID;
+
+			if (isset($memo[$callID]))
 			{
-				$fedInside[(int) $d] = true;
+				return $memo[$callID];
 			}
-		}
 
-		$roots = array();
+			global $db;
 
-		foreach ($callIDs as $cid)
-		{
-			if (!isset($fedInside[(int) $cid]))
-			{
-				$roots[] = (int) $cid;
-			}
-		}
-
-		/* Cycle guard. The link_group backfill produced symmetric pairs
-		/* (A->B and B->A), which feed each other and would leave the root
-		/* set EMPTY — silently restoring the bypass this fix removes. When
-		/* that happens, check every member instead. */
-
-		if (!count($roots))
-		{
-			$roots = $callIDs;
-		}
-
-		foreach ($roots as $rid)
-		{
-			$callRow  = $db->selectFirst('required', 'calls', 'id=' . $db->sc($rid));
+			$callRow  = $db->selectFirst('required', 'calls', 'id=' . $db->sc($callID));
 			$required = $callRow ? (int) $callRow->required : 0;
 
 			$stat = $db->selectFirst(
 				'COUNT(call_crew_map.status) as cnt',
 				'call_crew_map',
-				'status=5 AND callID=' . $db->sc($rid) . ' GROUP BY status'
+				'status=5 AND callID=' . $db->sc($callID) . ' GROUP BY status'
 			);
 			$confirmed = $stat ? (int) $stat->cnt : 0;
 
-			/* >= required matches sms-cron.php exactly (including the
-			/* required=0 edge, where a call needing no crew reads as full). */
+			$memo[$callID] = ($confirmed >= $required) ? true : false;
 
-			if ($confirmed >= $required)
+			return $memo[$callID];
+		}
+	}
+
+	/*
+	/* Capacity — checked on the package ROOTS, then PEELED.
+	/*
+	/* A root is a call in the package that no other package member feeds. It
+	/* is a call the crew member is being booked onto directly, so its
+	/* `required` must be honoured.
+	/*
+	/* A NON-root member keeps the DESIGN §3.3 bypass: those crew were promised
+	/* the slot upstream and must never be written Backup because a receiving
+	/* call was overfilled by direct booking. That is why case 4 leaves a call
+	/* at 4 confirmed against 3 required, and it is still correct.
+	/*
+	/* PEEL, replacing August's all-or-nothing. When a root IS full, the
+	/* promise that justified the bypass was not kept — so that root goes to
+	/* Backup, drops out, and whatever it fed becomes a root in its own right
+	/* and is checked on its own merits. Repeat until every remaining root has
+	/* room.
+	/*
+	/* This is Joe's case, 11 Sep 2026: Ben Ralph backed up on a load-in that
+	/* filled, and backed up on a load out with ten places free purely because
+	/* the two were linked. The feed invariant runs one way only — holding the
+	/* load out never required holding the load-in (see goat_decline_scope) —
+	/* so "Backup upstream, Confirmed downstream" is a legal state and the one
+	/* ops wants. The reverse is what must stay impossible, and it still is: a
+	/* call is only ever written Backup while it is a root, which means
+	/* everything upstream of it inside the package was already written Backup
+	/* on an earlier pass.
+	/*
+	/* CYCLE GUARD — all-or-nothing survives here, deliberately. The link_group
+	/* backfill produced symmetric pairs (A->B and B->A) which feed each other,
+	/* so the root set computes EMPTY. Those genuinely are answered as one unit
+	/* — that is what a linked call meant — so if any member is full the whole
+	/* remainder goes to Backup, exactly as before. Peeling them would silently
+	/* change the meaning of every old linked call in the system.
+	/*
+	/* A single unfed call is its own only root and never reaches a second
+	/* pass, so that path stays byte-identical to sms-cron.php.
+	*/
+
+	$statusOf = array();
+
+	foreach ($callIDs as $cid)
+	{
+		$statusOf[(int) $cid] = $callStatus;   /* 5 or 6; 5s may become 7 below */
+	}
+
+	if ($callStatus == 5)
+	{
+		$remaining = array();
+
+		foreach ($callIDs as $cid)
+		{
+			$remaining[] = (int) $cid;
+		}
+
+		$fullMemo = array();
+		$guard    = 0;
+
+		while (count($remaining) && $guard < 20)
+		{
+			$guard++;
+
+			/* targets of locked edges that START inside what is left */
+
+			$fedInside  = array();
+			$downstream = goat_feed_step($remaining, 'down');
+
+			foreach ($downstream as $d)
 			{
-				$effectiveStatus = 7;   /* Backup — a root call is full */
+				if (in_array((int) $d, $remaining))
+				{
+					$fedInside[(int) $d] = true;
+				}
+			}
+
+			$roots = array();
+
+			foreach ($remaining as $cid)
+			{
+				if (!isset($fedInside[$cid]))
+				{
+					$roots[] = $cid;
+				}
+			}
+
+			/* Mutually-fed remainder — see CYCLE GUARD above. All or nothing. */
+
+			if (!count($roots))
+			{
+				$anyFull = false;
+
+				foreach ($remaining as $cid)
+				{
+					if (goat_rtc_root_is_full($cid, $fullMemo))
+					{
+						$anyFull = true;
+						break;
+					}
+				}
+
+				if ($anyFull)
+				{
+					foreach ($remaining as $cid)
+					{
+						$statusOf[$cid] = 7;
+					}
+				}
+
 				break;
 			}
+
+			$fullRoots = array();
+
+			foreach ($roots as $rid)
+			{
+				if (goat_rtc_root_is_full($rid, $fullMemo))
+				{
+					$fullRoots[] = $rid;
+				}
+			}
+
+			/* Every root has room — everything still standing confirms. */
+
+			if (!count($fullRoots))
+			{
+				break;
+			}
+
+			$next = array();
+
+			foreach ($remaining as $cid)
+			{
+				if (in_array($cid, $fullRoots))
+				{
+					$statusOf[$cid] = 7;
+				}
+				else
+				{
+					$next[] = $cid;
+				}
+			}
+
+			$remaining = $next;
 		}
 	}
 
@@ -327,6 +436,10 @@
 	/*     to un-confirm an accepted shift whose commitment has been broken.
 	/*     Each one also loses its calendar entry.
 	/*
+	/* Since the peel, the status written is PER CALL ($statusOf), not one
+	/* value for the package. A call written 7 gets no calendar row, as before,
+	/* but that is now decided per call.
+	/*
 	/* Idempotent by construction (MyISAM has no transactions — DESIGN §4.3):
 	/* re-running produces the same end state.
 	*/
@@ -334,10 +447,13 @@
 	$totalChanged  = 0;
 	$changedCalls  = array();
 	$unconfirmed   = array();   /* previously-confirmed rows we took back */
+	$writtenStatus = array();   /* call_id => status actually written */
 
 	foreach ($callIDs as $cid)
 	{
+		$cid     = (int) $cid;
 		$isBreak = isset($breakCommitment[$cid]);
+		$writeSt = isset($statusOf[$cid]) ? (int) $statusOf[$cid] : (int) $callStatus;
 
 		$where = $isBreak
 			? 'userID=' . $db->sc($userID) . ' AND callID=' . $db->sc($cid)
@@ -345,7 +461,7 @@
 
 		$db->update(
 			'call_crew_map',
-			array('status' => $db->sc($effectiveStatus)),
+			array('status' => $db->sc($writeSt)),
 			$where
 		);
 
@@ -362,7 +478,9 @@
 			$totalChanged  += $changed;
 			$changedCalls[] = $cid;
 
-			if ($effectiveStatus == 5)
+			$writtenStatus[$cid] = $writeSt;
+
+			if ($writeSt == 5)
 			{
 				$sss->addToCalendar($cid, $userID);
 			}
@@ -396,12 +514,38 @@
 		}
 	}
 
+	/*
+	/* result_status / backup describe the SEED call — the card the crew member
+	/* tapped. Since the peel a package can carry more than one status, so a
+	/* single value for "the package" no longer exists. The seed row is
+	/* guaranteed status <= 1 here (the guard at the top of this file returned
+	/* early otherwise), so intended == written for it.
+	/*
+	/* `statuses` is additive and reports what was actually WRITTEN, per call.
+	/* Keys are cast to strings so json_encode always emits an object — call
+	/* ids are never a 0..n-1 sequence today, but relying on that is how a
+	/* client ends up parsing an array.
+	/*
+	/* Existing clients ignore `statuses` and keep reading result_status /
+	/* backup, so nothing in Crew Hub needs to change to deploy this.
+	*/
+
+	$seedStatus = isset($statusOf[$callID]) ? (int) $statusOf[$callID] : (int) $callStatus;
+
+	$statusMap = array();
+
+	foreach ($writtenStatus as $k => $v)
+	{
+		$statusMap[(string) $k] = (int) $v;
+	}
+
 	echo json_encode(array(
 		'ok'             => true,
 		'callID'         => $callID,
 		'status'         => $callStatus,                             /* what the crew requested (5/6) */
-		'result_status'  => $effectiveStatus,                        /* what was written (5/6/7) */
-		'backup'         => ($effectiveStatus == 7) ? true : false,
+		'result_status'  => $seedStatus,                             /* what was written for the SEED call */
+		'backup'         => ($seedStatus == 7) ? true : false,
+		'statuses'       => $statusMap,                              /* per call, what was written */
 		'changed'        => ($totalChanged > 0 || count($unconfirmed) > 0) ? true : false,
 		'changed_calls'  => $changedCalls,
 		'changed_names'  => $changedNames,
