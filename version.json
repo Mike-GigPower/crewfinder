@@ -1,6 +1,6 @@
 {
-  "version": "5.41.0",
-  "release_date": "2026-09-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.41.0/TheGOAT.dmg",
-  "release_notes": "A new Shadowlands lane on the Operations tab: active crew with no Crew Hub push notifications who have an unanswered offer or a confirmed call in the next four weeks. Click it for their EIN, name and number, soonest first."
+  "version": "5.42.0",
+  "release_date": "2026-09-11",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.42.0/TheGOAT.dmg",
+  "release_notes": "Crew can now record what someone should do for them in an emergency, and where they keep their medication — they write it themselves in Crew Hub. Manage Crew gains an Emergency tab, plus a marker beside the EIN for anyone who has recorded something. Opening it is logged, and the crew member can see who looked."
 }
