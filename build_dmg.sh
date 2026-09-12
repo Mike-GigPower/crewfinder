@@ -32,6 +32,7 @@ pyinstaller \
   --icon goat.icns \
   --add-data "templates:templates" \
   --add-data "static:static" \
+  --add-data "docs:docs" \
   --hidden-import AppKit \
   --hidden-import PyObjCTools \
   --hidden-import openpyxl \
@@ -52,6 +53,8 @@ pyinstaller \
   --hidden-import estimator_calc \
   --hidden-import visa_extract \
   --hidden-import pypdf \
+  --hidden-import docs_render \
+  --hidden-import docs_source \
   dock_launcher.py
 
 if [ ! -d "$BUNDLE" ]; then
