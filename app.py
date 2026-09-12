@@ -56,6 +56,8 @@ def _no_store_api(resp):
 
 import sys as _sys
 import visa_extract
+import docs_render
+import docs_source
 # When running inside a PyInstaller bundle, use the executable's directory
 # When running as a script, use the script's directory
 if getattr(_sys, 'frozen', False):
@@ -135,7 +137,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.43.0"
+APP_VERSION    = "5.44.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -15976,6 +15978,106 @@ def api_licence_triage_save():
     if err:
         return jsonify({"error": err}), 502
     return jsonify(out)
+
+
+# ─── DOCS CENTRE ──────────────────────────────────────────────────────────────
+# Bundled documentation: user guides, technical guides and patch history, with
+# search. Docs live in docs/ inside the app bundle, which is why the path comes
+# from app.root_path — the same place Flask already resolves templates/ and
+# static/ against. BASE_DIR would be wrong here: that points beside the
+# executable (Contents/MacOS), where config.json and au_postcodes.json are
+# copied in after the build, not where --add-data puts a folder.
+#
+# Read-only and any-cohort by design: there is nothing here to protect, and the
+# crew cohort is kept out in the UI rather than at the route.
+DOCS_DIR = os.path.join(app.root_path, "docs")
+_docs = docs_source.BundledDocs(DOCS_DIR, frozen=getattr(_sys, "frozen", False))
+
+
+def _docs_guard():
+    """Shared login check. Returns a response to send, or None to continue."""
+    if not session.get("sid") or not get_ss_session():
+        return jsonify({"error": "Not logged in"}), 401
+    if not os.path.isdir(DOCS_DIR):
+        # A build that dropped docs/ must say so. Returning an empty index here
+        # would render as "no documents yet", which is indistinguishable from a
+        # working app with nothing written — the exact silent failure the docs
+        # design calls out. Fail loudly instead.
+        app.logger.error("Docs folder missing at %s", DOCS_DIR)
+        return jsonify({"error": "Documentation is missing from this build."}), 500
+    return None
+
+
+@app.route("/api/docs/index")
+def api_docs_index():
+    """Every document's metadata, grouped by category. No bodies."""
+    guard = _docs_guard()
+    if guard:
+        return guard
+    try:
+        return jsonify(_docs.index())
+    except Exception as e:
+        app.logger.warning("Docs index failed: %s", e)
+        return jsonify({"error": f"Could not read documentation: {e}"}), 500
+
+
+@app.route("/api/docs/doc/<path:slug>")
+def api_docs_doc(slug):
+    """One document, rendered server-side.
+
+    The slug is looked up in the index, never joined onto a filesystem path, so
+    a traversal attempt simply finds no entry and 404s.
+    """
+    guard = _docs_guard()
+    if guard:
+        return guard
+    try:
+        doc = _docs.get(slug)
+    except Exception as e:
+        app.logger.warning("Docs read failed for %r: %s", slug, e)
+        return jsonify({"error": f"Could not read that document: {e}"}), 500
+    if not doc:
+        return jsonify({"error": "No such document"}), 404
+    return jsonify(doc)
+
+
+@app.route("/api/docs/search")
+def api_docs_search():
+    """Ranked search across every document.
+
+    An empty query returns an empty result set rather than an error — the
+    search box clears to nothing on the way to a new query, and that is not a
+    mistake worth reporting.
+    """
+    guard = _docs_guard()
+    if guard:
+        return guard
+    q = (request.args.get("q") or "").strip()
+    category = (request.args.get("category") or "").strip() or None
+    try:
+        return jsonify(_docs.search(q, category=category))
+    except Exception as e:
+        app.logger.warning("Docs search failed for %r: %s", q, e)
+        return jsonify({"error": f"Search failed: {e}"}), 500
+
+
+@app.route("/api/docs/reload", methods=["POST"])
+def api_docs_reload():
+    """Rebuild the docs index without restarting — source runs only.
+
+    Absent from the shipped DMG: inside a frozen bundle the files cannot
+    change, so this would only ever be a surface with no purpose.
+    """
+    if getattr(_sys, "frozen", False):
+        return jsonify({"error": "Not found"}), 404
+    guard = _docs_guard()
+    if guard:
+        return guard
+    try:
+        _docs._build()
+        return jsonify({"ok": True, "count": _docs.index()["count"]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
