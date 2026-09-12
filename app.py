@@ -135,7 +135,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.42.0"
+APP_VERSION    = "5.43.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -7331,6 +7331,46 @@ def api_availability():
             "soft":       str(c["call_id"]) in soft_ids,
         })
 
+    # Existing relationship to each target call, read from call_crew_map rather
+    # than inferred from the calendar-derived `shifts`.
+    #
+    # WHY NOT shifts: get-shifts-bulk.php is driven FROM calendars, and a
+    # declined assignment has no calendars row - addToCalendar runs on confirm,
+    # and a decline calls removeFromCalendar. So `shifts` cannot see a decline at
+    # all, and the Hide-from-results filter went blind to declines the moment a
+    # second call was selected. get-booking.php reads call_crew_map directly and
+    # knows every status word, backup and cancelled included.
+    #
+    # ONE FETCH PER DISTINCT BOOKING, not per call: get-booking.php returns every
+    # call in the booking with its full roster, and feeds cannot cross a booking,
+    # so calls selected together are normally one booking anyway.
+    #
+    # KEYED ON USER ID, deliberately. Name matching is not safe on this system -
+    # "Michael O'Lack" is a live example of an apostrophe being inserted into a
+    # rendered name. A hide filter that fails to match a name shows a settled
+    # crew member, which is the defect being fixed. Keys are strings so a
+    # str/int mismatch cannot silently miss.
+    #
+    # FAILS OPEN: on any error the map stays empty, every rel reads None, and
+    # nothing is hidden. Showing a settled crew member is a nuisance; hiding an
+    # available one loses a booking.
+    rel_by_call = {}   # {call_id_str: {user_id_str: status_word}}
+
+    for _bid in {str(t["booking_id"]) for t in targets if t.get("booking_id")}:
+        _bdata, _berr = fetch_booking_bulk(ss, _bid)
+        if _berr or not isinstance(_bdata, dict):
+            continue
+        for _bc in (_bdata.get("calls") or []):
+            _cid_s = str(_bc.get("call_id"))
+            _m = {}
+            for _member in (_bc.get("crew") or []):
+                _uid = _member.get("id")
+                _st  = _member.get("status") or ""
+                if _uid is not None and _st:
+                    _m[str(_uid)] = _st
+            if _m:
+                rel_by_call[_cid_s] = _m
+
     today = datetime.now()
 
     # Geo radius filter (optional). radius_km absent/falsy => disabled (back-compat).
@@ -7588,6 +7628,13 @@ def api_availability():
                 "conflict_warning":  conflict_warning,
                 "warning_rule":      warning_rule,
                 "licence_status":    lic_status,
+                # Status word from call_crew_map for THIS crew member on THIS
+                # call - 'confirmed' / 'declined' / 'backup' / 'unconfirmed' /
+                # 'sent' / 'noshow' / 'cancelled', or None when they hold no row.
+                # Consumed only by the Hide-from-results filter. Mapped to the
+                # Finder's relationship vocabulary client-side by
+                # relFromStatusWord(), which is the single mapping.
+                "rel":               rel_by_call.get(str(t["call_id"]), {}).get(str(cid)),
             })
 
         # Availability splits along hard vs soft. The partial bucket and the
@@ -9896,7 +9943,9 @@ def api_booked_crew(booking_id, call_id):
     if err is None and isinstance(data, dict):
         for c in (data.get("calls") or []):
             if str(c.get("call_id")) == str(call_id):
-                roster = [{"name": m.get("name", ""), "status": m.get("status", "")}
+                roster = [{"id":     m.get("id"),
+                           "name":   m.get("name", ""),
+                           "status": m.get("status", "")}
                           for m in (c.get("crew") or [])]
                 return jsonify({"crew": roster, "total": len(roster)})
         return jsonify({"crew": [], "total": 0})

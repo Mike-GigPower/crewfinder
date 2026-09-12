@@ -1725,7 +1725,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
             <div class="cf-dd-lbl">Hide from results</div>
             <label class="cf-dd-check"><input type="checkbox" id="cf-hide-booked" checked onchange="cfSetHideRel()"> Already booked on this call</label>
             <label class="cf-dd-check"><input type="checkbox" id="cf-hide-declined" checked onchange="cfSetHideRel()"> Declined this call</label>
-            <div style="font-size:10px;color:var(--muted);margin-top:6px">With several calls selected, hides only crew settled the same way on <b>every</b> one &mdash; someone booked on a load-in may still be needed on the load-out.</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:6px">With several calls selected, hides crew who have answered <b>every</b> one &mdash; booked or declined, and not necessarily the same way on each. Someone booked on a load-in and still free for the load-out stays in the list.</div>
           </div>
           <div class="cf-dd-sec">
             <label class="cf-dd-check"><input type="checkbox" id="exclude-pt" onchange="cfRenderChips();cfReSearchIfActive()"> Exclude public-transport-only crew</label>
@@ -3554,32 +3554,53 @@ function cfSetHideRel(){
   if(currentResult) renderResults(currentResult, currentResult.details, currentResult.targets);
 }
 
-// Settled relationship to the search, or null when it can't be established for
-// EVERY selected call. Null always means "show the row".
+// Should this crew member be hidden, given the ticked Hide-from-results boxes?
 //
-// link_group is deliberately NOT consulted. The original design hid only within
-// a joined set, on the grounds that "booked on one call is exactly who we want
-// to see for another" — true of booked-on-SOME, but it also blocked hiding
-// someone booked on ALL of them, who has nothing left to be offered whether or
-// not SmartStaff formally links the calls. Requiring a row for every selected
-// call AND unanimous agreement is what makes dropping the gate safe: it is also
-// the check that covers a split linked set, since the respond-to-call.php
-// accept/decline cascade does NOT cover SmartStaff's native dash.php, so even a
-// linked set can disagree in the data.
-function cfSettledRelationship(crew){
-  const n=selectedCalls.size;
-  if(n<=1) return targetRelationship(crew);          // _bookedRel is authoritative
-  // is_target is set for SOFT (considered) targets too — they ride in the same
-  // `calls` array to /api/availability — so restrict to the selected hard calls,
-  // or a soft call's row would join the agreement vote.
+// link_group is deliberately NOT consulted, as before. The original design hid
+// only within a joined set, on the grounds that "booked on one call is exactly
+// who we want to see for another" - true of booked-on-SOME, but it also blocked
+// hiding someone booked on ALL of them, who has nothing left to be offered
+// whether or not SmartStaff formally links the calls. What makes dropping that
+// gate safe is requiring an answer on EVERY selected call. It is NOT unanimity:
+// a split linked set - declined the load-in, booked the load out, which happens
+// because the respond-to-call.php cascade does NOT cover SmartStaff's native
+// dash.php - is still someone who has answered everything in front of them. The
+// old rule showed them, and that was four of the five surplus rows on the search
+// Joe reported on 11 Sep 2026.
+//
+// THE RULE, stated plainly: hide when the crew member is settled on EVERY
+// selected call in a way the operator asked to hide - not settled the same way
+// on every call.
+//
+// SOURCE IS call_results[].rel, from call_crew_map via get-booking.php. It is
+// deliberately NOT crew.shifts: shifts are calendar-derived, a declined
+// assignment has no calendar row, and so shifts cannot see declines at all -
+// which is why this filter silently stopped hiding them the moment a second
+// call was selected.
+//
+// FAILS OPEN. A selected call with no entry, or a null rel, means "not settled
+// there" and the row is shown. That is also what happens when the server-side
+// roster fetch failed: nothing is hidden. Showing a settled crew member is a
+// nuisance; hiding an available one loses a booking.
+//
+// Soft (considered) targets ride in the same call_results array, so restrict to
+// the selected HARD calls or a soft call would join the vote.
+function cfShouldHideSettled(crew){
+  if(!_cfHideBooked && !_cfHideDeclined) return false;
   const hardIds=new Set([...selectedCalls.keys()].map(String));
-  const ts=(crew.shifts||[]).filter(s=>s.is_target && hardIds.has(String(s.call_id)));
-  // Count DISTINCT calls covered, not rows: two rows against one call must not
-  // stand in for a call that has no row at all.
-  if(new Set(ts.map(s=>String(s.call_id))).size < n) return null;
-  const rels=new Set(ts.map(s=> s.status===5?'booked' : s.status===6?'declined'
-                                : s.status===7?'backup' : 'waiting'));
-  return rels.size===1 ? [...rels][0] : null;
+  if(!hardIds.size) return false;
+  const seen=new Map();
+  (crew.call_results||[]).forEach(r=>{
+    const k=String(r.call_id);
+    if(hardIds.has(k)) seen.set(k, r.rel ? relFromStatusWord(r.rel) : null);
+  });
+  if(seen.size < hardIds.size) return false;   // a call we know nothing about
+  for(const rel of seen.values()){
+    if(rel==='booked'   && _cfHideBooked)   continue;
+    if(rel==='declined' && _cfHideDeclined) continue;
+    return false;                              // not covered by a ticked box
+  }
+  return true;
 }
 
 // Clickable column-header sort. Cycles asc → desc → off for the clicked column.
@@ -3721,18 +3742,17 @@ function renderResults(result,details,targets){
       if(Array.isArray(result[k])) result[k]=result[k].filter(c=>(c.name||'').toLowerCase().includes(q));
     });
   }
-  // Hide crew whose answer to this search is settled (booked / declined). Only
-  // when the answer covers EVERY selected call — see cfSettledRelationship.
-  // `backup` and `waiting` are not hidden; neither is a settled answer.
+  // Hide crew who have already answered this search. A crew member is hidden
+  // only when EVERY selected hard call has an answer from them and every one of
+  // those answers is a reason the operator ticked - see cfShouldHideSettled.
+  // `backup` and `waiting` are never hidden; neither is a settled answer.
   let _cfRelHidden=0;
   if(_cfHideBooked||_cfHideDeclined){
     result={...result};
     ['available','conflicts','skipped','location_unknown'].forEach(k=>{
       if(!Array.isArray(result[k])) return;
       result[k]=result[k].filter(c=>{
-        const rel=cfSettledRelationship(c);
-        if(_cfHideBooked  && rel==='booked'){   _cfRelHidden++; return false; }
-        if(_cfHideDeclined&& rel==='declined'){ _cfRelHidden++; return false; }
+        if(cfShouldHideSettled(c)){ _cfRelHidden++; return false; }
         return true;
       });
     });
@@ -3868,14 +3888,22 @@ function toggleBookedSection(){
 // a target call for multi-call searches (where booked-crew isn't fetched).
 let _bookedRel=new Map();   // normalised name -> 'booked'|'backup'|'waiting'|'declined'
 function _normName(n){return String(n||'').toLowerCase().replace(/,/g,' ').split(/\s+/).filter(Boolean).sort().join(' ');}
+// Status word from get-booking.php -> the Finder's relationship vocabulary.
+// ONE mapping, used by buildBookedRel (ALREADY BOOKED panel) and by
+// cfShouldHideSettled (the hide filter), so the two cannot drift apart.
+// 'noshow' and 'cancelled' deliberately fall through to 'waiting': neither is a
+// settled answer to an offer, and both should stay visible.
+function relFromStatusWord(s){
+  return s==='confirmed' ? 'booked'
+       : s==='backup'    ? 'backup'
+       : s==='declined'  ? 'declined'
+       : 'waiting';   // unconfirmed / waiting / sent / noshow / cancelled
+}
+
 function buildBookedRel(bookedCrew){
   const m=new Map();
   (bookedCrew||[]).forEach(c=>{
-    const rel = c.status==='confirmed' ? 'booked'
-              : c.status==='backup'    ? 'backup'
-              : c.status==='declined'  ? 'declined'
-              : 'waiting';   // unconfirmed / waiting / sent
-    m.set(_normName(c.name),rel);
+    m.set(_normName(c.name), relFromStatusWord(c.status));
   });
   return m;
 }
