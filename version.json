@@ -1,6 +1,6 @@
 {
-  "version": "5.42.0",
-  "release_date": "2026-09-11",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.42.0/TheGOAT.dmg",
-  "release_notes": "Crew can now record what someone should do for them in an emergency, and where they keep their medication — they write it themselves in Crew Hub. Manage Crew gains an Emergency tab, plus a marker beside the EIN for anyone who has recorded something. Opening it is logged, and the crew member can see who looked."
+  "version": "5.43.0",
+  "release_date": "2026-09-12",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.43.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder's Hide from results filter now works with more than one call selected. Anyone who has already answered every call you have selected — booked or declined, and not necessarily the same way on each — drops out of the list; declines were previously invisible whenever a second call was selected."
 }
