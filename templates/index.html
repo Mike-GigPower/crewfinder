@@ -15931,8 +15931,8 @@ function buildPaletteIndex(){
   Object.keys(TAB_GROUPS).forEach(g=>{
     TAB_GROUPS[g].forEach(key=>rows.push({key, group: PALETTE_GROUP_LABELS[g] || g}));
   });
-  rows.push({key:'my-status', group:''});
-  rows.push({key:'docs', group:''});          // nav destination, like My Status   // nav destination, no group prefix
+  rows.push({key:'my-status', group:''});   // nav destination, no group prefix
+  rows.push({key:'docs', group:''});        // nav destination, like My Status
   return rows.map(r=>{
     const btn = document.getElementById('tab-btn-' + r.key);
     const label = btn ? btn.textContent.trim() : r.key;
