@@ -938,6 +938,67 @@ body.cohort-readonly #unavail-add-section{display:none}
 .admin-card-icon{font-size:22px;line-height:1;flex-shrink:0;margin-top:1px}
 .admin-card-title{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;color:var(--text);letter-spacing:.02em}
 .admin-card-desc{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);margin-top:3px;line-height:1.35}
+/* ── DOCS CENTRE ──────────────────────────────────────────────────────────── */
+/* Two columns inside the standard .tab-panel flex row: a fixed sidebar and a
+   reading pane that scrolls on its own. Colours come from the existing
+   variables only — no new values, so the theme stays one theme. */
+#tab-docs{flex-direction:row}
+.docs-sidebar{width:272px;flex-shrink:0;border-right:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;min-height:0}
+.docs-search-wrap{padding:12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.docs-search-box{position:relative}
+.docs-search{width:100%;padding:8px 26px 8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-family:'Rajdhani',sans-serif;font-size:13px}
+.docs-search:focus{outline:none;border-color:var(--accent)}
+.docs-search::placeholder{color:var(--muted)}
+.docs-search-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;line-height:1;padding:4px;display:none}
+.docs-search-clear.show{display:block}
+.docs-search-clear:hover{color:var(--accent2)}
+.docs-nav{flex:1;overflow-y:auto;padding:0 0 26px}
+.docs-cat{font-family:'Bebas Neue',sans-serif;font-size:14px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;padding:15px 14px 6px;border-bottom:1px solid var(--border);margin-bottom:5px}
+.docs-link{display:block;width:100%;text-align:left;padding:6px 14px;background:none;border:none;border-left:2px solid transparent;color:var(--text);font-family:'Rajdhani',sans-serif;font-size:13px;cursor:pointer}
+.docs-link:hover{background:var(--surface2)}
+.docs-link.active{background:var(--accent-bg);border-left-color:var(--accent);color:var(--accent)}
+.docs-group{display:block;width:100%;text-align:left;padding:5px 14px;background:none;border:none;color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:.08em;cursor:pointer}
+.docs-group:hover{color:var(--accent)}
+.docs-group-items{display:none}
+.docs-group-items.open{display:block}
+.docs-group-items .docs-link{padding-left:28px;font-family:'Share Tech Mono',monospace;font-size:11px}
+.docs-reader{flex:1;overflow-y:auto;padding:28px 34px 60px;min-width:0}
+.docs-crumb{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:12px}
+.docs-body{max-width:760px;line-height:1.55}
+.docs-body h1{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.05em;color:var(--accent);margin:0 0 14px;line-height:1.12}
+.docs-body h2{font-family:'Bebas Neue',sans-serif;font-size:19px;letter-spacing:.08em;color:var(--text);margin:26px 0 9px;border-bottom:1px solid var(--border);padding-bottom:5px}
+.docs-body h3{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;color:var(--accent);margin:20px 0 6px}
+.docs-body h4{font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;color:var(--text);margin:16px 0 4px}
+.docs-body p{margin:0 0 12px}
+.docs-body ul,.docs-body ol{margin:0 0 12px 20px}
+.docs-body li{margin-bottom:5px}
+.docs-body code{font-family:'Share Tech Mono',monospace;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:1px 4px;color:var(--accent)}
+.docs-body pre{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 14px}
+.docs-body pre code{background:none;border:none;padding:0;color:var(--text)}
+.docs-body blockquote{border-left:3px solid var(--accent);background:var(--accent-bg);padding:10px 14px;margin:0 0 14px}
+.docs-body blockquote p{margin:0}
+.docs-body a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(212,175,55,0.35)}
+.docs-body a:hover{border-bottom-color:var(--accent)}
+.docs-body hr{border:none;border-top:1px solid var(--border);margin:22px 0}
+.docs-body strong{color:#fff}
+.doc-table-wrap{overflow-x:auto;margin:0 0 14px}
+/* The app's global table rules are tuned for the crew grids — `td` is
+   white-space:nowrap and `thead th` is sticky, 9px and uppercase. Both are
+   right there and wrong here, where a cell holds a sentence. Undo them
+   explicitly rather than hoping specificity does it: without white-space,
+   a two-column reference table renders 1650px wide inside a 760px column. */
+.docs-body table{border-collapse:collapse;font-size:12px;width:100%;min-width:0}
+.docs-body th,.docs-body td{border:1px solid var(--border);padding:6px 9px;text-align:left;vertical-align:top;white-space:normal;position:static;font-size:12px;text-transform:none;letter-spacing:normal}
+.docs-body th{background:var(--surface2);color:var(--accent);font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:.03em}
+.docs-meta{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.08em;margin-top:34px;padding-top:12px;border-top:1px solid var(--border);max-width:760px}
+.docs-result{display:block;width:100%;max-width:760px;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:13px 15px;margin:0 0 10px;cursor:pointer;font-family:inherit}
+.docs-result:hover{border-color:var(--accent)}
+.docs-result-title{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;color:var(--text)}
+.docs-result-cat{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-left:8px}
+.docs-result-snip{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}
+.docs-result-snip mark{background:var(--accent-bg);color:var(--accent);padding:0 2px;border-radius:2px}
+.docs-result-head{color:var(--accent);opacity:.85}
+.docs-empty{color:var(--muted);font-family:'Rajdhani',sans-serif;font-size:13px;padding:18px 0;max-width:760px}
 .admin-card-soon{display:inline-block;margin-left:7px;font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--warn);border:1px solid var(--warn);border-radius:3px;padding:1px 5px;vertical-align:middle}
 .admin-card.is-soon{opacity:.72}
 .admin-card.is-soon:hover{border-color:var(--warn)}
@@ -1601,6 +1662,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
     <div class="cache-badge" id="cache-badge" onclick="refreshCache()">Loading cache...</div>
     <button id="tab-btn-my-status" class="btn-logout nav-tab-btn"
             onclick="switchTab('my-status')">👤 My Status</button>
+    <button id="tab-btn-docs" class="btn-logout nav-tab-btn"
+            onclick="switchTab('docs')">📖 Docs</button>
     <button id="btn-elevate" class="btn-logout" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="openElevateModal()">🔑 Admin</button>
     <button id="btn-exit-admin" class="btn-logout" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="exitAdmin()">⤓ Exit Admin</button>
     <a href="/logout" class="btn-logout">Sign out</a>
@@ -1656,6 +1719,22 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   </div>
 </div>
 <div class="main">
+  <!-- ── DOCS TAB ── -->
+  <div class="tab-panel" id="tab-docs">
+    <div class="docs-sidebar">
+      <div class="docs-search-wrap">
+        <div class="docs-search-box">
+          <input id="docs-search" class="docs-search" type="text" autocomplete="off"
+                 placeholder="Search documentation…"
+                 oninput="docsSearchInput()" onkeydown="docsSearchKey(event)">
+          <button class="docs-search-clear" id="docs-search-clear"
+                  onclick="docsSearchClear()" title="Clear search">✕</button>
+        </div>
+      </div>
+      <div class="docs-nav" id="docs-nav"></div>
+    </div>
+    <div class="docs-reader" id="docs-reader"></div>
+  </div>
   <!-- ── CREW FINDER TAB ── -->
   <div class="tab-panel" id="tab-crew-finder">
   <div class="sidebar">
@@ -2700,6 +2779,7 @@ function applyCohort(d){
     return;
   }
   // crew → personal dashboard only
+  hide('tab-btn-docs');       // crew read Crew Hub, not the ops documentation
   hide('btn-ask-goat');
   hide('cache-badge');
   const bar = document.querySelector('.tab-bar'); if(bar) bar.style.display='none';
@@ -2931,7 +3011,13 @@ async function msDeleteUnavail(id){
 }
 
 document.addEventListener('DOMContentLoaded', async ()=>{
-  const wantTab = (location.hash || '').replace(/^#/, '');  // capture BEFORE any switchTab runs
+  const _wantHash = (location.hash || '').replace(/^#/, '');  // capture BEFORE any switchTab runs
+  // A hash may carry a destination INSIDE a tab, as #docs/user/crew-finder.
+  // Split on the first slash: head is the tab key the existing check below
+  // expects, tail is handed to that tab's controller. No tail, no change.
+  const _wantSlash = _wantHash.indexOf('/');
+  const wantTab = _wantSlash === -1 ? _wantHash : _wantHash.slice(0, _wantSlash);
+  window._wantDoc = _wantSlash === -1 ? '' : _wantHash.slice(_wantSlash + 1);
   checkForUpdates();                       // version banner — fine for everyone
   const cohort = await loadWhoami();        // identity + cohort-aware nav
   if(cohort === 'crew'){ loadMyStatus(); return; }   // crew: personal view only — no tab bar, ignore any hash
@@ -5091,6 +5177,7 @@ function switchTab(tab){
   if(tab==='schedule') { initSchedule(); if(!_schedData) loadSchedule(); }
   if(tab==='all-bookings') loadAllBookings();
   if(tab==='my-status') loadMyStatus();
+  if(tab==='docs') initDocs();
   if(tab==='recruitment') loadRecruitment();
   if(tab==='recruitment-dashboard') loadRecruitMetrics();
   // Unconditional, not `if(!_recruitRows.length)`: book-on-behalf filters
@@ -15605,6 +15692,212 @@ document.addEventListener('keydown', function(e){
   closeCrewDetail();
 });
 
+// ── DOCS CENTRE ──────────────────────────────────────────────────────────────
+// Reads /api/docs/*. The markdown is rendered server-side, so this file holds
+// no markdown engine — only the sidebar, the reader and the search box.
+let _docsIndex      = null;   // {categories:[...], count} — fetched once
+let _docsCurrent    = '';     // slug of the open document
+let _docsTimer      = null;   // search debounce handle
+let _docsOpenGroups = {};     // patch-history major version -> expanded?
+
+function docsMajor(title){
+  const m = /^(\d+)\./.exec(title || '');
+  return m ? m[1] : 'other';
+}
+function docsAllDocs(){
+  if(!_docsIndex) return [];
+  return _docsIndex.categories.reduce((a, c) => a.concat(c.docs), []);
+}
+function docsFirstSlug(){
+  const all = docsAllDocs();
+  return all.length ? all[0].slug : '';
+}
+function docsHasSlug(slug){
+  return !!slug && docsAllDocs().some(d => d.slug === slug);
+}
+function docsShowError(msg){
+  const r = document.getElementById('docs-reader');
+  if(r) r.innerHTML = '<div class="docs-empty">⚠ '
+    + escapeHtml(msg || 'Documentation is unavailable.') + '</div>';
+}
+
+// Entry point, called by switchTab. The index is fetched once per session:
+// inside the DMG the documents cannot change, so re-fetching would buy nothing.
+function initDocs(){
+  const want = window._wantDoc || '';
+  window._wantDoc = '';
+  if(_docsIndex){
+    if(want && docsHasSlug(want)) docsOpen(want);
+    return;
+  }
+  const nav = document.getElementById('docs-nav');
+  if(nav) nav.innerHTML = '<div class="docs-empty" style="padding:14px">Loading…</div>';
+  fetch('/api/docs/index', {cache:'no-store'})
+    .then(r => r.json().then(d => ({ok:r.ok, d:d})))
+    .then(res => {
+      if(!res.ok || res.d.error) throw new Error(res.d.error || 'Could not load documentation');
+      _docsIndex = res.d;
+      docsRenderNav();
+      const last = goatPrefs.get('docs', 'last', null);
+      const open = docsHasSlug(want) ? want : (docsHasSlug(last) ? last : docsFirstSlug());
+      if(open) docsOpen(open);
+      else docsShowError('No documents are installed in this build.');
+    })
+    .catch(e => {
+      if(nav) nav.innerHTML = '';
+      docsShowError(e.message);
+    });
+}
+
+function docsLink(d){
+  return '<button class="docs-link' + (d.slug === _docsCurrent ? ' active' : '') + '" '
+       + 'onclick="docsOpen(\'' + escapeHtml(d.slug) + '\')">'
+       + escapeHtml(d.title) + '</button>';
+}
+
+function docsRenderNav(){
+  const nav = document.getElementById('docs-nav');
+  if(!nav || !_docsIndex) return;
+  let html = '';
+  _docsIndex.categories.forEach(function(cat){
+    if(!cat.docs.length) return;
+    html += '<div class="docs-cat">' + escapeHtml(cat.icon + ' ' + cat.label) + '</div>';
+    // Patch history is ~164 entries and grows by one per release. A flat list
+    // of that length is not a list, it is a wall — so group by major version,
+    // newest expanded and the rest collapsed.
+    if(cat.key === 'patches'){
+      const order = [], byMajor = {};
+      cat.docs.forEach(function(d){
+        const m = docsMajor(d.title);
+        if(!byMajor[m]){ byMajor[m] = []; order.push(m); }
+        byMajor[m].push(d);
+      });
+      order.forEach(function(m, i){
+        if(_docsOpenGroups[m] === undefined) _docsOpenGroups[m] = (i === 0);
+        const open = _docsOpenGroups[m];
+        html += '<button class="docs-group" onclick="docsToggleGroup(\'' + m + '\')">'
+             + (open ? '▾ ' : '▸ ') + escapeHtml(m) + '.x'
+             + ' <span style="opacity:.6">(' + byMajor[m].length + ')</span></button>'
+             + '<div class="docs-group-items' + (open ? ' open' : '') + '">'
+             + byMajor[m].map(docsLink).join('') + '</div>';
+      });
+    } else {
+      html += cat.docs.map(docsLink).join('');
+    }
+  });
+  nav.innerHTML = html;
+}
+
+function docsToggleGroup(m){
+  _docsOpenGroups[m] = !_docsOpenGroups[m];
+  docsRenderNav();
+}
+
+function docsOpen(slug, anchor){
+  if(!slug) return;
+  const reader = document.getElementById('docs-reader');
+  const url = '/api/docs/doc/' + slug.split('/').map(encodeURIComponent).join('/');
+  fetch(url, {cache:'no-store'})
+    .then(r => r.json().then(d => ({ok:r.ok, d:d})))
+    .then(res => {
+      if(!res.ok || res.d.error) throw new Error(res.d.error || 'Could not open that document');
+      const d = res.d;
+      _docsCurrent = d.slug;
+      // d.html is assigned as HTML on purpose: it was rendered and escaped by
+      // docs_render on the server, which is the whole reason rendering lives
+      // there. Everything else on this line goes through escapeHtml.
+      reader.innerHTML = '<div class="docs-crumb">' + escapeHtml(d.label || '') + '</div>'
+        + '<div class="docs-body">' + d.html + '</div>'
+        + (d.updated ? '<div class="docs-meta">UPDATED ' + escapeHtml(d.updated) + '</div>' : '');
+      reader.scrollTop = 0;
+      docsRenderNav();
+      try{ goatPrefs.set('docs', 'last', d.slug); }catch(e){}
+      try{ history.replaceState(null, '', location.pathname + '#docs/' + d.slug); }catch(e){}
+      if(anchor){
+        const el = document.getElementById(anchor);
+        if(el && el.scrollIntoView) el.scrollIntoView({block:'start'});
+      }
+    })
+    .catch(e => docsShowError(e.message));
+}
+
+// Debounced so a round trip doesn't fire on every keystroke.
+function docsSearchInput(){
+  const box = document.getElementById('docs-search');
+  const clear = document.getElementById('docs-search-clear');
+  if(clear) clear.classList.toggle('show', !!(box && box.value));
+  clearTimeout(_docsTimer);
+  _docsTimer = setTimeout(docsRunSearch, 180);
+}
+
+function docsSearchKey(e){
+  if(e.key === 'Escape'){ e.preventDefault(); docsSearchClear(); }
+}
+
+function docsSearchClear(){
+  const box = document.getElementById('docs-search');
+  if(box){ box.value = ''; box.focus(); }
+  const clear = document.getElementById('docs-search-clear');
+  if(clear) clear.classList.remove('show');
+  clearTimeout(_docsTimer);
+  docsOpen(_docsCurrent || docsFirstSlug());
+}
+
+function docsRunSearch(){
+  const box = document.getElementById('docs-search');
+  const q = (box ? box.value : '').trim();
+  if(!q){ docsOpen(_docsCurrent || docsFirstSlug()); return; }
+  const reader = document.getElementById('docs-reader');
+  fetch('/api/docs/search?q=' + encodeURIComponent(q), {cache:'no-store'})
+    .then(r => r.json().then(d => ({ok:r.ok, d:d})))
+    .then(res => {
+      if(!res.ok || res.d.error) throw new Error(res.d.error || 'Search failed');
+      const d = res.d;
+      let html = '<div class="docs-crumb">' + d.count + ' result'
+               + (d.count === 1 ? '' : 's') + ' for &ldquo;' + escapeHtml(q) + '&rdquo;</div>';
+      if(!d.count){
+        // Say WHY nothing matched. Search is AND across terms, which is not
+        // obvious, and "no results" on its own invites retyping the same query.
+        html += '<div class="docs-empty">Nothing matched. Every word has to appear '
+             +  'in the same document — try fewer words.</div>';
+      } else {
+        html += d.results.map(function(r){
+          // r.snippet already carries <mark> and was escaped server-side.
+          const snips = (r.hits || []).map(function(h){
+            // Don't label the snippet with a heading that just repeats the
+            // title. Every patch note's only heading IS its version number,
+            // so without this all 164 of them read "5.23.1 — 5.23.1 …".
+            const label = (h.heading && h.heading !== r.title)
+              ? '<span class="docs-result-head">' + escapeHtml(h.heading) + '</span> — '
+              : '';
+            return '<div class="docs-result-snip">' + label + h.snippet + '</div>';
+          }).join('');
+          const anchor = (r.hits && r.hits[0]) ? r.hits[0].anchor : '';
+          return '<button class="docs-result" onclick="docsOpen(\'' + escapeHtml(r.slug)
+            + '\',\'' + escapeHtml(anchor) + '\')">'
+            + '<div><span class="docs-result-title">' + escapeHtml(r.title) + '</span>'
+            + '<span class="docs-result-cat">' + escapeHtml(r.label || '') + '</span></div>'
+            + snips + '</button>';
+        }).join('');
+      }
+      reader.innerHTML = html;
+      reader.scrollTop = 0;
+    })
+    .catch(e => docsShowError(e.message));
+}
+
+// "/" focuses the search box while Docs is open. Deliberately not a global
+// shortcut: ⌘K already reaches Docs in two keystrokes, and every new global
+// binding is a conflict waiting to happen.
+document.addEventListener('keydown', function(e){
+  if(e.key !== '/' || _activeTab !== 'docs') return;
+  const t = e.target;
+  if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  e.preventDefault();
+  const box = document.getElementById('docs-search');
+  if(box) box.focus();
+});
+
 // ── COMMAND PALETTE (⌘K) ─────────────────────────────────────────────────────
 // Navigation only — jump to any cohort-visible tab. Additive: nothing existing
 // changes. Group labels carry the same emoji as the group row so a row reads
@@ -15626,6 +15919,8 @@ const PALETTE_ALIASES = {
   'administration':    ['admin', 'settings', 'manage'],
   'ops':               ['today', 'home', 'landing', 'ops'],
   'my-status':         ['me', 'my shifts'],
+  'docs':              ['help', 'guide', 'guides', 'manual', 'documentation',
+                       'patch notes', 'changelog', 'release notes'],
 };
 
 // One entry per tab key, built from TAB_GROUPS so it can never drift from the bar.
@@ -15636,7 +15931,8 @@ function buildPaletteIndex(){
   Object.keys(TAB_GROUPS).forEach(g=>{
     TAB_GROUPS[g].forEach(key=>rows.push({key, group: PALETTE_GROUP_LABELS[g] || g}));
   });
-  rows.push({key:'my-status', group:''});   // nav destination, no group prefix
+  rows.push({key:'my-status', group:''});
+  rows.push({key:'docs', group:''});          // nav destination, like My Status   // nav destination, no group prefix
   return rows.map(r=>{
     const btn = document.getElementById('tab-btn-' + r.key);
     const label = btn ? btn.textContent.trim() : r.key;
