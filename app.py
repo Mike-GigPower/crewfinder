@@ -12323,11 +12323,21 @@ def api_admin_crew_lookups():
 @app.route("/api/admin/crew-list")
 @require_cohort("admin")
 def api_admin_crew_list():
-    """Crew list for the Administration tab: {id, name, ein, phone, active}.
+    """Crew list for Crew > Records: {id, name, ein, phone, active, groups,
+    licences?} plus a top-level licences_ok.
 
     ?active=0 returns inactive crew; default (or ?active=1) returns active.
     id is the internal SmartStaff userId — the same one /crew/manage and
     aquire-id use, so the list rows can drive both view/edit and login-as.
+
+    `licences` rides along ONLY when fetch_crew_bulk carried it, and the ABSENT
+    key is load-bearing: absent means list-crew-bulk.php's licence query never
+    ran, an empty list means this crew member holds none. Defaulting to [] here
+    would turn a failed query into a licence filter that silently matches
+    nobody, which is the one failure mode a licence filter must not have — see
+    the contract in fetch_crew_bulk. `licences_ok` hands the client that same
+    distinction in one flag so the Records filter can refuse out loud instead of
+    rendering an honest-looking empty list.
     """
     ss = get_ss_session()
     if not ss:
@@ -12336,8 +12346,11 @@ def api_admin_crew_list():
     crew, err = fetch_crew_bulk(ss, include_inactive=(not want_active))
     if err:
         return jsonify({"error": err}), 502
-    rows = [
-        {
+    rows = []
+    for c in (crew or []):
+        if int(c.get("active", 1)) != (1 if want_active else 0):
+            continue
+        row = {
             "id":     c["id"],
             "name":   c.get("name", ""),
             "ein":    c.get("ein") or c["id"],
@@ -12345,11 +12358,17 @@ def api_admin_crew_list():
             "active": int(c.get("active", 1)),
             "groups": c.get("groups", []) or [],
         }
-        for c in (crew or [])
-        if int(c.get("active", 1)) == (1 if want_active else 0)
-    ]
+        if "licences" in c:
+            row["licences"] = c["licences"]
+        rows.append(row)
     rows.sort(key=lambda r: (r["name"] or "").lower())
-    return jsonify({"crew": rows})
+    # Judged on the WHOLE fetch, not the filtered rows: every crew member from
+    # one fetch carries the key or none of them do. No crew at all is `ok` —
+    # there is no licence data to be missing — matching both list-crew-bulk.php's
+    # empty-roster branch and api_availability's `all_crew and not any(...)`
+    # guard, so the two surfaces refuse under exactly the same conditions.
+    lic_ok = (not crew) or any("licences" in c for c in crew)
+    return jsonify({"crew": rows, "licences_ok": lic_ok})
 @app.route("/api/admin/add-user", methods=["POST"])
 @require_cohort("admin")
 def api_admin_add_user():
@@ -15861,6 +15880,13 @@ def api_licences_catalogue():
         "expiry_expected": [c for c, v in licence_expiry_expected().items() if v],
         "holders":         holders,
         "chips":           chips,
+        # Driver classes match UPWARD: ticking MR must also match HR/HC/MC, the
+        # same expansion expand_driver_codes() applies server-side for the Crew
+        # Finder. Records filters client-side, so the tier order has to be on the
+        # wire — a hardcoded copy in the template would be a second source of
+        # truth for the one behaviour whose failure is invisible (an HR holder
+        # simply not appearing).
+        "driver_tiers":    list(DRIVER_TIERS),
     })
 
 
