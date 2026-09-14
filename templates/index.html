@@ -3084,14 +3084,6 @@ function toggleGroup(el,group){
   cfRenderChips();
   cfReSearchIfActive();
 }
-// Licence chips. Same shape as loadGroups, with two differences the licence
-// catalogue forces: the codes arrive grouped (Forklift, EWP, Driver...) so the grid
-// is sectioned, and only codes SOMEBODY HOLDS are rendered — a chip nobody matches
-// can only ever return an empty search.
-//
-// Any failure hides the whole section rather than erroring: /api/licences/catalogue
-// already falls back to empty holders when list-licences.php isn't deployed yet, so
-// this is the visible half of that same no-deploy-order-dependency promise.
 // ── The licence catalogue, fetched once per page ────────────────────────────
 // Three surfaces now read it — the Crew Finder chips, the Manage Crew licence
 // dropdowns and the Records filter — and two independent fetches of the same
@@ -3133,6 +3125,14 @@ function expandLicCode(code){
   return (i < 0) ? [code] : _licDriverTiers.slice(i);
 }
 
+// Licence chips. Same shape as loadGroups, with two differences the licence
+// catalogue forces: the codes arrive grouped (Forklift, EWP, Driver...) so the grid
+// is sectioned, and only codes SOMEBODY HOLDS are rendered — a chip nobody matches
+// can only ever return an empty search.
+//
+// Any failure hides the whole section rather than erroring: /api/licences/catalogue
+// already falls back to empty holders when list-licences.php isn't deployed yet, so
+// this is the visible half of that same no-deploy-order-dependency promise.
 async function loadLicences(){
   const grid=document.getElementById('licences-grid'), sec=document.getElementById('cf-lic-sec');
   if(!grid||!sec) return;
@@ -3140,9 +3140,6 @@ async function loadLicences(){
   try{
     d=await licenceCatalogue();
   }catch(e){ sec.style.display='none'; return; }
-  // Hand the catalogue to the Manage Crew tab's lazy loader so the page never
-  // fetches the same constants twice.
-  if(!_licCatalogue){ _licCatalogue=d.catalogue||[]; _licExpiryExpected=d.expiry_expected||[]; }
   licHolders=d.holders||{};
   const chips=d.chips||[];
   const byCode={}; (d.catalogue||[]).forEach(function(e){ byCode[e.code]=e; });
@@ -14080,12 +14077,25 @@ async function openLicenceListModal(){
 function _licCatalogueClientReset(){
   _licCatalogue = null;
   _licExpiryExpected = [];
+  // Load-bearing, and the reason the two lines above are not enough on their
+  // own: licenceCatalogue() caches the whole PAYLOAD in a promise, and it
+  // repopulates _licCatalogue from it. Without clearing the promise, every
+  // consumer re-reads the copy fetched when the page opened and the reset above
+  // is silently undone — which is the precise staleness this function exists to
+  // prevent.
+  _licCatPromise = null;
   // Re-render the Crew Finder chips if that grid is on the page — it renders
   // from the same fetch, so leaving it alone would strand a deleted or
   // unpublished code as a clickable chip.
   var grid = document.getElementById('licences-grid');
   if(grid && typeof loadLicences === 'function'){
     try{ loadLicences(); }catch(e){}
+  }
+  // Records' licence chips are the third consumer of that payload and would
+  // strand the same dead chip.
+  var rgrid = document.getElementById('crew-lic-grid');
+  if(rgrid && typeof crewLicLoadChips === 'function'){
+    try{ crewLicLoadChips(); }catch(e){}
   }
 }
 
