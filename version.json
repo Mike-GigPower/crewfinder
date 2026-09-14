@@ -1,6 +1,6 @@
 {
-  "version": "5.44.0",
-  "release_date": "2026-09-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.44.0/TheGOAT.dmg",
-  "release_notes": "THE GOAT now carries its own documentation. A new Docs area in the top bar holds user guides, technical guides and the full patch history back to v2.0.0, with search across all of it."
+  "version": "5.45.0",
+  "release_date": "2026-09-14",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.45.0/TheGOAT.dmg",
+  "release_notes": "The Crew Records view can now be filtered by licence. Tick one or more licence codes on the Records toolbar to narrow the roster to the crew who hold them."
 }
