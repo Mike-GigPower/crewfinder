@@ -1760,7 +1760,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
       <button class="btn-refresh" onclick="loadCalls(true)">&#8635; Refresh</button>
     </div>
     <div class="calls-search">
-      <input type="text" id="calls-search-input" placeholder="Search bookings or #id..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="filterCalls(this.value)">
+      <input type="text" id="calls-search-input" placeholder="Search bookings, calls or #id..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="filterCalls(this.value)">
     </div>
     <div class="call-select-hint" id="call-select-hint">Click to select &bull; Cmd/Shift+click for multi</div>
     <div class="selected-calls-bar" id="selected-calls-bar" style="display:none">
@@ -9721,6 +9721,13 @@ function bookingIdQuery(q){
   return /^\d+$/.test(m) ? m : null;
 }
 
+/* Match order is booking id → booking name → call name, widest first. A booking
+   match keeps every call in that booking visible: you asked for the booking, so
+   you get all of it. Only when the booking name misses do we look inside, and
+   then the group shows just the calls that matched — landing on the call you
+   typed rather than making you scan a twenty-call booking for it.
+   Every branch resets the cards it is not hiding, because the previous keystroke
+   may have hidden them and nothing else in the Finder touches card display. */
 function filterCalls(query){
   const q      = query.toLowerCase().trim();
   const idq    = bookingIdQuery(q);
@@ -9731,12 +9738,31 @@ function filterCalls(query){
   let idHit = false;
   if(idq) groups.forEach(grp=>{ if(grp.id === 'bg-' + idq) idHit = true; });
   groups.forEach(grp=>{
+    const cards = grp.querySelectorAll('.call-card');
     if(idHit){
       grp.style.display = (grp.id === 'bg-' + idq) ? '' : 'none';
+      cards.forEach(card => { card.style.display = ''; });
       return;
     }
     const name=grp.querySelector('.booking-group-name')?.textContent.toLowerCase()||'';
-    grp.style.display=(!q||name.includes(q))?'':'none';
+    if(!q || name.includes(q)){
+      grp.style.display = '';
+      cards.forEach(card => { card.style.display = ''; });
+      return;
+    }
+    /* Booking name missed — fall through to the call names inside it. */
+    let callHit = false;
+    cards.forEach(card => {
+      const cn = card.querySelector('.call-name')?.textContent.toLowerCase()||'';
+      const hit = cn.includes(q);
+      card.style.display = hit ? '' : 'none';
+      if(hit) callHit = true;
+    });
+    grp.style.display = callHit ? '' : 'none';
+    /* A hit inside a group the operator had collapsed is invisible otherwise,
+       which reads as "search found nothing". Expanding is deliberate and is not
+       undone on clear — the collapse was for a list they are no longer looking at. */
+    if(callHit) grp.classList.remove('collapsed');
   });
 }
 
