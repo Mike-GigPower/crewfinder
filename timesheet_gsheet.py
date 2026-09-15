@@ -5,14 +5,20 @@ Ops generates a sheet, which they then share on to the crew boss. Because this i
 NATIVE Drive copy of the crew master + native Master-tab duplication (not an xlsx
 export), every formula, dropdown, colour rule and validation is preserved perfectly.
 
-Auth: OAuth as the real user (not a service account). A service account has no Drive
-of its own, so on a personal Gmail account `files.copy` fails with a storage-quota
-error; authorizing as the user creates the sheet in THEIR Drive instead. The one-time
-browser consent is done by gsheet_authorize.py, which writes the cached token; this
-module just loads/refreshes that token (no browser at request time).
+Auth: a SERVICE ACCOUNT writing into a Workspace Shared Drive. A service account has
+no Drive of its own — `files.copy` into My Drive fails with a storage-quota error —
+so `dest_folder_id` MUST point at a Shared Drive (or a folder inside one), which the
+org owns rather than any individual. That is the whole point of the change: a machine
+identity has no password, no consent screen and no refresh token to lapse, so the
+failure class that took all four Ops installs down on 9 and 21 July 2026 cannot recur.
 
-NOTE: requires Google network access + a valid token, so it can't be exercised in the
-build sandbox — verify on the machine where you've run gsheet_authorize.py.
+The legacy per-user OAuth token (gsheet_authorize.py) is still accepted by
+_gsheet_creds, chosen by the credential file's own "type" field. It is kept purely as
+a rollback path: swapping the file back and pointing one config key at it restores the
+old behaviour without a rebuild and a release. Do not build new work on it.
+
+NOTE: requires Google network access + valid credentials, so it can't be exercised in
+the build sandbox — verify on a machine holding the service-account key.
 """
 
 import os
@@ -28,22 +34,48 @@ _SHEETS_EPOCH = datetime(1899, 12, 30)   # serial-date epoch (same as Excel)
 _BAD_TAB_CHARS = re.compile(r"[:\\/\?\*\[\]]")
 
 
-def _user_creds(token_path):
-    """Load cached OAuth user credentials, refreshing silently if expired. Raises a
-    clear error if the user hasn't authorized yet (run gsheet_authorize.py)."""
+def _gsheet_creds(cred_path):
+    """Load Google credentials from cred_path.
+
+    Two formats are accepted, chosen by the file's own "type" field:
+
+      service_account  — the current path. Nothing to expire, nothing to revoke by an
+                         account-level event. Requires a Shared Drive destination.
+      authorized_user  — the legacy cached OAuth token, refreshed in place as before.
+                         Rollback only; see the module docstring.
+
+    Raises RuntimeError with a message an Ops user can act on, never a raw Google
+    exception — `invalid_grant` in front of Rich or Monty is meaningless to them."""
+    import json
+
+    if not os.path.exists(cred_path):
+        raise RuntimeError(
+            "Google credentials missing (%s). They ship inside the app — reinstall the "
+            "latest DMG, and if that doesn't fix it contact Mike."
+            % os.path.basename(cred_path))
+
+    try:
+        with open(cred_path) as f:
+            blob = json.load(f)
+    except ValueError as e:
+        raise RuntimeError("Google credentials file is not valid JSON (%s): %s"
+                           % (os.path.basename(cred_path), e))
+
+    if (blob.get("type") or "").strip() == "service_account":
+        from google.oauth2 import service_account
+        return service_account.Credentials.from_service_account_info(blob, scopes=SCOPES)
+
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
-    if not os.path.exists(token_path):
-        raise RuntimeError("Google not authorized yet — run: python3 gsheet_authorize.py")
-    creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    creds = Credentials.from_authorized_user_info(blob, SCOPES)
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            with open(token_path, "w") as f:
+            with open(cred_path, "w") as f:
                 f.write(creds.to_json())
         else:
-            raise RuntimeError("Google authorization expired — re-run: python3 gsheet_authorize.py")
+            raise RuntimeError("Google authorisation has expired — contact Mike.")
     return creds
 
 
@@ -66,7 +98,7 @@ def _serial(dt):
     return (dt - _SHEETS_EPOCH).total_seconds() / 86400.0
 
 
-def generate_timesheet_gsheet(token_path, template_id, share_email, booking_name,
+def generate_timesheet_gsheet(cred_path, template_id, share_email, booking_name,
                               calls, booking_id=None, dest_folder_id=None):
     """Copy the crew master, add a Master-cloned tab per call (crew pre-filled, Call
     ID stamped), and return {'url', 'spreadsheet_id'}. share_email is added as an
@@ -76,18 +108,19 @@ def generate_timesheet_gsheet(token_path, template_id, share_email, booking_name
     the sheet and the live importer can recover it from Drive by name when no local
     link exists.
 
-    dest_folder_id (optional): a Drive folder (My Drive folder OR a Shared Drive /
-    Shared-Drive folder) to create the sheet in. When set, the copy lands there — so
-    on a Shared Drive the org owns the sheet, not the authorising individual. When
-    empty/None, the sheet is created in the authorising account's My Drive root (the
-    old behaviour).
+    dest_folder_id: a Drive folder (a Shared Drive, a folder inside one, or — on the
+    legacy OAuth path only — a My Drive folder) to create the sheet in. The copy lands
+    there, so on a Shared Drive the org owns the sheet, not any individual. Empty/None
+    means the authorising account's My Drive root, which a SERVICE ACCOUNT does not
+    have: on that path an empty value is a configuration error and the caller rejects
+    it before we get here, rather than surfacing Google's storage-quota error.
 
     calls: [{call_id, call_name, call_time(datetime|None),
              crew:[{lastname, firstname, ein, phone}]}]  (confirmed crew only)
     """
     from googleapiclient.discovery import build
 
-    creds  = _user_creds(token_path)
+    creds  = _gsheet_creds(cred_path)
     drive  = build("drive",  "v3", credentials=creds, cache_discovery=False)
     sheets = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
@@ -166,20 +199,32 @@ def generate_timesheet_gsheet(token_path, template_id, share_email, booking_name
             body={"valueInputOption": "RAW", "data": value_ranges},
         ).execute()
 
-    # 5. share with the Ops user (writer). The user already owns the file, so a
-    #    self-share is a no-op/expected failure — tolerate it.
+    # 5. share with the Ops user (writer), when one is configured. On a Shared Drive
+    #    the Drive's own members already have access, so this is only for an address
+    #    that is NOT a member. A service account cannot send Drive invitation emails —
+    #    with sendNotificationEmail=True Google rejects the call — so notification is
+    #    only requested on the legacy user path.
+    #
+    #    The share stays non-fatal: a sheet that exists but wasn't shared is far more
+    #    recoverable than no sheet at all. But the outcome is REPORTED rather than
+    #    swallowed, because "shared" silently meaning "not shared" is the exact class
+    #    of failure this whole change exists to remove.
+    shared = None
     if share_email:
+        is_service_account = getattr(creds, "service_account_email", None) is not None
         try:
             drive.permissions().create(
                 fileId=ss_id,
                 body={"type": "user", "role": "writer", "emailAddress": share_email},
-                sendNotificationEmail=True,
+                sendNotificationEmail=(not is_service_account),
                 supportsAllDrives=True,
             ).execute()
+            shared = True
         except Exception:
-            pass
+            shared = False
 
     return {
         "spreadsheet_id": ss_id,
         "url": "https://docs.google.com/spreadsheets/d/%s/edit" % ss_id,
+        "shared": shared,          # True / False when share_email is set, None when not
     }
