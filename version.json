@@ -1,6 +1,6 @@
 {
-  "version": "5.45.0",
-  "release_date": "2026-09-14",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.45.0/TheGOAT.dmg",
-  "release_notes": "The Crew Records view can now be filtered by licence. Tick one or more licence codes on the Records toolbar to narrow the roster to the crew who hold them."
+  "version": "5.46.0",
+  "release_date": "2026-09-15",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.46.0/TheGOAT.dmg",
+  "release_notes": "The Licence Register is now in Administration: every licence on file, soonest expiry first, with the expired and undated ones surfaced. Filter it, group it by licence, and export exactly what is on screen."
 }
