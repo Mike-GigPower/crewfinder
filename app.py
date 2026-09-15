@@ -13435,10 +13435,26 @@ def _lookup_timesheet_link(booking_id):
     return _load_timesheet_links().get(str(booking_id))
 
 
-def _gsheet_token_path():
+def _gsheet_cred_path():
+    """Path to the Google credentials both timesheet paths use — the service-account
+    key by default. google_oauth_token_file is still honoured so a rollback to the old
+    per-user token is a config key and a file swap, not a rebuild and a release."""
     cfg = load_config()
-    tf = (cfg.get("google_oauth_token_file") or "google_token.json").strip()
-    return tf if os.path.isabs(tf) else os.path.join(BASE_DIR, tf)
+    cf = (cfg.get("gsheet_credentials_file")
+          or cfg.get("google_oauth_token_file")
+          or "google_service_account.json").strip()
+    return cf if os.path.isabs(cf) else os.path.join(BASE_DIR, cf)
+
+
+def _gsheet_is_service_account(cred_path):
+    """True when the credentials file is a service-account key. Used to enforce the
+    Shared-Drive requirement with a message Ops can act on, instead of letting Google
+    return a storage-quota error nobody can interpret."""
+    try:
+        with open(cred_path) as f:
+            return (json.load(f).get("type") or "").strip() == "service_account"
+    except (IOError, ValueError):
+        return False
 
 
 def _find_sheet_by_name(booking_id):
@@ -13446,16 +13462,25 @@ def _find_sheet_by_name(booking_id):
     embeds in the sheet name, when no local link exists. Returns id or None."""
     try:
         from googleapiclient.discovery import build
-        from timesheet_gsheet import _user_creds
-        drive = build("drive", "v3", credentials=_user_creds(_gsheet_token_path()),
+        from timesheet_gsheet import _gsheet_creds
+        drive = build("drive", "v3", credentials=_gsheet_creds(_gsheet_cred_path()),
                       cache_discovery=False)
         q = ("name contains '#%d' and trashed = false and "
              "mimeType = 'application/vnd.google-apps.spreadsheet'") % int(booking_id)
-        files = drive.files().list(
+        kwargs = dict(
             q=q, fields="files(id,name,modifiedTime)",
             orderBy="modifiedTime desc", pageSize=5,
             supportsAllDrives=True, includeItemsFromAllDrives=True,
-        ).execute().get("files", [])
+        )
+        # A service account has no My Drive, and files.list defaults to corpora="user"
+        # — its own empty Drive. Without an explicit driveId this search returns zero
+        # files and the caller reads that as "no sheet exists", which is the silent
+        # wrong answer, not an error. Scope the search to the Shared Drive.
+        drive_id = (load_config().get("gsheet_drive_id") or "").strip()
+        if drive_id:
+            kwargs["corpora"] = "drive"
+            kwargs["driveId"] = drive_id
+        files = drive.files().list(**kwargs).execute().get("files", [])
         return files[0]["id"] if files else None
     except Exception:
         return None
@@ -13833,7 +13858,7 @@ def api_import_times_preview_live(booking_id):
 
     try:
         from timesheet_gsheet_read import read_timesheet
-        parsed = read_timesheet(ssid, _gsheet_token_path())
+        parsed = read_timesheet(ssid, _gsheet_cred_path())
     except Exception as e:
         return jsonify({"error": "Couldn't read the Google Sheet: %s" % e}), 502
 
@@ -13952,9 +13977,10 @@ def api_generate_gsheet(booking_id):
     sheet, duplicate the Master tab per call with CONFIRMED crew pre-filled and the
     Call ID stamped, share it to the configured Ops email, and return its URL.
     Config (config.json): crew_master_template_id, gsheet_share_email,
-    gsheet_dest_folder_id (optional — Drive/Shared-Drive folder the sheet is created
-    in; empty = the authorising account's My Drive root), google_oauth_token_file
-    (defaults to google_token.json)."""
+    gsheet_dest_folder_id (the Shared Drive — or a folder in it — the sheet is created
+    in; REQUIRED on the service-account path, which has no My Drive to fall back to),
+    gsheet_drive_id (that Shared Drive's id, so name-recovery can search it),
+    gsheet_credentials_file (defaults to google_service_account.json)."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
@@ -13963,13 +13989,14 @@ def api_generate_gsheet(booking_id):
     template_id = (cfg.get("crew_master_template_id") or "").strip()
     share_email = (cfg.get("gsheet_share_email") or "").strip()
     dest_folder = (cfg.get("gsheet_dest_folder_id") or "").strip()
-    token_file  = (cfg.get("google_oauth_token_file") or "google_token.json").strip()
-    token_path  = token_file if os.path.isabs(token_file) else os.path.join(BASE_DIR, token_file)
+    cred_path   = _gsheet_cred_path()
 
     if not template_id:
         return jsonify({"error": "crew_master_template_id not set in config.json"}), 500
-    if not os.path.exists(token_path):
-        return jsonify({"error": "Google not authorized yet — run 'python3 gsheet_authorize.py' in your gigpower folder, then try again"}), 500
+    if not os.path.exists(cred_path):
+        return jsonify({"error": "Google credentials are missing from this install — reinstall the latest GOAT, and if that doesn't fix it contact Mike."}), 500
+    if _gsheet_is_service_account(cred_path) and not dest_folder:
+        return jsonify({"error": "gsheet_dest_folder_id is not set. The service account has no Drive of its own, so there is nowhere to create the sheet — it must point at the Shared Drive."}), 500
 
     booking_name, gen_calls, err = _gather_timesheet_calls(ss, booking_id)
     if err:
@@ -13977,7 +14004,7 @@ def api_generate_gsheet(booking_id):
 
     try:
         from timesheet_gsheet import generate_timesheet_gsheet
-        result = generate_timesheet_gsheet(token_path, template_id, share_email,
+        result = generate_timesheet_gsheet(cred_path, template_id, share_email,
                                            booking_name, gen_calls, booking_id, dest_folder)
     except Exception as e:
         return jsonify({"error": "Google Sheet generation failed: %s" % e}), 500
