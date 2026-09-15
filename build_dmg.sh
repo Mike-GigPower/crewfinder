@@ -42,6 +42,7 @@ pyinstaller \
   --hidden-import google.auth.transport.requests \
   --hidden-import google.oauth2 \
   --hidden-import google.oauth2.credentials \
+  --hidden-import google.oauth2.service_account \
   --collect-submodules googleapiclient \
   --collect-submodules google.auth \
   --copy-metadata google-api-python-client \
@@ -120,18 +121,20 @@ if [ ! -f "crew_master_template.xlsx" ]; then
 fi
 echo "▶ Bundling crew_master_template.xlsx..."
 cp crew_master_template.xlsx "dist/${APP_NAME}.app/Contents/MacOS/crew_master_template.xlsx"
-# Bundle the shared Google token (authorized as gigpower@gmail.com) so every Ops
-# install can generate/read sheets without each person running gsheet_authorize.py.
-# Same trust model as the baked Anthropic key. The app refreshes this token in place
-# at runtime (just like crew_cache.json), so it lives beside the executable.
+# Bundle the Google service-account key so every Ops install can generate and read
+# sheets. Same trust model as the baked Anthropic key, but a MACHINE identity: no
+# password, no consent screen, and no refresh token to be revoked by an account-level
+# event — which is the failure that took all four Ops installs down on 9 and 21 July
+# 2026. The key can reach nothing except the Shared Drive it was granted.
 # Gitignored — present only on this build machine.
-if [ ! -f "google_token.json" ]; then
-  echo "✗ google_token.json not found — Ops installs couldn't generate sheets."
-  echo "  Authorize as gigpower@gmail.com first:  python3 gsheet_authorize.py"
+if [ ! -f "google_service_account.json" ]; then
+  echo "✗ google_service_account.json not found — Ops installs couldn't generate sheets."
+  echo "  Google Cloud Console -> IAM & Admin -> Service Accounts -> Keys -> Add key"
+  echo "  (JSON), saved in this folder as google_service_account.json."
   exit 1
 fi
-echo "▶ Bundling google_token.json (shared gigpower@gmail.com)..."
-cp google_token.json "dist/${APP_NAME}.app/Contents/MacOS/google_token.json"
+echo "▶ Bundling google_service_account.json (timesheet service account)..."
+cp google_service_account.json "dist/${APP_NAME}.app/Contents/MacOS/google_service_account.json"
 # ─── Code signing (Developer ID + hardened runtime) ──────────────────────
 # Must run AFTER config.json and au_postcodes.json are copied in — signing
 # seals the bundle, so adding files afterward would break the signature.
