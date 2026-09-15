@@ -3,5 +3,7 @@
   "password": "",
   "anthropic_api_key": "",
   "gp_push_secret": "",
+  "gsheet_credentials_file": "",
+  "gsheet_drive_id": "",
   "goat_glossary": {}
 }
