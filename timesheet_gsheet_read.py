@@ -19,8 +19,10 @@ preview/match/write path consumes either source unchanged. Column understanding 
 per-cell parsing come from timesheet_common — the single source of truth both
 importers share.
 
-Auth + token handling are reused from timesheet_gsheet (_user_creds), so there's no
-second auth story to maintain and no new dependency.
+Auth is reused from timesheet_gsheet (_gsheet_creds), so there's no second auth
+story to maintain and no new dependency. Reading needs no Shared Drive special-casing:
+the sheet is addressed by id, and spreadsheets.get / values.batchGet carry no
+supportsAllDrives flag — only the Drive API does.
 """
 
 from timesheet_common import (
@@ -43,7 +45,7 @@ READ_RANGE = "A1:Z500"       # A..Z covers STATUS(A) … NOTES(Z); 500 rows is a
                              # for one call's crew (a single call never has 480+).
 
 
-def read_timesheet(spreadsheet_id, token_path):
+def read_timesheet(spreadsheet_id, cred_path):
     """Network entry point. Fetch the sheet's tabs + displayed values in two API
     calls (one metadata get, one batched values get), then parse.
 
@@ -55,9 +57,9 @@ def read_timesheet(spreadsheet_id, token_path):
       }
     """
     from googleapiclient.discovery import build
-    from timesheet_gsheet import _user_creds   # reuse the authorised creds + refresh
+    from timesheet_gsheet import _gsheet_creds   # one auth story for both directions
 
-    svc = build("sheets", "v4", credentials=_user_creds(token_path),
+    svc = build("sheets", "v4", credentials=_gsheet_creds(cred_path),
                 cache_discovery=False)
 
     # 1) enumerate tab titles (cheap; no cell data)
