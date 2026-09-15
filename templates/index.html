@@ -11675,20 +11675,32 @@ function _renderLicenceRegister(){
   // it with LICENCE_WARN_DAYS, the same window the Manage Crew licence pills use,
   // and a chip that claimed "90 days" while the pill beside it used 60 would be
   // two windows disagreeing about the same licence.
+  //
+  // The third element is a tooltip, and two of them are load-bearing rather than
+  // decorative. THIS REGISTER AND LICENCE TRIAGE WILL DISAGREE, and both are
+  // right: list-licence-triage.php filters to `u.active = '1'` so the operator
+  // never spends a decision on somebody long gone, while this register covers
+  // every roster flag on purpose (§2). On prod that is 231 codeless rows here
+  // against 11 on the active roster — so "Untriaged · 215" can sit beside a
+  // Licence Triage screen reading "Nothing to triage". Unexplained, that reads
+  // as one of the two being broken; it is the confusion this work already hit
+  // once (FINDINGS §3a.1) and it is a tooltip, not a redesign.
   var defs = [
-    ['expired',   'Expired'],
-    ['soon',      'Expiring soon'],
-    ['nodate',    'No expiry recorded'],
-    ['untriaged', 'Untriaged'],
-    ['closed',    'No code, closed'],
-    ['induction', 'Looks like a venue induction'],
-    ['offroster', 'Not on roster']
+    ['expired',   'Expired',        'Past its expiry date as at today'],
+    ['soon',      'Expiring soon',  'Inside the warning window the Manage Crew licence pills use'],
+    ['nodate',    'No expiry recorded', 'No expiry on file. Expected for white cards; worth asking about for HRW tickets'],
+    ['untriaged', 'Untriaged',      'No canonical code and never triaged. Counts EVERY roster flag — Licence Triage only queues active crew, so its count is smaller and both are correct'],
+    ['closed',    'No code, closed', 'Looked at and deliberately left without a code — a volunteer WWCC, or closed as out of scope. Nothing to do'],
+    ['induction', 'Looks like a venue induction', 'A venue induction recorded as a licence. Heuristic on the recorded type, codeless rows only'],
+    ['offroster', 'Not on roster',  'Roster flag is blank or inactive. Shown deliberately: somebody whose flag is wrong is exactly who you need to see']
   ];
   if(chipsEl){
     var chips = defs.map(function(d){
       var n  = _licRegRows.filter(function(r){ return _licRegMatches(r, d[0]); }).length;
       var on = (_licRegFilter === d[0]);
-      return '<button type="button" class="group-chip'+(on?' active':'')+'" onclick="licRegFilter(\'' + d[0] + '\')">'
+      return '<button type="button" class="group-chip'+(on?' active':'')+'"'
+           + ' title="'+escapeHtml(d[2] || '')+'"'
+           + ' onclick="licRegFilter(\'' + d[0] + '\')">'
            + escapeHtml(d[1]) + ' · ' + n + '</button>';
     });
     chips.push('<span style="width:1px;background:var(--border);margin:0 3px"></span>');
