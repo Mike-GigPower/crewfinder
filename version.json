@@ -1,6 +1,6 @@
 {
-  "version": "5.46.0",
+  "version": "5.46.1",
   "release_date": "2026-09-15",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.46.0/TheGOAT.dmg",
-  "release_notes": "The Licence Register is now in Administration: every licence on file, soonest expiry first, with the expired and undated ones surfaced. Filter it, group it by licence, and export exactly what is on screen."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.46.1/TheGOAT.dmg",
+  "release_notes": "Crew Finder's search box now finds calls as well as bookings. Type a call name — Bump In, Rigging, Show Call — and the Unfilled Calls list narrows to the bookings that have one, showing just the calls that matched. Booking name and #id work exactly as before."
 }
