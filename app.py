@@ -15556,95 +15556,48 @@ def ss_list_licence_holders(ss):
     return out, None
 
 
-# Venue-shaped licence rows. A venue induction typed as free text with NO venue
-# id is invisible to both of list-licence-holders.php's exclusion rules, and on
-# prod they dominate the codeless rows — `AAMI 2025`, `MCG 2025`,
-# `Crown Induction Certificate`, `Flemington Racecourse`. The register shows them
-# (they are real data in the wrong place, and hiding them is how the problem
-# stayed invisible) but it has to be able to SAY so, or the untriaged count reads
-# as noise instead of a worklist.
+# Licence rows whose recorded type says "induction". A venue induction typed as
+# free text with NO venue id is invisible to both of list-licence-holders.php's
+# exclusion rules, so it lands in the register as a codeless licence. The
+# register shows it — real data in the wrong place, and hiding it is how the
+# problem stayed invisible — but it has to be able to SAY so, or the codeless
+# count reads as noise rather than a worklist.
 #
-# NO YEAR TEST, deliberately. Genuine licences carry years all over this data —
-# `1st Aid 2022`, `FIRST AID 2028`, `WWCC 2027`, `FORK EXP 2029`,
-# `HR TRUCK 8/10/28`, `Police Check Jan25`. A year rule would move real tickets
-# into the induction bucket, and a mislabelled licence is worse than an
-# unlabelled one. Completeness is the only thing being traded away here.
-# Words that carry no venue identity on their own. "AAMI Park" is distinctive
-# because of AAMI, not Park, and matching on `park` alone would badge anything
-# mentioning a park. Dropped from the token set; if a venue's name is ENTIRELY
-# generic the whole name is kept as one token instead, so it is never left with
-# nothing to match on.
-_VENUE_STOPWORDS = frozenset((
-    "park", "parks", "stadium", "arena", "centre", "center", "hall", "bowl",
-    "ground", "grounds", "racecourse", "showgrounds", "complex", "precinct",
-    "venue", "club", "hotel", "studio", "studios", "convention", "exhibition",
-    "the", "and", "of", "at", "on", "melbourne", "victoria", "vic",
-))
+# ONE RULE ONLY: the word "induction", guarded against the white card.
+#
+# The first version also matched venue NAMES — every 3+ letter word of every
+# venue name, plus each venue's initialism, in one token set, matched on a single
+# word overlap. On prod that badged `Car`, `Truck`, `High Risk`, `RSA`,
+# `International Drivers License` and `NEBOSH National General Certificate`:
+# ordinary licences sharing one word, or three letters, with one of 50+ venue
+# names. EVERY badged row in the 15 Sep prod export was wrong. The fixture missed
+# it because it varied the type strings against a fixed, clean venue list, so it
+# could never see that the index itself was the defect — the input it held
+# constant was the thing that was broken. See
+# FINDINGS-licence-register-prod-smoke-2026-09-15.md §3.
+#
+# NO YEAR TEST either, for the same reason it was refused before: genuine
+# licences carry years all over this data — `1st Aid 2022`, `WWCC 2027`,
+# `FORK EXP 2029`, `HR TRUCK 8/10/28`, `Police Check Jan25`. A mislabelled
+# licence is worse than an unlabelled one, which is the lesson above.
 
 # Free-text that names the CONSTRUCTION INDUCTION card, not a venue induction.
-# `CI` is 434 of 977 register rows and its legitimate names contain the word
+# `CI` is 434 of the register's rows and its legitimate names contain the word
 # "induction" — `Construction Induction`, `Construction Industry Induction`,
-# `Construction induction card`, `CPCCWHS1001`. Without this guard rule 1 badges
-# genuine white cards as misfiled inductions, which is the false-positive
-# direction that actually costs something. Caught by the §2 fixture, not by
-# reasoning.
+# `Construction induction card`, `CPCCWHS1001`. Without this guard the rule
+# badges genuine white cards, which is the false-positive direction that costs
+# something.
 _WHITE_CARD_HINTS = ("construction", "cpcc", "whs1001", "white card", "whitecard")
 
 
-def _venue_match_index(venue_names):
-    """Lowercased venue names -> (tokens, phrases) for the heuristic.
-
-    THREE forms, because operators type all three and a single test misses two
-    of them — every one of these was a MISS in the §2 fixture before it was added:
-
-      tokens      distinctive words        `AAMI 2025`  <- "AAMI Park"
-      initialisms 3+ letter abbreviations  `JCA 2025`   <- "John Cain Arena"
-                                           `RLA 2025`   <- "Rod Laver Arena"
-      phrases     the whole name           `Melbourne Convention Centre`, whose
-                                           every word is a stopword and which
-                                           therefore has no distinctive token
-
-    A substring test alone finds none of the abbreviations; a token test alone
-    finds none of the all-generic names."""
-    toks, phrases = set(), set()
-    for name in (venue_names or ()):
-        words = [w for w in re.split(r"[^a-z0-9]+", str(name or "").lower()) if w]
-        if not words:
-            continue
-        toks.update(w for w in words if len(w) >= 3 and w not in _VENUE_STOPWORDS)
-        initials = "".join(w[0] for w in words)
-        if len(initials) >= 3:
-            toks.add(initials)
-        phrase = " ".join(words)
-        if len(phrase) >= 8:
-            phrases.add(phrase)
-    return toks, phrases
-
-
-def _looks_like_venue_induction(type_str, venue_match):
-    """True when a codeless licence row's free-text type looks like a venue
-    induction. venue_match: (tokens, phrases) from _venue_match_index()."""
+def _type_says_induction(type_str):
+    """True when a codeless row's free-text type contains the word "induction"
+    and is not naming a construction white card."""
     t = str(type_str or "").strip().lower()
     if not t:
         return False
-    toks, phrases = venue_match
-    norm  = " ".join(w for w in re.split(r"[^a-z0-9]+", t) if w)
-    words = set(norm.split())
-
-    # Rule 2 first: an explicit venue reference is the strongest signal there is,
-    # and it outranks the white-card guard — `MCG Construction Induction` is a
-    # venue induction that happens to mention construction.
-    if words & toks:
-        return True
-    for p in phrases:
-        if p in norm:
-            return True
-
-    # Rule 1: the bare word, but never on a construction-card string.
-    if "induction" in words and not any(h in t for h in _WHITE_CARD_HINTS):
-        return True
-
-    return False
+    words = set(w for w in re.split(r"[^a-z0-9]+", t) if w)
+    return "induction" in words and not any(h in t for h in _WHITE_CARD_HINTS)
 
 
 @app.route("/api/licence-holders")
@@ -15662,11 +15615,11 @@ def api_licence_holders():
     Not filtered to active crew, deliberately — see the PHP. roster_flag is
     returned and the client badges it.
 
-    Adds three things the PHP deliberately does not compute:
+    Adds two things the PHP deliberately does not compute:
       status                  compliance_status per row, the same helper the
                               Licences tab pills use
-      probable_induction      the §4.2 heuristic, only ever set on codeless rows
-      venue_names_ok          whether the heuristic had its best input
+      says_induction          the recorded type contains the word "induction",
+                              codeless rows only
     """
     ss = get_ss_session()
     if not ss:
@@ -15678,16 +15631,16 @@ def api_licence_holders():
 
     rows = out.get("rows") or []
 
-    # Venue names for the heuristic. list-venues.php is admin-only, so a future
-    # non-admin SmartStaff session loses rule 2 and keeps rule 1 — degraded, never
-    # broken, and venue_names_ok tells the client so it can label its own chip
-    # honestly rather than silently under-counting. Same posture as licences_ok on
-    # the Records filter.
-    venue_names = []
-    venues, verr = ss_list_venues(ss)
-    if not verr:
-        venue_names = [str(v.get("name") or "") for v in (venues or [])]
-    venue_match = _venue_match_index(venue_names)
+    # SmartStaff's stored licence `type` carries HTML entities from whatever form
+    # captured it — `Open Driver&#39;s`, `Manual Drivers&#39; License` — and the
+    # register both escapes for display and writes the raw value into the CSV, so
+    # the entity shows up in the cell verbatim. Same treatment and same reason as
+    # the timesheet and schedule readers further up this file.
+    from html import unescape
+    for r in rows:
+        for k in ("name", "type"):
+            if isinstance(r.get(k), str):
+                r[k] = unescape(r[k])
 
     today = datetime.now().date()
     expected_by_code = licence_expiry_expected()
@@ -15702,11 +15655,10 @@ def api_licence_holders():
             _licence_parse_date(r.get("date_expiry")),
             today, LICENCE_WARN_DAYS, expected_by_code.get(ltype, False))
         # ONLY on codeless rows. A triaged row carries a recorded human decision
-        # and the heuristic does not get to second-guess it — which is also why
-        # the AAMI-2025-triaged-as-POLICE row is not badged here: that is a
-        # mis-triage, a different finding, and it needs a person not a regex.
-        r["probable_induction"] = (
-            (code is None) and _looks_like_venue_induction(r.get("type"), venue_match))
+        # and the rule does not get to second-guess it — which is also why the
+        # AAMI-2025-triaged-as-POLICE row is not badged here: that is a mis-triage,
+        # a different finding, and it needs a person not a regex.
+        r["says_induction"] = (code is None) and _type_says_induction(r.get("type"))
 
     # Attention-first, then soonest expiry, undated last, then name. The PHP
     # already ordered by expiry; this adds the status weighting on top, so an
@@ -15722,7 +15674,6 @@ def api_licence_holders():
         "ok": True,
         "rows": rows,
         "total": len(rows),
-        "venue_names_ok": bool(venue_match[0] or venue_match[1]),
     })
 
 

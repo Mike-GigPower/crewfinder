@@ -11544,7 +11544,6 @@ function _visaCsvTs(ts){
 var _licRegRows    = [];
 var _licRegFilter  = '';
 var _licRegGroup   = false;   // group by licence code — off by default
-var _licRegVenueOk = true;    // did the venue-name half of the heuristic load
 
 // Filter key -> the words that go in an exported filename, same reasoning as
 // _VISA_FILTER_SLUG: licence-register-expired-2026-09-15 still says what it is
@@ -11555,7 +11554,7 @@ var _LICREG_FILTER_SLUG = {
   nodate:    'no-expiry-recorded',
   untriaged: 'untriaged',
   closed:    'no-code-closed',
-  induction: 'probable-venue-inductions',
+  induction: 'type-says-induction',
   offroster: 'not-on-roster'
 };
 
@@ -11568,7 +11567,6 @@ async function openLicenceRegisterModal(){
   _renderLicenceRegisterActions(0);
   document.getElementById('entity-modal-body').innerHTML =
       '<div id="lic-reg-chips" style="display:flex;gap:6px;flex-wrap:wrap;padding-bottom:10px"></div>'
-    + '<div id="lic-reg-note" style="font-size:11px;color:var(--warn);min-height:0;padding-bottom:6px"></div>'
     + '<div id="lic-reg-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>'
     + '<div id="lic-reg-rows" style="max-height:52vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading&hellip;</div></div>';
   try{
@@ -11578,7 +11576,6 @@ async function openLicenceRegisterModal(){
     _licRegRows    = d.rows || [];
     _licRegFilter  = '';
     _licRegGroup   = false;
-    _licRegVenueOk = (d.venue_names_ok !== false);
     _renderLicenceRegister();
   }catch(e){
     // The endpoint refuses with a 500 when it reads ZERO rows, because
@@ -11614,7 +11611,7 @@ function _licRegMatches(row, f){
   if(f === 'nodate')    return !row.date_expiry;
   if(f === 'untriaged') return row.type_canonical === null && Number(row.type_triaged) === 0;
   if(f === 'closed')    return row.type_canonical === null && Number(row.type_triaged) !== 0;
-  if(f === 'induction') return row.probable_induction === true;
+  if(f === 'induction') return row.says_induction === true;
   if(f === 'offroster') return row.roster_flag !== 'active';
   return true;
 }
@@ -11664,7 +11661,6 @@ function _renderLicenceRegister(){
   var rowsEl  = document.getElementById('lic-reg-rows');
   var countEl = document.getElementById('lic-reg-count');
   var chipsEl = document.getElementById('lic-reg-chips');
-  var noteEl  = document.getElementById('lic-reg-note');
   if(!rowsEl) return;
 
   // Seven questions, one click each, and every one is a worklist rather than a
@@ -11691,7 +11687,7 @@ function _renderLicenceRegister(){
     ['nodate',    'No expiry recorded', 'No expiry on file. Expected for white cards; worth asking about for HRW tickets'],
     ['untriaged', 'Untriaged',      'No canonical code and never triaged. Counts EVERY roster flag — Licence Triage only queues active crew, so its count is smaller and both are correct'],
     ['closed',    'No code, closed', 'Looked at and deliberately left without a code — a volunteer WWCC, or closed as out of scope. Nothing to do'],
-    ['induction', 'Looks like a venue induction', 'A venue induction recorded as a licence. Heuristic on the recorded type, codeless rows only'],
+    ['induction', 'Type says induction', 'The recorded type contains the word “induction” — a venue induction filed as a licence. Codeless rows only, and it does not match venue names: see FINDINGS-licence-register-prod-smoke-2026-09-15 §3'],
     ['offroster', 'Not on roster',  'Roster flag is blank or inactive. Shown deliberately: somebody whose flag is wrong is exactly who you need to see']
   ];
   if(chipsEl){
@@ -11707,14 +11703,6 @@ function _renderLicenceRegister(){
     chips.push('<button type="button" class="group-chip'+(_licRegGroup?' active':'')+'" onclick="licRegToggleGroup()">'
              + 'Group by licence</button>');
     chipsEl.innerHTML = chips.join('');
-  }
-
-  // The heuristic lost its venue-name input (list-venues.php is admin-only, so a
-  // non-admin SmartStaff session sees rule 1 only). Say so rather than quietly
-  // under-counting, the same posture as the Records filter's licences_ok.
-  if(noteEl){
-    noteEl.textContent = _licRegVenueOk ? ''
-      : 'Venue names were unavailable, so “Looks like a venue induction” only counts rows whose type says “induction”. The count is a floor, not a total.';
   }
 
   var rows = _licRegRows.filter(function(r){ return _licRegMatches(r, _licRegFilter); });
@@ -11781,7 +11769,7 @@ function _licRegRowHtml(r, hideCode){
       ? '<span style="color:var(--warn)">untriaged</span>'
       : '<span style="color:var(--muted)">no code, closed</span>');
   }
-  if(r.probable_induction) flags.push('<span style="color:var(--warn)">looks like a venue induction</span>');
+  if(r.says_induction) flags.push('<span style="color:var(--warn)">type says induction</span>');
   if(r.has_pdf)        flags.push('card on file');
   else if(r.has_image) flags.push('legacy image');
   else                 flags.push('<span style="color:var(--muted)">no document</span>');
@@ -11829,7 +11817,7 @@ function exportLicenceRegisterCSV(){
 
   var headers = ['EIN', 'Name', 'Roster', 'Code', 'Licence', 'Recorded type',
                  'Triaged', 'Certified', 'Expires', 'Status',
-                 'Looks like a venue induction', 'Document'];
+                 'Type says induction', 'Document'];
 
   var body = rows.map(function(r){
     return [
@@ -11843,7 +11831,7 @@ function exportLicenceRegisterCSV(){
       _visaCsvDate(r.date_certified),
       _visaCsvDate(r.date_expiry),
       r.status || '',
-      (r.probable_induction ? 'yes' : ''),
+      (r.says_induction ? 'yes' : ''),
       (r.has_pdf ? 'pdf' : (r.has_image ? 'legacy image' : ''))
     ];
   });
