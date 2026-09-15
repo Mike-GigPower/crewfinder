@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """
+LEGACY — the per-user OAuth path, kept as a rollback only.
+
+Timesheet generation now authenticates as a SERVICE ACCOUNT writing into a Workspace
+Shared Drive (see timesheet_gsheet.py). Nothing in the shipped app needs this script,
+and a token it produces is only used if gsheet_credentials_file is pointed back at it
+deliberately. Do not run it as part of normal setup.
+
 One-time Google authorization for THE GOAT's Google Sheets timesheet generation.
 
 Run this once from the gigpower folder:
