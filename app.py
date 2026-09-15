@@ -15530,6 +15530,202 @@ def ss_list_visa_workers(ss):
     return out, None
 
 
+def ss_list_licence_holders(ss):
+    """The licence register via list-licence-holders.php, or (None, err).
+
+    ZERO ROWS IS A FAILURE HERE, and this is the opposite of ss_list_visa_workers
+    on purpose. user_visa starts empty and stays empty until somebody records a
+    visa, so an empty visa register is correct. user_licenses holds thousands of
+    rows, so an empty licence register means the table is unreachable or the WHERE
+    clause has been broken — and answering "no licences on file" to that is the
+    Induction Checker failure (a read failure and a clean bill of health producing
+    byte-identical output). The PHP refuses with a 500 and a message the client
+    must relay; this just passes the refusal through."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/list-licence-holders.php", timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+# Venue-shaped licence rows. A venue induction typed as free text with NO venue
+# id is invisible to both of list-licence-holders.php's exclusion rules, and on
+# prod they dominate the codeless rows — `AAMI 2025`, `MCG 2025`,
+# `Crown Induction Certificate`, `Flemington Racecourse`. The register shows them
+# (they are real data in the wrong place, and hiding them is how the problem
+# stayed invisible) but it has to be able to SAY so, or the untriaged count reads
+# as noise instead of a worklist.
+#
+# NO YEAR TEST, deliberately. Genuine licences carry years all over this data —
+# `1st Aid 2022`, `FIRST AID 2028`, `WWCC 2027`, `FORK EXP 2029`,
+# `HR TRUCK 8/10/28`, `Police Check Jan25`. A year rule would move real tickets
+# into the induction bucket, and a mislabelled licence is worse than an
+# unlabelled one. Completeness is the only thing being traded away here.
+# Words that carry no venue identity on their own. "AAMI Park" is distinctive
+# because of AAMI, not Park, and matching on `park` alone would badge anything
+# mentioning a park. Dropped from the token set; if a venue's name is ENTIRELY
+# generic the whole name is kept as one token instead, so it is never left with
+# nothing to match on.
+_VENUE_STOPWORDS = frozenset((
+    "park", "parks", "stadium", "arena", "centre", "center", "hall", "bowl",
+    "ground", "grounds", "racecourse", "showgrounds", "complex", "precinct",
+    "venue", "club", "hotel", "studio", "studios", "convention", "exhibition",
+    "the", "and", "of", "at", "on", "melbourne", "victoria", "vic",
+))
+
+# Free-text that names the CONSTRUCTION INDUCTION card, not a venue induction.
+# `CI` is 434 of 977 register rows and its legitimate names contain the word
+# "induction" — `Construction Induction`, `Construction Industry Induction`,
+# `Construction induction card`, `CPCCWHS1001`. Without this guard rule 1 badges
+# genuine white cards as misfiled inductions, which is the false-positive
+# direction that actually costs something. Caught by the §2 fixture, not by
+# reasoning.
+_WHITE_CARD_HINTS = ("construction", "cpcc", "whs1001", "white card", "whitecard")
+
+
+def _venue_match_index(venue_names):
+    """Lowercased venue names -> (tokens, phrases) for the heuristic.
+
+    THREE forms, because operators type all three and a single test misses two
+    of them — every one of these was a MISS in the §2 fixture before it was added:
+
+      tokens      distinctive words        `AAMI 2025`  <- "AAMI Park"
+      initialisms 3+ letter abbreviations  `JCA 2025`   <- "John Cain Arena"
+                                           `RLA 2025`   <- "Rod Laver Arena"
+      phrases     the whole name           `Melbourne Convention Centre`, whose
+                                           every word is a stopword and which
+                                           therefore has no distinctive token
+
+    A substring test alone finds none of the abbreviations; a token test alone
+    finds none of the all-generic names."""
+    toks, phrases = set(), set()
+    for name in (venue_names or ()):
+        words = [w for w in re.split(r"[^a-z0-9]+", str(name or "").lower()) if w]
+        if not words:
+            continue
+        toks.update(w for w in words if len(w) >= 3 and w not in _VENUE_STOPWORDS)
+        initials = "".join(w[0] for w in words)
+        if len(initials) >= 3:
+            toks.add(initials)
+        phrase = " ".join(words)
+        if len(phrase) >= 8:
+            phrases.add(phrase)
+    return toks, phrases
+
+
+def _looks_like_venue_induction(type_str, venue_match):
+    """True when a codeless licence row's free-text type looks like a venue
+    induction. venue_match: (tokens, phrases) from _venue_match_index()."""
+    t = str(type_str or "").strip().lower()
+    if not t:
+        return False
+    toks, phrases = venue_match
+    norm  = " ".join(w for w in re.split(r"[^a-z0-9]+", t) if w)
+    words = set(norm.split())
+
+    # Rule 2 first: an explicit venue reference is the strongest signal there is,
+    # and it outranks the white-card guard — `MCG Construction Induction` is a
+    # venue induction that happens to mention construction.
+    if words & toks:
+        return True
+    for p in phrases:
+        if p in norm:
+            return True
+
+    # Rule 1: the bare word, but never on a construction-card string.
+    if "induction" in words and not any(h in t for h in _WHITE_CARD_HINTS):
+        return True
+
+    return False
+
+
+@app.route("/api/licence-holders")
+@require_cohort(*READ_ALL_COHORTS)
+def api_licence_holders():
+    """The licence register — every non-induction licence row with its crew member,
+    attention-first.
+
+    READ_ALL rather than admin, and that is the one place this differs from the
+    visa register: immigration data is different in kind, a licence is a
+    capability record, and Operations has a working reason to check whether
+    somebody holds a ticket. The gate list matches goat_can_read_all() in
+    list-licence-holders.php, so Python and PHP agree by construction.
+
+    Not filtered to active crew, deliberately — see the PHP. roster_flag is
+    returned and the client badges it.
+
+    Adds three things the PHP deliberately does not compute:
+      status                  compliance_status per row, the same helper the
+                              Licences tab pills use
+      probable_induction      the §4.2 heuristic, only ever set on codeless rows
+      venue_names_ok          whether the heuristic had its best input
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    out, err = ss_list_licence_holders(ss)
+    if err:
+        return jsonify({"error": err}), 502
+
+    rows = out.get("rows") or []
+
+    # Venue names for the heuristic. list-venues.php is admin-only, so a future
+    # non-admin SmartStaff session loses rule 2 and keeps rule 1 — degraded, never
+    # broken, and venue_names_ok tells the client so it can label its own chip
+    # honestly rather than silently under-counting. Same posture as licences_ok on
+    # the Records filter.
+    venue_names = []
+    venues, verr = ss_list_venues(ss)
+    if not verr:
+        venue_names = [str(v.get("name") or "") for v in (venues or [])]
+    venue_match = _venue_match_index(venue_names)
+
+    today = datetime.now().date()
+    expected_by_code = licence_expiry_expected()
+
+    for r in rows:
+        code = r.get("type_canonical")
+        # Score against the canonical code; fall back to the raw type string so an
+        # untriaged row misses the lookup and scores 'na'/'unknown' rather than
+        # being silently treated as a code nobody expects to expire.
+        ltype = code or r.get("type") or ""
+        r["status"] = compliance_status(
+            _licence_parse_date(r.get("date_expiry")),
+            today, LICENCE_WARN_DAYS, expected_by_code.get(ltype, False))
+        # ONLY on codeless rows. A triaged row carries a recorded human decision
+        # and the heuristic does not get to second-guess it — which is also why
+        # the AAMI-2025-triaged-as-POLICE row is not badged here: that is a
+        # mis-triage, a different finding, and it needs a person not a regex.
+        r["probable_induction"] = (
+            (code is None) and _looks_like_venue_induction(r.get("type"), venue_match))
+
+    # Attention-first, then soonest expiry, undated last, then name. The PHP
+    # already ordered by expiry; this adds the status weighting on top, so an
+    # expired row cannot sit below a dated-but-valid one.
+    rows.sort(key=lambda r: (
+        _LICENCE_STATUS_ORDER.get(r.get("status"), 9),
+        r.get("date_expiry") is None,
+        r.get("date_expiry") or "",
+        str(r.get("name") or "").lower(),
+    ))
+
+    return jsonify({
+        "ok": True,
+        "rows": rows,
+        "total": len(rows),
+        "venue_names_ok": bool(venue_match[0] or venue_match[1]),
+    })
+
+
 @app.route("/api/visa-workers")
 @require_cohort("admin")
 def api_visa_workers():
@@ -15849,7 +16045,7 @@ def ss_licence_holder_counts(ss):
 
 
 @app.route("/api/licences/catalogue")
-@require_cohort("admin")
+@require_cohort(*READ_ALL_COHORTS)
 def api_licences_catalogue():
     """The licence catalogue (code · name · group), its group order, which codes
     carry an expiry, and the live holder count per code — for the Manage Crew licence
@@ -15858,11 +16054,13 @@ def api_licences_catalogue():
     template. Exposed separately so the Licences tab doesn't have to pull the whole
     triage queue just to populate a <select>.
 
-    ADMIN, matching api_availability: both consumers are admin-only surfaces — the
-    Crew Finder tab and the Manage Crew licence CRUD. Not READ_ALL like api_groups,
-    despite being the group-chip feed's sibling: the day Crew Finder opens to
-    Operations this relaxes with it, and the PHP behind it is already
-    goat_can_read_all() gated so nothing else has to move.
+    READ_ALL since 5.46.0. It was ADMIN while both consumers were admin-only
+    surfaces — the Crew Finder tab and the Manage Crew licence CRUD — with a note
+    saying it would relax when one of them opened up. The Licence Register is the
+    third consumer and is READ_ALL gated, so that day arrived: without this the
+    register's chips 401 for Operations on first render. The PHP behind it
+    (list-licences.php) has always been goat_can_read_all() gated, so nothing
+    else had to move, exactly as that note anticipated.
 
     `chips` is the render list: codes with at least one holder, in group order.
     A code nobody holds is a chip that can only ever return nothing."""
