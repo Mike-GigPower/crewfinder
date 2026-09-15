@@ -2596,6 +2596,20 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
             <div class="admin-card-desc">Who holds a working visa, when work rights end, and whether they have been checked.</div>
           </div>
         </button>
+        <!-- The ENDPOINT is READ_ALL (admin + leadership + operations) but this
+             hub is admin-only, so the screen is admin-only today. Deliberate, not
+             an oversight: nobody holds leadership or operations right now (Mike,
+             Rich, Monty and Joe are all usergroupID = 1 -> admin), and the
+             Administration dissolution is already in flight — Manage Crew left
+             here for Crew -> Records in 5.1.0. When the register follows, the
+             gate underneath it is already right and nothing has to move. -->
+        <button class="admin-card" onclick="adminLicenceRegister()">
+          <div class="admin-card-icon">📋</div>
+          <div class="admin-card-body">
+            <div class="admin-card-title">Licence Register</div>
+            <div class="admin-card-desc">Every licence on file, soonest expiry first &mdash; what is held, what has lapsed, and what still needs a code.</div>
+          </div>
+        </button>
       </div>
 
       <div class="admin-hub-section">Access</div>
@@ -11509,6 +11523,321 @@ function _visaCsvTs(ts){
   if(!ts) return '';
   var d = new Date(Number(ts) * 1000);
   return isNaN(d.getTime()) ? '' : _goatLocalISODate(d);
+}
+
+// ── LICENCE REGISTER ─────────────────────────────────────────────────────────
+// Administration -> Licence Register. Every non-induction licence row on the
+// system with its crew member, attention-first. See BRIEF-licence-register.md.
+//
+// THE OTHER HALF of the Crew Records licence filter shipped in 5.45.0, and a
+// different question: the filter narrows the roster to people holding X, this
+// answers "what is on file, and is it current". One row per (crew x licence).
+//
+// READ_ALL, not admin — a licence is a capability record, and Operations has a
+// working reason to check whether somebody holds a ticket. The visa register is
+// admin-only because immigration data is different in kind.
+//
+// NOT FILTERED TO ACTIVE CREW, deliberately, exactly as the visa register is
+// not: 3,270 crew carry a blank roster flag and 115 of them worked in 2026, so
+// an active-only register would show the cleanest records and hide the data that
+// most needs looking at. roster_flag comes off the wire and is badged.
+var _licRegRows    = [];
+var _licRegFilter  = '';
+var _licRegGroup   = false;   // group by licence code — off by default
+var _licRegVenueOk = true;    // did the venue-name half of the heuristic load
+
+// Filter key -> the words that go in an exported filename, same reasoning as
+// _VISA_FILTER_SLUG: licence-register-expired-2026-09-15 still says what it is
+// after it has been moved, renamed and emailed on.
+var _LICREG_FILTER_SLUG = {
+  expired:   'expired',
+  soon:      'expiring-soon',
+  nodate:    'no-expiry-recorded',
+  untriaged: 'untriaged',
+  closed:    'no-code-closed',
+  induction: 'probable-venue-inductions',
+  offroster: 'not-on-roster'
+};
+
+function adminLicenceRegister(){ openLicenceRegisterModal(); }
+
+async function openLicenceRegisterModal(){
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Licence Register';
+  document.getElementById('entity-modal-sub').textContent   = 'Licences on file, soonest expiry first';
+  _renderLicenceRegisterActions(0);
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div id="lic-reg-chips" style="display:flex;gap:6px;flex-wrap:wrap;padding-bottom:10px"></div>'
+    + '<div id="lic-reg-note" style="font-size:11px;color:var(--warn);min-height:0;padding-bottom:6px"></div>'
+    + '<div id="lic-reg-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:6px"></div>'
+    + '<div id="lic-reg-rows" style="max-height:52vh;overflow-y:auto"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading&hellip;</div></div>';
+  try{
+    var r = await fetch('/api/licence-holders');
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    _licRegRows    = d.rows || [];
+    _licRegFilter  = '';
+    _licRegGroup   = false;
+    _licRegVenueOk = (d.venue_names_ok !== false);
+    _renderLicenceRegister();
+  }catch(e){
+    // The endpoint refuses with a 500 when it reads ZERO rows, because
+    // user_licenses holds ~1,000 of them and an empty result means the table is
+    // unreachable rather than that nobody holds a licence. That message is meant
+    // to be relayed verbatim, so it is — never flattened to "no records".
+    document.getElementById('lic-reg-rows').innerHTML =
+      '<div style="color:var(--conflict);font-size:12px;padding:8px 0">'+escapeHtml(e.message)+'</div>';
+  }
+}
+
+function licRegFilter(f){
+  _licRegFilter = (_licRegFilter === f) ? '' : f;   // click again to clear
+  _renderLicenceRegister();
+}
+
+function licRegToggleGroup(){
+  _licRegGroup = !_licRegGroup;
+  _renderLicenceRegister();
+}
+
+// UNTRIAGED MEANS WHAT THE TRIAGE QUEUE MEANS: no canonical code AND
+// type_triaged = 0. Testing the null alone counts rows a human already closed
+// deliberately — WWCC by policy (a volunteer card is not valid for paid work, so
+// there is no safe default), the 31 Aug OUT/JUNK closures, the type_triaged = 2
+// empty-type rows — and the register would then show a worklist number that
+// Licence Triage reports as empty. That disagreement happened while this was
+// being written; see FINDINGS-licence-register-test-response-2026-09-14 §3a.1.
+// The deliberate ones get their own chip so neither number lies.
+function _licRegMatches(row, f){
+  if(f === 'expired')   return row.status === 'expired';
+  if(f === 'soon')      return row.status === 'expiring_soon';
+  if(f === 'nodate')    return !row.date_expiry;
+  if(f === 'untriaged') return row.type_canonical === null && Number(row.type_triaged) === 0;
+  if(f === 'closed')    return row.type_canonical === null && Number(row.type_triaged) !== 0;
+  if(f === 'induction') return row.probable_induction === true;
+  if(f === 'offroster') return row.roster_flag !== 'active';
+  return true;
+}
+
+// The rows on screen, in the order they appear. One definition for the renderer
+// and the export, so the file can never carry a row the operator could not see.
+function _licRegVisibleRows(){
+  var rows = _licRegRows.filter(function(r){ return _licRegMatches(r, _licRegFilter); });
+  if(!_licRegGroup) return rows;
+  return _licRegGroupRows(rows).reduce(function(acc, g){ return acc.concat(g.rows); }, []);
+}
+
+// Bucket by canonical code, biggest cohort first — "who holds a forklift ticket"
+// is the question grouping exists to answer, so size leads and the code only
+// breaks ties. The codeless bucket is ALWAYS LAST AND ALWAYS SHOWN: it is
+// missing data on a compliance surface, which is a finding rather than an
+// absence, and it holds two different facts (never triaged, and deliberately
+// closed) which is why the chips above can separate them.
+function _licRegGroupRows(rows){
+  var buckets = {}, order = [];
+  rows.forEach(function(r){
+    var k = r.type_canonical || '';
+    if(!buckets[k]){ buckets[k] = []; order.push(k); }
+    buckets[k].push(r);
+  });
+  return order.sort(function(a, b){
+    if(a === '') return 1;
+    if(b === '') return -1;
+    if(buckets[b].length !== buckets[a].length) return buckets[b].length - buckets[a].length;
+    return a.localeCompare(b);
+  }).map(function(k){ return {key: k, rows: buckets[k]}; });
+}
+
+function _renderLicenceRegisterActions(shown){
+  var el = document.getElementById('entity-modal-actions');
+  if(!el) return;
+  el.innerHTML =
+      entityBtn('Export CSV', 'exportLicenceRegisterCSV()', {
+        disabled: !shown,
+        title: shown ? ('Download the ' + shown + ' row' + (shown === 1 ? '' : 's') + ' shown')
+                     : 'Nothing to export'
+      })
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+function _renderLicenceRegister(){
+  var rowsEl  = document.getElementById('lic-reg-rows');
+  var countEl = document.getElementById('lic-reg-count');
+  var chipsEl = document.getElementById('lic-reg-chips');
+  var noteEl  = document.getElementById('lic-reg-note');
+  if(!rowsEl) return;
+
+  // Seven questions, one click each, and every one is a worklist rather than a
+  // view. No default filter: everything fits, and a filter applied by default is
+  // a filter that hides an expired ticket.
+  //
+  // "Expiring soon" deliberately does NOT say a number of days. The server scores
+  // it with LICENCE_WARN_DAYS, the same window the Manage Crew licence pills use,
+  // and a chip that claimed "90 days" while the pill beside it used 60 would be
+  // two windows disagreeing about the same licence.
+  var defs = [
+    ['expired',   'Expired'],
+    ['soon',      'Expiring soon'],
+    ['nodate',    'No expiry recorded'],
+    ['untriaged', 'Untriaged'],
+    ['closed',    'No code, closed'],
+    ['induction', 'Looks like a venue induction'],
+    ['offroster', 'Not on roster']
+  ];
+  if(chipsEl){
+    var chips = defs.map(function(d){
+      var n  = _licRegRows.filter(function(r){ return _licRegMatches(r, d[0]); }).length;
+      var on = (_licRegFilter === d[0]);
+      return '<button type="button" class="group-chip'+(on?' active':'')+'" onclick="licRegFilter(\'' + d[0] + '\')">'
+           + escapeHtml(d[1]) + ' · ' + n + '</button>';
+    });
+    chips.push('<span style="width:1px;background:var(--border);margin:0 3px"></span>');
+    chips.push('<button type="button" class="group-chip'+(_licRegGroup?' active':'')+'" onclick="licRegToggleGroup()">'
+             + 'Group by licence</button>');
+    chipsEl.innerHTML = chips.join('');
+  }
+
+  // The heuristic lost its venue-name input (list-venues.php is admin-only, so a
+  // non-admin SmartStaff session sees rule 1 only). Say so rather than quietly
+  // under-counting, the same posture as the Records filter's licences_ok.
+  if(noteEl){
+    noteEl.textContent = _licRegVenueOk ? ''
+      : 'Venue names were unavailable, so “Looks like a venue induction” only counts rows whose type says “induction”. The count is a floor, not a total.';
+  }
+
+  var rows = _licRegRows.filter(function(r){ return _licRegMatches(r, _licRegFilter); });
+
+  if(countEl){
+    var expired = _licRegRows.filter(function(r){ return r.status === 'expired'; }).length;
+    var people  = {};
+    _licRegRows.forEach(function(r){ people[r.user_id] = 1; });
+    countEl.textContent = _licRegRows.length + ' on file across ' + Object.keys(people).length + ' people · '
+      + expired + ' expired'
+      + (_licRegFilter ? '  ·  showing ' + rows.length : '');
+  }
+
+  _renderLicenceRegisterActions(rows.length);
+
+  if(!rows.length){
+    rowsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Nothing matches that filter.</div>';
+    return;
+  }
+
+  if(!_licRegGroup){
+    rowsEl.innerHTML = rows.map(function(r){ return _licRegRowHtml(r, false); }).join('');
+    return;
+  }
+
+  // Grouped. Counts come from the FILTERED set, so "Expired" + grouped answers
+  // "which licences are people letting lapse", which falls out for free.
+  // Headers do not collapse: a collapsed group here is a hidden expired ticket.
+  rowsEl.innerHTML = _licRegGroupRows(rows).map(function(g){
+    var label = g.key ? escapeHtml(_licRegCodeLabel(g.key)) : 'No canonical code';
+    return '<div style="position:sticky;top:0;z-index:1;background:var(--surface);'
+         +   'font-family:\'Share Tech Mono\',monospace;font-size:10px;letter-spacing:.08em;'
+         +   'text-transform:uppercase;color:var(--accent);border-bottom:1px solid var(--border-gold);'
+         +   'padding:9px 0 5px;margin-top:8px">'
+         +   label + ' · ' + g.rows.length
+         + '</div>'
+         + g.rows.map(function(r){ return _licRegRowHtml(r, true); }).join('');
+  }).join('');
+}
+
+// "Forklift truck (LF)" where the catalogue is loaded, the bare code otherwise.
+// licChipLabel() already does exactly this and reads the same cached catalogue.
+function _licRegCodeLabel(code){
+  return (typeof licChipLabel === 'function') ? licChipLabel(code) : code;
+}
+
+function _licRegRowHtml(r, hideCode){
+  var roster = (r.roster_flag === 'active')
+    ? ''
+    : '<span style="font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:20px;padding:1px 7px;margin-left:6px">'
+      + (r.roster_flag === 'inactive' ? 'inactive' : 'not on roster') + '</span>';
+
+  // The free-text `type` is shown beside the code on purpose. type_canonical is
+  // what the system matches on, but the operator's original string is what is
+  // printed on the card in the filing cabinet — and on this data it is also the
+  // evidence for every mis-triage the register exists to surface.
+  var codeBit = (hideCode || !r.type_canonical) ? ''
+    : '<span style="font-family:\'Share Tech Mono\',monospace;font-size:10px;border:1px solid var(--border);border-radius:3px;padding:1px 5px;color:var(--muted);margin-right:6px">'
+      + escapeHtml(r.type_canonical) + '</span>';
+
+  var flags = [];
+  if(r.type_canonical === null){
+    flags.push(Number(r.type_triaged) === 0
+      ? '<span style="color:var(--warn)">untriaged</span>'
+      : '<span style="color:var(--muted)">no code, closed</span>');
+  }
+  if(r.probable_induction) flags.push('<span style="color:var(--warn)">looks like a venue induction</span>');
+  if(r.has_pdf)        flags.push('card on file');
+  else if(r.has_image) flags.push('legacy image');
+  else                 flags.push('<span style="color:var(--muted)">no document</span>');
+
+  return ''
+    + '<div style="border-bottom:1px solid var(--border);padding:9px 0">'
+    +   '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">'
+    +     '<div style="font-size:13px">'
+    +       codeBit
+    +       '<button type="button" onclick="closeEntityModal();openCrewEdit(' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
+    +         escapeHtml(r.name || ('#'+r.user_id)) + '</button>'
+    +       '<span style="color:var(--muted);font-size:11px;margin-left:7px">EIN ' + escapeHtml(String(r.ein||'')) + '</span>'
+    +       roster
+    +     '</div>'
+    +     '<div style="font-size:12px">' + _licRegExpiryHtml(r) + '</div>'
+    +   '</div>'
+    +   '<div style="font-size:11px;color:var(--muted);padding-top:4px">'
+    +     escapeHtml(String(r.type || '').trim() || '—') + ' · ' + flags.join(' · ')
+    +   '</div>'
+    + '</div>';
+}
+
+// The expiry, coloured by the SERVER's status rather than a second date
+// calculation here. One window, one verdict — see the chip comment above.
+function _licRegExpiryHtml(r){
+  if(!r.date_expiry){
+    return '<span style="color:var(--muted)">no expiry recorded</span>';
+  }
+  var nice = _visaNice ? _visaNice(r.date_expiry) : r.date_expiry;
+  if(r.status === 'expired')       return '<span style="color:var(--conflict)">expired ' + escapeHtml(nice) + '</span>';
+  if(r.status === 'expiring_soon') return '<span style="color:var(--warn)">expires ' + escapeHtml(nice) + '</span>';
+  return '<span style="color:var(--muted)">expires ' + escapeHtml(nice) + '</span>';
+}
+
+// ── LICENCE REGISTER EXPORT ──────────────────────────────────────────────────
+// WHAT IS ON SCREEN, AND NOTHING MORE — same rule as the visa export. An
+// "Expired" export should be the expired rows or the chip is decorative.
+//
+// No document bytes and no file paths: has_pdf / has_image say whether something
+// exists, and anyone who needs the card opens the crew record. A filename in a
+// spreadsheet is an invitation to go looking in the filesystem.
+function exportLicenceRegisterCSV(){
+  var rows = _licRegVisibleRows();
+  if(!rows.length) return;
+
+  var headers = ['EIN', 'Name', 'Roster', 'Code', 'Licence', 'Recorded type',
+                 'Triaged', 'Certified', 'Expires', 'Status',
+                 'Looks like a venue induction', 'Document'];
+
+  var body = rows.map(function(r){
+    return [
+      r.ein || '',
+      r.name || '',
+      r.roster_flag || '',
+      r.type_canonical || '',
+      r.type_canonical ? _licRegCodeLabel(r.type_canonical) : '',
+      String(r.type || '').trim(),
+      (r.type_canonical === null ? (Number(r.type_triaged) === 0 ? 'no' : 'closed without a code') : 'yes'),
+      _visaCsvDate(r.date_certified),
+      _visaCsvDate(r.date_expiry),
+      r.status || '',
+      (r.probable_induction ? 'yes' : ''),
+      (r.has_pdf ? 'pdf' : (r.has_image ? 'legacy image' : ''))
+    ];
+  });
+
+  goatExportCSV('licence-register' + (_licRegFilter ? '-' + (_LICREG_FILTER_SLUG[_licRegFilter] || _licRegFilter) : ''),
+                headers, body);
 }
 
 // ── CREW VISA (admin) ────────────────────────────────────────────────────────
