@@ -137,7 +137,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.46.1"
+APP_VERSION    = "5.49.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -389,32 +389,57 @@ def _gp_cancel_targets(body):
         out.append((uid, "cancelled" if p in (5, 7) else "withdrawn"))
     return out
 
-def gp_fetch_push_reachable():
-    """Distinct EINs with at least one live Crew Hub push subscription.
+def gp_fetch_push_reachable(detail=False):
+    """Crew Hub push reachability. Returns a (reachable, lapsed) TUPLE.
 
-    Returns a set of EIN strings, or None on ANY failure. None means "unknown"
-    and MUST be distinguished from an empty set: the Hub returns a non-200
-    rather than an empty list precisely so a Supabase blip can't be read as
-    "nobody is reachable". Callers show no indicator when this is None.
+    reachable — distinct EINs with at least one live push subscription, as a set
+    of EIN strings, or None on ANY failure. None means "unknown" and MUST be
+    distinguished from an empty set: the Hub returns a non-200 rather than an
+    empty list precisely so a Supabase blip can't be read as "nobody is
+    reachable". Callers show no indicator when this is None.
+
+    lapsed — only with detail=True: the EINs that HAD push and lost it, because
+    sendToSubs prunes a subscription row on a 404/410 and the deleted row is
+    afterwards indistinguishable from one that never existed. None means
+    UNKNOWN, and covers three cases that must all degrade identically: we did
+    not ask; the Crew Hub predates the ?detail=1 parameter; or its lookup
+    failed. An empty set is a real answer meaning nobody is currently lapsed.
+    Never conflate the two — reading unknown as empty would label crew who had
+    push for months as having never turned notifications on, which is the exact
+    false accusation this was built to remove.
+
+    detail costs the Hub one extra database call, so only the Shadowlands lane
+    asks for it; the 15-minute cache refresh does not need it and does not pay.
     """
     try:
         r = http.get(
-            GP_REACHABLE_URL,
+            GP_REACHABLE_URL + ("?detail=1" if detail else ""),
             headers={"X-Push-Secret": GP_PUSH_SECRET},
             timeout=6,
         )
         if r.status_code != 200:
             app.logger.warning(f"[push-reachable] HTTP {r.status_code}")
-            return None
+            return None, None
         data = r.json()
         eins = data.get("eins")
         if not isinstance(eins, list):
             app.logger.warning("[push-reachable] malformed response: 'eins' not a list")
-            return None
-        return {str(e).strip() for e in eins if str(e).strip()}
+            return None, None
+        reachable = {str(e).strip() for e in eins if str(e).strip()}
+
+        lapsed = None
+        if detail:
+            raw = data.get("lapsed")
+            if isinstance(raw, list):
+                lapsed = {str(e).strip() for e in raw if str(e).strip()}
+            else:
+                # Absent rather than malformed: an older Crew Hub deploy simply
+                # ignores the parameter. Stays None, which is correct.
+                app.logger.info("[push-reachable] no 'lapsed' key — older Crew Hub build?")
+        return reachable, lapsed
     except Exception as e:
         app.logger.warning(f"[push-reachable] fetch error: {e}")
-        return None
+        return None, None
 
 # ─── RECRUITMENT (ops applicant review) ───────────────────────────────────────
 # Read-only applicant list, served by a deployed Supabase edge function. The URL
@@ -686,7 +711,7 @@ def _do_cache_refresh(ss):
         # "unknown" — leave each entry's existing push_ok untouched rather than
         # writing False, so a failed fetch keeps the last known state.
         try:
-            reachable = gp_fetch_push_reachable()
+            reachable, _ = gp_fetch_push_reachable()
             if reachable is not None:
                 for _entry in new_cache.values():
                     _entry["push_ok"] = str(_entry.get("ein", "")).strip() in reachable
@@ -8935,6 +8960,205 @@ def api_ops_times():
     return jsonify(data)
 
 
+# ─── OPS LANDING — RED ZONE ──────────────────────────────────────────────────
+# "Who keeps not turning up, and who keeps turning up late."
+#
+# Backed by ajax/crew/red-zone.php — live on test and prod 16 Sep 2026, source
+# committed at e39c397, all three copies byte-identical at b0c1cd9a.
+#
+# TWO ROUTES, and the split is the whole performance story of this lane:
+#
+#   /api/ops/red-zone            the CARD. The two donuts' segment counts plus
+#                                the 30-day badge figures. No crew rows.
+#   /api/ops/red-zone/register   the DRILL-THROUGH. The ranked register plus
+#                                twelve monthly trend buckets, fetched only when
+#                                somebody opens the caret.
+#
+# On prod the 30-day query is 48ms and the twelve-month register is 406ms. The
+# card pays the register's query cost ANYWAY — under D7 (house donuts) the two
+# donuts are distributions over the register, so that aggregate sits on the
+# card's path whether we like it or not. What the split actually saves is
+# SHIPPING ~80 crew rows of JSON on every Ops page load, and what makes the
+# 406ms acceptable is the TTL cache below. Under the rejected leaderboard option
+# the split alone would have been enough; it is not, and the cache is therefore
+# load-bearing rather than an optimisation.
+#
+# Lanes load STRICTLY ONE AT A TIME behind a per-session PHP file lock, so every
+# millisecond here is added to every lane after it. ONE request per route, ever.
+# No thread pool, no parallel fetch.
+#
+# WHAT THIS LANE NAMES. Individual crew members, with a performance record, over
+# twelve months. Gated to READ_ALL_COHORTS at the route and to goat_can_read_all()
+# in the PHP — dual-gated exactly like the other read lanes, and for a stronger
+# reason than they have.
+
+GP_RED_ZONE_TTL = 900     # seconds. A twelve-month window does not move in fifteen minutes.
+
+# key -> {"at": float, "data": dict}
+#
+# Keyed on the full parameter tuple because every parameter changes the QUESTION,
+# not the presentation: the client clearing the 90-day chip is asking a different
+# thing, and red-zone.php owns that predicate. THE GOAT does not re-derive a
+# boundary the server already decided (same rule fetch_ops_times follows).
+#
+# Module-level and shared across sessions, like _crew_stats_cache. Every caller
+# is READ_ALL_COHORTS and the answer does not vary by user, so there is nothing
+# to leak between them.
+_red_zone_cache = {}
+
+
+def _red_zone_params():
+    """The three tuning parameters, VALIDATED here but not DEFAULTED here.
+
+    red-zone.php owns the defaults (20 shifts / 5.0% / 90 days) and the clamping.
+    Restating them in Python would be two places for one boundary to drift, and
+    drift would be invisible — both sides would look correct in isolation while
+    the card and the register disagreed. A parameter the client does not send is
+    simply absent from the URL, and the response's `window` block always states
+    what was actually used.
+
+    Validation still happens here, because these values are interpolated into a
+    URL: each is coerced to a number, and anything that will not coerce is
+    dropped so the PHP default applies. Nothing user-supplied reaches the query
+    string as a string."""
+    spec = (("min_shifts", int), ("min_rate", float), ("since_days", int))
+    out = {}
+    for name, caster in spec:
+        raw = request.args.get(name)
+        if raw is None or raw == "":
+            continue
+        try:
+            out[name] = caster(raw)
+        except (TypeError, ValueError):
+            continue          # malformed → let the PHP default stand
+    return out
+
+
+def fetch_red_zone(ss, mode, params):
+    """Ops landing — the Red Zone source, via red-zone.php (dual-gated).
+
+    Returns the endpoint's own dict — its `window` echo, its `recent` counters,
+    its `profile` / `band` segment counts, and in register mode its `trend` and
+    `register` — passed through untouched. The PHP decides every boundary and
+    decodes the display strings on the way out, so there is no unescape pass and
+    no re-derivation here.
+
+    Returns (data, error). On any failure data is None and error is a short
+    message; the caller soft-fails to an 'unavailable' lane."""
+    qs = f"mode={mode}"
+    for k in sorted(params):
+        qs += f"&{k}={params[k]}"
+    url = f"{BASE_URL}/ajax/crew/red-zone.php?{qs}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def gp_red_zone(ss, mode, params, force=False):
+    """fetch_red_zone through the TTL cache. Returns (data, error).
+
+    ON FAILURE THIS RETURNS THE ERROR, NOT A STALE ENTRY — and that is the
+    opposite of gp_crew_stats(), deliberately. That function serves stale because
+    its alternative is rendering ZEROES against a named crew member, which reads
+    as "never accepted anything, never declined anything" and is a damning, false
+    picture shown while somebody decides whether to take work off them. Here the
+    alternative is the lane's own 'unavailable' state, which is honest and which
+    every other Ops lane already uses. A silently stale answer on a screen that
+    names offenders is worth less than an empty one that says so.
+
+    `force` (the Refresh button) clears the whole cache rather than one key, so
+    one Refresh genuinely refetches rather than refreshing whichever view happens
+    to be open."""
+    key = (mode,) + tuple(sorted(params.items()))
+    now = time.time()
+
+    if force:
+        _red_zone_cache.clear()
+    else:
+        hit = _red_zone_cache.get(key)
+        if hit is not None and (now - hit["at"]) < GP_RED_ZONE_TTL:
+            return hit["data"], None
+
+    data, err = fetch_red_zone(ss, mode, params)
+    if err is not None:
+        return None, err
+
+    # The key space is small in practice — the client sends at most a couple of
+    # variants — but it is client-driven, so it is bounded rather than trusted.
+    if len(_red_zone_cache) > 32:
+        _red_zone_cache.clear()
+
+    _red_zone_cache[key] = {"at": now, "data": data}
+    return data, None
+
+
+@app.route("/api/ops/red-zone", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_red_zone():
+    """Ops landing — the Red Zone CARD.
+
+    Returns the badge's 30-day counters and the two donuts' segment counts, and
+    deliberately NO crew rows: `register` and `trend` are absent from this shape
+    so a card refresh can never silently replace the rows the drill-through is
+    built from. Same reasoning, and the same shape of guarantee, as
+    /api/ops/calls-calendar omitting `calls` and `counts`.
+
+    Soft-fails with HTTP 200 {"unavailable": true} so the lane renders
+    'unavailable' and never takes the page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    force = request.args.get("force") in ("1", "true", "yes")
+
+    data, err = gp_red_zone(ss, "summary", _red_zone_params(), force=force)
+    if err is not None:
+        app.logger.warning(f"[red-zone] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
+
+@app.route("/api/ops/red-zone/register", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_red_zone_register():
+    """Ops landing — the Red Zone DRILL-THROUGH.
+
+    The ranked twelve-month register plus the twelve monthly trend buckets the
+    window header draws. Hit ONLY when the caret is opened or a chip changes the
+    question — never on an Ops page load. That is the whole point of splitting it
+    from the card (see the section header).
+
+    The card's own counters come back in this shape too, so the detail window
+    never has to reach back into the card's payload to label itself."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    force = request.args.get("force") in ("1", "true", "yes")
+
+    data, err = gp_red_zone(ss, "register", _red_zone_params(), force=force)
+    if err is not None:
+        app.logger.warning(f"[red-zone-register] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
 # ─── OPS LANDING — PUSH REACHABILITY GAP ─────────────────────────────────────
 # "Who is booked to work, and cannot be told anything about it."
 #
@@ -9067,7 +9291,7 @@ def api_ops_push_gaps():
         return jsonify({"unavailable": True, "error": "crew list empty"})
 
     # 2. Push reachability. None means UNKNOWN and must never be read as "none".
-    reachable = gp_fetch_push_reachable()
+    reachable, lapsed = gp_fetch_push_reachable(detail=True)
     if reachable is None:
         app.logger.warning("[ops-push] unavailable: push reachability unknown")
         return jsonify({"unavailable": True,
@@ -9181,15 +9405,50 @@ def api_ops_push_gaps():
     # Soonest commitment first — the order they need ringing in.
     rows.sort(key=lambda r: (r.get("start") or "9999", r.get("name") or ""))
 
+    # WHY each row is here. Second pass, deliberately: gp_crew_stats is a FOURTH
+    # SmartStaff call behind the same per-session file lock, so an empty lane
+    # must not pay for it. It is cached 15 minutes and shared with the responses
+    # panel, so in practice it is usually free.
+    #
+    # BOTH inputs are required, and this is stricter than the brief first said.
+    # If `lapsed` is unknown we cannot rule a lapse out for anyone, so neither
+    # "hub_no_push" nor "dark" can be stated truthfully; if crew stats are
+    # unknown we cannot separate those two from each other. Either gap and the
+    # whole dimension is omitted — the key is simply absent, the donut does not
+    # render, and the lane is otherwise untouched. A crew-stats failure must
+    # never soft-fail the lane the way unknown reachability does: a lane with a
+    # coarser tag beats no lane at all.
+    c_reason = None
+    if rows and lapsed is not None:
+        stats = gp_crew_stats(ss)
+        if stats is not None:
+            c_reason = {"lapsed": 0, "hub_no_push": 0, "dark": 0}
+            for r in rows:
+                r_ein = r.get("ein") or ""
+                # Same empty-EIN guard as the reachable test above: a blank EIN
+                # must fall through, never match a set.
+                if r_ein and r_ein in lapsed:
+                    reason = "lapsed"
+                elif (stats.get(r.get("user_id")) or {}).get("timed_sample", 0) > 0:
+                    reason = "hub_no_push"
+                else:
+                    reason = "dark"
+                r["reason"] = reason
+                c_reason[reason] += 1
+
+    counts = {
+        "total":    len(rows),
+        "lead":     c_lead,
+        "exposure": c_exposure,
+    }
+    if c_reason is not None:
+        counts["reason"] = c_reason
+
     return jsonify({
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "window":       {"start": start, "end": end},
         "rows":         rows,
-        "counts": {
-            "total":    len(rows),
-            "lead":     c_lead,
-            "exposure": c_exposure,
-        },
+        "counts":       counts,
         # Zone 2. Deliberately NOT a set of donut dimensions: these describe the
         # whole roster and every open offer, while every row in `rows` is by
         # definition one no-push crew member, so a "has push" segment could never
@@ -12881,6 +13140,14 @@ def gp_crew_stats(ss, days=GP_CREW_STATS_DAYS):
                 # environment running the older endpoint, hence the default.
                 "cancelled":     c.get("cancelled", 0),
                 "response_rate": c.get("response_rate"),
+                # Offers this crew member answered THEMSELVES, through the
+                # system. get-crew-offer-stats.php counts only rows where
+                # responded_src IS NULL, so an ops user typing in a resolution
+                # ('ops') and an Add & Confirm ('phone') are already excluded.
+                # `responded` is NOT a substitute: it counts ops entries too.
+                # Used by the Shadowlands lane to tell "uses the Hub, never
+                # turned notifications on" from "we have never heard from them".
+                "timed_sample":  c.get("timed_sample", 0),
             }
         _crew_stats_cache["by_user"] = by_user
         _crew_stats_cache["at"]      = now
