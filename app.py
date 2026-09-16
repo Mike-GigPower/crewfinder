@@ -8935,6 +8935,205 @@ def api_ops_times():
     return jsonify(data)
 
 
+# ─── OPS LANDING — RED ZONE ──────────────────────────────────────────────────
+# "Who keeps not turning up, and who keeps turning up late."
+#
+# Backed by ajax/crew/red-zone.php — live on test and prod 16 Sep 2026, source
+# committed at e39c397, all three copies byte-identical at b0c1cd9a.
+#
+# TWO ROUTES, and the split is the whole performance story of this lane:
+#
+#   /api/ops/red-zone            the CARD. The two donuts' segment counts plus
+#                                the 30-day badge figures. No crew rows.
+#   /api/ops/red-zone/register   the DRILL-THROUGH. The ranked register plus
+#                                twelve monthly trend buckets, fetched only when
+#                                somebody opens the caret.
+#
+# On prod the 30-day query is 48ms and the twelve-month register is 406ms. The
+# card pays the register's query cost ANYWAY — under D7 (house donuts) the two
+# donuts are distributions over the register, so that aggregate sits on the
+# card's path whether we like it or not. What the split actually saves is
+# SHIPPING ~80 crew rows of JSON on every Ops page load, and what makes the
+# 406ms acceptable is the TTL cache below. Under the rejected leaderboard option
+# the split alone would have been enough; it is not, and the cache is therefore
+# load-bearing rather than an optimisation.
+#
+# Lanes load STRICTLY ONE AT A TIME behind a per-session PHP file lock, so every
+# millisecond here is added to every lane after it. ONE request per route, ever.
+# No thread pool, no parallel fetch.
+#
+# WHAT THIS LANE NAMES. Individual crew members, with a performance record, over
+# twelve months. Gated to READ_ALL_COHORTS at the route and to goat_can_read_all()
+# in the PHP — dual-gated exactly like the other read lanes, and for a stronger
+# reason than they have.
+
+GP_RED_ZONE_TTL = 900     # seconds. A twelve-month window does not move in fifteen minutes.
+
+# key -> {"at": float, "data": dict}
+#
+# Keyed on the full parameter tuple because every parameter changes the QUESTION,
+# not the presentation: the client clearing the 90-day chip is asking a different
+# thing, and red-zone.php owns that predicate. THE GOAT does not re-derive a
+# boundary the server already decided (same rule fetch_ops_times follows).
+#
+# Module-level and shared across sessions, like _crew_stats_cache. Every caller
+# is READ_ALL_COHORTS and the answer does not vary by user, so there is nothing
+# to leak between them.
+_red_zone_cache = {}
+
+
+def _red_zone_params():
+    """The three tuning parameters, VALIDATED here but not DEFAULTED here.
+
+    red-zone.php owns the defaults (20 shifts / 5.0% / 90 days) and the clamping.
+    Restating them in Python would be two places for one boundary to drift, and
+    drift would be invisible — both sides would look correct in isolation while
+    the card and the register disagreed. A parameter the client does not send is
+    simply absent from the URL, and the response's `window` block always states
+    what was actually used.
+
+    Validation still happens here, because these values are interpolated into a
+    URL: each is coerced to a number, and anything that will not coerce is
+    dropped so the PHP default applies. Nothing user-supplied reaches the query
+    string as a string."""
+    spec = (("min_shifts", int), ("min_rate", float), ("since_days", int))
+    out = {}
+    for name, caster in spec:
+        raw = request.args.get(name)
+        if raw is None or raw == "":
+            continue
+        try:
+            out[name] = caster(raw)
+        except (TypeError, ValueError):
+            continue          # malformed → let the PHP default stand
+    return out
+
+
+def fetch_red_zone(ss, mode, params):
+    """Ops landing — the Red Zone source, via red-zone.php (dual-gated).
+
+    Returns the endpoint's own dict — its `window` echo, its `recent` counters,
+    its `profile` / `band` segment counts, and in register mode its `trend` and
+    `register` — passed through untouched. The PHP decides every boundary and
+    decodes the display strings on the way out, so there is no unescape pass and
+    no re-derivation here.
+
+    Returns (data, error). On any failure data is None and error is a short
+    message; the caller soft-fails to an 'unavailable' lane."""
+    qs = f"mode={mode}"
+    for k in sorted(params):
+        qs += f"&{k}={params[k]}"
+    url = f"{BASE_URL}/ajax/crew/red-zone.php?{qs}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def gp_red_zone(ss, mode, params, force=False):
+    """fetch_red_zone through the TTL cache. Returns (data, error).
+
+    ON FAILURE THIS RETURNS THE ERROR, NOT A STALE ENTRY — and that is the
+    opposite of gp_crew_stats(), deliberately. That function serves stale because
+    its alternative is rendering ZEROES against a named crew member, which reads
+    as "never accepted anything, never declined anything" and is a damning, false
+    picture shown while somebody decides whether to take work off them. Here the
+    alternative is the lane's own 'unavailable' state, which is honest and which
+    every other Ops lane already uses. A silently stale answer on a screen that
+    names offenders is worth less than an empty one that says so.
+
+    `force` (the Refresh button) clears the whole cache rather than one key, so
+    one Refresh genuinely refetches rather than refreshing whichever view happens
+    to be open."""
+    key = (mode,) + tuple(sorted(params.items()))
+    now = time.time()
+
+    if force:
+        _red_zone_cache.clear()
+    else:
+        hit = _red_zone_cache.get(key)
+        if hit is not None and (now - hit["at"]) < GP_RED_ZONE_TTL:
+            return hit["data"], None
+
+    data, err = fetch_red_zone(ss, mode, params)
+    if err is not None:
+        return None, err
+
+    # The key space is small in practice — the client sends at most a couple of
+    # variants — but it is client-driven, so it is bounded rather than trusted.
+    if len(_red_zone_cache) > 32:
+        _red_zone_cache.clear()
+
+    _red_zone_cache[key] = {"at": now, "data": data}
+    return data, None
+
+
+@app.route("/api/ops/red-zone", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_red_zone():
+    """Ops landing — the Red Zone CARD.
+
+    Returns the badge's 30-day counters and the two donuts' segment counts, and
+    deliberately NO crew rows: `register` and `trend` are absent from this shape
+    so a card refresh can never silently replace the rows the drill-through is
+    built from. Same reasoning, and the same shape of guarantee, as
+    /api/ops/calls-calendar omitting `calls` and `counts`.
+
+    Soft-fails with HTTP 200 {"unavailable": true} so the lane renders
+    'unavailable' and never takes the page down with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    force = request.args.get("force") in ("1", "true", "yes")
+
+    data, err = gp_red_zone(ss, "summary", _red_zone_params(), force=force)
+    if err is not None:
+        app.logger.warning(f"[red-zone] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
+
+@app.route("/api/ops/red-zone/register", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_red_zone_register():
+    """Ops landing — the Red Zone DRILL-THROUGH.
+
+    The ranked twelve-month register plus the twelve monthly trend buckets the
+    window header draws. Hit ONLY when the caret is opened or a chip changes the
+    question — never on an Ops page load. That is the whole point of splitting it
+    from the card (see the section header).
+
+    The card's own counters come back in this shape too, so the detail window
+    never has to reach back into the card's payload to label itself."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    force = request.args.get("force") in ("1", "true", "yes")
+
+    data, err = gp_red_zone(ss, "register", _red_zone_params(), force=force)
+    if err is not None:
+        app.logger.warning(f"[red-zone-register] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
 # ─── OPS LANDING — PUSH REACHABILITY GAP ─────────────────────────────────────
 # "Who is booked to work, and cannot be told anything about it."
 #
