@@ -1,6 +1,6 @@
 {
-  "version": "5.47.0",
+  "version": "5.48.0",
   "release_date": "2026-09-16",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.47.0/TheGOAT.dmg",
-  "release_notes": "A new Crew Reliability Red Zone tile on Today → Operations shows who is not turning up and who is turning up late, with a twelve-month register of the crew behind it. Open the tile for the full list — shifts, no-shows, lates, rate and last incident, worst first."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.48.0/TheGOAT.dmg",
+  "release_notes": "The Recruitment tab's search box now finds a candidate by their EIN once they have been converted to crew, and the EIN is shown on the row beside their name. It has to be typed in full — name, reference, email and phone still match on part of what you type."
 }
