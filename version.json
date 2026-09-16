@@ -1,6 +1,6 @@
 {
-  "version": "5.48.0",
+  "version": "5.49.0",
   "release_date": "2026-09-16",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.48.0/TheGOAT.dmg",
-  "release_notes": "The Recruitment tab's search box now finds a candidate by their EIN once they have been converted to crew, and the EIN is shown on the row beside their name. It has to be typed in full — name, reference, email and phone still match on part of what you type."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.49.0/TheGOAT.dmg",
+  "release_notes": "The Shadowlands lane now shows why each crew member cannot be reached, not just that they cannot. Someone whose notifications lapsed needs a different conversation from someone who has never opened the Crew Hub."
 }
