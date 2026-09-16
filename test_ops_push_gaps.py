@@ -17,7 +17,11 @@ Fixtures are chosen to catch the things that actually break:
   • an offer to someone who HAS push            (counts in the total, not the gap)
   • an offer to someone off the active roster   (counts in the total, never listed)
   • an orphan user_id 0                         (must be dropped)
-  • a crew member with an empty EIN             (must not silently match push)
+  • a crew member with an empty EIN             (must not silently match push,
+    and must not match the lapsed set either, even when "" is in it)
+  • a crew member who is BOTH lapsed and a Hub user (lapsed must win)
+  • lapsed unknown, and crew stats unknown      (the reason dimension is
+    omitted entirely — never guessed, and never allowed to fail the lane)
 """
 import sys, json
 from datetime import datetime, timedelta
@@ -37,6 +41,20 @@ ROSTER = [
     {"id":"7","manage_id":"7","ein":"",    "name":"Gray, Gus",  "phone":"0400 000 007"},
 ]
 REACHABLE = {"1001"}          # only Ann has push
+
+# Ben had push and lost it. The empty string is in here ON PURPOSE: Gus has no
+# EIN, and a blank must never match a set membership test.
+LAPSED = {"1002", ""}
+
+# Keyed by user_id as a string, exactly as gp_crew_stats indexes it.
+# timed_sample = offers they answered THEMSELVES through the Crew Hub.
+# Ben (2) has both a lapse and Hub activity — lapsed must win.
+# Finn (6) and Gus (7) are absent entirely, which must read as 0, not crash.
+STATS = {
+    "2": {"timed_sample": 3},
+    "3": {"timed_sample": 1},
+    "4": {"timed_sample": 5},
+}
 
 OFFERS = {"counts": {"total": 4}, "offers": [
     {"user_id":1,"ein":"1001","name":"Able, Ann", "start":iso(timedelta(days=6)),  "call_id":40,"booking_id":90,"call_name":"Bump in","booking_name":"Show A","venue":"Rod Laver"},
@@ -71,7 +89,8 @@ class FakeSS:
 
 A.get_ss_session          = lambda: FakeSS()
 A._get_all_crew           = lambda ss: ROSTER
-A.gp_fetch_push_reachable = lambda: set(REACHABLE)
+A.gp_fetch_push_reachable = lambda detail=False: (set(REACHABLE), set(LAPSED) if detail else None)
+A.gp_crew_stats           = lambda ss, days=None: STATS
 A.fetch_open_offers_bulk  = lambda ss, start, end: (OFFERS, None)
 A._ss_sessions["h"] = FakeSS()
 A._ss_identity["h"] = {"cohort": "admin", "usergroupID": 1}
@@ -114,6 +133,20 @@ check("an offer to someone off the roster is not listed", "Gone, Greg" not in by
 
 check("sum(lead) == total", sum(cnt["lead"].values()) == cnt["total"], cnt["lead"])
 check("sum(exposure) == total", sum(cnt["exposure"].values()) == cnt["total"], cnt["exposure"])
+check("sum(reason) == total", sum(cnt["reason"].values()) == cnt["total"], cnt.get("reason"))
+
+check("Ben is lapsed, and lapsed BEATS his Hub activity",
+      by["Book, Ben"]["reason"] == "lapsed", by["Book, Ben"]["reason"])
+check("Cara answers her own offers -> hub_no_push",
+      by["Cope, Cara"]["reason"] == "hub_no_push", by["Cope, Cara"]["reason"])
+check("Dave answers his own offers -> hub_no_push",
+      by["Dunn, Dave"]["reason"] == "hub_no_push", by["Dunn, Dave"]["reason"])
+check("Finn has no stats row at all -> dark, not a crash",
+      by["Fair, Finn"]["reason"] == "dark", by["Fair, Finn"]["reason"])
+check("empty EIN does NOT match the empty string in the lapsed set",
+      by["Gray, Gus"]["reason"] == "dark", by["Gray, Gus"]["reason"])
+check("reason tallies: 1 lapsed, 2 hub_no_push, 2 dark",
+      cnt["reason"] == {"lapsed": 1, "hub_no_push": 2, "dark": 2}, cnt["reason"])
 
 check("Ben: confirmed only -> booked", by["Book, Ben"]["exposure"] == "booked")
 check("Cara: offer + confirmed -> both", by["Cope, Cara"]["exposure"] == "both")
@@ -139,18 +172,38 @@ check("window is today -> today+28",
       (datetime.strptime(d["window"]["end"], "%Y-%m-%d") -
        datetime.strptime(d["window"]["start"], "%Y-%m-%d")).days == 28, d["window"])
 
-# The two soft-fail paths that must never be read as "nobody is reachable"
-A.gp_fetch_push_reachable = lambda: None
+# ── Degradation: an unknown input must SUBTRACT the tag, never guess it ─────
+# Neither of these may fail the lane. Losing the reason dimension is a worse
+# card; asserting a reason we cannot support is a false accusation about a
+# named person, which is the whole reason this lane was re-worked.
+
+A.gp_fetch_push_reachable = lambda detail=False: (set(REACHABLE), None)
+_, d4 = call()
+check("lapsed unknown -> reason omitted entirely",
+      "reason" not in d4["counts"], d4["counts"])
+check("...but the lane still renders and its other identities hold",
+      sum(d4["counts"]["lead"].values()) == d4["counts"]["total"] == len(d4["rows"]),
+      d4["counts"])
+check("...and no row claims a reason", all("reason" not in r for r in d4["rows"]))
+
+A.gp_fetch_push_reachable = lambda detail=False: (set(REACHABLE), set(LAPSED) if detail else None)
+A.gp_crew_stats           = lambda ss, days=None: None
+_, d5 = call()
+check("crew stats unknown -> reason omitted, lane NOT failed",
+      "reason" not in d5["counts"] and d5.get("unavailable") is not True, d5["counts"])
+A.gp_crew_stats           = lambda ss, days=None: STATS
+
+# ── The two soft-fails that must never be read as "nobody is reachable" ─────
+A.gp_fetch_push_reachable = lambda detail=False: (None, None)
 _, d2 = call()
 check("reachability unknown soft-fails the lane", d2.get("unavailable") is True, d2)
 check("...and reports nothing as a count", "counts" not in d2)
 
-A.gp_fetch_push_reachable = lambda: set(REACHABLE)
+A.gp_fetch_push_reachable = lambda detail=False: (set(REACHABLE), set(LAPSED) if detail else None)
 A.fetch_open_offers_bulk  = lambda ss, start, end: (None, "HTTP 500")
 _, d3 = call()
 check("offers feed failing soft-fails the lane", d3.get("unavailable") is True, d3)
 
 print()
-open("/sessions/rcw-018zmz4zdtjn3xruqrelqnqc/_fixture_payload.json","w").write(json.dumps(d))
 if fails: print(f"FAILED: {len(fails)} check(s): {fails}"); sys.exit(1)
 print("ALL CHECKS PASSED"); sys.exit(0)
