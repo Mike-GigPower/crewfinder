@@ -21407,7 +21407,7 @@ const OPS_LANES = [
   // SmartStaff calls (the active roster, then the confirmed shifts), so the six
   // ahead of it fill first. The frame is progressive — nothing waits on it.
   { key:'push_gaps', label:'Shadowlands',
-    load: loadOpsPush, render: renderOpsPush, list: renderOpsPushList, dims:['lead','exposure'] }
+    load: loadOpsPush, render: renderOpsPush, list: renderOpsPushList, dims:['lead','exposure','reason'] }
 ];
 
 // Shared-source cache: name -> in-flight/resolved Promise<responseJSON>. Memoised
@@ -21520,6 +21520,18 @@ const OPS_VENUE_RANK_COLORS = ['var(--accent)', '#22c55e', 'var(--warn)', '#f973
 const OPS_EXPOSURE_COLORS = { offer:'var(--accent2)', both:'#f97316', booked:'var(--warn)' };
 const OPS_EXPOSURE_LABELS = { offer:'Unanswered offer', both:'Offer + booked', booked:'Booked only' };
 
+// Lane 7 `reason` — WHY this person cannot be reached, which is a different
+// question from what is riding on it, and the one that decides what ops SAYS
+// when they ring. 'Had push, lost it' is the loud one: their phone still shows
+// us as allowed to send, so opening with "you never turned notifications on" is
+// both wrong and the fastest way to lose the argument. Measured 16 Sep 2026:
+// 131 prunes since 23 July, every one a 410, Android ~6x the iOS rate.
+//
+// These three var()s are exactly the colours .lbl-nm / .lbl-aw / .lbl-cb carry,
+// so the donut segment and the row pill for the same reason cannot drift apart.
+const OPS_REASON_COLORS = { lapsed:'var(--accent2)', hub_no_push:'var(--accent)', dark:'var(--suggest)' };
+const OPS_REASON_LABELS = { lapsed:'Had push, lost it', hub_no_push:'Uses the Hub, no push', dark:'Never heard from' };
+
 
 // Red Zone — `profile` answers "what kind of failure is this person", which is
 // the distinction nothing else on the card makes. Casey Horsington is 15 lates
@@ -21553,7 +21565,7 @@ const OPS_DIM_LABELS = {
   fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS,
   kind:   OPS_KIND_LABELS,   risk: OPS_RISK_LABELS,
   venue:  OPS_VENUE_LABELS,
-  exposure: OPS_EXPOSURE_LABELS,
+  exposure: OPS_EXPOSURE_LABELS, reason: OPS_REASON_LABELS,
   profile: OPS_PROFILE_LABELS, band: OPS_BAND_LABELS,
   // A date has no fixed segment list, so this entry is a FORMATTER rather than a
   // map. opsDimLabel() below is the single reader that knows the difference, so
@@ -23391,6 +23403,13 @@ function renderOpsPush(lane){
     return;
   }
 
+  // counts.reason is ABSENT whenever the server could not establish the split —
+  // an older Crew Hub with no ?detail=1, or crew stats unavailable. Absent must
+  // render as no donut, never as an empty or guessed one. Clear any stale chip
+  // first: a reason filter left set while the dimension has gone would empty the
+  // list and leave no visible chip to clear it with.
+  if(!counts.reason && st.chips && st.chips.reason) delete st.chips.reason;
+
   const leadSegs = ['under48','from48to168','over168'].map(function(k){
     return { key:k, value:(counts.lead && counts.lead[k]) || 0,
              color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
@@ -23400,10 +23419,17 @@ function renderOpsPush(lane){
     return { key:k, value:(counts.exposure && counts.exposure[k]) || 0,
              color:OPS_EXPOSURE_COLORS[k], label:OPS_EXPOSURE_LABELS[k] };
   });
+  const reasonBlock = counts.reason
+    ? opsDonutBlock(lane, 'Why', 'reason', ['lapsed','hub_no_push','dark'].map(function(k){
+        return { key:k, value:counts.reason[k] || 0,
+                 color:OPS_REASON_COLORS[k], label:OPS_REASON_LABELS[k] };
+      }))
+    : '';
   body.innerHTML = strip
     + '<div class="ops-donuts">'
     +   opsDonutBlock(lane, 'Next call', 'lead',     leadSegs)
     +   opsDonutBlock(lane, 'At stake',  'exposure', expSegs)
+    +   reasonBlock
     +   opsShockButton()
     + '</div>';
   setOpsLaneDetail(lane, true);
@@ -23428,7 +23454,7 @@ function opsCoverageStrip(cov){
   const offerLine = oTot
     ? '<br><b>'+oNo+'</b> of <b>'+oTot+'</b> open offer'+(oTot === 1 ? '' : 's')
       + ' '+(oNo === 1 ? 'is' : 'are')+' with crew who have no push'
-      + (oNo ? ' — they were never told we asked' : '')
+      + (oNo ? ' — nothing we send is reaching them' : '')
     : '';
   return '<div class="ops-cover">'
     +   '<div class="ops-cover-bar">'
@@ -23451,6 +23477,7 @@ function opsPushFilteredRows(lane){
   let rows = (st.data && st.data.rows) ? st.data.rows.slice() : [];
   if(st.chips.lead)     rows = rows.filter(function(r){ return r.lead_bucket === st.chips.lead; });
   if(st.chips.exposure) rows = rows.filter(function(r){ return r.exposure    === st.chips.exposure; });
+  if(st.chips.reason)   rows = rows.filter(function(r){ return r.reason      === st.chips.reason; });
   return rows;
 }
 
@@ -23489,6 +23516,10 @@ function opsPushRowCard(r, laneKey){
   if(r.call_count)  tally.push(r.call_count  + (r.call_count  === 1 ? ' call'  : ' calls'));
   const lbl = OPS_EXPOSURE_LABELS[r.exposure];
   const cls = (r.exposure === 'offer') ? 'lbl-nm' : (r.exposure === 'both' ? 'lbl-sf' : 'lbl-aw');
+  // Absent when the server omitted the dimension — then no pill, rather than a
+  // pill asserting something about a named person that we cannot support.
+  const rlbl = OPS_REASON_LABELS[r.reason];
+  const rcls = (r.reason === 'lapsed') ? 'lbl-nm' : (r.reason === 'hub_no_push' ? 'lbl-aw' : 'lbl-cb');
   return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\',\''+escapeHtml(String(r.user_id))+'\')">'
     +   '<div class="ops-row-main">'
     +     '<div class="ops-row-title">'
@@ -23507,7 +23538,12 @@ function opsPushRowCard(r, laneKey){
     +     '<span class="ops-pill" style="color:'+pcol+';border-color:'+pcol+'">'+escapeHtml(ptxt)+'</span>'
     +     '<span class="ops-row-when">'+escapeHtml(tally.join(' · '))+'</span>'
     +   '</div>'
-    +   (lbl ? '<div class="ops-row-labels"><span class="ops-lbl '+cls+'">'+escapeHtml(lbl)+'</span></div>' : '')
+    +   ((lbl || rlbl)
+           ? '<div class="ops-row-labels">'
+             + (lbl  ? '<span class="ops-lbl '+cls +'">'+escapeHtml(lbl) +'</span>' : '')
+             + (rlbl ? '<span class="ops-lbl '+rcls+'">'+escapeHtml(rlbl)+'</span>' : '')
+             + '</div>'
+           : '')
     + '</div>';
 }
 
