@@ -389,32 +389,57 @@ def _gp_cancel_targets(body):
         out.append((uid, "cancelled" if p in (5, 7) else "withdrawn"))
     return out
 
-def gp_fetch_push_reachable():
-    """Distinct EINs with at least one live Crew Hub push subscription.
+def gp_fetch_push_reachable(detail=False):
+    """Crew Hub push reachability. Returns a (reachable, lapsed) TUPLE.
 
-    Returns a set of EIN strings, or None on ANY failure. None means "unknown"
-    and MUST be distinguished from an empty set: the Hub returns a non-200
-    rather than an empty list precisely so a Supabase blip can't be read as
-    "nobody is reachable". Callers show no indicator when this is None.
+    reachable — distinct EINs with at least one live push subscription, as a set
+    of EIN strings, or None on ANY failure. None means "unknown" and MUST be
+    distinguished from an empty set: the Hub returns a non-200 rather than an
+    empty list precisely so a Supabase blip can't be read as "nobody is
+    reachable". Callers show no indicator when this is None.
+
+    lapsed — only with detail=True: the EINs that HAD push and lost it, because
+    sendToSubs prunes a subscription row on a 404/410 and the deleted row is
+    afterwards indistinguishable from one that never existed. None means
+    UNKNOWN, and covers three cases that must all degrade identically: we did
+    not ask; the Crew Hub predates the ?detail=1 parameter; or its lookup
+    failed. An empty set is a real answer meaning nobody is currently lapsed.
+    Never conflate the two — reading unknown as empty would label crew who had
+    push for months as having never turned notifications on, which is the exact
+    false accusation this was built to remove.
+
+    detail costs the Hub one extra database call, so only the Shadowlands lane
+    asks for it; the 15-minute cache refresh does not need it and does not pay.
     """
     try:
         r = http.get(
-            GP_REACHABLE_URL,
+            GP_REACHABLE_URL + ("?detail=1" if detail else ""),
             headers={"X-Push-Secret": GP_PUSH_SECRET},
             timeout=6,
         )
         if r.status_code != 200:
             app.logger.warning(f"[push-reachable] HTTP {r.status_code}")
-            return None
+            return None, None
         data = r.json()
         eins = data.get("eins")
         if not isinstance(eins, list):
             app.logger.warning("[push-reachable] malformed response: 'eins' not a list")
-            return None
-        return {str(e).strip() for e in eins if str(e).strip()}
+            return None, None
+        reachable = {str(e).strip() for e in eins if str(e).strip()}
+
+        lapsed = None
+        if detail:
+            raw = data.get("lapsed")
+            if isinstance(raw, list):
+                lapsed = {str(e).strip() for e in raw if str(e).strip()}
+            else:
+                # Absent rather than malformed: an older Crew Hub deploy simply
+                # ignores the parameter. Stays None, which is correct.
+                app.logger.info("[push-reachable] no 'lapsed' key — older Crew Hub build?")
+        return reachable, lapsed
     except Exception as e:
         app.logger.warning(f"[push-reachable] fetch error: {e}")
-        return None
+        return None, None
 
 # ─── RECRUITMENT (ops applicant review) ───────────────────────────────────────
 # Read-only applicant list, served by a deployed Supabase edge function. The URL
@@ -686,7 +711,7 @@ def _do_cache_refresh(ss):
         # "unknown" — leave each entry's existing push_ok untouched rather than
         # writing False, so a failed fetch keeps the last known state.
         try:
-            reachable = gp_fetch_push_reachable()
+            reachable, _ = gp_fetch_push_reachable()
             if reachable is not None:
                 for _entry in new_cache.values():
                     _entry["push_ok"] = str(_entry.get("ein", "")).strip() in reachable
@@ -9266,7 +9291,7 @@ def api_ops_push_gaps():
         return jsonify({"unavailable": True, "error": "crew list empty"})
 
     # 2. Push reachability. None means UNKNOWN and must never be read as "none".
-    reachable = gp_fetch_push_reachable()
+    reachable, lapsed = gp_fetch_push_reachable(detail=True)
     if reachable is None:
         app.logger.warning("[ops-push] unavailable: push reachability unknown")
         return jsonify({"unavailable": True,
@@ -9380,15 +9405,50 @@ def api_ops_push_gaps():
     # Soonest commitment first — the order they need ringing in.
     rows.sort(key=lambda r: (r.get("start") or "9999", r.get("name") or ""))
 
+    # WHY each row is here. Second pass, deliberately: gp_crew_stats is a FOURTH
+    # SmartStaff call behind the same per-session file lock, so an empty lane
+    # must not pay for it. It is cached 15 minutes and shared with the responses
+    # panel, so in practice it is usually free.
+    #
+    # BOTH inputs are required, and this is stricter than the brief first said.
+    # If `lapsed` is unknown we cannot rule a lapse out for anyone, so neither
+    # "hub_no_push" nor "dark" can be stated truthfully; if crew stats are
+    # unknown we cannot separate those two from each other. Either gap and the
+    # whole dimension is omitted — the key is simply absent, the donut does not
+    # render, and the lane is otherwise untouched. A crew-stats failure must
+    # never soft-fail the lane the way unknown reachability does: a lane with a
+    # coarser tag beats no lane at all.
+    c_reason = None
+    if rows and lapsed is not None:
+        stats = gp_crew_stats(ss)
+        if stats is not None:
+            c_reason = {"lapsed": 0, "hub_no_push": 0, "dark": 0}
+            for r in rows:
+                r_ein = r.get("ein") or ""
+                # Same empty-EIN guard as the reachable test above: a blank EIN
+                # must fall through, never match a set.
+                if r_ein and r_ein in lapsed:
+                    reason = "lapsed"
+                elif (stats.get(r.get("user_id")) or {}).get("timed_sample", 0) > 0:
+                    reason = "hub_no_push"
+                else:
+                    reason = "dark"
+                r["reason"] = reason
+                c_reason[reason] += 1
+
+    counts = {
+        "total":    len(rows),
+        "lead":     c_lead,
+        "exposure": c_exposure,
+    }
+    if c_reason is not None:
+        counts["reason"] = c_reason
+
     return jsonify({
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "window":       {"start": start, "end": end},
         "rows":         rows,
-        "counts": {
-            "total":    len(rows),
-            "lead":     c_lead,
-            "exposure": c_exposure,
-        },
+        "counts":       counts,
         # Zone 2. Deliberately NOT a set of donut dimensions: these describe the
         # whole roster and every open offer, while every row in `rows` is by
         # definition one no-push crew member, so a "has push" segment could never
@@ -13080,6 +13140,14 @@ def gp_crew_stats(ss, days=GP_CREW_STATS_DAYS):
                 # environment running the older endpoint, hence the default.
                 "cancelled":     c.get("cancelled", 0),
                 "response_rate": c.get("response_rate"),
+                # Offers this crew member answered THEMSELVES, through the
+                # system. get-crew-offer-stats.php counts only rows where
+                # responded_src IS NULL, so an ops user typing in a resolution
+                # ('ops') and an Add & Confirm ('phone') are already excluded.
+                # `responded` is NOT a substitute: it counts ops entries too.
+                # Used by the Shadowlands lane to tell "uses the Hub, never
+                # turned notifications on" from "we have never heard from them".
+                "timed_sample":  c.get("timed_sample", 0),
             }
         _crew_stats_cache["by_user"] = by_user
         _crew_stats_cache["at"]      = now
