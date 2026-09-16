@@ -21362,6 +21362,22 @@ const OPS_LANES = [
   { key:'times_outstanding', label:'Times outstanding',
     load: loadOpsTimes, render: renderOpsTimes, list: renderOpsTimesList,
     target: opsTimesTarget, dims:['status','age'] },
+
+
+  // The second backward-looking lane, beside the first. Unlike every other lane
+  // this one is not a work queue — nothing here is finished today — so its badge
+  // counts the last 30 days while the register behind the caret runs twelve
+  // months. Those are different units on one card, which is why the body carries
+  // a line saying so.
+  //
+  // NO `target`. Every candidate destination for a row is admin-only: the Crew
+  // Finder's openCrewDetail needs an anchor <tr> from that table, and
+  // openCrewEdit fetches /api/admin/crew/<id>, which is @require_cohort("admin")
+  // — so a row click would 403 for exactly the operations users this lane is
+  // built for. Rows are informational in v1. See design Q7.
+  { key:'red_zone', label:'Crew Reliability Red Zone',
+    load: loadOpsRedZone, render: renderOpsRedZone, list: renderOpsRedZoneList,
+    dims:['profile','band'] },
   // Lanes A and B share ONE fetch (source:'induction'): both blocks come back in
   // a single response, so declaring a source instead of a load lets loadOps fetch
   // once and render both. Load order A-before-B is preserved by array order.
@@ -21486,6 +21502,32 @@ const OPS_VENUE_RANK_COLORS = ['var(--accent)', '#22c55e', 'var(--warn)', '#f973
 const OPS_EXPOSURE_COLORS = { offer:'var(--accent2)', both:'#f97316', booked:'var(--warn)' };
 const OPS_EXPOSURE_LABELS = { offer:'Unanswered offer', both:'Offer + booked', booked:'Booked only' };
 
+
+// Red Zone — `profile` answers "what kind of failure is this person", which is
+// the distinction nothing else on the card makes. Casey Horsington is 15 lates
+// and ZERO no-shows; James Goodhall is 4 no-shows and 1 late. Same rate band,
+// completely different conversations: one is a punctuality problem, the other a
+// reliability problem. 'both' takes the same orange lane A's 'expired by then'
+// uses, so the middle of a three-way severity read looks the same across the tab.
+//
+// EXPECT no_shows_only TO BE A SLIVER. On prod it is 1 of 39 (Tyson Pickett, 4
+// no-shows in 45 shifts and never late). The arc is real, not a rendering bug —
+// opsDonut already skips zero-value segments and opsPercents keeps the legend
+// summing to 100, so nothing here needs to special-case it.
+const OPS_PROFILE_COLORS = { no_shows_only:'var(--accent2)', both:'#f97316', lates_only:'var(--warn)' };
+const OPS_PROFILE_LABELS = { no_shows_only:'No-shows only', both:'Both', lates_only:'Lates only' };
+
+// `band` is severity by incident rate. The server assigns it (red-zone.php owns
+// the thresholds); these are the labels and colours only, so the two can never
+// disagree about where a row sits. Thresholds are Rich's to tune — design Q6.
+//
+// 'watch' is deliberately MUTED rather than a third alarm colour. With the 5%
+// inclusion floor it means "on the list, not the problem" — 18 of the 39 on prod
+// — and painting half a register in warning colours is how the seven that matter
+// stop standing out.
+const OPS_BAND_COLORS = { severe:'var(--accent2)', elevated:'var(--warn)', watch:'var(--muted)' };
+const OPS_BAND_LABELS = { severe:'20% and over', elevated:'10–19%', watch:'Under 10%' };
+
 // Chip labels by dimension — lets opsChipsBar render any lane's active filters
 // without naming lanes. Defined after the per-dim label maps above exist.
 const OPS_DIM_LABELS = {
@@ -21494,6 +21536,7 @@ const OPS_DIM_LABELS = {
   kind:   OPS_KIND_LABELS,   risk: OPS_RISK_LABELS,
   venue:  OPS_VENUE_LABELS,
   exposure: OPS_EXPOSURE_LABELS,
+  profile: OPS_PROFILE_LABELS, band: OPS_BAND_LABELS,
   // A date has no fixed segment list, so this entry is a FORMATTER rather than a
   // map. opsDimLabel() below is the single reader that knows the difference, so
   // every existing dim keeps working untouched. (Hoisted declaration — naming it
@@ -22757,6 +22800,267 @@ function opsTimesWhen(o){
 // what the boss submitted — not an inline grid in the lane. One place where
 // call times are edited; a second surface for the same data would drift from it.
 function opsTimesTarget(o){ openCallTimes(o.booking_id, o.call_id); }
+
+
+
+// ── Red Zone ────────────────────────────────────────────────────────────────
+// Two endpoints, and the split is the whole performance story: /api/ops/red-zone
+// is the card (48ms of SmartStaff work, no crew rows) and
+// /api/ops/red-zone/register is the drill-through (406ms, ~39 rows), fetched
+// ONLY when somebody opens the caret. Lanes load one at a time behind a
+// per-session PHP file lock, so the register never sits on the Ops page's path.
+//
+// The lazy fetch lives in the LIST RENDERER rather than in opsOpenDetail,
+// deliberately: opsOpenDetail is shared machinery and a lane that needed it
+// changed would be a lane that does not fit the frame. renderOpsRedZoneList owns
+// #ops-list-red_zone entirely, so it can paint a loading state, fetch, and let
+// opsSyncDetail repaint — all without any other lane knowing.
+
+async function loadOpsRedZone(lane, force){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/red-zone' + (force ? '?force=1' : ''));
+    const d = await r.json();
+    if(d && d.unavailable){
+      st.status = 'unavailable'; st.error = d.error || '';
+      renderOpsUnavailable(lane); return;
+    }
+    st.status = 'ready'; st.data = d;
+    // A forced Refresh must drop the register too, or the card refreshes while
+    // the drill-through keeps serving figures from before it.
+    if(force){ st._register = null; st._regError = null; }
+    if(d && d.generated_at) setOpsAsAt(d.generated_at);
+    renderOpsRedZone(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = e.message || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+function renderOpsRedZone(lane){
+  const st     = _opsLaneState[lane.key];
+  const d      = (st && st.data) || {};
+  const recent = d.recent  || {};
+  const prof   = d.profile || {};
+  const band   = d.band    || {};
+  const shown  = d.crew_shown || 0;
+
+  // THE BADGE AND THE HEADLINE COUNT ARE DIFFERENT NUMBERS, on purpose.
+  //
+  // The badge counts INCIDENTS in the last 30 days — a live figure that moves
+  // week to week, which is what earns this lane a place on a tab called Today.
+  // st.total is the number of CREW in the register, because that is what the
+  // detail window lists and what opsDetailSub prints beside its filters. Setting
+  // both from one number, as the other lanes do, would caption a list of 39
+  // people with the number 47.
+  st.total = shown;
+
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = (recent.incidents || 0);
+  if(!body) return;
+
+  // Gated on the REGISTER being empty, never on the badge. A quiet month with a
+  // standing register is a real state (badge 0, thirty-nine people still on the
+  // list) and blanking the card for it would hide the whole point of the lane.
+  if(shown === 0){
+    body.innerHTML = '<div class="ops-empty">Nobody is in the red zone.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
+    return;
+  }
+
+  const profSegs = ['no_shows_only','both','lates_only'].map(function(k){
+    return { key:k, value:prof[k] || 0,
+             color:OPS_PROFILE_COLORS[k], label:OPS_PROFILE_LABELS[k] };
+  });
+  const bandSegs = ['severe','elevated','watch'].map(function(k){
+    return { key:k, value:band[k] || 0,
+             color:OPS_BAND_COLORS[k], label:OPS_BAND_LABELS[k] };
+  });
+
+  const inc  = recent.incidents || 0;
+  const crew = recent.crew_involved || 0;
+  // The one line on the card that reconciles its two units. Not decoration: the
+  // badge says 47 and the donuts total 39, and nobody should have to work out why.
+  const sub = opsRzPlural(inc, 'incident') + ' in the last 30 days'
+            + (crew ? ' across ' + opsRzPlural(crew, 'crew member') : '')
+            + ' · ' + opsRzPlural(st.total, 'crew member') + ' in the register';
+
+  body.innerHTML = ''
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Profile',  'profile', profSegs)
+    +   opsDonutBlock(lane, 'Severity', 'band',    bandSegs)
+    + '</div>'
+    + '<div style="color:var(--muted);font-size:11px;padding:2px 2px 0">'
+    +   escapeHtml(sub)
+    + '</div>';
+
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
+}
+
+function opsRzPlural(n, word){
+  return String(n) + ' ' + word + (n === 1 ? '' : 's');
+}
+
+// ── The register (drill-through) ────────────────────────────────────────────
+
+// Recency, design D5. The server default is 90 days and red-zone.php owns the
+// predicate, so clearing it is a different REQUEST rather than a client-side
+// filter — which is also why it is not one of the lane's `dims`. Chips filter
+// rows already fetched; this changes which rows exist.
+function opsRzSinceDays(lane){
+  const st = _opsLaneState[lane.key];
+  return (st && typeof st._sinceDays === 'number') ? st._sinceDays : 90;
+}
+
+async function loadOpsRedZoneRegister(lane){
+  const st = _opsLaneState[lane.key];
+  if(st._regLoading) return;
+  st._regLoading = true;
+  st._regError   = null;
+  const since = opsRzSinceDays(lane);
+  try{
+    const r = await fetch('/api/ops/red-zone/register?since_days=' + encodeURIComponent(since));
+    const d = await r.json();
+    if(d && d.unavailable) st._regError = d.error || 'unavailable';
+    else                   st._register = d;
+  }catch(e){
+    st._regError = (e && e.message) || 'load failed';
+  }
+  st._regLoading = false;
+  // Repaint through the shared path so the window is never a stale copy of a
+  // lane that has moved on.
+  opsSyncDetail(lane);
+}
+
+function opsRzToggleSince(laneKey){
+  const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
+  if(!lane) return;
+  const st = _opsLaneState[laneKey];
+  st._sinceDays = (opsRzSinceDays(lane) === 90) ? 0 : 90;
+  st._register  = null;          // a different question, not a filtered view
+  opsSyncDetail(lane);           // paints "Loading…", which refetches
+}
+
+function opsFilteredRedZone(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st._register && st._register.register) ? st._register.register.slice() : [];
+  if(st.chips.profile) rows = rows.filter(function(o){ return o.profile === st.chips.profile; });
+  if(st.chips.band)    rows = rows.filter(function(o){ return o.band    === st.chips.band;    });
+  return rows;
+}
+
+function renderOpsRedZoneList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const st = _opsLaneState[lane.key];
+
+  if(st._regError){
+    el.innerHTML = '<div class="ops-unavail">Couldn&#39;t load the register '
+      + '<span style="color:var(--muted);font-size:11px">('+escapeHtml(st._regError)+')</span></div>';
+    return;
+  }
+  if(!st._register){
+    el.innerHTML = '<div class="ops-lane-status">Loading the twelve-month register…</div>';
+    loadOpsRedZoneRegister(lane);
+    return;
+  }
+
+  const rows  = opsFilteredRedZone(lane);
+  const since = opsRzSinceDays(lane);
+  const total = (st._register.crew_total || 0);
+  const shown = (st._register.crew_shown || 0);
+
+  // crew_total is counted BEFORE the recency cap, so this sentence is honest
+  // about the people the default is hiding rather than implying they do not exist.
+  const scope = (since > 0)
+    ? shown + ' of ' + total + ' with an incident in the last ' + since + ' days'
+    : total + ' over twelve months';
+  const btn = (since > 0) ? 'Show all twelve months' : 'Back to the last 90 days';
+
+  el.innerHTML = ''
+    + opsRzTrend(st._register.trend || [])
+    + '<div style="display:flex;align-items:center;gap:10px;padding:2px 2px 10px">'
+    +   '<span style="color:var(--muted);font-size:11px">'+escapeHtml(scope)+'</span>'
+    +   '<button class="btn" style="margin-left:auto;font-size:11px;padding:3px 9px"'
+    +     ' onclick="opsRzToggleSince(\''+lane.key+'\')">'+escapeHtml(btn)+'</button>'
+    + '</div>'
+    + (rows.length
+        ? rows.map(opsRzCard).join('')
+        : '<div class="ops-empty" style="padding:14px 2px">No crew match the current filter.</div>');
+}
+
+// Twelve monthly cells, height by incident count. The one thing on this screen
+// that answers "is this getting worse?" — no other lane answers that about
+// anything. It lives here rather than on the card because the detail window is
+// not part of the lane grid and owes nothing to the house donut idiom (D7).
+//
+// A month with no work is NOT the same as a month with no incidents, so the
+// tooltip carries `rostered` and the bar is drawn from incidents alone.
+function opsRzTrend(trend){
+  if(!trend.length) return '';
+  let max = 0;
+  trend.forEach(function(t){ if(t.incidents > max) max = t.incidents; });
+  const cells = trend.map(function(t){
+    const h  = (max > 0) ? Math.max(2, Math.round((t.incidents / max) * 36)) : 2;
+    const tip = t.month + ' · ' + t.incidents + ' incidents ('
+              + t.no_shows + ' no-show, ' + t.lates + ' late) in '
+              + t.rostered + ' shifts';
+    return '<div title="'+escapeHtml(tip)+'" style="flex:1;display:flex;flex-direction:column;'
+      +      'justify-content:flex-end;height:40px;min-width:0">'
+      +   '<div style="height:'+h+'px;background:var(--accent2);opacity:.75;border-radius:2px 2px 0 0"></div>'
+      + '</div>';
+  }).join('');
+  const first = trend[0].month, last = trend[trend.length - 1].month;
+  return '<div style="padding:2px 2px 8px">'
+    +   '<div style="display:flex;gap:3px;align-items:flex-end">'+cells+'</div>'
+    +   '<div style="display:flex;justify-content:space-between;color:var(--muted);'
+    +        'font-size:10px;font-family:\'Share Tech Mono\',monospace;padding-top:3px">'
+    +     '<span>'+escapeHtml(first)+'</span><span>'+escapeHtml(last)+'</span>'
+    +   '</div>'
+    + '</div>';
+}
+
+// NO onclick. Every per-crew destination in the app is admin-only (see the lane
+// descriptor), and a row that 403s for the operations users this lane serves is
+// worse than a row that does nothing. The cursor stays default so the row does
+// not advertise an action it cannot perform.
+//
+// escapeHtml WITHOUT decodeEntities, unlike lanes 1–3: red-zone.php already
+// html_entity_decode()s the names on the way out, exactly as list-licence-holders
+// does. Running decodeEntities here as well would be a second decode of an
+// already-decoded string.
+function opsRzCard(o){
+  const last = (o.lastname  || '').trim();
+  const firs = (o.firstname || '').trim();     // SmartStaff has trailing spaces
+  const name = (last ? last + ', ' : '') + firs;
+  const col  = OPS_BAND_COLORS[o.band] || 'var(--muted)';
+
+  const bits = [];
+  if(o.no_shows) bits.push(o.no_shows + ' no-show' + (o.no_shows === 1 ? '' : 's'));
+  if(o.lates)    bits.push(o.lates + ' late');
+  const meta = 'EIN ' + o.ein + ' · ' + o.rostered + ' shifts · ' + bits.join(' · ')
+             + (o.roster_flag && o.roster_flag !== 'active' ? ' · ' + o.roster_flag : '');
+
+  const when = o.last_incident ? ('last ' + opsFmtDayMon(o.last_incident)) : '';
+
+  return '<div class="ops-row" style="cursor:default">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+escapeHtml(name || '—')+'</span>'
+    +       '<span class="ops-row-when">'+escapeHtml(when)+'</span>'
+    +     '</div>'
+    +     '<span class="ops-row-meta">'+escapeHtml(meta)+'</span>'
+    +   '</div>'
+    +   '<div class="ops-row-side">'
+    +     '<span class="ops-pill" style="color:'+col+';border-color:'+col+'">'
+    +       escapeHtml(String(o.rate)) + '%'
+    +     '</span>'
+    +   '</div>'
+    + '</div>';
+}
 
 // ── Lanes A & B: induction exceptions (one shared source) ───────────────────
 // Both render from _opsLaneState[key].data, which is the WHOLE induction
