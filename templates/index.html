@@ -2489,7 +2489,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
       <div class="recruit-searchrow">
         <div class="recruit-search-wrap">
           <input type="text" id="recruit-search" class="recruit-search"
-                 placeholder="Search name, reference, email or phone…"
+                 placeholder="Search name, reference, email, phone or EIN…"
                  oninput="setRecruitSearch(this.value)" autocomplete="off">
           <button class="recruit-search-clear" id="recruit-search-clear"
                   onclick="clearRecruitSearch()" title="Clear search">×</button>
@@ -5425,6 +5425,13 @@ function recruitMatches(c, q){
   const hay = [c.name, c.reference, c.email]
     .map(v => String(v || '').toLowerCase());
   if(hay.some(v => v.includes(q))) return true;
+  // EIN — EXACT match only, and only converted candidates have one. EINs are
+  // short numbers, so a substring test would make "23" hit 6233, 2312 and 1023
+  // at once: noise on the one field an operator types when they already know
+  // precisely who they want. q is already trimmed and lowercased by
+  // setRecruitSearch, and an EIN is digits, so a plain === is the whole rule.
+  const ein = String(c.ein == null ? '' : c.ein).trim();
+  if(ein && ein === q) return true;
   const qDigits = q.replace(/\D/g, '');
   if(qDigits.length >= 3){
     const pDigits = String(c.phone || '').replace(/\D/g, '');
@@ -8463,6 +8470,17 @@ function fmtPhone(v){
   return raw;
 }
 
+// Muted EIN chip for the name cell. Only a converted candidate HAS an EIN, and it
+// is now a searchable field — without it on the row, a search for 6233 returns a
+// row with nothing on it that says 6233. Mirrors the EIN styling on Crew Records.
+function recruitEinChip(c){
+  if(!c || c.status !== 'active_crew') return '';
+  const ein = String(c.ein == null ? '' : c.ein).trim();
+  if(!ein) return '';
+  return ' <span style="color:var(--muted);font-size:11px;font-weight:400">EIN '
+       + recruitEsc(ein) + '</span>';
+}
+
 // Red MVL / blue MOP chips for applicants who have submitted their Marvel and
 // Melbourne Park inductions. Both read induction_codes off the list feed — the
 // venue codes stored on cert_details.inductions, which is the same field
@@ -8699,7 +8717,7 @@ function renderRecruitRow(c, i){
   const summary = `
     <tr class="recruit-row" id="recruit-row-${i}" onclick="recruitToggleRow(${i})">
       ${checkCell}
-      <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}${c.is_test ? ' <span title="Test fixture — badged, not hidden (decision 19)" style="font-size:8px;letter-spacing:.5px;background:var(--border-gold,#8a6d1a);color:#000;padding:1px 4px;border-radius:3px;vertical-align:middle;text-transform:uppercase;font-weight:700">Test</span>' : ''}<span class="rc-chevron">▾</span></td>
+      <td class="rc-name">${recruitEsc(c.name || 'Unnamed applicant')}${c.is_test ? ' <span title="Test fixture — badged, not hidden (decision 19)" style="font-size:8px;letter-spacing:.5px;background:var(--border-gold,#8a6d1a);color:#000;padding:1px 4px;border-radius:3px;vertical-align:middle;text-transform:uppercase;font-weight:700">Test</span>' : ''}${recruitEinChip(c)}<span class="rc-chevron">▾</span></td>
       <td>${pill}${recruitSubmittedBadge(c)}${recruitEhBadge(c)}${recruitContractBadge(c)}${recruitVisaBadge(c)}${recruitInductionPills(c)}${age}${recruitSubmittedAge(c)}${recruitEhCompleteAge(c)}${recruitContractSignedAge(c)}<span id="recruit-notes-badge-${i}">${recruitNotesBadge(c)}</span>${flags}</td>
       <td class="rc-avail">${recruitAvail(c.availability)}</td>
       <td class="rc-tickets">${ticketsCell}</td>
