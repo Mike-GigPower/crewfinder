@@ -137,7 +137,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.50.0"
+APP_VERSION    = "5.51.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1962,6 +1962,16 @@ def resolve_origin(origin, targets):
         vstr = targets[0].get("venue", "") if targets else ""
         return venue_to_coords(vstr)
     return None
+
+
+# Sort score for Crew Finder's induction-first ordering. HIGHER IS BETTER — the
+# inverse of STATUS_RANK inside induction_status_for_venue(), which is
+# lowest-wins. Deliberately a second literal rather than a derivation from it:
+# the two are read in opposite directions, and deriving one from the other
+# invites a later "simplification" that silently flips the order. A status not in
+# this map scores 0 — including None, which is what the helper returns for a crew
+# member with no matching induction row at all.
+_INDUCTION_SORT_SCORE = {"Complete": 3, "Expiring Soon": 2, "Expired": 1, "Incomplete": 0}
 
 
 def induction_status_for_venue(inductions, venue_code):
@@ -7620,9 +7630,14 @@ def api_availability():
             # produces nothing — unchanged, and deliberate. See the brief §0.
             induction_warning = ""
             induction_current = ""
+            # None on an UNGATED call, distinct from 0 ("gated, and this crew
+            # member has nothing current"). Only gated calls contribute to the
+            # induction sort score; see the entry build below.
+            induction_rank    = None
             ind_code = ind_code_by_call.get(str(t["call_id"]))
             if ind_code:
                 ind_status, ind_venue = induction_status_for_venue(inductions, ind_code)
+                induction_rank = _INDUCTION_SORT_SCORE.get(ind_status, 0)
                 if ind_status == "Incomplete":
                     induction_warning = f"No induction: {t['venue']}"
                 elif ind_status == "Expired":
@@ -7652,6 +7667,7 @@ def api_availability():
                 "detail":            reason,
                 "induction_warning": induction_warning,
                 "induction_current": induction_current,
+                "induction_rank":    induction_rank,
                 "conflict_warning":  conflict_warning,
                 "warning_rule":      warning_rule,
                 "licence_status":    lic_status,
@@ -7698,6 +7714,18 @@ def api_availability():
         avail_count = sum(1 for r in call_results
                           if r["available"] and str(r["call_id"]) not in soft_result_ids)
         total_calls = sum(1 for t in targets if not t.get("soft"))
+
+        # Induction-first ordering. Sum of per-call induction rank over the GATED
+        # HARD targets. Soft targets are excluded for the same reason avail_count
+        # excludes them: a call merely being ranked against must never change
+        # where a crew member lands. An ungated call contributes nothing (rank is
+        # None), so on a search with no gated venue every crew member scores 0 and
+        # the sort key below collapses to exactly the 5.50.0 key.
+        induction_score = sum(
+            r["induction_rank"] for r in call_results
+            if r["induction_rank"] is not None
+            and str(r["call_id"]) not in soft_result_ids
+        )
 
         # Collect all induction warnings across calls (deduplicated)
         induction_warnings = list(dict.fromkeys(
@@ -7781,6 +7809,7 @@ def api_availability():
             "induction_warnings":  induction_warnings,
             "conflict_warnings":   conflict_warnings,
             "induction_currents":  induction_currents,
+            "induction_score":     induction_score,
             "licence_summary":     licence_summary,
         }
 
@@ -7797,15 +7826,26 @@ def api_availability():
     # Save cache
     save_cache(updated_cache)
 
-    # Sort: full availability first, then partial, then by rating desc
-    available.sort(key=lambda x: (-x["avail_count"], -x["rating"]))
-    conflicts.sort(key=lambda x: x["rating"], reverse=True)
-
-    # Design §6: rank available by free_for (over the whole target set)
-    # descending, ties keeping existing order. Stable sort => no-op when every
-    # target is hard (free_for == free_of for all).
+    # Order within each bucket. ONE sort, not the two stacked passes this
+    # replaced: those relied on a stable sort carrying rating from the first pass
+    # into the second pass's ties. Correct, but not readable once a third level
+    # sits between them. The key below is the flattened equivalent of the old
+    # pair — (-avail_count, -free_for, -rating) — with the induction tier
+    # inserted above rating.
+    #
+    #   1. avail_count      full availability before partial      (unchanged)
+    #   2. free_for         design §6 ranking over the whole set  (unchanged)
+    #   3. induction_score  valid induction for the venue first   (NEW)
+    #   4. rating           descending                            (was carried, now keyed)
+    #
+    # Induction sits BELOW the two availability keys deliberately (Mike,
+    # 17 Sep 2026): the "AVAILABLE FOR ALL (n)" / partial headers promise that
+    # grouping, so the induction tier sorts INSIDE it, never across it.
     available.sort(key=lambda c: (-(c.get("avail_count") or 0),
-                                  -(c.get("free_for") or 0)))
+                                  -(c.get("free_for") or 0),
+                                  -(c.get("induction_score") or 0),
+                                  -(c.get("rating") or 0)))
+    conflicts.sort(key=lambda x: x["rating"], reverse=True)
 
     def _ser_target(t):
         return {"call_id": t["call_id"], "booking_id": t["booking_id"], "call_num": t["call_num"],
