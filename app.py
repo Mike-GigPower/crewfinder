@@ -137,7 +137,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.49.0"
+APP_VERSION    = "5.50.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -9156,6 +9156,53 @@ def api_ops_red_zone_register():
     data, err = gp_red_zone(ss, "register", _red_zone_params(), force=force)
     if err is not None:
         app.logger.warning(f"[red-zone-register] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
+
+@app.route("/api/ops/red-zone/incidents", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_red_zone_incidents():
+    """Ops landing — ONE crew member's incidents, for the row expansion (Q7).
+
+    The Red Zone names people. A name beside 14.3% invites an argument about the
+    number; a name beside four dated calls invites a conversation about those
+    calls. This is the route that makes the second thing possible, and it is the
+    whole of Q7's answer: no new per-crew destination, no widened gate, nothing
+    that can 403 differently for two people reading the same screen.
+
+    NOT CACHED, and that is a decision rather than an omission.
+    _red_zone_cache holds 32 entries and clears WHOLESALE when it overflows.
+    Keying incidents by user_id would put one entry per crew member into it, so
+    opening a dozen rows would evict the 406ms twelve-month register — the
+    expensive thing the cache exists for — in order to memoise a query that is
+    per-click and cheap. The client caches each expansion for the lifetime of the
+    open detail window, which is the correct place for it: the register behind it
+    is itself memoised for 900s, so a longer-lived client cache would be
+    answering from two different moments at once.
+
+    Soft-fails in the SAME shape as the other two routes — HTTP 200 with
+    {"unavailable": true} — so the lane's renderer handles one response shape
+    rather than three.
+
+    user_id is validated here AND in the PHP. Dual validation for the same reason
+    the lane is dual-gated: neither side should be the only thing standing
+    between a query string and a query."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    try:
+        user_id = int(request.args.get("user_id", "0"))
+    except (TypeError, ValueError):
+        user_id = 0
+
+    if user_id < 1:
+        return jsonify({"error": "user_id required"}), 400
+
+    data, err = fetch_red_zone(ss, "incidents", {"user_id": user_id})
+    if err is not None:
+        app.logger.warning(f"[red-zone-incidents] unavailable: {err}")
         return jsonify({"unavailable": True, "error": err})
     return jsonify(data)
 
