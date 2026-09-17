@@ -1,6 +1,6 @@
 {
-  "version": "5.50.0",
+  "version": "5.51.0",
   "release_date": "2026-09-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.50.0/TheGOAT.dmg",
-  "release_notes": "A row in the Crew Reliability Red Zone now opens to show what the person actually did — the dates, bookings and calls behind their rate, most recent first."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.51.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder now lists crew who hold a current venue induction first, highest rating first within each group."
 }
