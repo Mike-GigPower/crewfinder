@@ -339,7 +339,13 @@
 
 			$incidents_out[] = array(
 				'call_id'      => (int) $r['call_id'],
-				'call_ts'      => (int) $r['call_ts'],
+				// Y-m-d STRING, not an int. opsFmtDayMon() in index.html does
+				// new Date(v), and JS reads a BARE NUMBER AS MILLISECONDS - so unix
+				// seconds render as January 1970 (5.50.0 shipped exactly that bug).
+				// The register has always sent date('Y-m-d', ...) for last_incident;
+				// this makes the two modes agree. The column is non-null by the
+				// WHERE clause above, which is why there is no null guard here.
+				'call_ts'      => date('Y-m-d', (int) $r['call_ts']),
 				'start_time'   => (string) $r['start_time'],
 				'booking_name' => $booking,
 				'call_name'    => trim(html_entity_decode((string) $r['call_name'], ENT_QUOTES, 'UTF-8')),
