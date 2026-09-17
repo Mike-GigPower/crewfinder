@@ -1,6 +1,6 @@
 {
-  "version": "5.51.0",
+  "version": "5.52.0",
   "release_date": "2026-09-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.51.0/TheGOAT.dmg",
-  "release_notes": "Crew Finder now lists crew who hold a current venue induction first, highest rating first within each group."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.52.0/TheGOAT.dmg",
+  "release_notes": "A session's roster now shows its waitlist in the order people will actually be emailed when a seat frees. Anyone already notified is marked, and a note flags how many fall beyond the twenty a freed seat reaches."
 }
