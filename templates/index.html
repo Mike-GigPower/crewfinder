@@ -21388,11 +21388,16 @@ const OPS_LANES = [
   // months. Those are different units on one card, which is why the body carries
   // a line saying so.
   //
-  // NO `target`. Every candidate destination for a row is admin-only: the Crew
-  // Finder's openCrewDetail needs an anchor <tr> from that table, and
-  // openCrewEdit fetches /api/admin/crew/<id>, which is @require_cohort("admin")
-  // — so a row click would 403 for exactly the operations users this lane is
-  // built for. Rows are informational in v1. See design Q7.
+  // NO `target`, and that is still right. Every candidate destination for a row
+  // is admin-only: the Crew Finder's openCrewDetail needs an anchor <tr> from
+  // that table, and openCrewEdit fetches /api/admin/crew/<id>, which is
+  // @require_cohort("admin") — so a row click there would 403 for exactly the
+  // operations users this lane is built for.
+  //
+  // Q7 (5.50.0): rows EXPAND IN PLACE instead, against red-zone.php's own
+  // mode=incidents, behind the same READ_ALL_COHORTS gate as the rest of the
+  // lane. No new destination and no widened gate, so the screen cannot behave
+  // differently for two people looking at it together.
   { key:'red_zone', label:'Crew Reliability Red Zone',
     load: loadOpsRedZone, render: renderOpsRedZone, list: renderOpsRedZoneList,
     dims:['profile','band'] },
@@ -23018,7 +23023,7 @@ function renderOpsRedZoneList(lane){
     +     ' onclick="opsRzToggleSince(\''+lane.key+'\')">'+escapeHtml(btn)+'</button>'
     + '</div>'
     + (rows.length
-        ? rows.map(opsRzCard).join('')
+        ? rows.map(function(o){ return opsRzCard(o, lane.key); }).join('')
         : '<div class="ops-empty" style="padding:14px 2px">No crew match the current filter.</div>');
 }
 
@@ -23062,11 +23067,12 @@ function opsRzTrend(trend){
 // html_entity_decode()s the names on the way out, exactly as list-licence-holders
 // does. Running decodeEntities here as well would be a second decode of an
 // already-decoded string.
-function opsRzCard(o){
+function opsRzCard(o, laneKey){
   const last = (o.lastname  || '').trim();
-  const firs = (o.firstname || '').trim();     // SmartStaff has trailing spaces
+  const firs = (o.firstname || '').trim();     // belt-and-braces: the PHP trims these now
   const name = (last ? last + ', ' : '') + firs;
   const col  = OPS_BAND_COLORS[o.band] || 'var(--muted)';
+  const uid  = Number(o.user_id) || 0;
 
   const bits = [];
   if(o.no_shows) bits.push(o.no_shows + ' no-show' + (o.no_shows === 1 ? '' : 's'));
@@ -23076,9 +23082,21 @@ function opsRzCard(o){
 
   const when = o.last_incident ? ('last ' + opsFmtDayMon(o.last_incident)) : '';
 
-  return '<div class="ops-row" style="cursor:default">'
+  // A row with no resolvable user_id keeps 5.47.0's behaviour exactly rather
+  // than rendering a control that cannot work.
+  const clickable = (uid > 0);
+
+  return '<div class="ops-row"'
+    +      (clickable
+              ? ' style="cursor:pointer" onclick="opsRzToggleIncidents(\''+laneKey+'\','+uid+')"'
+              : ' style="cursor:default"')
+    +      '>'
     +   '<div class="ops-row-main">'
     +     '<div class="ops-row-title">'
+    +       (clickable
+              ? '<span id="ops-rz-car-'+uid+'" style="color:var(--muted);font-size:10px;'
+                + 'display:inline-block;width:10px">▸</span> '
+              : '')
     +       '<span class="ops-row-name">'+escapeHtml(name || '—')+'</span>'
     +       '<span class="ops-row-when">'+escapeHtml(when)+'</span>'
     +     '</div>'
@@ -23089,7 +23107,127 @@ function opsRzCard(o){
     +       escapeHtml(String(o.rate)) + '%'
     +     '</span>'
     +   '</div>'
-    + '</div>';
+    + '</div>'
+    + (clickable
+        ? '<div id="ops-rz-inc-'+uid+'" style="display:none;padding:0 2px 10px 22px"></div>'
+        : '');
+}
+
+
+// Toggle, and fetch on first open only.
+//
+// The per-crew cache lives on the lane's own state and therefore dies with the
+// detail window, which is the right lifetime: the register behind it is itself
+// memoised for 900s server-side, so a cache that outlived the window would be
+// answering from two different moments at once.
+function opsRzToggleIncidents(laneKey, userId){
+  const box = document.getElementById('ops-rz-inc-'+userId);
+  const car = document.getElementById('ops-rz-car-'+userId);
+  if(!box) return;
+
+  const open = (box.style.display !== 'none');
+
+  if(open){
+    box.style.display = 'none';
+    if(car) car.textContent = '▸';
+    return;
+  }
+
+  box.style.display = '';
+  if(car) car.textContent = '▾';
+
+  const st = _opsLaneState[laneKey];
+  if(!st) return;
+  if(!st._incidents) st._incidents = {};
+
+  const hit = st._incidents[userId];
+  if(hit){
+    box.innerHTML = opsRzIncidentRows(hit);
+    return;
+  }
+
+  box.innerHTML = '<div class="ops-lane-status" style="padding:6px 0">Loading…</div>';
+  loadOpsRedZoneIncidents(laneKey, userId);
+}
+
+// ONE request per crew member per open window. No force/refresh path: the
+// Refresh button clears the server-side cache and reloads the lane, which
+// rebuilds this list from scratch anyway.
+function loadOpsRedZoneIncidents(laneKey, userId){
+  const box = document.getElementById('ops-rz-inc-'+userId);
+
+  fetch('/api/ops/red-zone/incidents?user_id='+Number(userId), { credentials:'same-origin' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      const st = _opsLaneState[laneKey];
+      if(!st) return;
+      if(!st._incidents) st._incidents = {};
+
+      if(d && d.unavailable){
+        if(box){
+          box.innerHTML = '<div class="ops-unavail" style="padding:6px 0">Couldn&#39;t load '
+            + 'these incidents <span style="color:var(--muted);font-size:11px">('
+            + escapeHtml(d.error || 'unavailable') + ')</span></div>';
+        }
+        return;   // deliberately NOT cached — a retry should actually retry
+      }
+
+      const payload = { list: (d && d.incidents) || [], capped: !!(d && d.capped) };
+      st._incidents[userId] = payload;
+      if(box) box.innerHTML = opsRzIncidentRows(payload);
+    })
+    .catch(function(e){
+      if(box){
+        box.innerHTML = '<div class="ops-unavail" style="padding:6px 0">Couldn&#39;t load '
+          + 'these incidents <span style="color:var(--muted);font-size:11px">('
+          + escapeHtml(String(e && e.message ? e.message : e)) + ')</span></div>';
+      }
+    });
+}
+
+// The evidence, one line per incident.
+//
+// booking · call, because the venue rides inside the booking name by convention
+// ("AFL 26 - MCG Gate 2") and the call name carries the task ("Load In",
+// "Tech Rehearsal"). Production has 937 incidents in the window with ZERO blank
+// booking names and ZERO blank call names, so the em-dash fallbacks below are
+// defensive rather than expected.
+//
+// Both strings are free text typed by operators and go through escapeHtml.
+function opsRzIncidentRows(payload){
+  const list = (payload && payload.list) || [];
+
+  if(!list.length){
+    return '<div class="ops-empty" style="padding:6px 0;font-size:11px">'
+      + 'No incidents in this window.</div>';
+  }
+
+  const rows = list.map(function(i){
+    const when = opsFmtDayMon(i.call_ts);
+    const time = (i.start_time || '').slice(0,5);
+    const isNo = (i.kind === 'no_show');
+    const col  = isNo ? 'var(--accent2)' : 'var(--warn)';
+    const kind = isNo ? 'No-show' : 'Late';
+    const what = (i.booking_name || '—') + ' · ' + (i.call_name || '—');
+
+    return '<div style="display:flex;align-items:baseline;gap:8px;padding:3px 0;font-size:11px">'
+      +   '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace;'
+      +        'white-space:nowrap">'+escapeHtml(when + (time ? ' ' + time : ''))+'</span>'
+      +   '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;'
+      +        'white-space:nowrap">'+escapeHtml(what)+'</span>'
+      +   '<span style="color:'+col+';white-space:nowrap">'+escapeHtml(kind)+'</span>'
+      + '</div>';
+  }).join('');
+
+  // Say so rather than truncating silently. The cap is 50 and the whole register
+  // holds 937 incidents over twelve months, so this line should never render —
+  // which is exactly why it must exist.
+  const note = payload.capped
+    ? '<div style="color:var(--muted);font-size:10px;padding-top:4px">'
+      + 'Showing the 50 most recent.</div>'
+    : '';
+
+  return rows + note;
 }
 
 // ── Lanes A & B: induction exceptions (one shared source) ───────────────────
