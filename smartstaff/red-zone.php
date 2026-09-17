@@ -34,14 +34,18 @@
 	/*
 	/* DESIGN-ops-red-zone-v0_1.md (v0.2). Probe run on prod 16 Sep 2026.
 	/*
-	/* TWO MODES, one file, because the SS_NO_SMARTY/cohort/PDO preamble should
-	/* exist once and the two share every filter:
+	/* THREE MODES, one file, because the SS_NO_SMARTY/cohort/PDO preamble should
+	/* exist once and all three share every filter:
 	/*
 	/*   mode=summary   (default)  the lane CARD. 30-day counters + the two donut
 	/*                             segment distributions + the register headcount.
 	/*                             Returns NO crew rows.
 	/*   mode=register             the DRILL-THROUGH. The full ranked register
 	/*                             plus twelve monthly trend buckets.
+	/*   mode=incidents            ONE crew member's actual incidents, for the
+	/*                             row expansion. Requires user_id. Short-circuits
+	/*                             before the register aggregate — see the block
+	/*                             where it is handled.
 	/*
 	/* WHY THE SPLIT EXISTS. THE GOAT's Ops lanes load STRICTLY ONE AT A TIME
 	/* behind a per-session PHP file lock, so every millisecond here is added to
@@ -138,7 +142,8 @@
 	/*
 	/* ── INPUT ────────────────────────────────────────────────────────────────
 	/*
-	/*   mode        summary | register
+	/*   mode        summary | register | incidents
+	/*   user_id     REQUIRED by mode=incidents, ignored by the other two
 	/*   start,end   YYYY-MM-DD, on the CALL DATE. This is a report about a period
 	/*               of WORK, unlike get-crew-offer-stats.php whose window is on
 	/*               when the offer was made.
@@ -160,9 +165,9 @@
 
 	$mode = isset($_GET['mode']) ? (string) $_GET['mode'] : 'summary';
 
-	if ($mode !== 'summary' && $mode !== 'register')
+	if ($mode !== 'summary' && $mode !== 'register' && $mode !== 'incidents')
 	{
-		goat_json_error(400, 'mode must be summary or register');
+		goat_json_error(400, 'mode must be summary, register or incidents');
 		exit;
 	}
 
@@ -225,6 +230,132 @@
 	if (($end_ts - $start_ts) > (400 * 86400))
 	{
 		goat_json_error(400, 'window exceeds 400 days');
+		exit;
+	}
+
+	/*
+	/* ── mode=incidents ───────────────────────────────────────────────────────
+	/*
+	/* ONE crew member's incidents, most recent first. Q7: the Red Zone names
+	/* people, and a name beside a percentage invites an argument about the
+	/* number while a name beside four dated calls invites a conversation about
+	/* those calls.
+	/*
+	/* SHORT-CIRCUITS HERE, BEFORE THE REGISTER AGGREGATE. The register is 406ms
+	/* on production (P5). This fires when somebody clicks a name, so paying the
+	/* aggregate for it would put half a second behind an interaction that should
+	/* feel instant. Nothing below this block runs for this mode.
+	/*
+	/* LEFT JOIN on bookings, deliberately. An INNER join would silently drop an
+	/* incident whose booking row had gone missing, and dropping a row from a
+	/* screen that judges a named individual is the wrong direction to fail in.
+	/* Production has 937 incidents in the twelve-month window and zero missing
+	/* bookings, so this costs nothing today and stays honest if that changes.
+	/* The same reasoning is why call_crew_map's two orphan rows matter.
+	/*
+	/* ORDER BY CARRIES start_time, and must. start_date is a unix timestamp at
+	/* LOCAL MIDNIGHT, so every call on a day shares it, and load-outs run late —
+	/* a 22:30 start appears in the first fifteen rows of production. Ordering on
+	/* the date alone leaves same-day incidents in whatever order the engine
+	/* happens to return.
+	/*
+	/* LIMIT 50 is defensive, not load-bearing: 937 incidents across the WHOLE
+	/* register in twelve months means no individual comes close to it. `capped`
+	/* is returned so the client can say so rather than silently truncating.
+	/*
+	/* BOOKING AND CALL NAMES ARE TRIMMED SERVER-SIDE. They are display strings
+	/* and the renderer should not have to defend against whitespace. The CREW
+	/* name trim that 5.47.0 deferred is a different fix and is applied in the
+	/* register output below, where those names are actually emitted.
+	*/
+
+	if ($mode === 'incidents')
+	{
+		$user_id = isset($_GET['user_id']) ? (int) $_GET['user_id'] : 0;
+
+		if ($user_id < 1)
+		{
+			goat_json_error(400, 'user_id is required for mode=incidents');
+			exit;
+		}
+
+		$incidents_sql = "
+		SELECT c.`id`                                AS call_id,
+		       c.`start_date`                        AS call_ts,
+		       c.`start_time`                        AS start_time,
+		       b.`name`                              AS booking_name,
+		       c.`call_name`                         AS call_name,
+		       CASE WHEN ccm.`status` = 8
+		            THEN 'no_show' ELSE 'late' END   AS kind
+		  FROM `calls` c
+		  INNER JOIN `call_crew_map` ccm ON ccm.`callID` = c.`id`
+		  LEFT  JOIN `bookings` b        ON b.`id`       = c.`bookingID`
+		 WHERE ccm.`userID`      = :user_id
+		   AND c.`start_date`   >= :start_ts
+		   AND c.`start_date`    < :end_ts
+		   AND c.`cancelled_at` IS NULL
+		   AND (ccm.`status` = 8 OR (ccm.`status` = 5 AND ccm.`late` = '1'))
+		 ORDER BY c.`start_date` DESC, c.`start_time` DESC
+		 LIMIT 50
+		";
+
+		try
+		{
+			$stmt = $pdo->prepare($incidents_sql);
+			$stmt->bindValue(':user_id',  $user_id,  PDO::PARAM_INT);
+			$stmt->bindValue(':start_ts', $start_ts, PDO::PARAM_INT);
+			$stmt->bindValue(':end_ts',   $end_ts,   PDO::PARAM_INT);
+			$stmt->execute();
+			$rows = $stmt->fetchAll();
+		}
+		catch (PDOException $e)
+		{
+			error_log('red-zone: incidents query failed: ' . $e->getMessage());
+			goat_json_error(500, 'Red Zone read failed');
+			exit;
+		}
+
+		/*
+		/* DECODE, then trim — the same treatment the register gives crew names,
+		/* and for the same reason: SmartStaff stores entity-encoded text.
+		/*
+		/* Found on the test smoke, 17 Sep. The first cut trimmed these two
+		/* fields but did NOT decode them, so one endpoint would have decoded
+		/* entities in one mode and not the other — a crew name rendering
+		/* correctly directly above a booking name that did not. On production
+		/* 304 booking names and 649 call names contain an ampersand.
+		/*
+		/* Order matters and matches the register: decode first, then trim,
+		/* because decoding can expose whitespace that was encoded.
+		*/
+
+		$incidents_out = array();
+
+		foreach ($rows as $r)
+		{
+			$booking = ($r['booking_name'] === null)
+				? ''
+				: trim(html_entity_decode((string) $r['booking_name'], ENT_QUOTES, 'UTF-8'));
+
+			$incidents_out[] = array(
+				'call_id'      => (int) $r['call_id'],
+				'call_ts'      => (int) $r['call_ts'],
+				'start_time'   => (string) $r['start_time'],
+				'booking_name' => $booking,
+				'call_name'    => trim(html_entity_decode((string) $r['call_name'], ENT_QUOTES, 'UTF-8')),
+				'kind'         => (string) $r['kind']
+			);
+		}
+
+		echo json_encode(array(
+			'mode'      => 'incidents',
+			'user_id'   => $user_id,
+			'start'     => date('Y-m-d', $start_ts),
+			'end'       => date('Y-m-d', $end_ts - 86400),
+			'capped'    => (count($incidents_out) === 50),
+			'incidents' => $incidents_out
+		));
+
 		exit;
 	}
 
@@ -464,8 +595,19 @@
 		$register[] = array(
 			'user_id'       => (int) $r['user_id'],
 			'ein'           => $r['ein'],
-			'firstname'     => html_entity_decode((string) $r['firstname'], ENT_QUOTES, 'UTF-8'),
-			'lastname'      => html_entity_decode((string) $r['lastname'],  ENT_QUOTES, 'UTF-8'),
+			/*
+			/* TRIM OUTSIDE THE DECODE, and in that order. 5.47.0 shipped with
+			/* `"Isaac "` trimmed in the renderer and recorded that the real fix
+			/* was server-side, riding the next edit to this file — this is it.
+			/*
+			/* Decode first so a trailing space that arrived as a literal space
+			/* is caught. NOTE the limit: a trailing `&nbsp;` decodes to U+00A0,
+			/* which PHP's trim() does NOT strip by default. No such value has
+			/* been observed; if one appears, widen the character list rather
+			/* than reordering these two calls.
+			*/
+			'firstname'     => trim(html_entity_decode((string) $r['firstname'], ENT_QUOTES, 'UTF-8')),
+			'lastname'      => trim(html_entity_decode((string) $r['lastname'],  ENT_QUOTES, 'UTF-8')),
 			'roster_flag'   => $flag,
 			'rostered'      => $rostered,
 			'no_shows'      => $no_shows,
