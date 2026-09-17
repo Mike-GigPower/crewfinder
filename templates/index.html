@@ -6107,9 +6107,39 @@ async function openSessionRoster(id){
         + '</tr>').join('')
     : '<tr><td colspan="4" style="padding:10px 8px;color:var(--muted);font-size:12px">No one booked yet.</td></tr>';
 
+  // Waitlist rows arrive from the edge function in the order notifyWaitlist
+  // ACTUALLY sends — never-notified first in join order, then whoever was told
+  // longest ago. Do not re-sort here: the server owns that order, and a second
+  // opinion about it would be wrong the moment the two drift.
+  //
+  // notified_at is an ISO STRING from Postgres, never a unix number. new Date()
+  // reads a bare number as milliseconds, which is how every Red Zone incident
+  // date rendered as January 1970 in 5.50.0. Anything falsy renders no chip.
+  const _wlTold = (iso) => {
+    if(!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : d.toLocaleDateString([], {day:'numeric', month:'short'});
+  };
+  // Degrades on an older edge function that sends none of these fields: position
+  // falls back to the row index, no chip renders, nothing dims, no banner.
+  const wlCap = (typeof res.body.notify_cap === 'number') ? res.body.notify_cap : 0;
+  const wlBeyond = res.body.beyond_cap || 0;
   const waitRows = waitlist.length
     ? '<div style="margin-top:16px"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px">Waitlist ('+waitlist.length+')</div>'
-      + waitlist.map((c,i) => '<div style="padding:4px 0;border-bottom:1px solid var(--border);font-size:12px"><b>'+escapeHtml(c.name||'')+'</b> <span style="color:var(--muted);font-size:10px">'+escapeHtml(c.reference||'')+' · '+contact(c)+'</span></div>').join('')
+      + (wlBeyond > 0
+          ? '<div style="font-size:11px;color:var(--conflict);margin-bottom:6px">A freed seat emails the first '+wlCap+' on this list. The '+wlBeyond+' below the line are not told about it.</div>'
+          : '')
+      + waitlist.map((c,i) => {
+          const past = (c.in_next_notify === false);
+          const told = c.notified_at
+            ? ' <span style="color:var(--muted);font-size:10px">· told '+escapeHtml(_wlTold(c.notified_at))+'</span>'
+            : '';
+          return '<div style="padding:4px 0;border-bottom:1px solid var(--border);font-size:12px'+(past?';opacity:.45':'')+'">'
+            + '<span style="color:var(--muted);font-size:10px;display:inline-block;min-width:20px">'+(c.position||(i+1))+'</span>'
+            + '<b>'+escapeHtml(c.name||'')+'</b> <span style="color:var(--muted);font-size:10px">'+escapeHtml(c.reference||'')+' · '+contact(c)+'</span>'
+            + told
+            + '</div>';
+        }).join('')
       + '</div>'
     : '';
 
