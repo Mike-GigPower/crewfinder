@@ -15,6 +15,37 @@
 	$user->checkPermissions(1);
 
 	/*
+	/* TEXT FIELDS WHERE A LEADING ZERO IS MEANINGFUL.
+	/*
+	/* $db->sc() autoquotes only NON-numeric values (class.db.php:523,
+	/* if(!is_numeric($string))). An all-digit phone or postcode is therefore
+	/* escaped but handed back UNQUOTED, so MySQL parses '0411538575' as the
+	/* integer 411538575 and the column stores '411538575'. The zero is lost in
+	/* the parse, not in PHP -- the value sc() returns is intact.
+	/*
+	/* So: quote whatever came back unquoted. mysql_real_escape_string has
+	/* already run inside sc(); this adds nothing but the quotes it withheld.
+	/* update-crew.php has carried the same defence since it was written.
+	*/
+
+	if(!function_exists('ss_sc_text'))
+	{
+
+		function ss_sc_text($db, $v)
+		{
+
+			$q = $db->sc((string) $v);
+
+			if(substr($q, 0, 1) !== "'")
+				$q = "'". $q ."'";
+
+			return $q;
+
+		}
+
+	}
+
+	/*
 	/* select all crew groups */
 	
 	$crewGroups = $db->select('*', 'crew_groups');
@@ -129,19 +160,19 @@
 				'firstname'		=> $db->sc(filter_var($_POST['firstname'], FILTER_SANITIZE_STRING, FILTER_FLAG_NO_ENCODE_QUOTES)),
 				'lastname'		=> $db->sc(filter_var($_POST['lastname'], FILTER_SANITIZE_STRING, FILTER_FLAG_NO_ENCODE_QUOTES)),
 				'ein'			=> $db->sc(filter_var($_POST['ein'], FILTER_SANITIZE_STRING)),
-				'mobile'		=> $db->sc($_POST['mobile']),
-				'phone'			=> $db->sc($_POST['phone']),
-				'phone_work'	=> $db->sc($_POST['phone_work']),
+				'mobile'		=> ss_sc_text($db, $_POST['mobile']),
+				'phone'			=> ss_sc_text($db, $_POST['phone']),
+				'phone_work'	=> ss_sc_text($db, $_POST['phone_work']),
 				'dob'			=> $db->sc(strtotime(filter_var($_POST['dob'], FILTER_SANITIZE_STRING))),
 				'address'		=> $db->sc(filter_var($_POST['address'], FILTER_SANITIZE_STRING, FILTER_FLAG_NO_ENCODE_QUOTES)),
 				'suburb'		=> $db->sc(filter_var($_POST['suburb'], FILTER_SANITIZE_STRING, FILTER_FLAG_NO_ENCODE_QUOTES)),
 				'state'			=> $db->sc(filter_var($_POST['state'], FILTER_SANITIZE_STRING)),
-				'postcode'		=> $db->sc(filter_var($_POST['postcode'], FILTER_SANITIZE_STRING)),
+				'postcode'		=> ss_sc_text($db, filter_var($_POST['postcode'], FILTER_SANITIZE_STRING)),
 				'notes'			=> $db->sc(filter_var($_POST['notes'], FILTER_SANITIZE_STRING, FILTER_FLAG_NO_ENCODE_QUOTES)),
 				'email'			=> $db->sc(filter_var($_POST['email'], FILTER_SANITIZE_STRING)),
 				
 				'emergency_contact'	=> $db->sc(filter_var($_POST['emergency_contact'], FILTER_SANITIZE_STRING, FILTER_FLAG_NO_ENCODE_QUOTES)),
-				'emergency_phone'	=> $db->sc(filter_var($_POST['emergency_phone'], FILTER_SANITIZE_STRING)),
+				'emergency_phone'	=> ss_sc_text($db, filter_var($_POST['emergency_phone'], FILTER_SANITIZE_STRING)),
 				
 				//'union'					=> $db->sc(filter_var($_POST['union'], FILTER_SANITIZE_STRING)),
 				
