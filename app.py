@@ -7197,9 +7197,29 @@ def api_recruitment_convert(cand_id):
 # X-Goat-Service-Key authenticates the FLASK SERVICE, not the human — both checks
 # are needed. The write-enable gate lives in the edge function, not here.
 def _keypay_acting_user_id():
-    """Opaque internal user id for the acting operator, from the session identity.
-    Log-only per §7.2 — never used for any decision, never returned to the client."""
-    return str((current_identity() or {}).get("user_id", "") or "")
+    """Opaque internal user id for the operator, for the edge function's log line.
+    Log-only per §7.2 — never used for any decision, never returned to the client.
+
+    Resolves the HUMAN the way _write_audit does, not merely the session identity.
+    During an admin step-up the request RUNS AS the elevated admin account while
+    the person who clicked is the stashed pre-elevation crew identity, so reading
+    current_identity() alone credits an account rather than a person. That is
+    tolerable for a generic log line and not tolerable for IDENTITY_OVERRIDE,
+    whose whole purpose is to record who chose to wave a payroll identity
+    mismatch through. Observed live 18 Sep 2026: two operators' commits logged
+    10259 and 10261, neither of them a person's own user id.
+
+    Returns "<human>", or "<human> via <elevated account>" when the two differ so
+    the elevation is recorded rather than hidden. Opaque and length-capped at the
+    edge; nothing parses it, so the compound form costs nothing."""
+    acting = current_identity() or {}
+    pre    = _pre_elevation.get(session.get("sid")) or {}
+    human  = pre.get("ident") or acting
+    hid    = str(human.get("user_id", "") or "")
+    aid    = str(acting.get("user_id", "") or "")
+    if hid and aid and hid != aid:
+        return f"{hid} via {aid}"
+    return hid or aid
 
 
 @app.route("/api/recruitment/candidate/<cand_id>/keypay-preview", methods=["GET"])
