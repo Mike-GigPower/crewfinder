@@ -7172,8 +7172,8 @@ def api_recruitment_convert(cand_id):
 # browser). See BRIEF-keypay-complete-setup.md for the full rationale.
 #
 # TRUST BOUNDARY (§7.2): these routes are NOT a generic pass-through. The commit
-# route forwards EXACTLY three client values — candidate_id, commencement_date,
-# before_hash — and drops anything else in the body. The edge function rebuilds
+# route forwards EXACTLY four client values — candidate_id, commencement_date,
+# before_hash, identity_ack — and drops anything else in the body. The edge function rebuilds
 # the whole KeyPay payload server-side from a fresh GET + hardcoded constants, so
 # the only operator-controllable value in the entire write is the commencement
 # date. Relaying arbitrary JSON here would reintroduce the boundary one layer up
@@ -7183,6 +7183,13 @@ def api_recruitment_convert(cand_id):
 # from the request body — and the edge function writes it into its redacted
 # before/after log line only. It is an opaque internal id (no name, no email),
 # never enters the payload rebuild, and never gates behaviour.
+#
+# identity_ack (18 Sep 2026) is the fourth and last value that crosses. It is an
+# OPAQUE digest the edge function issued in its own 409 and recomputes from its
+# own fresh GET — it cannot name a field, carry a value, or reach the payload
+# rebuild. All it can do is lift a refusal for the exact discrepancy it encodes,
+# and only when that discrepancy is name-only with a matching email. Flask does
+# not interpret it; it relays it.
 #
 # AUTH: ships ADMIN-ONLY (§5.1a staging — widening to operations is a separate,
 # dated one-line commit after the §8 step-5 verification). Server-side cohort
@@ -7215,9 +7222,13 @@ def api_recruitment_keypay_preview(cand_id):
     # operator enters the commencement date so the edge computes the Start Date
     # diff row (and its overwrite verdict) server-side. Read-only and re-validated
     # independently at commit, so it does not widen the §7.2 trust boundary. Only
-    # this one extra value is forwarded; anything else on the query string is
-    # ignored. Omitted when absent so the edge shows its placeholder row.
+    # this value and identity_ack (below) are forwarded; anything else on the
+    # query string is ignored. Omitted when absent so the edge shows its
+    # placeholder row.
     commencement_date = str(request.args.get("commencement_date", "")).strip()
+    # Optional identity-override token (see the trust-boundary note above).
+    # Opaque here: relayed, never interpreted, never generated.
+    identity_ack = str(request.args.get("identity_ack", "")).strip()
     edge_body = {
         "mode":           "preview",
         "candidate_id":   cand_id,
@@ -7225,6 +7236,8 @@ def api_recruitment_keypay_preview(cand_id):
     }
     if commencement_date:
         edge_body["commencement_date"] = commencement_date
+    if identity_ack:
+        edge_body["identity_ack"] = identity_ack
     try:
         r = http.post(
             KEYPAY_COMPLETE_SETUP_URL,
@@ -7248,8 +7261,10 @@ def api_recruitment_keypay_preview(cand_id):
 @require_cohort("admin")
 def api_recruitment_keypay_commit(cand_id):
     """Stage 4 of the KeyPay flow: the live payroll write. Forwards EXACTLY
-    candidate_id + commencement_date + before_hash (+ session acting_user_id);
-    everything else in the body is dropped, not relayed (§7.2). The edge function
+    candidate_id + commencement_date + before_hash + identity_ack (+ session
+    acting_user_id); everything else in the body is dropped, not relayed (§7.2).
+    identity_ack is optional and opaque — it can only lift a name-only identity
+    refusal, never alter the payload. The edge function
     re-GETs, re-verifies identity, checks before_hash, rebuilds the payload from
     constants, POSTs to KeyPay, asserts the returned id, and re-GETs.
 
@@ -7265,9 +7280,10 @@ def api_recruitment_keypay_commit(cand_id):
         return jsonify({"error": "Missing candidate id"}), 400
 
     body = request.get_json(silent=True) or {}
-    # Forward ONLY these two client-supplied values — nothing else crosses.
+    # Forward ONLY these three client-supplied values — nothing else crosses.
     commencement_date = str(body.get("commencement_date", "")).strip()
     before_hash       = str(body.get("before_hash", "")).strip()
+    identity_ack      = str(body.get("identity_ack", "")).strip()
     if not commencement_date:
         return jsonify({"error": "Missing commencement date"}), 400
     if not before_hash:
@@ -7283,6 +7299,7 @@ def api_recruitment_keypay_commit(cand_id):
                 "commencement_date": commencement_date,
                 "before_hash":       before_hash,
                 "acting_user_id":    _keypay_acting_user_id(),  # log-only, from session
+                **({"identity_ack": identity_ack} if identity_ack else {}),
             },
             # Longer than the edge function's own ~30s AbortController so its
             # outcome-unknown handling wins the race rather than our socket.
@@ -7308,6 +7325,51 @@ def api_recruitment_keypay_commit(cand_id):
         return jsonify(r.json()), r.status_code
     except Exception:
         print(f"[keypay] commit edge function returned {r.status_code}")
+        return jsonify({"error": "KeyPay service error"}), 502
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/keypay-adopt-name", methods=["POST"])
+@require_cohort("admin")
+def api_recruitment_keypay_adopt_name(cand_id):
+    """Adopt the Employment Hero name onto the candidate record — the permanent
+    fix for a legal-name divergence, offered on the identity-mismatch screen.
+
+    NOT a generic name-edit endpoint: the only value that crosses is the opaque
+    identity_ack, and the edge function sources the new name from its own fresh
+    KeyPay GET. It refuses unless the mismatch is name-only with a matching email
+    and the token matches the discrepancy the operator was shown. Writes Supabase
+    only — no payroll write, so no outcome-unknown hazard and a plain failure is
+    honest here."""
+    if not GOAT_RECRUITMENT_KEY:
+        return jsonify({"error": "Recruitment key not configured"}), 500
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing candidate id"}), 400
+
+    body = request.get_json(silent=True) or {}
+    identity_ack = str(body.get("identity_ack", "")).strip()
+    if not identity_ack:
+        return jsonify({"error": "Missing identity_ack — re-run the preview"}), 400
+
+    try:
+        r = http.post(
+            KEYPAY_COMPLETE_SETUP_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json={
+                "mode":           "adopt_eh_name",
+                "candidate_id":   cand_id,
+                "identity_ack":   identity_ack,
+                "acting_user_id": _keypay_acting_user_id(),  # log-only, from session
+            },
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"[keypay] adopt-name request failed: {e}")
+        return jsonify({"error": "KeyPay service unavailable"}), 502
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        print(f"[keypay] adopt-name edge function returned {r.status_code}")
         return jsonify({"error": "KeyPay service error"}), 502
 
 

@@ -7792,9 +7792,12 @@ function keypayClose(refresh){
   if(kp && kp.writing) return;
   closeEntityModal();
   var rf = kp && kp.returnFocus;
+  // refreshOnClose is set when something behind the modal changed (an adopted EH
+  // name), so the list repaints without interrupting the flow mid-dialog.
+  var wantRefresh = (refresh === true) || !!(kp && kp.refreshOnClose);
   window._keypay = null;
   if(rf && rf.focus){ try{ rf.focus(); }catch(e){} }
-  if(refresh === true && typeof loadRecruitment === 'function'){ loadRecruitment(); }
+  if(wantRefresh && typeof loadRecruitment === 'function'){ loadRecruitment(); }
 }
 
 // Generic read-side failure (no write happened, so a plain failure is honest).
@@ -7820,10 +7823,23 @@ async function keypayOpen(id){
     dateDisplay: '',     // DD-MM-YYYY exactly as typed
     preview: null,
     writing: false,
+    identityAck: '',       // set only by an explicit "Continue anyway"
+    identityAckOffered: '',
+    identityOrigin: '',
+    identityWarn: null,    // banner text once an override is in effect
+    refreshOnClose: false,
     returnFocus: document.activeElement
   };
   openEntityModal();
-  keypaySet('Complete KeyPay setup', keypayEsc(c.name || ''),
+  await keypayRunStage1();
+}
+
+// The Stage 1 body, factored out of keypayOpen so an identity override (or an
+// adopted EH name) can re-run it WITHOUT rebuilding window._keypay — which would
+// drop the ack and any date already typed.
+async function keypayRunStage1(){
+  var kp = window._keypay || {};
+  keypaySet('Complete KeyPay setup', keypayEsc(kp.name || ''),
     '<div role="status" aria-live="polite" style="color:var(--muted);font-size:12px;padding:8px 0">'
       + 'Reading the current KeyPay record… this checks an external system and may take a moment.</div>',
     '');
@@ -7840,7 +7856,9 @@ async function keypayOpen(id){
     // Branch on the edge function's own `code` (§8a.1 item 2 prerequisite) — the
     // old `if(!r.ok||p.error)` collapsed every non-200 preview into one generic
     // line, swallowing the 409 identity mismatch and blurring the gate reasons.
-    if(p.code === 'IDENTITY_MISMATCH'){ keypayIdentityMismatch(p); return; }
+    if(p.code === 'IDENTITY_MISMATCH' || p.code === 'IDENTITY_ACK_STALE'){
+      keypayIdentityMismatch(p, 'stage1'); return;
+    }
     keypayReadError(r.status === 403
       ? 'You do not have access to complete KeyPay setup.'
       : (p.error || ('Could not read the KeyPay record (HTTP ' + r.status + ').')));
@@ -7848,7 +7866,21 @@ async function keypayOpen(id){
   }
   window._keypay.preview = p;
   if(p.eh_employee_id != null) window._keypay.ehId = String(p.eh_employee_id);
+  keypayNoteIdentity(p);
   keypayStage1(p);
+}
+
+// Keep an override visible for the rest of the flow. The operator confirms at
+// Stage 1 and presses the live-payroll button at Stage 4 — several screens later,
+// which is exactly long enough to forget.
+function keypayNoteIdentity(p){
+  var kp = window._keypay || {};
+  var idc = (p && p.identity) || {};
+  if(idc.overridden !== true){ kp.identityWarn = null; return; }
+  var k = idc.keypay || {};
+  var ehName = ((k.firstName || '') + ' ' + (k.surname || '')).trim();
+  kp.identityWarn = 'Identity override in effect — Employment Hero has '
+    + ehName + ' on employee ' + (p.eh_employee_id != null ? p.eh_employee_id : kp.ehId) + '.';
 }
 
 // Shared preview fetch (§8a.1a). Called twice: once at Stage 1 with no date (for
@@ -7857,8 +7889,11 @@ async function keypayOpen(id){
 // overwrite verdict — is computed server-side. Returns { r, p } or { netError }.
 async function keypayFetchPreview(dateIso){
   var kp = window._keypay || {};
+  var qs = [];
+  if(dateIso)        qs.push('commencement_date=' + encodeURIComponent(dateIso));
+  if(kp.identityAck) qs.push('identity_ack=' + encodeURIComponent(kp.identityAck));
   var url = '/api/recruitment/candidate/' + encodeURIComponent(kp.id) + '/keypay-preview'
-    + (dateIso ? ('?commencement_date=' + encodeURIComponent(dateIso)) : '');
+    + (qs.length ? ('?' + qs.join('&')) : '');
   try{
     var r = await fetch(url, { headers: { 'Accept': 'application/json' } });
     var p = await r.json().catch(function(){ return {}; });
@@ -7888,7 +7923,9 @@ async function keypayShowPreview(){
   }
   var r = res.r, p = res.p || {};
   if(!r.ok || p.error){
-    if(p.code === 'IDENTITY_MISMATCH'){ keypayIdentityMismatch(p); return; }  // terminal, as at Stage 1
+    if(p.code === 'IDENTITY_MISMATCH' || p.code === 'IDENTITY_ACK_STALE'){
+      keypayIdentityMismatch(p, 'stage3'); return;   // terminal unless overridable
+    }
     keypayStage2(r.status === 403
       ? 'You do not have access to complete KeyPay setup.'
       : (p.error || ('Couldn’t prepare the preview (HTTP ' + r.status + '). Your date is kept — try again.')));
@@ -7896,6 +7933,7 @@ async function keypayShowPreview(){
   }
   window._keypay.preview = p;   // THIS call's before_hash is what commit will use
   if(p.eh_employee_id != null) window._keypay.ehId = String(p.eh_employee_id);
+  keypayNoteIdentity(p);
   keypayStage3();
 }
 
@@ -7911,8 +7949,17 @@ function keypayStage1(p){
   keypayStage2();
 }
 
-// (a) Identity mismatch — TERMINAL. Three-field comparison, no path forward.
-function keypayIdentityMismatch(p){
+// (a) Identity mismatch. TERMINAL when the email differs; when only the names
+// differ it offers two ways forward. The severity decision is the SERVER'S —
+// never re-derive it here from the mismatch list, or the rule ends up implemented
+// twice and the two copies drift.
+function keypayIdentityMismatch(p, origin){
+  var kpS = window._keypay || {};
+  kpS.identityOrigin = origin || 'stage1';
+  // The token the edge issued for THIS discrepancy. Absent on a blocking
+  // mismatch, which is what keeps the blocking case terminal without a second
+  // rule here.
+  kpS.identityAckOffered = (typeof p.identity_ack === 'string') ? p.identity_ack : '';
   // §8a.1 item 2: the edge sends a 409 with
   //   identity: { mismatches[], keypay:{firstName,surname,emailAddress},
   //               candidate:{firstName,surname,email} }
@@ -7920,18 +7967,32 @@ function keypayIdentityMismatch(p){
   var idc = p.identity || {};
   var cand = idc.candidate || {};
   var kp   = idc.keypay || {};
+  var overridable = (idc.severity === 'overridable') && !!kpS.identityAckOffered;
+  var ms = Array.isArray(idc.mismatches) ? idc.mismatches : [];
+  var differs = function(f){ return ms.indexOf(f) !== -1; };
+  // The closing line must say something DIFFERENT in the two cases, or a Continue
+  // button reads as contradicting the warning above it.
+  var tail = overridable
+    ? 'The email address matches, so this is most likely a legal-name difference — '
+      + 'Employment Hero holds the name they typed during their own setup. Check it '
+      + 'is the same person, then continue or adopt the Employment Hero name.'
+    : 'The email addresses do not match, so the stored employee ID may point at a '
+      + 'different person. This cannot be continued — check in KeyPay.';
   var cmp = {
     first_name: { candidate: cand.firstName, keypay: kp.firstName },
     surname:    { candidate: cand.surname,   keypay: kp.surname },
     email:      { candidate: cand.email,     keypay: kp.emailAddress },
   };
   var thStyle = 'text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:0 14px 6px 0';
-  function row(label, pair){
+  function row(label, pair, isDiff){
     pair = pair || {};
+    // Colour the fields that actually differ, so "which one is the problem" is
+    // answered by the table rather than by reading the paragraph underneath.
+    var vs = isDiff ? 'color:var(--conflict);font-weight:600' : 'color:var(--text)';
     return '<tr>'
       + '<th scope="row" style="text-align:left;font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:6px 12px 6px 0;white-space:nowrap;vertical-align:top">' + label + '</th>'
-      + '<td style="padding:6px 14px 6px 0;color:var(--text);font-size:12px">' + keypayEsc(pair.candidate == null || pair.candidate === '' ? '—' : pair.candidate) + '</td>'
-      + '<td style="padding:6px 0;color:var(--text);font-size:12px">' + keypayEsc(pair.keypay == null || pair.keypay === '' ? '—' : pair.keypay) + '</td>'
+      + '<td style="padding:6px 14px 6px 0;font-size:12px;' + vs + '">' + keypayEsc(pair.candidate == null || pair.candidate === '' ? '—' : pair.candidate) + '</td>'
+      + '<td style="padding:6px 0;font-size:12px;' + vs + '">' + keypayEsc(pair.keypay == null || pair.keypay === '' ? '—' : pair.keypay) + '</td>'
       + '</tr>';
   }
   var body =
@@ -7943,14 +8004,60 @@ function keypayIdentityMismatch(p){
     + '<th scope="col" style="' + thStyle + '">Candidate</th>'
     + '<th scope="col" style="text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:0 0 6px 0">Employment Hero</th>'
     + '</tr></thead><tbody>'
-    + row('First name', cmp.first_name)
-    + row('Surname', cmp.surname)
-    + row('Email', cmp.email)
+    + row('First name', cmp.first_name, differs('firstName'))
+    + row('Surname', cmp.surname, differs('surname'))
+    + row('Email', cmp.email, differs('email'))
     + '</tbody></table></div>'
-    + '<div style="font-size:12px;color:var(--text);line-height:1.6;margin-top:10px">The stored employee ID may point at the wrong person. Check in KeyPay before continuing.</div>'
+    + '<div style="font-size:12px;color:var(--text);line-height:1.6;margin-top:10px">' + escapeHtml(tail) + '</div>'
     + '</div>';
-  keypaySet('This does not look like the right employee', '', body, entityBtn('Close', 'keypayClose()'));
+  var actions = entityBtn('Close', 'keypayClose()');
+  if(overridable){
+    actions += entityBtn('Use the Employment Hero name', 'keypayAdoptEhName(this)', { id: 'kp-adopt' })
+             + entityBtn('Continue anyway', 'keypayIdentityContinue()', { primary: true });
+  }
+  keypaySet('This does not look like the right employee', '', body, actions);
   keypayFocusBody();
+}
+
+// "Continue anyway" — record the ack and re-run the stage that refused. The ack is
+// per-discrepancy, so it survives only as long as the EH record does.
+function keypayIdentityContinue(){
+  var kp = window._keypay || {};
+  if(!kp.identityAckOffered) return;
+  kp.identityAck = kp.identityAckOffered;
+  // A commit-stage mismatch restarts at Stage 1 deliberately: commit needs a
+  // before_hash from a preview that carried the ack, and the re-read is cheap.
+  // The typed date survives in kp.dateDisplay, so nothing is re-keyed.
+  if(kp.identityOrigin === 'stage3'){ keypayShowPreview(); return; }
+  keypayRunStage1();
+}
+
+// "Use the Employment Hero name" — the permanent fix. Supabase-only write, so a
+// plain failure message is honest here; there is no outcome-unknown case.
+async function keypayAdoptEhName(btn){
+  var kp = window._keypay || {};
+  if(kp.writing || !kp.identityAckOffered) return;
+  if(btn){ btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'progress'; btn.textContent = 'Updating…'; }
+  var r, d;
+  try{
+    r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(kp.id) + '/keypay-adopt-name', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identity_ack: kp.identityAckOffered })
+    });
+    d = await r.json().catch(function(){ return {}; });
+  }catch(e){
+    keypayReadError('Could not reach the service — the candidate\u2019s name was not changed.');
+    return;
+  }
+  if(!r.ok || d.error){
+    keypayReadError(d.error || ('Could not update the candidate\u2019s name (HTTP ' + r.status + ').'));
+    return;
+  }
+  if(d.name) kp.name = String(d.name);
+  kp.identityAck = '';          // the mismatch is gone — no override needed now
+  kp.identityAckOffered = '';
+  kp.refreshOnClose = true;     // the pipeline row behind the modal is stale
+  keypayRunStage1();            // re-reads; should now pass the guard cleanly
 }
 
 // (b) Self-setup incomplete — warn, but allow through. Booleans only (§5.2b) —
@@ -8082,6 +8189,13 @@ function keypayStage3(){
       + '</tr>';
   }).join('');
 
+  // An override confirmed back at Stage 1 must still be visible on the screen
+  // where the live payroll write is authorised.
+  var identityBanner = kp.identityWarn
+    ? '<div role="alert" style="border:1px solid var(--warn);background:var(--surface2);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--warn);font-weight:600">&#9888; '
+        + escapeHtml(kp.identityWarn) + '</div>'
+    : '';
+
   var writeEnabled = !!p.write_enabled;
 
   // Write disabled is the EXPECTED §8 read-only state — it must read as normal.
@@ -8110,7 +8224,7 @@ function keypayStage3(){
     + 'This does not complete the tax file declaration. You will need to finish that in KeyPay after saving.</div>';
 
   keypaySet('Preview the KeyPay write', keypayEsc(kp.name || ''),
-    disabledBanner + overwriteBanner + table + footer,
+    identityBanner + disabledBanner + overwriteBanner + table + footer,
     // §4: a single explicit confirm — NOT default-focused, NOT Enter-triggerable.
     // With writes disabled it is REPLACED (§5 WRITE_DISABLED), not just disabled.
     writeEnabled
@@ -8133,7 +8247,11 @@ async function keypayCommit(){
   try{
     r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(kp.id) + '/keypay-commit', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ commencement_date: kp.date, before_hash: (kp.preview || {}).before_hash || '' })
+      body: JSON.stringify({
+        commencement_date: kp.date,
+        before_hash: (kp.preview || {}).before_hash || '',
+        identity_ack: kp.identityAck || ''
+      })
     });
     d = await r.json().catch(function(){ return {}; });
   }catch(e){
@@ -8164,7 +8282,7 @@ function keypayCommitResult(status, d){
   if(code === 'NOT_IN_WRITE_ALLOWLIST')                            { keypayAllowlist(); return; }
   if(code === 'WRITE_DISABLED' || status === 403)                  { keypayWriteDisabled(); return; }
   // The commit re-verifies identity on a fresh read and can 409 here too.
-  if(code === 'IDENTITY_MISMATCH')                                 { keypayIdentityMismatch(d); return; }
+  if(code === 'IDENTITY_MISMATCH' || code === 'IDENTITY_ACK_STALE'){ keypayIdentityMismatch(d, 'commit'); return; }
   if(code === 'WRITE_REJECTED' || d.keypay_detail != null || d.keypay_status != null){ keypayKeypayError(d); return; }
   keypayGenericFailure(d, status);
 }
