@@ -88,7 +88,8 @@ TIMESHEET_TEMPLATE_FILE = os.path.join(BASE_DIR, "crew_master_template.xlsx")  #
 VALID_CALL_NAMES = {
     "Load In", "Load Out", "LX", "SX", "VX", "Backline", "Show Call",
     "FOH Spot", "Truss Spot", "Wardrobe", "Steel", "Fork", "Truck", "EWP",
-    "Crown Hand", "Crew Boss", "Site", "Utility", "General", "Other"
+    "Crown Hand", "Crew Boss", "Site", "Utility", "General", "Seamstress",
+    "Other"
 }
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -137,7 +138,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.52.0"
+APP_VERSION    = "5.53.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────

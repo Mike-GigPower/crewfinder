@@ -550,7 +550,8 @@ class CallNameTests(unittest.TestCase):
     def test_mapped_names(self):
         self.assertEqual(ec.role_for_call_name("Load In"), "Standard Crew")
         self.assertEqual(ec.role_for_call_name("Show Call"), "Show Crew")
-        self.assertEqual(ec.role_for_call_name("Wardrobe"), "Seamstress")
+        self.assertEqual(ec.role_for_call_name("Wardrobe"), "Show Crew")
+        self.assertEqual(ec.role_for_call_name("Seamstress"), "Seamstress")
 
     def test_the_two_names_production_actually_carries(self):
         self.assertIsNone(ec.role_for_call_name("GC Spot"))
@@ -560,8 +561,8 @@ class CallNameTests(unittest.TestCase):
         self.assertIsNone(ec.role_for_call_name(""))
         self.assertIsNone(ec.role_for_call_name(None))
 
-    def test_the_map_is_still_the_twenty_from_types_ts(self):
-        self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 20)
+    def test_the_map_is_still_the_twenty_one_from_types_ts(self):
+        self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 21)
 
 
 class SmartStaffCallNameTests(unittest.TestCase):
@@ -631,7 +632,7 @@ class SmartStaffCallNameTests(unittest.TestCase):
         The whole point of §1.1: CALL_NAME_TO_ROLE stays a verbatim copy of
         types.ts so the two implementations can still be diffed.
         """
-        self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 20)
+        self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 21)
         for name in ec.SMARTSTAFF_EXTRA_CALL_NAMES:
             self.assertNotIn(name, ec.CALL_NAME_TO_ROLE)
 
