@@ -133,6 +133,7 @@ input[type=range]{flex:1;accent-color:var(--accent)}
    badges, which block a booking; this one only informs. */
 .push-warn{color:var(--muted);opacity:.55;filter:grayscale(1);font-size:11px;margin-left:5px;cursor:default}
 .clash-warn{color:var(--warn);font-size:11px;margin-left:5px;cursor:help}
+.offer-clash{color:var(--accent);font-size:11px;margin-left:5px;cursor:help}
 .cd-push-warn{color:var(--muted);font-size:11px;margin-top:3px}
 .crew-remove-btn{background:none;border:none;color:var(--muted);font-size:13px;line-height:1;cursor:pointer;padding:0 4px;border-radius:3px;opacity:.6}
 .crew-remove-btn:hover{color:#ef4444;background:rgba(239,68,68,0.12);opacity:1}
@@ -148,6 +149,9 @@ tr.partial .name-cell{border-left-color:var(--warn)}
 .cb-pill.no{color:var(--conflict);background:var(--conf-bg)}
 .cb-pill.soft{color:var(--suggest);background:var(--suggest-bg)}
 .cb-pill.warn{color:var(--warn);background:var(--warn-bg)}
+/* Lighter than .warn on purpose: an offer nobody has answered, not a shift they
+   hold. Outlined rather than filled, for the same reason the timeline bar is. */
+.cb-pill.offer{color:var(--warn);background:transparent;border:1px dashed var(--warn);padding:0 4px}
 .call-card-top{display:flex;align-items:center;gap:7px;margin-bottom:3px}
 .call-num{font-size:10px;color:var(--muted)}
 .call-name{font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
@@ -273,6 +277,10 @@ tr.skipped{opacity:.6}
 .tl-bar.bar-booked{background:#22c55e;border:1px solid #16a34a}
 .tl-bar.bar-assigned{background:#6b7280;border:1px solid #9ca3af}
 .tl-bar.bar-backup{background:#14b8a6;border:1px solid #0d9488}
+/* Hollow on purpose: a filled bar says "this time is taken", and an open offer
+   is not taken. Must never read as bar-backup, bar-warn or bar-info. */
+.tl-bar.bar-offer{background:transparent;border:1px dashed #9ca3af}
+.tl-bar.bar-offer-clash{background:transparent;border:1px dashed var(--warn)}
 /* Floating shift tooltip — fixed-position so the scrollable cell's overflow can't clip it */
 #tl-tip{position:fixed;transform:translate(-50%,-100%);background:#1a1d23;color:#fff;font-size:10px;line-height:1.5;text-align:left;padding:5px 9px;border-radius:4px;white-space:pre-line;max-width:300px;z-index:9999;pointer-events:none;display:none;box-shadow:0 4px 14px rgba(0,0,0,.5)}
 /* Crew name-hover card (photo + notes) */
@@ -1865,6 +1873,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
       <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:var(--conflict)"></span>Conflict</span>
       <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:var(--warn)"></span>Potential Conflict</span>
       <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:rgba(59,130,246,0.65)"></span>For Info</span>
+      <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:transparent;border:1px dashed #9ca3af"></span>Open Offer</span>
+      <span class="cf-legend-item"><span class="cf-legend-swatch" style="background:transparent;border:1px dashed var(--warn)"></span>Offer Clash</span>
       <span class="cf-legend-item" id="cf-legend-induction" style="display:none"></span>
     </div>
     <div class="results-table-wrap" id="results-wrap">
@@ -4086,6 +4096,14 @@ function shiftBarState(s, rel){
     else { barClass='bar-assigned'; state='Assigned — awaiting confirmation'; }
   } else if(s.status===5 && s.conflicts_target){
     barClass='bar-conflict'; state='Confirmed — conflicts with requested shift';
+  } else if(s.is_offer){
+    // Open offers arrive at status 0/1 and would otherwise fall into bar-warn or
+    // bar-info. They get their own hollow bar: nobody has answered them, so the
+    // time is not taken. Must come before the status===1 branch below.
+    barClass = s.conflicts_target ? 'bar-offer-clash' : 'bar-offer';
+    state    = s.conflicts_target
+                 ? 'Open offer — would clash if they accept'
+                 : 'Open offer — unanswered';
   } else if(s.status===1 && s.conflicts_target){
     barClass='bar-warn'; state='Unconfirmed — would conflict if confirmed';
   } else if(s.status===6 && s.overlaps_target){
@@ -4326,6 +4344,10 @@ function shiftTagTone(s, barClass){
   let tag;
   if(s.is_target){
     tag = st===5?'BOOKED' : st===6?'DECLINED' : st===7?'BACKUP' : 'WAITING';   // 1/0/missing → WAITING
+  } else if(s.is_offer){
+    // Offers arrive at status 0/1, so without this they would read PENDING or
+    // UNSET — the one thing they are not. Toned from barClass like the rest.
+    tag = 'OFFER';
   } else if(s.conflicts_target && (st===5 || st===1)){
     tag = 'CLASH';
   } else if(s.overlaps_target && (st===5 || st===1)){
@@ -4334,11 +4356,13 @@ function shiftTagTone(s, barClass){
     tag = st===5?'BOOKED' : st===1?'PENDING' : st===6?'DECLINED' : st===8?'NO-SHOW' : st===7?'BACKUP' : 'UNSET';   // 0/missing → UNSET
   }
   let tone;
-  if(barClass==='bar-conflict')      tone='bad';
-  else if(barClass==='bar-warn')     tone='warn';
-  else if(barClass==='bar-booked')   tone='ok';
-  else if(barClass==='bar-info')     tone=(st===5)?'ok':'muted';
-  else                               tone='muted';   // bar-backup, bar-assigned
+  if(barClass==='bar-conflict')          tone='bad';
+  else if(barClass==='bar-warn')         tone='warn';
+  else if(barClass==='bar-offer-clash')  tone='warn';
+  else if(barClass==='bar-offer')        tone='muted';
+  else if(barClass==='bar-booked')       tone='ok';
+  else if(barClass==='bar-info')         tone=(st===5)?'ok':'muted';
+  else                                   tone='muted';   // bar-backup, bar-assigned
   return {tag, tone};
 }
 
@@ -4606,18 +4630,35 @@ function conflictWarnHtml(crew){
   if(!w || !w.length) return '';
   return '<span class="clash-warn" title="'+escapeHtml(w.join('\n'))+'">\u26A0</span>';
 }
+// Crew who are bookable but hold an UNANSWERED offer that would clash if they
+// accept it. Distinct glyph from the Rule 2/3/4 warning on purpose: that one is
+// about shifts they hold, this one is about offers nobody has answered. Never
+// blocks — an offer holds no time and may be declined (design D1).
+function offerClashHtml(crew){
+  const o = crew && crew.offer_clashes;
+  if(!o || !o.length) return '';
+  return '<span class="offer-clash" title="'+escapeHtml(o.join('\n'))+'">\u2709</span>';
+}
 function breakdownHtml(crew){
   if(!crew.call_results||crew.call_results.length<=1)return '';
   return '<div class="call-breakdown">'+crew.call_results.map(function(r){
     var soft = _softCallIds.has(String(r.call_id));
     // Conflict beats mode: a clash stays red (.no) even when it's a soft call.
-    // A soft call the crew is free for is violet (.soft, ranked-against, not
-    // searched). The ~ prefix marks the soft call in either case.
     // A bookable-but-warned call is amber (.warn) and keeps its checkbox.
-    var cls = r.available ? (r.conflict_warning ? 'warn' : (soft?'soft':'ok')) : 'no';
+    // An offer clash is lighter than .warn — it is about an offer nobody has
+    // answered, not a shift they hold.
+    // A soft call the crew is free for is violet (.soft, ranked-against, not
+    // searched). The ~ prefix marks the soft call in any case.
+    var cls = r.available
+                ? (r.conflict_warning ? 'warn'
+                   : r.offer_clash    ? 'offer'
+                   : (soft?'soft':'ok'))
+                : 'no';
     var tip = (soft?'Considered (ranked, not searched) — ':'')
             + (r.available
-                 ? (r.conflict_warning ? 'Warning: '+r.conflict_warning : 'Available')
+                 ? (r.conflict_warning ? 'Warning: '+r.conflict_warning
+                    : r.offer_clash    ? 'Open offer: '+r.offer_clash
+                    : 'Available')
                  : 'Conflict: '+r.detail);
     return '<span class="cb-pill '+cls+'" title="'+escapeHtml(tip)+'">'+(soft?'~':'')+'#'+r.call_num+'</span>';
   }).join('')+'</div>';
@@ -4712,7 +4753,7 @@ function addTableRow(tbody,crew,status,targets){
   tr.appendChild(cbTd);
   function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
   const ph=phoneLink(crew.phone);
-  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew);
+  const nameHtml=(isGoat?'🐐 ':'')+'<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew)+offerClashHtml(crew);
   const nameTd=mkTd('name-cell',nameHtml);
   if(isGoat) nameTd.style.cssText='color:var(--accent);font-weight:700;border-left-color:var(--accent)';
   tr.appendChild(nameTd);
@@ -4840,7 +4881,7 @@ function renderTimeline(result,details,targets){
     tr.appendChild(cbTd);
     function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
     const ph=phoneLink(crew.phone);
-    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew));
+    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew)+offerClashHtml(crew));
     tr.appendChild(nameTd);
     attachCrewCardHover(nameTd,crew);
     tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
