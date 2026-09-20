@@ -1,6 +1,6 @@
 {
-  "version": "5.53.0",
-  "release_date": "2026-09-19",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.53.0/TheGOAT.dmg",
-  "release_notes": "A KeyPay name mismatch can now be confirmed or corrected instead of stopping the setup, with both records shown side by side. Bookings also understand Seamstress calls, and Wardrobe now prices as Show Crew."
+  "version": "5.54.0",
+  "release_date": "2026-09-20",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.54.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder now flags crew already holding an unanswered offer that would clash with the call you are filling, with the reason on hover and their offered shifts shown on the timeline. They stay bookable — an offer is not a booking — and Ask the GOAT reports the same advisory."
 }
