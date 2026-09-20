@@ -138,7 +138,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.53.0"
+APP_VERSION    = "5.54.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -7648,6 +7648,46 @@ def api_availability():
     # the cache lookup. Keyed by str(user_id) to match the previous shape.
     unavail_cache = _get_unavails_for_window(ss, win_start, win_end)
 
+    # Open offers (status 0/1) for the same window. The Finder's availability is
+    # derived from `calendars`, and an offer writes no calendar row until it is
+    # accepted — so a stack of unanswered offers is invisible here. On 19 Sep that
+    # let one crew member accumulate 20 hours in 24, past the MAX_24H_HRS ceiling
+    # of 16, with nothing on screen.
+    #
+    # SEQUENTIAL, after the shifts and unavailability reads: the endpoint holds a
+    # per-session PHP file lock and a concurrent /ajax/crew/ call on the same
+    # session hangs. See fetch_open_offers_bulk's own docstring.
+    #
+    # FAILS OPEN. On any error the map stays empty, no badges render, and the
+    # search behaves exactly as 5.53.0 did. Same rule as rel_by_call: a missing
+    # advisory is a nuisance, a failed search loses a booking.
+    offers_by_uid = {}
+    _off_data, _off_err = fetch_open_offers_bulk(
+        ss, win_start.strftime("%Y-%m-%d"), win_end.strftime("%Y-%m-%d"))
+    if _off_err is not None:
+        print(f"[finder-offers] unavailable: {_off_err}")
+    else:
+        _target_ids = set(str(t["call_id"]) for t in targets)
+        for o in (_off_data.get("offers") or []):
+            uid   = str(o.get("user_id") or "")
+            cid_o = str(o.get("call_id") or "")
+            if not uid or not cid_o or cid_o in _target_ids:
+                continue
+            # RENAMED ON THE WAY IN. The endpoint emits `end_iso`; check_conflict
+            # reads s["end"]. Leave it as end_iso and every offer is zero-length,
+            # nothing ever fires, and there is no error to notice.
+            offers_by_uid.setdefault(uid, []).append({
+                "start":        o.get("start"),
+                "end":          o.get("end_iso"),
+                "venue":        o.get("venue") or "",
+                "call_id":      o.get("call_id"),
+                "booking_id":   o.get("booking_id"),
+                "call_name":    o.get("call_name") or "",
+                "booking_name": o.get("booking_name") or "",
+                "status":       o.get("status"),
+                "is_offer":     True,
+            })
+
     # Induction gate, resolved ONCE per target. Controlled-ness belongs to the
     # CALL; only the crew member's status varies per row. `published` gates the
     # whole check — an unpublished induction yields neither warning nor tick.
@@ -7663,6 +7703,14 @@ def api_availability():
         cid          = crew["id"]
         all_shifts   = shifts_by_name.get(crew["name"], [])
         shifts       = [s for s in all_shifts if s.get("status") == 5]  # conflict checks: confirmed only
+        offers       = offers_by_uid.get(str(cid), [])
+        # De-dup against the calendar-derived set. update-call.php re-syncs the
+        # calendar for EVERY call_crew_map row whatever its status, so an offer on
+        # a call somebody later edited DOES have a calendars row and is already in
+        # all_shifts. Without this the same offer produces both a bar-warn timeline
+        # bar and an offer badge — one offer reading as two problems.
+        _held_ids = set(str(s.get("call_id")) for s in all_shifts)
+        offers    = [o for o in offers if str(o.get("call_id")) not in _held_ids]
         unavails     = unavail_cache.get(cid, [])
         inductions = crew["inductions"]
         crew_lic     = crew.get("licences") or []
@@ -7702,6 +7750,46 @@ def api_availability():
                 if warned:
                     conflict_warning = warn_reason
                     warning_rule     = warn_rule
+
+            # PASS 3 — open offers. Runs ONLY when the row is bookable and pass 2
+            # produced nothing: one row, one reason. An offer clash NEVER sets
+            # available=False (D1) — an offer holds no time and may be declined,
+            # and the write layer would allow the booking anyway.
+            offer_clash         = ""
+            offer_clash_rule    = 0
+            offer_clash_call_id = None
+            if not conflict and not conflict_warning and offers:
+                offers_for_target = [o for o in offers
+                                     if str(o.get("call_id")) != str(t["call_id"])]
+
+                # Rules 1-3 are per-shift and correct against the offer set alone.
+                oc, o_reason, o_rule = check_conflict(
+                    offers_for_target, t["start"], t["end"], t["venue"], rules=(1, 2, 3))
+
+                # RULE 4 IS DIFFERENT and this is the rule the 19 Sep incident
+                # broke. It totals hours in a rolling 24h window, so run against
+                # offers alone it misses the confirmed work sitting between them.
+                # Run it over confirmed UNION offered, and report it only when it
+                # does not already fire on confirmed alone — otherwise a
+                # confirmed-only breach would be relabelled as an offer clash.
+                if not oc:
+                    already, _, _ = check_conflict(
+                        shifts_for_target, t["start"], t["end"], t["venue"], rules=(4,))
+                    if not already:
+                        oc, o_reason, o_rule = check_conflict(
+                            shifts_for_target + offers_for_target,
+                            t["start"], t["end"], t["venue"], rules=(4,))
+
+                if oc:
+                    offer_clash      = o_reason
+                    offer_clash_rule = o_rule
+                    # Rule 4 is a total, not a pair, so it names no counterpart
+                    # call. Rules 1-3 return on the first offer that fires; the
+                    # reason string carries its time and venue.
+                    for o in offers_for_target:
+                        if o.get("venue", "") and o["venue"] in o_reason:
+                            offer_clash_call_id = o.get("call_id")
+                            break
 
             # Induction check — controlled AND published venues only; the gate is
             # precomputed per target above. "Complete" was already being returned
@@ -7753,6 +7841,9 @@ def api_availability():
                 "induction_rank":    induction_rank,
                 "conflict_warning":  conflict_warning,
                 "warning_rule":      warning_rule,
+                "offer_clash":         offer_clash,
+                "offer_clash_rule":    offer_clash_rule,
+                "offer_clash_call_id": offer_clash_call_id,
                 "licence_status":    lic_status,
                 # Status word from call_crew_map for THIS crew member on THIS
                 # call - 'confirmed' / 'declined' / 'backup' / 'unconfirmed' /
@@ -7821,6 +7912,12 @@ def api_availability():
             r["conflict_warning"] for r in call_results if r["conflict_warning"]
         ))
 
+        # Same shape as conflict_warnings: a per-crew advisory list the UI renders
+        # without it ever touching availability.
+        offer_clashes = list(dict.fromkeys(
+            r["offer_clash"] for r in call_results if r["offer_clash"]
+        ))
+
         # Kept in a SEPARATE list from induction_warnings on purpose. The
         # frontend splices induction_warnings into the detail cell alongside
         # clash reasons; a green entry in there would fill that column with
@@ -7872,6 +7969,15 @@ def api_availability():
                 nearby_set.add(key)
                 nearby.append(_tag_shift_for_timeline(s, targets))
 
+        # Open offers as pseudo-shifts, shaped exactly like a real one and run
+        # through the same tagger, so the bar is coloured by the same
+        # check_conflict every other bar uses. Same 3-day window test.
+        for o in offers:
+            o_start = datetime.fromisoformat(o["start"])
+            if any(abs((o_start - t["start"]).total_seconds()) <= 3 * 86400
+                   for t in targets):
+                nearby.append(_tag_shift_for_timeline(o, targets))
+
         nearby_unavails = [u for u in unavails if any(
             datetime.fromisoformat(u["end"]) >= t["start"] - timedelta(days=3)
             and datetime.fromisoformat(u["start"]) <= t["end"] + timedelta(days=3)
@@ -7891,6 +7997,8 @@ def api_availability():
             "detail":              conflict_details,
             "induction_warnings":  induction_warnings,
             "conflict_warnings":   conflict_warnings,
+            "offer_clashes":       offer_clashes,
+            "open_offers":         len(offers),
             "induction_currents":  induction_currents,
             "induction_score":     induction_score,
             "licence_summary":     licence_summary,
@@ -10743,7 +10851,7 @@ GOAT_TOOLS = [
     },
     {
         "name": "search_availability",
-        "description": "Search crew availability for one or more specific calls. Returns available crew, conflicts, and skipped crew with their ratings, groups, and shift timeline. An available crew member may carry a 'warnings' list - fatigue, venue-change or 24-hour-load advisories (conflict rules 2, 3 and 4). A warning does NOT make them unavailable and must never be reported as a conflict, but always state it when you name that crew member, so the operator can judge it.",
+        "description": "Search crew availability for one or more specific calls. Returns available crew, conflicts, and skipped crew with their ratings, groups, and shift timeline. An available crew member may carry a 'warnings' list - fatigue, venue-change or 24-hour-load advisories (conflict rules 2, 3 and 4). A warning does NOT make them unavailable and must never be reported as a conflict, but always state it when you name that crew member, so the operator can judge it. An entry prefixed \"Open offer:\" means the clash is with an offer the crew member has not yet answered, not a shift they hold — still not a conflict, still must be stated when you name that person.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -11176,6 +11284,39 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
             win_end   = max(t["end"]   for t in targets) + timedelta(days=2)
             shifts_by_name = _get_shifts_for_window(ss, win_start, win_end)
 
+            # Open offers, read SEQUENTIALLY after the shifts fetch — the endpoint
+            # holds a per-session PHP file lock and a concurrent /ajax/crew/ call
+            # on the same session hangs. Keyed on user_id exactly as the Finder
+            # keys it (shifts are keyed by display name; offers carry a real id).
+            # FAILS OPEN: on any error the map stays empty and this arm behaves
+            # exactly as 5.53.0 did. THE GOAT and the Finder must not disagree
+            # about who is available — see the booking 12034 note below.
+            offers_by_uid = {}
+            _off_data, _off_err = fetch_open_offers_bulk(
+                ss, win_start.strftime("%Y-%m-%d"), win_end.strftime("%Y-%m-%d"))
+            if _off_err is not None:
+                print(f"[goat-offers] unavailable: {_off_err}")
+            else:
+                _target_ids = set(str(t.get("call_id")) for t in targets)
+                for o in (_off_data.get("offers") or []):
+                    uid   = str(o.get("user_id") or "")
+                    cid_o = str(o.get("call_id") or "")
+                    if not uid or not cid_o or cid_o in _target_ids:
+                        continue
+                    # end_iso -> end: check_conflict reads s["end"]. Leave it and
+                    # every offer is zero-length and nothing ever fires.
+                    offers_by_uid.setdefault(uid, []).append({
+                        "start":        o.get("start"),
+                        "end":          o.get("end_iso"),
+                        "venue":        o.get("venue") or "",
+                        "call_id":      o.get("call_id"),
+                        "booking_id":   o.get("booking_id"),
+                        "call_name":    o.get("call_name") or "",
+                        "booking_name": o.get("booking_name") or "",
+                        "status":       o.get("status"),
+                        "is_offer":     True,
+                    })
+
             count = 0
             for crew in all_crew[:50]:  # cap at 50 for speed
                 cid = crew["id"]
@@ -11201,7 +11342,15 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
                     if d > float(radius_km):
                         results["skipped"].append(f"{crew['name']} ({round(d)} km away)")
                         continue
-                shifts = [s for s in shifts_by_name.get(crew["name"], []) if s.get("status") == 5]
+                _all_shifts = shifts_by_name.get(crew["name"], [])
+                shifts = [s for s in _all_shifts if s.get("status") == 5]
+                # De-dup against the calendar-derived set, same reason as the
+                # Finder: update-call.php re-syncs the calendar for every
+                # call_crew_map row whatever its status, so an offer on a call
+                # somebody later edited already has a calendars row here.
+                _held_ids = set(str(s.get("call_id")) for s in _all_shifts)
+                offers = [o for o in offers_by_uid.get(str(cid), [])
+                          if str(o.get("call_id")) not in _held_ids]
                 conflict = False
                 warnings = []
                 for t in targets:
@@ -11222,6 +11371,34 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
                         shifts_for_target, t["start"], t["end"], t.get("venue",""), rules=(2, 3, 4))
                     if w_flag and w_reason not in warnings:
                         warnings.append(w_reason)
+
+                    # PASS 3 — open offers, gated behind pass 2 exactly as the
+                    # Finder gates it: one row, one reason. Never a conflict (D1)
+                    # — an offer holds no time and may be declined. This arm has
+                    # no timeline and no pills, so the "Open offer: " prefix is
+                    # the whole surface.
+                    if not w_flag and offers:
+                        offers_for_target = [o for o in offers
+                                             if str(o.get("call_id")) != str(t.get("call_id"))]
+                        oc, o_reason, _ = check_conflict(
+                            offers_for_target, t["start"], t["end"], t.get("venue",""),
+                            rules=(1, 2, 3))
+                        # Rule 4 totals hours in a rolling 24h window, so run over
+                        # offers alone it misses the confirmed work sitting between
+                        # them. Run it over confirmed UNION offered, and report it
+                        # only when it does not already fire on confirmed alone.
+                        if not oc:
+                            already, _, _ = check_conflict(
+                                shifts_for_target, t["start"], t["end"], t.get("venue",""),
+                                rules=(4,))
+                            if not already:
+                                oc, o_reason, _ = check_conflict(
+                                    shifts_for_target + offers_for_target,
+                                    t["start"], t["end"], t.get("venue",""), rules=(4,))
+                        if oc:
+                            o_msg = f"Open offer: {o_reason}"
+                            if o_msg not in warnings:
+                                warnings.append(o_msg)
                 if not conflict:
                     entry = {
                         "name": crew["name"],
