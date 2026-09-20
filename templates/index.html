@@ -246,20 +246,57 @@ tr.skipped{opacity:.6}
 .rating-cell{text-align:center;font-weight:500}
 .section-row td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
 /* TIMELINE VIEW */
-.timeline-wrap{flex:1;overflow:auto;padding:0}
-.tl-table{width:100%;border-collapse:collapse;min-width:900px}
+.tl-table{width:100%;border-collapse:collapse}
 .tl-table thead th{background:var(--surface);padding:8px 12px;text-align:left;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:10;white-space:nowrap}
 .tl-table tbody tr{border-bottom:1px solid var(--border);transition:background .08s}
 .tl-table tbody tr:hover{background:var(--surface2)}
 .tl-table tbody tr.row-selected{background:var(--accent-bg)!important}
 .tl-table td{padding:5px 12px;vertical-align:middle;white-space:nowrap}
-/* Timeline column: 600px viewport. The header (.tl-th-scroll) is the ONE real
-   horizontal scroller — its scrollbar is the visible "bar at the top". Body
-   cells only clip; their inner is moved with a transform to match the header.
-   One scroller (not N synced ones) = consistent in Safari as well as Chrome. */
-.tl-cell{padding:3px 0!important;width:600px;min-width:600px;max-width:600px;overflow:hidden}
+/* Timeline column: ELASTIC viewport (was a hard 600px). The header
+   (.tl-th-scroll) is still the ONE real horizontal scroller — its scrollbar is
+   the visible "bar at the top". Body cells only clip; their inner is moved with
+   a transform to match the header. One scroller (not N synced ones) =
+   consistent in Safari as well as Chrome.
+   --tl-vw is set ONCE on the table by renderTimeline (and again on resize, on a
+   column toggle, and after a Name drag) to whatever width is left over. One
+   property write repaints all 290 rows — never walk the cells. The 600px
+   fallback is what a pre-measure render gets, so the column is never 0 wide. */
+.tl-cell{padding:3px 0!important;width:var(--tl-vw,600px);min-width:var(--tl-vw,600px);max-width:var(--tl-vw,600px);overflow:hidden}
 .tl-inner{position:relative;height:24px;will-change:transform}
-.tl-th-scroll{padding:0!important;width:600px;min-width:600px;max-width:600px;overflow-x:auto;overflow-y:hidden}
+.tl-th-scroll{padding:0!important;width:var(--tl-vw,600px);min-width:var(--tl-vw,600px);max-width:var(--tl-vw,600px);overflow-x:auto;overflow-y:hidden}
+/* Column visibility — targeted by data-col, NEVER nth-child: the Dist column
+   only exists while a distance filter is on, so column indices shift. */
+.tl-table[data-hide~="phone"] [data-col="phone"],
+.tl-table[data-hide~="rating"] [data-col="rating"],
+.tl-table[data-hide~="groups"] [data-col="groups"],
+.tl-table[data-hide~="detail"] [data-col="detail"]{display:none}
+/* Sticky crew identity: checkbox + Name never scroll out of view, whatever the
+   window width. A sticky cell paints over the row background, so tr:hover and
+   tr.row-selected have to be mirrored here or shift bars slide visibly under. */
+.tl-table th[data-col="cb"],.tl-table td[data-col="cb"]{position:sticky;left:0;background:var(--bg);z-index:5}
+.tl-table th[data-col="name"],.tl-table td[data-col="name"]{position:sticky;left:36px;background:var(--bg);z-index:5}
+.tl-table thead th[data-col="cb"],.tl-table thead th[data-col="name"]{background:var(--surface);z-index:11}
+.tl-table tbody tr:hover td[data-col="cb"],.tl-table tbody tr:hover td[data-col="name"]{background:var(--surface2)}
+.tl-table tbody tr.row-selected td[data-col="cb"],.tl-table tbody tr.row-selected td[data-col="name"]{background:var(--accent-bg)}
+/* Name column width is operator-set (grip on the header). Triple-pinned for the
+   same reason .tl-cell is: auto table layout ignores a lone width. */
+.tl-table th[data-col="name"],.tl-table td[data-col="name"]{width:var(--nm-w,220px);min-width:var(--nm-w,220px);max-width:var(--nm-w,220px);overflow:hidden}
+/* The NAME truncates when the column narrows; the badges never do. Licence,
+   induction, push, conflict and offer-clash chips are safety signals — a
+   clipped surname costs nothing (the hover card still has it), a clipped
+   induction warning could put uninducted crew on a Marvel Stadium call. */
+.nm-wrap{display:flex;align-items:center;gap:4px;min-width:0}
+.nm-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.nm-badges{flex:none;white-space:nowrap}
+/* Resize grip: 7px wide, ~12px hit area via ::before. The hairline shows only
+   on hover / keyboard focus so the header stays clean. */
+.nm-grip{position:absolute;top:0;right:0;bottom:0;width:7px;cursor:col-resize;user-select:none}
+.nm-grip::before{content:'';position:absolute;left:-5px;right:0;top:0;bottom:0}
+.nm-grip:hover::after,.nm-grip:focus-visible::after{content:'';position:absolute;right:3px;top:5px;bottom:5px;width:1px;background:var(--accent)}
+body.cf-nm-resizing{cursor:col-resize;user-select:none}
+/* Columns popover — narrower than .cf-dropdown and right-anchored, because it
+   hangs off the right-hand end of the results-actions row. */
+.cf-coldd{left:auto;right:0;width:210px}
 .tl-th-scroll::-webkit-scrollbar{height:10px}
 .tl-th-scroll::-webkit-scrollbar-track{background:var(--surface2)}
 .tl-th-scroll::-webkit-scrollbar-thumb{background:var(--border-gold);border-radius:5px}
@@ -436,6 +473,9 @@ tr.skipped{opacity:.6}
 body.cf-focus nav,
 body.cf-focus .tab-bar,
 body.cf-focus .subtab-bar{display:none}
+/* Sidebar collapse — the horizontal twin of focus mode. Scoped to the Crew
+   Finder panel: .sidebar is a shared class and must not collapse elsewhere. */
+body.cf-sb-collapsed #tab-crew-finder > .sidebar{width:0;min-width:0;border-right:none}
 .subtab-group .tab-btn{height:28px;padding:0 18px;font-size:12px;font-weight:600;letter-spacing:.04em;border-bottom:none}
 .subtab-group .tab-btn.active{background:var(--accent);color:#000;border-bottom:none}
 /* Inactive crew aren't scheduled or inducted (slice 2 §6a): the Utilization and
@@ -1842,6 +1882,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         <button id="goat-ask-btn" class="btn" onclick="askGoatCrew()">Ask</button>
         <div id="goat-ask-status" class="goat-ask-status" style="display:none"></div>
       </div>
+      <button type="button" class="btn" id="cf-sb-btn" onclick="cfToggleSidebar()"
+              title="Collapse the Unfilled Calls list to widen the schedule">&#10094; Calls</button>
       <button type="button" class="btn" id="cf-focus-btn" onclick="cfToggleFocus()"
               title="Hide the top bars to fit more crew on screen (Esc to exit)">&#10530; Focus</button>
     </div>
@@ -1856,6 +1898,20 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
       <div class="results-actions">
         <button class="btn" id="view-table-btn" onclick="setView('table')">&#9776; Table</button>
         <button class="btn btn-view-active" id="view-tl-btn" onclick="setView('timeline')">&#9632; Timeline</button>
+        <span class="cf-tool-filters">
+          <button type="button" class="btn" id="cf-cols-btn" onclick="cfToggleCols(event)"
+                  title="Hide columns to give the schedule more room">&#9776; Columns <span class="cf-fb-count" id="cf-cols-count" style="display:none">0</span> &#9662;</button>
+          <div class="cf-dropdown cf-coldd" id="cf-cols-dropdown">
+            <div class="cf-dd-sec">
+              <div class="cf-dd-lbl">Show columns</div>
+              <div id="cf-cols-list" style="display:flex;flex-direction:column;gap:8px"></div>
+            </div>
+            <div class="cf-dd-sec">
+              <div class="cf-dd-lbl">Name column</div>
+              <button type="button" class="btn" style="width:100%" onclick="cfResetNameWidth()">Reset width</button>
+            </div>
+          </div>
+        </span>
         <span style="width:1px;height:20px;background:var(--border);display:inline-block"></span>
         <button class="btn" onclick="selectAll()">Select All</button>
         <button class="btn" onclick="clearAll()">Clear</button>
@@ -2773,6 +2829,9 @@ async function loadWhoami(){
     window._ssBase = d.ss_base || window._ssBase;
     window._identity = d;
     applyCohort(d);
+    // Crew Finder layout prefs are keyed by pref_key, so they can only be read
+    // once identity has resolved — goatPrefs falls back to 'anon' before that.
+    cfRestoreLayoutPrefs();
     return window._cohort;
   }catch(e){
     // Fail closed to least privilege if identity can't be read.
@@ -3263,6 +3322,8 @@ document.addEventListener('click', function(e){
   if(dd&&dd.classList.contains('open')&&!dd.contains(t)&&btn&&!btn.contains(t)){ dd.classList.remove('open'); }
   const ldd=document.getElementById('crew-lic-dropdown'), lbtn=document.getElementById('crew-lic-btn');
   if(ldd&&ldd.classList.contains('open')&&!ldd.contains(t)&&lbtn&&!lbtn.contains(t)){ ldd.classList.remove('open'); }
+  const cdd=document.getElementById('cf-cols-dropdown'), cbtn=document.getElementById('cf-cols-btn');
+  if(cdd&&cdd.classList.contains('open')&&!cdd.contains(t)&&cbtn&&!cbtn.contains(t)){ cdd.classList.remove('open'); }
 });
 function setGeoMode(mode){
   geoMode=mode;
@@ -4774,6 +4835,168 @@ function addTableRow(tbody,crew,status,targets){
   tbody.appendChild(tr);
 }
 
+// ── CREW FINDER COLUMN LAYOUT ───────────────────────────────────────
+// Joe, 21 Sep 2026: "only about 1/3 of the screen is available to view the
+// schedule, and scrolling to the left hides the crew names." Three separate
+// causes, fixed together:
+//   1. .tl-cell was pinned to a hard 600px, so hiding a column would have freed
+//      whitespace, not schedule. It reads --tl-vw now, measured per render.
+//   2. Total table width exceeded the window, so #results-wrap scrolled sideways
+//      and took the Name column with it. Checkbox + Name are sticky now.
+//   3. The body appended a Detail <td> with no matching <th> (~260px) — which is
+//      also why addSecRow's colSpan was one short. Detail is a real column now.
+// Availability is deliberately NOT hideable: it is the answer to the question
+// the operator is actually asking.
+const CF_HIDEABLE=[{id:'phone',label:'Phone'},{id:'rating',label:'Rating'},
+                   {id:'groups',label:'Groups'},{id:'detail',label:'Detail'}];
+const CF_NM_MIN=120, CF_NM_MAX=420, CF_NM_DEFAULT=220;
+// Module-level, NOT per render: renderResults re-runs on every keystroke of the
+// name filter, so a listener created inside renderTimeline would stack up one
+// per keypress. _tlRelayout never re-renders — an open crew detail row and the
+// operator's scroll position both have to survive a resize or a column toggle.
+let _tlRelayout=null, _tlResizeFn=null, _tlResizeRaf=null;
+
+function cfHiddenCols(){
+  const v=goatPrefs.get('crewFinder','hiddenCols',[]);
+  if(!Array.isArray(v)) return [];
+  return v.filter(id=>CF_HIDEABLE.some(c=>c.id===id));
+}
+function cfNameColW(){
+  const n=parseInt(goatPrefs.get('crewFinder','nameColW',CF_NM_DEFAULT),10);
+  return isNaN(n)?CF_NM_DEFAULT:Math.max(CF_NM_MIN,Math.min(CF_NM_MAX,n));
+}
+// Hidden state must never be invisible, or the next operator files a bug about
+// missing phone numbers. Same badge the Filters button uses.
+function cfColsBadge(){
+  const n=cfHiddenCols().length;
+  const el=document.getElementById('cf-cols-count');
+  if(el){ el.textContent=n; el.style.display=n?'inline-flex':'none'; }
+}
+function cfToggleCols(e){
+  if(e) e.stopPropagation();
+  const dd=document.getElementById('cf-cols-dropdown');
+  if(!dd) return;
+  cfRenderColsMenu();
+  dd.classList.toggle('open');
+}
+function cfRenderColsMenu(){
+  const box=document.getElementById('cf-cols-list');
+  if(!box) return;
+  const hidden=cfHiddenCols();
+  box.innerHTML='';
+  CF_HIDEABLE.forEach(c=>{
+    const lab=document.createElement('label');
+    lab.className='cf-dd-check';
+    const cb=document.createElement('input');
+    cb.type='checkbox';
+    cb.checked=hidden.indexOf(c.id)===-1;
+    cb.onchange=()=>cfSetCol(c.id,cb.checked);
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(' '+c.label));
+    box.appendChild(lab);
+  });
+}
+function cfSetCol(id,show){
+  const hidden=cfHiddenCols().filter(x=>x!==id);
+  if(!show) hidden.push(id);
+  goatPrefs.set('crewFinder','hiddenCols',hidden);
+  const table=document.querySelector('#results-wrap .tl-table');
+  if(table) table.dataset.hide=hidden.join(' ');
+  cfColsBadge();
+  if(_tlRelayout) _tlRelayout();     // the freed pixels go to the schedule
+}
+function cfResetNameWidth(){ cfApplyNameWidth(CF_NM_DEFAULT); }
+function cfApplyNameWidth(px){
+  const w=Math.max(CF_NM_MIN,Math.min(CF_NM_MAX,Math.round(px)));
+  goatPrefs.set('crewFinder','nameColW',w);
+  const table=document.querySelector('#results-wrap .tl-table');
+  if(table) table.style.setProperty('--nm-w',w+'px');
+  if(_tlRelayout) _tlRelayout();
+  return w;
+}
+// Sidebar collapse — the horizontal twin of focus mode. The toggle lives in the
+// always-visible cf-toolbar, never inside the sidebar: a control that vanishes
+// with the thing it collapses strands the operator.
+function cfToggleSidebar(on){
+  const want=(on===undefined)?!document.body.classList.contains('cf-sb-collapsed'):!!on;
+  document.body.classList.toggle('cf-sb-collapsed',want);
+  goatPrefs.set('crewFinder','sidebarCollapsed',want);
+  const b=document.getElementById('cf-sb-btn');
+  if(b){ b.innerHTML=(want?'&#10095;':'&#10094;')+' Calls'; b.classList.toggle('btn-view-active',want); }
+  if(_tlRelayout) _tlRelayout();
+}
+function cfRestoreLayoutPrefs(){
+  cfColsBadge();
+  if(goatPrefs.get('crewFinder','sidebarCollapsed',false)) cfToggleSidebar(true);
+}
+// The Columns popover owns Escape while it is open. Registered HERE, above the
+// documented Esc ladder near the end of this file (call dialog → ops dialog →
+// palette → crew detail row → focus mode): without stopImmediatePropagation,
+// closing this menu would also drop the operator out of focus mode.
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Escape') return;
+  const dd=document.getElementById('cf-cols-dropdown');
+  if(dd&&dd.classList.contains('open')){ dd.classList.remove('open'); e.stopImmediatePropagation(); }
+});
+// Auto-fit samples the first 200 rows, not all 290 — scrollWidth forces layout.
+function cfAutoFitName(table){
+  let max=0,n=0;
+  const wraps=table.querySelectorAll('tbody td[data-col="name"] .nm-wrap');
+  for(const w of wraps){
+    if(n++>200) break;
+    const t=w.querySelector('.nm-text'), b=w.querySelector('.nm-badges');
+    const need=(t?t.scrollWidth:0)+(b?b.offsetWidth:0);
+    if(need>max) max=need;
+  }
+  return Math.max(CF_NM_MIN,Math.min(CF_NM_MAX,Math.ceil(max)+28));
+}
+// Drag handle on the Name header. stopPropagation on BOTH mousedown and click
+// is load-bearing: the Name <th> carries th.onclick=sortByHeader('name'), and a
+// sort mid-drag re-renders the table and destroys the node being dragged.
+function cfAttachNameGrip(th,table){
+  const grip=document.createElement('div');
+  grip.className='nm-grip';
+  grip.tabIndex=0;
+  grip.setAttribute('role','separator');
+  grip.setAttribute('aria-orientation','vertical');
+  grip.setAttribute('aria-label','Resize name column');
+  grip.title='Drag to resize · double-click to fit';
+  grip.addEventListener('click',function(e){ e.stopPropagation(); });
+  grip.addEventListener('dblclick',function(e){
+    e.stopPropagation(); e.preventDefault();
+    cfApplyNameWidth(cfAutoFitName(table));
+  });
+  grip.addEventListener('mousedown',function(e){
+    e.stopPropagation(); e.preventDefault();
+    const x0=e.clientX, w0=cfNameColW();
+    document.body.classList.add('cf-nm-resizing');
+    // Live feedback while dragging, but the preference is written ONCE on
+    // mouseup — never per mousemove.
+    function mv(ev){
+      const w=Math.max(CF_NM_MIN,Math.min(CF_NM_MAX,w0+(ev.clientX-x0)));
+      table.style.setProperty('--nm-w',w+'px');
+    }
+    function up(ev){
+      document.removeEventListener('mousemove',mv);
+      document.removeEventListener('mouseup',up);
+      document.body.classList.remove('cf-nm-resizing');
+      cfApplyNameWidth(w0+(ev.clientX-x0));
+    }
+    document.addEventListener('mousemove',mv);
+    document.addEventListener('mouseup',up);
+  });
+  grip.addEventListener('keydown',function(e){
+    let d=0;
+    if(e.key==='ArrowLeft') d=e.shiftKey?-48:-16;
+    else if(e.key==='ArrowRight') d=e.shiftKey?48:16;
+    else if(e.key==='Home'){ e.preventDefault(); e.stopPropagation(); cfApplyNameWidth(cfAutoFitName(table)); return; }
+    else return;
+    e.preventDefault(); e.stopPropagation();
+    cfApplyNameWidth(cfNameColW()+d);
+  });
+  th.appendChild(grip);
+}
+
 // ── TIMELINE VIEW ──
 function renderTimeline(result,details,targets){
   const{available,conflicts,skipped}=result;
@@ -4795,14 +5018,14 @@ function renderTimeline(result,details,targets){
   }));
 
   // Scrollable bounds: 24h before earliest call start, 24h after latest call end.
-  // Default viewport (600px @ 25 px/h) shows a 24h window centred on shift midpoint.
+  // The viewport is measured per render (see tlMeasure below) and centred on the
+  // shift midpoint — at 25 px/h, every 25px of reclaimed width is another hour.
   const callStart=Math.min(...targetWindows.map(t=>t.startH));
   const callEnd  =Math.max(...targetWindows.map(t=>t.endH));
   const tlMin=callStart-24;
   const tlMax=callEnd  +24;
   const tlTotal=tlMax-tlMin||1;
   const PX_PER_HOUR=25;
-  const VIEWPORT_W=600;
   const innerWidth=tlTotal*PX_PER_HOUR;
   function pxD(h){return(h-tlMin)*PX_PER_HOUR}
   // Tick lines every 2h; time labels every 4h
@@ -4814,16 +5037,25 @@ function renderTimeline(result,details,targets){
   wrap.innerHTML='';
   const table=document.createElement('table');
   table.className='tl-table';
+  table.dataset.hide=cfHiddenCols().join(' ');
+  table.style.setProperty('--nm-w',cfNameColW()+'px');
   const thead=document.createElement('thead');
   const hrow=document.createElement('tr');
   _geoActive = !!result.origin_label;   // mirror table view: Dist column only when distance filter is on
-  const tlCols = _geoActive
-    ? ['','Name','Availability','Dist','Phone','Rating','Groups','Timeline']
-    : ['','Name','Availability','Phone','Rating','Groups','Timeline'];
-  const tlIdx = tlCols.length - 1;       // Timeline is always the last column
+  // [label, column id]. The id drives hiding via CSS attribute selectors — never
+  // nth-child, because Dist only exists while a distance filter is on and every
+  // index after it shifts. Detail is a REAL column here now; table view has had
+  // its <th> all along (see the table-view cols string), the timeline header was
+  // the odd one out, which is what made addSecRow's colSpan one short.
+  const tlDefs = _geoActive
+    ? [['','cb'],['Name','name'],['Availability','avail'],['Dist','dist'],['Phone','phone'],['Rating','rating'],['Groups','groups'],['Timeline','tl'],['Detail','detail']]
+    : [['','cb'],['Name','name'],['Availability','avail'],['Phone','phone'],['Rating','rating'],['Groups','groups'],['Timeline','tl'],['Detail','detail']];
+  const tlCols = tlDefs.map(d=>d[0]);
+  const tlIdx = tlDefs.findIndex(d=>d[1]==='tl');   // Timeline is no longer last
   const TL_SORT_KEYS={'Name':'name','Availability':'availability','Status':'availability','Dist':'distance','Rating':'rating'};
   tlCols.forEach((h,i)=>{
     const th=document.createElement('th');
+    th.dataset.col=tlDefs[i][1];
     if(i===0)th.style.width='36px';
     if(i===tlIdx){
       th.className='tl-th-scroll';
@@ -4844,6 +5076,7 @@ function renderTimeline(result,details,targets){
         th.innerHTML=h+(active?'<span class="th-arrow">'+(_sortDir==='asc'?'\u25B2':'\u25BC')+'</span>':'');
         th.onclick=()=>sortByHeader(sk);
       } else { th.textContent=h; }
+      if(tlDefs[i][1]==='name') cfAttachNameGrip(th,table);
     }
     hrow.appendChild(th);
   });
@@ -4867,7 +5100,7 @@ function renderTimeline(result,details,targets){
     const isSelectable=status==='available'||status==='partial';
     const isWarned=!!(crew.conflict_warnings&&crew.conflict_warnings.length);
     const tr=document.createElement('tr');tr.className=(status==='partial'?'partial available':status)+(isWarned?' warned':'');
-    const cbTd=document.createElement('td');cbTd.className='cb-cell';
+    const cbTd=document.createElement('td');cbTd.className='cb-cell';cbTd.dataset.col='cb';
     if(isSelectable){
       const cb=document.createElement('input');cb.type='checkbox';
       cb.addEventListener('change',e=>{
@@ -4879,22 +5112,25 @@ function renderTimeline(result,details,targets){
       cbTd.appendChild(cb);
     }
     tr.appendChild(cbTd);
-    function mkTd(cls,html,title){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;return td}
+    function mkTd(cls,html,title,col){const td=document.createElement('td');td.className=cls;td.innerHTML=html;if(title)td.title=title;if(col)td.dataset.col=col;return td}
     const ph=phoneLink(crew.phone);
-    const nameTd=mkTd('name-cell','<span class="crew-name">'+crew.name+'</span>'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew)+offerClashHtml(crew));
+    // Two children, deliberately: .nm-text truncates when the column is narrowed,
+    // .nm-badges never does. The badge order (warnings before ticks) is the one
+    // the licence/induction helpers already establish — do not reorder.
+    const nameTd=mkTd('name-cell','<div class="nm-wrap"><span class="nm-text"><span class="crew-name">'+crew.name+'</span></span><span class="nm-badges">'+licenceBadgeHtml(crew)+inductionWarnHtml(crew)+pushWarnHtml(crew)+conflictWarnHtml(crew)+offerClashHtml(crew)+'</span></div>',null,'name');
     tr.appendChild(nameTd);
     attachCrewCardHover(nameTd,crew);
-    tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew)));
+    tr.appendChild(mkTd('',statusLabel(crew,targets&&targets.length?targets:null,status)+breakdownHtml(crew),null,'avail'));
     if(_geoActive){
       const dkm=(crew.distance_km!=null)?crew.distance_km+' km':'\u2014';
-      tr.appendChild(mkTd('dist-cell',dkm));
+      tr.appendChild(mkTd('dist-cell',dkm,null,'dist'));
     }
-    tr.appendChild(mkTd('phone-cell',ph));
-    tr.appendChild(mkTd('rating-cell',crew.rating));
-    tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', ')));
+    tr.appendChild(mkTd('phone-cell',ph,null,'phone'));
+    tr.appendChild(mkTd('rating-cell',crew.rating,null,'rating'));
+    tr.appendChild(mkTd('groups-cell',(crew.groups||[]).join(', '),(crew.groups||[]).join(', '),'groups'));
 
     // Timeline cell — px-based, scrollable
-    const tlTd=document.createElement('td');tlTd.className='tl-cell';
+    const tlTd=document.createElement('td');tlTd.className='tl-cell';tlTd.dataset.col='tl';
     const inner=document.createElement('div');inner.className='tl-inner';
     inner.style.width=innerWidth+'px';
     dynTicks.forEach(h=>{const line=document.createElement('div');line.className='tl-grid';line.style.left=pxD(h)+'px';inner.appendChild(line)});
@@ -4976,6 +5212,7 @@ function renderTimeline(result,details,targets){
     const detail=[...detailParts,...warnParts,...indParts].join(' | ')||(crew.detail||crew.reason||'');
     const dtd=document.createElement('td');
     dtd.className='detail-cell'+(status==='skipped'?' skip':'');
+    dtd.dataset.col='detail';
     dtd.title=detail;dtd.textContent=detail;
     dtd.style.maxWidth='260px';dtd.style.overflow='hidden';dtd.style.textOverflow='ellipsis';
     tr.appendChild(dtd);
@@ -4998,11 +5235,34 @@ function renderTimeline(result,details,targets){
   }
   table.appendChild(tbody);wrap.appendChild(table);
 
-  // Centre the shift midpoint in the 600px viewport, then drive everything from
-  // the single header scroller: on its scroll, translate every body row to match.
+  // ── ELASTIC WIDTH ──
+  // Measured AFTER append (offsetWidth is 0 before it) and BEFORE the centring
+  // maths below, which clamps against the viewport width — measuring second
+  // would land the view off-centre. The table is briefly dropped to width:auto
+  // with a zero-width timeline so the other columns report their NATURAL width;
+  // with width:100% the table algorithm stretches them and 'used' comes back too
+  // large, which would shrink the timeline a little more on every relayout.
+  function tlMeasure(){
+    const prevW=table.style.width;
+    table.style.width='auto';
+    table.style.setProperty('--tl-vw','0px');
+    let used=0;
+    for(const th of hrow.children){ if(th!==headerScroller) used+=th.offsetWidth; }
+    const avail=wrap.clientWidth-used-2;      // -2: table border
+    table.style.width=prevW;
+    // Never wider than the scrollable span itself, or a 27" iMac leaves dead
+    // grey to the right of the last hour.
+    const w=Math.max(320,Math.min(avail,innerWidth));
+    table.style.setProperty('--tl-vw',w+'px');
+    return w;
+  }
+  let tlVw=tlMeasure();
+
+  // Centre the shift midpoint in the measured viewport, then drive everything
+  // from the single header scroller: on its scroll, translate every body row.
   const midH=(callStart+callEnd)/2;
-  let initialScroll=pxD(midH)-VIEWPORT_W/2;
-  initialScroll=Math.max(0,Math.min(initialScroll,Math.max(0,innerWidth-VIEWPORT_W)));
+  let initialScroll=pxD(midH)-tlVw/2;
+  initialScroll=Math.max(0,Math.min(initialScroll,Math.max(0,innerWidth-tlVw)));
 
   function applyBodyScroll(x){
     const tx='translateX('+(-x)+'px)';
@@ -5010,6 +5270,27 @@ function renderTimeline(result,details,targets){
   }
   headerScroller.scrollLeft=initialScroll;
   applyBodyScroll(initialScroll);
+
+  // Re-measure on a window resize, a column toggle, a sidebar collapse and after
+  // a Name-column drag. Deliberately NOT a re-render: an open crew detail row and
+  // the operator's scroll position both have to survive.
+  _tlRelayout=function(){
+    if(!document.body.contains(table)) return;
+    tlVw=tlMeasure();
+    const maxScroll=Math.max(0,innerWidth-tlVw);
+    if(headerScroller.scrollLeft>maxScroll) headerScroller.scrollLeft=maxScroll;
+    applyBodyScroll(headerScroller.scrollLeft);
+  };
+  if(_tlResizeFn) window.removeEventListener('resize',_tlResizeFn);
+  _tlResizeFn=function(){
+    if(_tlResizeRaf) return;
+    _tlResizeRaf=requestAnimationFrame(function(){
+      _tlResizeRaf=null;
+      if(!document.body.contains(table)){ window.removeEventListener('resize',_tlResizeFn); return; }
+      _tlRelayout();
+    });
+  };
+  window.addEventListener('resize',_tlResizeFn);
   // The header is the only real scroller; rows follow via transform. Using rAF
   // coalesces the (sometimes async in Safari) scroll events into one paint.
   let _tlRaf=null;
