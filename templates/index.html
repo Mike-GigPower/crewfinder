@@ -5250,9 +5250,15 @@ function renderTimeline(result,details,targets){
     for(const th of hrow.children){ if(th!==headerScroller) used+=th.offsetWidth; }
     const avail=wrap.clientWidth-used-2;      // -2: table border
     table.style.width=prevW;
-    // Never wider than the scrollable span itself, or a 27" iMac leaves dead
-    // grey to the right of the last hour.
-    const w=Math.max(320,Math.min(avail,innerWidth));
+    // The timeline takes ALL the remaining width, even when the scrollable span
+    // is shorter than that. It was briefly clamped to innerWidth to avoid dead
+    // space right of the last hour — but the table is width:100%, so whatever
+    // the clamp left over got redistributed by the table algorithm into the only
+    // column without a pinned width: Availability. A 60px status pill sat in a
+    // 485px column (reported 21 Sep 2026). Slack has to land somewhere; inside
+    // the schedule column, where the grid lines show the range ending, is the
+    // one place it reads as deliberate rather than broken.
+    const w=Math.max(320,avail);
     table.style.setProperty('--tl-vw',w+'px');
     return w;
   }
