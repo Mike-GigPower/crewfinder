@@ -1,6 +1,6 @@
 {
-  "version": "5.55.0",
+  "version": "5.56.0",
   "release_date": "2026-09-21",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.55.0/TheGOAT.dmg",
-  "release_notes": "The Crew Finder timeline now fills the window — hide the columns you do not need, resize the crew name column, and collapse the calls sidebar to see far more of the schedule at once. Crew names stay put when you scroll sideways."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.56.0/TheGOAT.dmg",
+  "release_notes": "The Crew Finder guide in Docs has been rewritten from top to bottom and now has screenshots throughout — filters, the conflict rules, open offers, and how to get the most schedule onto your screen."
 }
