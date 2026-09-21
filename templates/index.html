@@ -4587,12 +4587,26 @@ function hideCrewCard(){ if(_crewCardEl) _crewCardEl.style.display='none'; }
 // Wire a name cell to the hover card. 220ms intent delay so quick scans don't pop it.
 function attachCrewCardHover(td,crew){
   if(!crew) return;
-  const nameSpan=td.querySelector('.crew-name')||td;
-  td.addEventListener('mouseenter',()=>{
+  // Two separate elements, deliberately.
+  //
+  // TRIGGER is the name TEXT, not the whole cell. The cell also holds the
+  // licence / induction / push / conflict chips, and hovering one of those to
+  // read its tooltip used to open the photo card on top of it — the tooltip
+  // then painted over the card and neither could be read (reported 21 Sep 2026).
+  // Hovering a chip now leaves the card closed, and moving from the name onto a
+  // chip dismisses it.
+  //
+  // ANCHOR is the CELL. Anchoring to the name text would start the card
+  // part-way across the Name column — the text is truncated and narrower than
+  // the column — covering the very chips the trigger change exists to expose.
+  // Against the cell, the card always begins just past the Name column's right
+  // edge, in the same place on every row.
+  const nameSpan=td.querySelector('.nm-text')||td.querySelector('.crew-name')||td;
+  nameSpan.addEventListener('mouseenter',()=>{
     clearTimeout(_crewCardTimer);
-    _crewCardTimer=setTimeout(()=>showCrewCard(nameSpan,crew),220);
+    _crewCardTimer=setTimeout(()=>showCrewCard(td,crew),220);
   });
-  td.addEventListener('mouseleave',()=>{
+  nameSpan.addEventListener('mouseleave',()=>{
     clearTimeout(_crewCardTimer);
     hideCrewCard();
   });
