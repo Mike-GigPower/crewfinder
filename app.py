@@ -522,6 +522,68 @@ GOAT_AUDIT_LOG_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat
 RECRUITMENT_VALID_STATUSES = {"applied", "invited_to_induction", "booked", "attended", "details_submitted", "sent_to_eh", "all_docs_received", "on_hold", "not_suitable"}
 GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config().get("goat_recruitment_key", "")
 
+# ─── LIVE CHECK-IN PILOT (slice 2: the mode switch) ───────────────────────────
+# The pilot mode for one booking — Off or Shadow. THE GOAT reaches Supabase only
+# through edge functions, so this proxies checkin-booking-mode exactly as the
+# recruitment routes above proxy theirs. See BRIEF-live-checkin-slices-1-2.md §2.
+CHECKIN_BOOKING_MODE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/checkin-booking-mode"
+# A NEW, DEDICATED secret — deliberately not GOAT_RECRUITMENT_KEY, so the pilot
+# switch can be revoked on its own without taking recruitment down with it. Same
+# discipline as every other key here: env first, then the gitignored config.json,
+# never hardcoded, and never sent to the browser.
+GOAT_CHECKIN_KEY = os.environ.get("GOAT_CHECKIN_KEY", "") or load_config().get("goat_checkin_key", "")
+# The only modes this doorway may set — must match the edge function exactly.
+# 'live' is absent ON PURPOSE. It reaches payroll, and it is added by slice 7's
+# own migration only after the pilot's exit criteria are met (design §2.1, Q45).
+CHECKIN_VALID_MODES = {"off", "shadow"}
+# The pilot switch is held by one person until the exit criteria are met
+# (DESIGN-live-checkin-v0_1 §2.2, §9). Keyed on SmartStaff userID, NOT EIN:
+# admin accounts return ein "0" from whoami, so an EIN gate would either match
+# every admin or none of them.
+#
+# 10261 is Mike's ADMIN account (usergroupID 1, ein "0") — the account THE GOAT
+# is actually logged in as. One person can hold two SmartStaff accounts: an
+# admin login and a separate crew record. Mike's crew record is userID 9734,
+# EIN 5925, and THE GOAT never logs in as it, so gating on 9734 refuses the only
+# person the switch is for. BRIEF-live-checkin-slices-1-2.md §2.2 gives 9734 and
+# is WRONG; confirmed live against whoami before this was changed.
+#
+# The rule this encodes, for whoever widens the set later: the id here is the
+# one whoami returns for the account the operator SIGNS IN WITH, which for every
+# operator in THE GOAT is their admin account. A crew userID never appears here.
+# (checkin_taps.user_id is the opposite case — those ARE crew userIDs, resolved
+# from EIN, which is why the two must never be copied between each other.)
+#
+# Be clear about what this is: the key ships inside every DMG, so this is
+# enforced by THE GOAT, not by cryptography. That is acceptable here only
+# because the worst available misuse is putting a booking into Shadow — which
+# cannot reach payroll, because the table's check constraint refuses 'live'.
+# Widening this set is a decision for the end of the pilot.
+#
+# NOTE for testing: admin elevation replaces the session identity wholesale (see
+# /api/elevate-admin), so elevating with a SHARED admin account puts that
+# account's userID here, not Mike's, and the switch will 403. Signing in as
+# 10261 directly, or elevating with those same credentials, both work.
+CHECKIN_PILOT_SWITCHERS = {10261}
+
+def current_checkin_switcher_id():
+    """The current session's SmartStaff userID if they hold the pilot switch,
+    else None.
+
+    Identity comes from the server-side session (whoami), never from anything
+    the client sends. The field is `user_id` — snake case — and it can be None,
+    "", 0 or "0" for accounts whoami couldn't fully resolve, so it is coerced
+    the same defensive way the candidate-notes route coerces it."""
+    ident = current_identity() or {}
+    raw = ident.get("user_id")
+    if raw in (None, "", 0, "0"):
+        return None
+    try:
+        uid = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return uid if uid in CHECKIN_PILOT_SWITCHERS else None
+
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
 # When True, the app will try the new bulk SmartStaff endpoints first and fall
 # back to HTML scraping on any failure. Safe to leave True even before the
@@ -14600,6 +14662,139 @@ def api_generate_gsheet(booking_id):
         _save_timesheet_link(booking_id, result["spreadsheet_id"], result.get("url"))
 
     return jsonify(result)
+
+
+# ─── LIVE CHECK-IN PILOT MODE (booking dialog switch) ─────────────────────────
+# Both routes proxy the checkin-booking-mode edge function server-side, sending
+# GOAT_CHECKIN_KEY in the X-Goat-Service-Key header. The key stays in Python —
+# index.html never sees it, and never sees the switcher's userID either.
+
+def _checkin_booking_id(booking_id):
+    """Coerce a path booking_id to the integer the edge function requires.
+    Returns None if it isn't one, so we never forward junk upstream."""
+    try:
+        return int(str(booking_id).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+@app.route("/api/booking/<booking_id>/checkin-mode", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_checkin_mode_get(booking_id):
+    """Read one booking's live check-in pilot mode. Open to Ops (brief §2.1).
+
+    Returns {booking_id, mode, can_switch}. `mode` is "off" when the booking has
+    no row, which is every booking until someone switches it.
+
+    `can_switch` is computed HERE, from the server-side identity, and is the only
+    thing the browser learns about the pilot gate. /api/whoami deliberately does
+    not expose user_id (a live admin whoami returns ein "0", so operator identity
+    is a hashed pref_key there), which means the frontend could not check the
+    switcher set itself even if we wanted it to — and it shouldn't. The POST
+    route below re-checks this on its own; can_switch is presentation only."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    if not GOAT_CHECKIN_KEY:
+        return jsonify({"error": "Check-in key not configured"}), 500
+    try:
+        r = http.get(
+            CHECKIN_BOOKING_MODE_URL,
+            params={"booking_id": bid},
+            headers={"X-Goat-Service-Key": GOAT_CHECKIN_KEY},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[checkin] mode read request failed: {e}")
+        return jsonify({"error": "Check-in service unavailable"}), 502
+    if r.status_code != 200:
+        # 503 is expected from time to time: the edge function returns it when
+        # GOAT_CHECKIN_KEY is unset on the Supabase project, and Supabase's own
+        # runtime returns it while degraded. Neither is an error the operator can
+        # act on, and neither may block a booking dialog — the browser treats
+        # every non-200 here as "mode unknown" and shows no control.
+        print(f"[checkin] mode read edge function returned {r.status_code}")
+        return jsonify({"error": "Check-in service error"}), 502
+    try:
+        data = r.json()
+    except Exception:
+        return jsonify({"error": "Bad response from check-in service"}), 502
+    return jsonify({
+        "booking_id": bid,
+        "mode":       str(data.get("mode") or "off"),
+        "can_switch": current_checkin_switcher_id() is not None,
+    })
+
+
+@app.route("/api/booking/<booking_id>/checkin-mode", methods=["POST"])
+@require_cohort("admin")
+def api_checkin_mode_set(booking_id):
+    """Set one booking's pilot mode. Gated to the pilot switcher (brief §2.2).
+
+    Two gates, both server-side: require_cohort("admin") as the coarse one every
+    write route in this app carries, then the named-account check. A logged-in
+    admin who is not the switcher gets 403 here.
+
+    set_by_user_id is taken from the session identity and NEVER from the request
+    body — a body value is ignored rather than rejected, so a stale or malicious
+    caller simply cannot attribute a switch to someone else."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+
+    switcher = current_checkin_switcher_id()
+    if switcher is None:
+        return jsonify({"error": "The live check-in pilot switch is held by one "
+                                 "account during the pilot."}), 403
+
+    data = request.get_json(silent=True) or {}
+    mode = str(data.get("mode") or "").strip().lower()
+    # Validate here too, so an invalid mode costs no round trip. The table's
+    # check constraint is the real guarantee — this is only a readable message.
+    #
+    # Ordered BEFORE the key check on purpose: asking for 'live' is wrong whether
+    # or not this machine is configured, and answering "key not configured" to it
+    # would hide a caller's error behind an operator's. Everything above this is
+    # an authorisation answer, which must not depend on the body at all.
+    if mode not in CHECKIN_VALID_MODES:
+        return jsonify({"error": "Mode must be off or shadow. 'live' is not "
+                                 "available during the pilot."}), 422
+
+    if not GOAT_CHECKIN_KEY:
+        return jsonify({"error": "Check-in key not configured"}), 500
+
+    try:
+        r = http.post(
+            CHECKIN_BOOKING_MODE_URL,
+            headers={"X-Goat-Service-Key": GOAT_CHECKIN_KEY},
+            json={"booking_id": bid, "mode": mode, "set_by_user_id": switcher},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[checkin] mode write request failed: {e}")
+        return jsonify({"error": "Check-in service unavailable"}), 502
+
+    if r.status_code == 200:
+        return jsonify({"booking_id": bid, "mode": mode, "can_switch": True})
+
+    # The edge function upserts the mode first and appends the log second. If the
+    # log write fails it answers 500 with {mode, logged: false} — the mode DID
+    # change. Reporting that as a plain failure would be a lie, and the pilot is
+    # defined by its log, so say exactly what happened.
+    try:
+        upstream = r.json()
+    except Exception:
+        upstream = {}
+    if r.status_code == 500 and upstream.get("logged") is False:
+        print(f"[checkin] mode set to {mode} on booking {bid} but the log write failed")
+        return jsonify({
+            "error": "Mode was set to %s, but the change could not be logged. "
+                     "The pilot record is incomplete — check before relying on it." % mode,
+            "mode":  mode,
+        }), 502
+
+    print(f"[checkin] mode write edge function returned {r.status_code}")
+    return jsonify({"error": "Check-in service error"}), 502
 
 
 def ss_get_crew(ss, crew_id):
