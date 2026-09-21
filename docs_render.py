@@ -38,6 +38,9 @@ _TABLE_ROW   = re.compile(r"^\s*\|.*\|\s*$")
 _TABLE_SEP   = re.compile(r"^\s*\|(?:\s*:?-{2,}:?\s*\|)+\s*$")
 
 _CODE_TOKEN  = "\x00CODE%d\x00"      # placeholder while inline markup runs
+# Images we are willing to emit an <img> for. Everything else falls back to
+# the alt text, the same way an unsafe link falls back to its label.
+_IMG_EXT = re.compile(r"\.(?:png|jpe?g|gif|webp)$", re.I)
 
 
 # ── FRONT MATTER ─────────────────────────────────────────────────────────────
@@ -115,7 +118,30 @@ def _inline(text):
     # 2. Escape EVERYTHING. From here on, any < > & in the string is ours.
     text = html.escape(text, quote=False)
 
-    # 3. Links: [label](url). The label is already escaped; the url is checked
+    # 3. Images: ![alt](src). BEFORE links, or the [alt](src) sitting inside
+    #    ![alt](src) is matched as a link first and the ! is left stranded.
+    #
+    #    Only a relative path under the docs folder is ever emitted, and the src
+    #    is rewritten to the media route — a document must not be able to make
+    #    the app fetch anything off this machine. Anything rejected degrades to
+    #    the alt text, which is the same thing an unsafe link does with its label.
+    #
+    #    The alt has already been escaped by step 2, but html.escape(quote=False)
+    #    leaves quotes alone and this lands in an attribute, so quotes are fixed
+    #    here specifically. Re-running html.escape would double-escape the
+    #    ampersands step 2 already wrote.
+    def _img(m):
+        alt, src = m.group(1), m.group(2).strip()
+        raw = html.unescape(src)
+        if (not raw or raw[0] in "/." or ".." in raw or "//" in raw
+                or ":" in raw or "?" in raw or not _IMG_EXT.search(raw)):
+            return alt
+        return '<img class="doc-img" loading="lazy" src="/api/docs/media/%s" alt="%s">' % (
+            html.escape(raw, quote=True), alt.replace('"', "&quot;"))
+
+    text = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", _img, text)
+
+    # 4. Links: [label](url). The label is already escaped; the url is checked
     #    against the scheme allow-list and escaped for attribute context.
     def _link(m):
         label, url = m.group(1), m.group(2).strip()
