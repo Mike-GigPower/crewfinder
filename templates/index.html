@@ -246,7 +246,14 @@ tr.skipped{opacity:.6}
 .rating-cell{text-align:center;font-weight:500}
 .section-row td{background:var(--bg);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 12px;border-top:1px solid var(--border);font-weight:600}
 /* TIMELINE VIEW */
-.tl-table{width:100%;border-collapse:collapse}
+/* min-width:0 is load-bearing, not tidy-up-able. The generic `table` rule in
+   TABLE VIEW below sets min-width:700px and it applies to this table too, so
+   without this the timeline table can never measure narrower than 700px. During
+   tlMeasure's width:auto pass that floor was handed to the only column without a
+   pinned width — Availability — which then reported ~440px of borrowed space as
+   its natural width, starving the timeline of the same amount. A 60px status
+   pill in a 440px column (reported 21 Sep 2026). */
+.tl-table{width:100%;border-collapse:collapse;min-width:0}
 .tl-table thead th{background:var(--surface);padding:8px 12px;text-align:left;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:10;white-space:nowrap}
 .tl-table tbody tr{border-bottom:1px solid var(--border);transition:background .08s}
 .tl-table tbody tr:hover{background:var(--surface2)}
@@ -274,7 +281,7 @@ tr.skipped{opacity:.6}
    window width. A sticky cell paints over the row background, so tr:hover and
    tr.row-selected have to be mirrored here or shift bars slide visibly under. */
 .tl-table th[data-col="cb"],.tl-table td[data-col="cb"]{position:sticky;left:0;background:var(--bg);z-index:5}
-.tl-table th[data-col="name"],.tl-table td[data-col="name"]{position:sticky;left:36px;background:var(--bg);z-index:5}
+.tl-table th[data-col="name"],.tl-table td[data-col="name"]{position:sticky;left:var(--cb-w,36px);background:var(--bg);z-index:5}
 .tl-table thead th[data-col="cb"],.tl-table thead th[data-col="name"]{background:var(--surface);z-index:11}
 .tl-table tbody tr:hover td[data-col="cb"],.tl-table tbody tr:hover td[data-col="name"]{background:var(--surface2)}
 .tl-table tbody tr.row-selected td[data-col="cb"],.tl-table tbody tr.row-selected td[data-col="name"]{background:var(--accent-bg)}
@@ -5248,6 +5255,11 @@ function renderTimeline(result,details,targets){
     table.style.setProperty('--tl-vw','0px');
     let used=0;
     for(const th of hrow.children){ if(th!==headerScroller) used+=th.offsetWidth; }
+    // Sticky Name sits flush against the checkbox column. Its declared width is
+    // 36px but .tl-table td's 12px side padding renders it at 40, and a
+    // hardcoded offset leaves a seam that shift bars scroll through. Measure it.
+    const cbTh=hrow.querySelector('th[data-col="cb"]');
+    if(cbTh) table.style.setProperty('--cb-w',cbTh.offsetWidth+'px');
     const avail=wrap.clientWidth-used-2;      // -2: table border
     table.style.width=prevW;
     // The timeline takes ALL the remaining width, even when the scrollable span
