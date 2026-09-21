@@ -295,6 +295,9 @@ tr.skipped{opacity:.6}
 .nm-wrap{display:flex;align-items:center;gap:4px;min-width:0}
 .nm-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .nm-badges{flex:none;white-space:nowrap}
+/* Timeline only: the green "current induction" chip keeps its tick and drops its
+   label, so the name gets the width instead. Table view is untouched. */
+.tl-table .ind-lbl{display:none}
 /* Resize grip: 7px wide, ~12px hit area via ::before. The hairline shows only
    on hover / keyboard focus so the header stays clean. */
 .nm-grip{position:absolute;top:0;right:0;bottom:0;width:7px;cursor:col-resize;user-select:none}
@@ -4649,8 +4652,17 @@ function inductionWarnHtml(crew){
   }).join('');
   // Warnings first, always — a green tick for one venue must never push a red
   // one for another off the visible end of the name cell on a multi-call search.
+  //
+  // The label is wrapped so TIMELINE view can hide it and keep the tick (see
+  // .tl-table .ind-lbl). It is the same reassurance on every row of a
+  // single-venue search — ~165px that was squeezing crew names down to one
+  // letter — and the venue is already named once in the legend above the
+  // results. Table view keeps the full text; the title carries it in both.
+  // NOTE: on a multi-call search spanning two venues the ticks become
+  // indistinguishable without hovering. Accepted 21 Sep 2026 (Mike); warnings
+  // are never abbreviated, which is the half that matters for safety.
   const okHtml=currents.map(c=>
-    '<span class="induction-current" title="'+c+'">✓ '+c+'</span>'
+    '<span class="induction-current" title="'+c+'">✓<span class="ind-lbl"> '+c+'</span></span>'
   ).join('');
   return warnHtml+okHtml;
 }
