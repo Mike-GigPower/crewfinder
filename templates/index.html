@@ -295,9 +295,13 @@ tr.skipped{opacity:.6}
 .nm-wrap{display:flex;align-items:center;gap:4px;min-width:0}
 .nm-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .nm-badges{flex:none;white-space:nowrap}
-/* Timeline only: the green "current induction" chip keeps its tick and drops its
-   label, so the name gets the width instead. Table view is untouched. */
+/* Timeline only: induction chips keep their icon and colour but drop the venue,
+   so the name gets the width instead. The green "current" chip is left as a bare
+   tick; a warning chip keeps its status word (.ind-short). Table view shows the
+   full label and never the short form. Both carry the full text in the title. */
+.ind-short{display:none}
 .tl-table .ind-lbl{display:none}
+.tl-table .ind-short{display:inline}
 /* Resize grip: 7px wide, ~12px hit area via ::before. The hairline shows only
    on hover / keyboard focus so the header stays clean. */
 .nm-grip{position:absolute;top:0;right:0;bottom:0;width:7px;cursor:col-resize;user-select:none}
@@ -4662,7 +4666,20 @@ function inductionWarnHtml(crew){
     const expiring=w.startsWith('Expiring');
     const cls=expired?'induction-expired':expiring?'induction-expiring':'induction-warn';
     const icon=expired?'⊘':expiring?'◈':'⚠';
-    return '<span class="'+cls+'" title="'+w+'">'+icon+' '+w+'</span>';
+    // Short form, shown in TIMELINE view only (see .tl-table .ind-short). The
+    // server sends exactly three shapes — "Expired induction: <venue>",
+    // "Expiring induction: <venue>" and "No induction: <venue>" (app.py) — and
+    // the ": <venue>" tail is ~120px of a ~185px chip, which was swallowing the
+    // whole Name column on any row carrying one. Icon, colour AND the status
+    // word all stay on screen; only the venue moves to the tooltip, where table
+    // view and the detail panel still carry it in full.
+    // The fallback is deliberately the text before the colon, not a fixed
+    // label: an unrecognised future shape must not be given a word that could
+    // misstate the compliance position.
+    const short=expired?'Expired':expiring?'Expiring':(w.split(':')[0]||'Check');
+    return '<span class="'+cls+'" title="'+w+'">'+icon
+         + '<span class="ind-short"> '+short+'</span>'
+         + '<span class="ind-lbl"> '+w+'</span></span>';
   }).join('');
   // Warnings first, always — a green tick for one venue must never push a red
   // one for another off the visible end of the name cell on a multi-call search.
