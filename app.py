@@ -20,7 +20,7 @@ import threading
 import functools
 import time
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, render_template, session, redirect, url_for, Response
+from flask import Flask, jsonify, request, render_template, session, redirect, url_for, Response, send_file
 from bs4 import BeautifulSoup
 import requests as http
 
@@ -138,7 +138,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.55.0"
+APP_VERSION    = "5.56.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -16828,6 +16828,42 @@ def api_docs_doc(slug):
     if not doc:
         return jsonify({"error": "No such document"}), 404
     return jsonify(doc)
+
+
+# Extensions this route will serve. Checked BEFORE the filesystem is touched,
+# so a traversal attempt aimed at source never reaches a path resolution.
+_DOC_MEDIA_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+@app.route("/api/docs/media/<path:rel>")
+def api_docs_media(rel):
+    """Serve one image referenced by a document.
+
+    Every other docs route avoids the filesystem entirely — api_docs_doc looks
+    its slug up in the index and never joins it onto a path, so a traversal
+    attempt simply finds no entry. This route cannot work that way, so the
+    containment is explicit instead of structural: the resolved real path must
+    sit underneath the resolved docs folder, and it must be a regular file.
+
+    Failures are 404, never 403. A 403 confirms the path exists.
+
+    No cache header: _no_store_api already forces no-store on everything under
+    /api/, and that rule is there so a stale response cannot render the wrong
+    cohort's UI. Re-fetching a few hundred KB over loopback is not a reason to
+    carve a hole in it.
+    """
+    guard = _docs_guard()
+    if guard:
+        return guard
+    if not rel.lower().endswith(_DOC_MEDIA_EXT):
+        return jsonify({"error": "Not found"}), 404
+    root = os.path.realpath(DOCS_DIR)
+    target = os.path.realpath(os.path.join(root, rel))
+    if not (target == root or target.startswith(root + os.sep)):
+        return jsonify({"error": "Not found"}), 404
+    if not os.path.isfile(target):
+        return jsonify({"error": "Not found"}), 404
+    return send_file(target)
 
 
 @app.route("/api/docs/search")
