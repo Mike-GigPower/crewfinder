@@ -1,6 +1,6 @@
 {
-  "version": "5.54.0",
-  "release_date": "2026-09-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.54.0/TheGOAT.dmg",
-  "release_notes": "Crew Finder now flags crew already holding an unanswered offer that would clash with the call you are filling, with the reason on hover and their offered shifts shown on the timeline. They stay bookable — an offer is not a booking — and Ask the GOAT reports the same advisory."
+  "version": "5.55.0",
+  "release_date": "2026-09-21",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.55.0/TheGOAT.dmg",
+  "release_notes": "The Crew Finder timeline now fills the window — hide the columns you do not need, resize the crew name column, and collapse the calls sidebar to see far more of the schedule at once. Crew names stay put when you scroll sideways."
 }
