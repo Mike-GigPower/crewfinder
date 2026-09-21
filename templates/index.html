@@ -18968,7 +18968,14 @@ async function abToggle(bookingId){
   }
   body.style.display = '';
   if(chev) chev.style.transform = 'rotate(90deg)';
-  if(body.getAttribute('data-loaded') === '1') return;   // fetched already
+  if(body.getAttribute('data-loaded') === '1'){
+    // The calls are cached; the pilot mode deliberately is not. Re-read it on
+    // every expand, so a collapse-and-re-expand shows the truth and picks up a
+    // change made in the booking dialog since. The two views never sync live —
+    // each just reads fresh when it opens.
+    bkLoadCheckinMode(bookingId, 'ab-checkin-'+bookingId);
+    return;
+  }
 
   body.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:4px">Loading calls…</div>';
   try{
@@ -18987,7 +18994,13 @@ async function abToggle(bookingId){
     const genBtn = '<div onclick="openEntityModal();openCrewLists(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📋 Crew Lists</div>';
     const gsheetBtn = '<div onclick="generateGoogleSheet(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📊 Google Sheet</div>';
     const importBtn = '<div onclick="openEntityModal();openTimesImport(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📥 Import times</div>';
-    body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+genBtn+gsheetBtn+importBtn+'</div>' + calls.map(function(c){
+    // The pilot switch sits directly under the timesheet actions it will one day
+    // replace, and this list is where bookings get chosen for the pilot. Its own
+    // per-booking id: several bookings can be expanded at once, so a fixed id
+    // would collide. Filled by the shared loader below — one implementation,
+    // shown here and in the booking dialog.
+    const checkinWrap = '<div id="ab-checkin-'+bookingId+'"></div>';
+    body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+genBtn+gsheetBtn+importBtn+'</div>' + checkinWrap + calls.map(function(c){
       const when = _abCallWhen(c.start_date, c.start_time);
       // Greyed, struck through, and NO Enter Times doorway -- see the call
       // dialog for why that link is a trap on a cancelled call.
@@ -19009,6 +19022,7 @@ async function abToggle(bookingId){
         + '</div>';
     }).join('');
     body.setAttribute('data-loaded','1');
+    bkLoadCheckinMode(bookingId, 'ab-checkin-'+bookingId);   // async, never awaited
   }catch(e){
     body.innerHTML = '<div style="color:var(--conflict);font-size:11px;padding:4px">Couldn\'t load calls: '+escapeHtml(e.message)+'</div>';
   }
@@ -20465,7 +20479,9 @@ function renderBookingDialog(bookingId, d, cached){
   }
   document.getElementById('entity-modal-body').innerHTML =
       rows
-    + '<div id="bk-calls-wrap">' + callsSection + '</div>';
+    + '<div id="bk-calls-wrap">' + callsSection + '</div>'
+    + '<div id="bk-checkin-wrap"></div>';
+  bkLoadCheckinMode(bookingId, 'bk-checkin-wrap');   // async, never awaited
   entityRestoreScroll();   // stepped back into this view -- put it where it was
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
@@ -20477,6 +20493,141 @@ function renderBookingDialog(bookingId, d, cached){
     + entityBtn('📥 Import Times', "openTimesImport('"+bookingId+"')")
     + entityBtn('📊 Generate Google Sheet', "generateGoogleSheet('"+bookingId+"')")
     + entityBtn('Close', 'closeEntityModal()');
+}
+
+
+// ── LIVE CHECK-IN PILOT (booking dialog) ─────────────────────────────────────
+// Slice 2 of the live check-in pilot: one mode per booking, Off or Shadow. In
+// Shadow the new tool runs alongside the Google Sheet and is compared against
+// it — the sheet stays the record, and nothing reaches payroll (design §2.1).
+//
+// Who sees what (brief §2.3):
+//   the switcher   -> the Off / Shadow control
+//   everyone else  -> nothing when Off; a read-only badge when Shadow
+//   crew bosses    -> nothing at all; slice 3 reads the mode on the Crew Hub side
+//
+// This block loads ASYNCHRONOUSLY and no caller awaits it, so a slow, degraded
+// or unreachable Supabase can neither delay nor block opening a booking. Every
+// failure — network error, 502, or the edge function's own 503 when its key is
+// unset — takes one path: mode unknown, no control, no badge, and no error
+// state anywhere (brief §2.4 test 6).
+//
+// SHOWN IN TWO PLACES, one implementation: the booking dialog (a single wrap,
+// '#bk-checkin-wrap') and the All Bookings inline panel, where several bookings
+// can be expanded at once and each needs its own '#ab-checkin-<bookingId>'. So
+// every function here takes the host's element id and nothing reads a fixed one.
+// The __loadToken guard lives ON the host element, so it is already per-host;
+// the busy flag is keyed by host id for the same reason — switching one booking
+// in the list must not freeze the control on another.
+//
+// The two views do not stay in sync, by design: each reads the mode fresh when
+// it opens, which is also what makes a collapse-and-re-expand truthful.
+var _bkCheckinBusy = {};
+
+function bkCheckinControl(mode, bookingId, hostId){
+  var btns = [['off', 'Off'], ['shadow', 'Shadow']].map(function(o){
+    var on = (mode === o[0]);
+    var style = 'background:' + (on ? 'var(--surface)' : 'var(--surface2)')
+      + ';border:1px solid ' + (on ? 'var(--border-gold)' : 'var(--border)')
+      + ';color:' + (on ? 'var(--accent)' : 'var(--muted)')
+      + ";border-radius:4px;padding:5px 14px;font-family:'Share Tech Mono',monospace;"
+      + 'font-size:11px;margin-right:6px;cursor:' + (on ? 'default' : 'pointer');
+    // bookingId and hostId are interpolated the same way every other control in
+    // this dialog does it (openCallDialog, openBookingEditForm) — bare ids in
+    // quotes. Both are app-generated (a SmartStaff booking id, and a host id
+    // this file builds), so there is nothing here to escape and no reason to
+    // reach for JSON.stringify.
+    var click = on ? ''
+      : "bkSetCheckinMode('" + bookingId + "','" + hostId + "','" + o[0] + "')";
+    return '<button onclick="' + click + '" style="' + style + '">' + o[1] + '</button>';
+  }).join('');
+  var note = (mode === 'shadow')
+    ? 'Running alongside the Google Sheet. The sheet is still the record.'
+    : 'Off for this booking. The Google Sheet is the only timesheet.';
+  return '<div>' + btns + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">' + note + '</div>';
+}
+
+function bkCheckinMarkup(state, bookingId, hostId, msg){
+  var head = '<div style="margin-top:14px;font-size:10px;color:var(--muted);'
+    + 'text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Live check-in</div>';
+  var body;
+  if(state === 'unknown'){
+    // Off and unreachable are indistinguishable from out here, so only admins
+    // are told the difference, and told it quietly. window._cohort is the same
+    // presentation gate the rest of the UI uses; Flask enforces the real one.
+    if(window._cohort !== 'admin') return '';
+    body = '<div style="font-size:11px;color:var(--muted)">Unknown — pilot service unreachable'
+      + '<span onclick="bkLoadCheckinMode(\'' + bookingId + '\',\'' + hostId + '\')" '
+      + 'style="color:var(--accent);cursor:pointer;margin-left:8px">Retry</span></div>';
+  } else if(state.can_switch){
+    body = bkCheckinControl(state.mode, bookingId, hostId);
+  } else if(state.mode === 'shadow'){
+    body = '<div style="font-size:11px;color:var(--muted);border:1px solid var(--border);'
+      + 'border-radius:4px;padding:7px 9px;background:var(--surface2)">'
+      + 'Live check-in pilot — the Google Sheet is still the record</div>';
+  } else {
+    return '';   // Off, and not the switcher: nothing at all (test 7)
+  }
+  return head + body + (msg
+    ? '<div style="font-size:11px;color:var(--conflict);margin-top:6px">' + escapeHtml(msg) + '</div>'
+    : '');
+}
+
+async function bkLoadCheckinMode(bookingId, hostId, msg){
+  var host = document.getElementById(hostId);
+  if(!host) return;   // that view isn't on screen — nothing to fill
+  // Same race guard as recruitLoadNotes, for the same reason: a wrap is rebuilt
+  // from scratch on every render, so a superseded call can be holding a DETACHED
+  // node whose own token still matches. isConnected is what catches it. The
+  // token lives on the element, so two hosts can never interfere with one
+  // another however many bookings are expanded at once.
+  var token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  var state = 'unknown';
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/checkin-mode',
+                        { headers: { 'Accept': 'application/json' } });
+    if(r.ok){
+      var j = await r.json();
+      if(j && !j.error) state = { mode: String(j.mode || 'off'), can_switch: !!j.can_switch };
+    }
+  }catch(e){ /* stays 'unknown' — deliberately silent, this must never surface */ }
+  if(host.__loadToken !== token || !host.isConnected) return;   // superseded
+  host.innerHTML = bkCheckinMarkup(state, bookingId, hostId, msg);
+}
+
+async function bkSetCheckinMode(bookingId, hostId, mode){
+  if(_bkCheckinBusy[hostId]) return;
+  _bkCheckinBusy[hostId] = true;
+  var host = document.getElementById(hostId);
+  if(host) host.innerHTML = '<div style="margin-top:14px;font-size:11px;color:var(--muted)">Saving…</div>';
+  var msg = '';
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/checkin-mode', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: mode })
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok) msg = (j && j.error) || "Couldn't change the mode.";
+  }catch(e){
+    msg = "Couldn't reach the check-in service.";
+  }
+  if(!msg) showFeedback('Live check-in: ' + (mode === 'shadow' ? 'Shadow' : 'Off'));
+  // Always re-read rather than assume the write took. The edge function upserts
+  // the mode and appends the log separately, so there is a real path where the
+  // mode changed and the log did not — the message says so, and the control
+  // below it shows what the mode actually is now, not what we asked for.
+  //
+  // Awaited, and the busy flag is cleared only in the finally: until the re-read
+  // lands the control on screen is still the PREVIOUS state, and a second click
+  // on it would post a mode the operator can no longer see the truth of. Keyed
+  // by host, so this blocks only the control that was clicked.
+  try{
+    await bkLoadCheckinMode(bookingId, hostId, msg);
+  } finally {
+    delete _bkCheckinBusy[hostId];
+  }
 }
 
 
