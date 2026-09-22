@@ -1,6 +1,6 @@
 {
-  "version": "5.57.0",
+  "version": "5.58.0",
   "release_date": "2026-09-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.57.0/TheGOAT.dmg",
-  "release_notes": "Groundwork for live check-in, a replacement for the Google Sheets timesheet. Bookings now show a Live check-in setting; during the pilot it is switched by one account only, and the Google Sheet stays the record for payroll."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.58.0/TheGOAT.dmg",
+  "release_notes": "Applicants parked on Hold with their paperwork complete can now be moved back to Ready to convert, so a start date several weeks out no longer strands them. Moving an applicant back through Attended also no longer re-sends the details form to someone who has already submitted it."
 }
