@@ -5704,6 +5704,7 @@ const RECRUIT_STATUS_ORDER = ['applied','invited_to_induction','booked','attende
 const RECRUIT_MOVE_LABELS = {
   applied:'Return to New', invited_to_induction:'Invite to induction',
   booked:'Mark booked', attended:'Mark attended', sent_to_eh:'Send to EH',
+  all_docs_received:'Ready to convert',
   on_hold:'Put on hold', not_suitable:'Mark not suitable'
 };
 // Amber-tint thresholds, in DAYS, for the "waiting" stages only. A candidate who
@@ -7588,6 +7589,31 @@ async function recruitMarkAttended(id, btn){
   await recruitSetStatus(id, 'attended', btn);
 }
 
+// "Ready to convert" — put a fully-documented candidate back at all_docs_received
+// after they were parked, which is almost always Hold because their availability to
+// start was several weeks out.
+//
+// A stage CORRECTION, not a promotion. The button only renders when both gate
+// signals are present (see the actions block), and recruitment-set-status has NO
+// side-effect branch for this status — no email, no Employment Hero call, and the
+// base patch is {status, updated_at} only. Verified against the deployed function
+// (version 44) on 22 Sep 2026. all_docs_received_at is therefore NOT re-stamped: it
+// keeps the date the two signals actually landed, which is what ops read.
+//
+// Confirms anyway, and names both dates. An operator moving someone into the convert
+// pile should be able to see WHY they qualify, and — given the workaround this
+// replaces did email people — be told plainly that this one does not.
+async function recruitReadyToConvert(id, btn){
+  const cand = _recruitRows.find(c => String(c.id) === String(id)) || {};
+  const name = cand.name || 'this applicant';
+  const eh   = recruitDate(cand.eh_complete_at);
+  const sig  = recruitDate(cand.contract_signed_at);
+  if(!confirm(`Move ${name} to Ready to convert?\n\n`
+    + `Their paperwork is complete \u2014 EH setup ${eh}, contract signed ${sig}.\n\n`
+    + `No email is sent.`)) return;
+  await recruitSetStatus(id, 'all_docs_received', btn);
+}
+
 // Resend outcomes all arrive as HTTP 200 — the outcome string is the result, not
 // the status code. "deduped" in particular is a correct outcome (the per-day key
 // did its job) and must not be reported as a failure.
@@ -9134,11 +9160,25 @@ function renderRecruitRow(c, i){
     // So no generic button ever moves anyone INTO it (mirrors active_crew above).
     // The value stays allow-listed server-side for rare manual correction.
     if(s === 'details_submitted') return '';
-    // "All Docs Received" is reached ONLY by the automatic two-signal gate (EH
-    // self-setup complete + contract signed) — never a manual triage destination,
-    // and it has no RECRUIT_MOVE_LABELS entry. Guard it like details_submitted /
-    // active_crew above so the generic button below never renders an "undefined".
-    if(s === 'all_docs_received') return '';
+    // "Ready to convert" is normally reached ONLY by the automatic two-signal gate
+    // (EH self-setup complete + contract signed). Since 5.58.0 it is ALSO a manual
+    // action, because ops park fully-documented candidates on Hold when their
+    // availability to start is weeks out and there was no route back out of Hold.
+    // People were walked FORWARD through earlier stages instead, and the hop through
+    // "attended" re-fired their details-form email to someone who had already
+    // submitted it. See BRIEF-hold-to-ready-to-convert.md §0.
+    //
+    // Gated on the SIGNALS, not on the status: both gate stamps must genuinely be
+    // present. So this CORRECTS a stage the candidate already earned and can never
+    // grant one they have not — a half-documented candidate still cannot reach the
+    // convert pile, which is the whole point of the gate. Withdrawn (opted out) and
+    // active_crew (already converted) stay read-only, matching the guards below.
+    if(s === 'all_docs_received'){
+      if(cur === 'all_docs_received' || cur === 'withdrawn' || cur === 'active_crew') return '';
+      if(!c.eh_complete_at || !c.contract_signed_at) return '';
+      return `<button class="recruit-action" onclick="recruitReadyToConvert('${id}',this)">`
+        + `${RECRUIT_MOVE_LABELS[s]}</button>`;
+    }
     // A withdrawn applicant is read-only (they've opted out): don't offer the
     // normal triage buttons. Allow only a single "Return to New", in case someone
     // withdrew by mistake and needs putting back in the pipeline.
