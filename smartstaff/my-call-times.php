@@ -3,6 +3,7 @@
 	/*
 	/* global file */
 
+	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
 	include_once('supervision-graph.php');
@@ -24,7 +25,10 @@
 	/* AUTH — goat_acting_user_id(), then a scope gate, same as
 	/* my-boss-calls.php and submit-call-times.php: a crew-facing self-scoped
 	/* read called by Crew Hub through the Edge Function, where the service key
-	/* is the trust anchor.
+	/* authenticates the EDGE FUNCTION AND NOTHING MORE. It carries no cohort:
+	/* Crew Hub presents it on every request, for every signed-in crew member.
+	/* The scope gate below is the only thing between a Crew Hub caller and
+	/* somebody else's call.
 	/*
 	/* 403, NOT AN EMPTY RESPONSE — AND THIS DIFFERS FROM my-boss-calls.php ON
 	/* PURPOSE. There, an empty scope is the NORMAL case for most of the roster
@@ -60,22 +64,42 @@
 	$scope = goat_boss_scope($actor);
 
 	/*
-	/* BOSS OF THIS CALL, OR OPS. The boss reads this to see what they
-	/* submitted; Ops read the same thing to review it before accepting, which
-	/* is what the Times outstanding lane opens (addendum 1, Q42). Same data,
-	/* two legitimate readers.
+	/* BOSS OF THIS CALL, OR OPS AT A KEYBOARD. The boss reads this to see what
+	/* they submitted; Ops read the same thing to review it before accepting,
+	/* which is what the Times outstanding lane opens (addendum 1, Q42). Same
+	/* data, two legitimate readers.
 	/*
-	/* goat_can_read_all() IS THE EXISTING OPS GATE — get-booking.php uses it
-	/* for the whole booking, and this is one call's crew inside a booking Ops
-	/* can already open. It grants nothing new; it stops Ops being refused
-	/* their own review surface.
+	/* NOT goat_can_read_all(), WHICH THIS FILE USED TO CALL AND WHICH LEAKED.
+	/* That helper's second branch returns true on a valid service key ALONE,
+	/* resolving a cohort for nobody. Crew Hub sends the key on every request,
+	/* so through Crew Hub the branch was always true and the scope test below
+	/* was never reached: any signed-in crew member could open
+	/* /your-crew/<any call id>/times and read that call's roster and every
+	/* submission on it. Confirmed against live before this was changed.
+	/*
+	/* goat_user_cohort() is the SESSION-ONLY half of that helper — null unless
+	/* $user->checkSession(). A service-key caller cannot satisfy it and falls
+	/* through to goat_boss_scope(), which is the entire fix. Ops lose nothing:
+	/* they open this from THE GOAT on their own SmartStaff session, and THE
+	/* GOAT holds no service key at all, by design (app.py,
+	/* ss_get_call_submissions -> get_ss_session).
+	/*
+	/* This is the invariant get-induction-content.php already spells out: the
+	/* service key's read-all branch is sound only where the portal has checked
+	/* the cohort via requireCohort BEFORE calling, and a crew-facing page
+	/* breaks it. Read any endpoint that pairs goat_acting_user_id() with
+	/* goat_can_read_all() with that in mind.
 	/*
 	/* THE REFUSAL IS IDENTICAL FOR BOTH FAILURE MODES, deliberately: someone
 	/* who is neither must not be able to tell "no such scope" from "not Ops"
 	/* by reading the message.
 	*/
 
-	if (!goat_can_read_all() && !in_array($callID, $scope))
+	$cohort = goat_user_cohort();
+
+	$is_ops = ($cohort === 'admin' || $cohort === 'leadership' || $cohort === 'operations');
+
+	if (!$is_ops && !in_array($callID, $scope))
 	{
 		goat_json_error(403, 'You are not the crew boss for this call');
 	}
