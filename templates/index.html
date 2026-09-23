@@ -358,6 +358,9 @@ body.cf-nm-resizing{cursor:col-resize;user-select:none}
    at 4 rows + a "+N more" line, so this ceiling is never actually hit. */
 #crew-card .cc-sh-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:2px 0 4px}
 #crew-card .cc-shifts{max-height:180px;overflow:hidden;margin-bottom:8px}
+/* Crew <-> call links in the shared dialog: read as text until hovered. */
+.ce-call-link{background:none;border:none;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
+.ce-call-link:hover,.ce-call-link:focus-visible{color:var(--accent);text-decoration:underline;outline:none}
 #crew-card .cc-sh-empty{font-size:11px;color:var(--muted);font-style:italic;margin-bottom:8px}
 #crew-card .cc-sh-row{padding:2px 0}
 #crew-card .cc-sh-line1{display:flex;align-items:baseline;justify-content:space-between;gap:6px;font-size:11px;line-height:1.4;color:var(--text)}
@@ -11713,7 +11716,11 @@ function openCrewUnavail(id){
   openUnavailManager(id, window._crewEditNameLF || window._crewEditName || '');
 }
 
-async function openCrewEdit(id){
+async function openCrewEdit(id, opts){
+  opts = opts || {};
+  entityStackTrim('crew:'+id);       // Crew A -> call -> Crew A collapses the trail
+  window._ceSnapshot = null;         // nothing to guard until the form is on screen
+  window._ceEditId = String(id);
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Edit Crew Member';
   document.getElementById('entity-modal-sub').textContent   = '';
@@ -11819,9 +11826,14 @@ async function openCrewEdit(id){
     + '<div id="ce-panel-shifts" style="display:none"></div>'
     + '<div id="ce-panel-unavail" style="display:none"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
-      entityBtn('Cancel', 'closeEntityModal()')
+      entityBtn('Cancel', "entityLeave(closeEntityModal, 'close')")
     + entityBtn('Save changes', "submitCrewEdit('"+String(c.id)+"')", {primary:true, id:'ce-submit'});
-  ceShowTab(String(c.id), 'details');
+  ceSnapshot();
+  var _ceTab = opts.tab || 'details';
+  ceShowTab(String(c.id), _ceTab);
+  // The Calls tab loads asynchronously; restoring now would clamp to 0 while it
+  // reads "Loading calls...", so ceLoadShifts restores once its rows are in.
+  if(_ceTab !== 'shifts') entityRestoreScroll();
 }
 
 // Work Visa flag for the crew-details header. Renders nothing unless the crew
@@ -11873,7 +11885,9 @@ var _VISA_FILTER_SLUG = {
 
 function adminVisaRegister(){ openVisaRegisterModal(); }
 
-async function openVisaRegisterModal(){
+async function openVisaRegisterModal(opts){
+  // opts.keep: re-entered from a breadcrumb — keep the filter and list scroll.
+  var _keep = !!(opts && opts.keep === true);
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Visa Register';
   document.getElementById('entity-modal-sub').textContent   = 'Working-visa crew, soonest expiry first';
@@ -11887,9 +11901,12 @@ async function openVisaRegisterModal(){
     var d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
     _visaRows = d.rows || [];
-    _visaFilter = '';
-    _visaGroup  = false;
+    if(!_keep){
+      _visaFilter = '';
+      _visaGroup  = false;
+    }
     _renderVisaRegister();
+    if(_keep){ var _vr = document.getElementById('visa-reg-rows'); if(_vr) _vr.scrollTop = opts.rowsScroll || 0; }
   }catch(e){
     document.getElementById('visa-reg-rows').innerHTML =
       '<div style="color:var(--conflict);font-size:12px;padding:8px 0">Couldn’t load the register: '+escapeHtml(e.message)+'</div>';
@@ -12059,7 +12076,7 @@ function _visaRowHtml(r, hideSubclass){
     + '<div style="border-bottom:1px solid var(--border);padding:9px 0">'
     +   '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">'
     +     '<div style="font-size:13px">'
-    +       '<button type="button" onclick="closeEntityModal();openCrewEdit(' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
+    +       '<button type="button" onclick="entityOpenCrewFromRegister(\'visa\', ' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
     +         escapeHtml(r.name || ('#'+r.user_id)) + '</button>'
     +       '<span style="color:var(--muted);font-size:11px;margin-left:7px">EIN ' + escapeHtml(String(r.ein||'')) + '</span>'
     +       roster
@@ -12178,7 +12195,9 @@ var _LICREG_FILTER_SLUG = {
 
 function adminLicenceRegister(){ openLicenceRegisterModal(); }
 
-async function openLicenceRegisterModal(){
+async function openLicenceRegisterModal(opts){
+  // opts.keep: re-entered from a breadcrumb — keep the filter and list scroll.
+  var _keep = !!(opts && opts.keep === true);
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Licence Register';
   document.getElementById('entity-modal-sub').textContent   = 'Licences on file, soonest expiry first';
@@ -12192,9 +12211,12 @@ async function openLicenceRegisterModal(){
     var d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
     _licRegRows    = d.rows || [];
-    _licRegFilter  = '';
-    _licRegGroup   = false;
+    if(!_keep){
+      _licRegFilter  = '';
+      _licRegGroup   = false;
+    }
     _renderLicenceRegister();
+    if(_keep){ var _lr = document.getElementById('lic-reg-rows'); if(_lr) _lr.scrollTop = opts.rowsScroll || 0; }
   }catch(e){
     // The endpoint refuses with a 500 when it reads ZERO rows, because
     // user_licenses holds ~1,000 of them and an empty result means the table is
@@ -12397,7 +12419,7 @@ function _licRegRowHtml(r, hideCode){
     +   '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline">'
     +     '<div style="font-size:13px">'
     +       codeBit
-    +       '<button type="button" onclick="closeEntityModal();openCrewEdit(' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
+    +       '<button type="button" onclick="entityOpenCrewFromRegister(\'lic\', ' + Number(r.user_id) + ')" style="background:none;border:none;padding:0;color:var(--accent);font-size:13px;cursor:pointer">'
     +         escapeHtml(r.name || ('#'+r.user_id)) + '</button>'
     +       '<span style="color:var(--muted);font-size:11px;margin-left:7px">EIN ' + escapeHtml(String(r.ein||'')) + '</span>'
     +       roster
@@ -12840,9 +12862,31 @@ async function ceVisaVevo(id, verified){
   }
 }
 
+// With a trail (the record was reached from a call or a register) Save keeps
+// the record open and says so, rather than throwing the trail away. Opened
+// fresh from Records, Save closes exactly as before.
 async function submitCrewEdit(id){
-  const err = document.getElementById('ce-error');
   const btn = document.getElementById('ce-submit');
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  const ok = await _ceSaveDetails(id);
+  if(!ok){
+    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+    return;
+  }
+  if(!_entityStack.length){ closeEntityModal(); return; }
+  if(btn){
+    btn.textContent = 'Saved ✓';
+    setTimeout(function(){
+      var b = document.getElementById('ce-submit');
+      if(b && b === btn){ b.disabled = false; b.textContent = 'Save changes'; }
+    }, 1800);
+  }
+}
+
+// POST the Details form. Returns true on success; on failure the reason is in
+// #ce-error and nothing else changes. Re-snapshots so the guard goes quiet.
+async function _ceSaveDetails(id){
+  const err = document.getElementById('ce-error');
   if(err) err.textContent = '';
   const val = function(eid){ var el=document.getElementById(eid); return el ? el.value.trim() : ''; };
 
@@ -12869,22 +12913,29 @@ async function submitCrewEdit(id){
 
   if(!payload.firstname || !payload.lastname){
     if(err) err.textContent = 'First and last name are required.';
-    return;
+    return false;
   }
 
-  if(btn){ btn.disabled = true; btn.textContent = 'Saving\u2026'; }
   try{
     const r = await fetch('/api/admin/crew/'+encodeURIComponent(id), {
       method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
     });
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
-    closeEntityModal();
-    await _loadCrewList();          // refresh the panel behind the modal (ends in _renderCrewList)
   }catch(e){
     if(err) err.textContent = e.message;
-    if(btn){ btn.disabled = false; btn.textContent = 'Save changes'; }
+    return false;
   }
+  // Saved. The name may have changed; keep the header and the trail honest.
+  window._crewEditName   = (payload.firstname+' '+payload.lastname).trim();
+  window._crewEditNameLF = [payload.lastname, payload.firstname].filter(Boolean).join(', ');
+  var t = document.getElementById('entity-modal-title');
+  if(t && document.getElementById('ce-panel-details')) t.textContent = window._crewEditNameLF;
+  var pwEl = document.getElementById('ce-password');
+  if(pwEl) pwEl.value = '';
+  ceSnapshot();
+  try{ await _loadCrewList(); }catch(e){}   // refresh the panel behind the modal (ends in _renderCrewList)
+  return true;
 }
 
 // ── Edit Crew Member: tabbed panels (Details / Inductions / Shifts / Unavailability) ──
@@ -13482,6 +13533,12 @@ async function ceLoadShifts(id){
   if(lateCount) summaryParts.push(lateCount+' late');
   var rows = shifts.map(function(s){
     var title = escapeHtml(s.booking_name||s.call_name||'Call');
+    // Joe, 23 Sep 2026: the title opens the call. Numeric ids only in the
+    // handler — names never go inside an onclick string.
+    if(Number(s.call_id) > 0 && Number(s.booking_id) > 0){
+      title = '<button type="button" class="ce-call-link" title="Open call" onclick="ceOpenCall('
+        + Number(id) + ',' + Number(s.booking_id) + ',' + Number(s.call_id) + ')">' + title + '</button>';
+    }
     var sub = [];
     if(s.venue) sub.push(escapeHtml(s.venue));
     if(s.call_name && s.call_name!==s.booking_name) sub.push(escapeHtml(s.call_name));
@@ -13499,6 +13556,7 @@ async function ceLoadShifts(id){
   panel.innerHTML =
       '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+escapeHtml(shifts.length+' call'+(shifts.length===1?'':'s')+(summaryParts.length?'  \u00b7  '+summaryParts.join(' \u00b7 '):''))+'</div>'
     + rows;
+  entityRestoreScroll();   // back from a call: put the list where it was
 }
 
 // ── Unavailability: shared ordering + formatting ────────────────────────────
@@ -16773,7 +16831,12 @@ function entityStackPush(key, label, reopen){
   var top = _entityStack[_entityStack.length - 1];
   if(top && top.key === key) return;          // already the thing we'd return to
   var p = _entityPanel();
-  _entityStack.push({key: key, label: label, reopen: reopen, scroll: p ? p.scrollTop : 0});
+  // name is the breadcrumb text of the view being LEFT. Every push site runs
+  // before the child view overwrites the header, so the title (or the crumb the
+  // view declared for itself) is still the parent's here.
+  _entityStack.push({key: key, label: label, reopen: reopen, scroll: p ? p.scrollTop : 0,
+                     name: entityCurrentName()});
+  entityRenderTrail();
 }
 
 // Re-entering a view (its own Back button, a save that re-renders it) drops the
@@ -16784,6 +16847,7 @@ function entityStackTrim(key){
     if(_entityStack[i].key === key){
       window._entityRestoreScroll = _entityStack[i].scroll;   // a "< Back to ..." button
       _entityStack.length = i;
+      entityRenderTrail();
       return;
     }
   }
@@ -16795,8 +16859,203 @@ function entityStackBack(){
   var f = _entityStack.pop();
   if(!f) return false;
   window._entityRestoreScroll = f.scroll;
+  entityRenderTrail();
   f.reopen();
   return true;
+}
+
+// ── Breadcrumbs ─────────────────────────────────────────────────────────────
+// The back-stack drawn as a trail above the title: every frame is a crumb that
+// jumps straight back to it, the last crumb is the view on screen. Hidden while
+// the stack is empty, so a dialog opened fresh looks exactly as it did.
+//
+// A view may declare its own crumb (the call dialog adds the booking name,
+// because a bare "LOAD OUT" means nothing out of context). The declaration is
+// bound to the title it was made for, so a later view that sets only a title
+// can never inherit a stale crumb.
+function entitySetCrumb(text){
+  var t = document.getElementById('entity-modal-title');
+  window._entityCrumb = {title: t ? t.textContent : '', text: String(text||'')};
+}
+function entityCurrentName(){
+  var t = document.getElementById('entity-modal-title');
+  var title = t ? t.textContent : '';
+  var c = window._entityCrumb;
+  return decodeEntities((c && c.title === title && c.text) ? c.text : title);
+}
+
+// Built from DOM nodes with listeners, never an HTML string with onclick=:
+// crumbs are crew and booking names (O'Lack), and node --check cannot see
+// inside onclick attributes (REFERENCE §3).
+function entityRenderTrail(){
+  var el = document.getElementById('entity-modal-trail');
+  if(!el) return;
+  el.textContent = '';
+  if(!_entityStack.length){ el.style.display = 'none'; return; }
+  el.style.display = 'block';
+
+  var idx = _entityStack.map(function(f, i){ return i; });
+  var collapsed = false;
+  if(idx.length > 4 && !window._entityTrailOpen){
+    idx = [0].concat(idx.slice(-2));
+    collapsed = true;
+  }
+  function sep(){
+    var s = document.createElement('span');
+    s.textContent = ' › ';
+    s.style.opacity = '.5';
+    el.appendChild(s);
+  }
+  function crumb(text, onClick){
+    var b = document.createElement(onClick ? 'button' : 'span');
+    b.textContent = text || '—';
+    b.title = text || '';
+    b.style.cssText = "display:inline-block;max-width:160px;overflow:hidden;text-overflow:ellipsis;"
+      + "white-space:nowrap;vertical-align:bottom;background:none;border:none;padding:0;margin:0;"
+      + "font:inherit;color:" + (onClick ? 'var(--muted)' : 'var(--text)') + ";cursor:" + (onClick ? 'pointer' : 'default');
+    if(onClick){
+      b.type = 'button';
+      b.addEventListener('mouseenter', function(){ b.style.color = 'var(--accent)'; b.style.textDecoration = 'underline'; });
+      b.addEventListener('mouseleave', function(){ b.style.color = 'var(--muted)'; b.style.textDecoration = 'none'; });
+      b.addEventListener('click', onClick);
+    }
+    el.appendChild(b);
+  }
+  idx.forEach(function(i, n){
+    if(n > 0) sep();
+    if(collapsed && n === 1){
+      crumb('…', function(){ window._entityTrailOpen = true; entityRenderTrail(); });
+      sep();
+    }
+    crumb(_entityStack[i].name, function(){ entityJumpTo(i); });
+  });
+  sep();
+  crumb(entityCurrentName(), null);
+}
+
+// Jump back to frame i — entityStackBack, more than one level at a time.
+function entityJumpTo(i){
+  entityLeave(function(){
+    var f = _entityStack[i];
+    if(!f) return;
+    _entityStack.length = i;
+    window._entityRestoreScroll = f.scroll;
+    entityRenderTrail();
+    f.reopen();
+  }, 'nav');
+}
+
+// The title changes in ~40 views; observing it means none of them has to
+// remember to redraw the trail. Rendering the trail never touches the title,
+// so this cannot loop.
+(function(){
+  function hook(){
+    var t = document.getElementById('entity-modal-title');
+    if(!t || !window.MutationObserver) return;
+    new MutationObserver(function(){ entityRenderTrail(); })
+      .observe(t, {childList: true, characterData: true, subtree: true});
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', hook);
+  else hook();
+})();
+
+// ── Leaving a crew record with unsaved Details edits ────────────────────────
+// Every way OUT of the crew record goes through here: a call link, a crumb,
+// Back, X / Esc / backdrop, and Cancel. Programmatic closes (after a save, a
+// register link) call closeEntityModal() directly and are not guarded.
+// Only Details counts: every other crew tab writes the moment its button is
+// pressed, so none of them can hold pending state.
+function _ceDetailsState(){
+  var p = document.getElementById('ce-panel-details');
+  if(!p) return null;
+  var parts = [];
+  p.querySelectorAll('input, textarea, select').forEach(function(el){
+    parts.push((el.id || el.className || el.name || '') + '=' +
+      ((el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? '1' : '0') + ':' + el.value : el.value));
+  });
+  return parts.join('\u0001');
+}
+function ceSnapshot(){ window._ceSnapshot = _ceDetailsState(); }
+function ceIsDirty(){
+  var m = document.getElementById('entity-modal');
+  if(!m || m.style.display !== 'flex') return false;
+  var now = _ceDetailsState();
+  return now !== null && window._ceSnapshot != null && now !== window._ceSnapshot;
+}
+
+function entityLeave(fn, mode){
+  if(!ceIsDirty()){ fn(); return; }
+  var acts = document.getElementById('entity-modal-actions');
+  if(!acts) { fn(); return; }
+  window._ceLeavePending = fn;
+  if(!document.getElementById('ce-leave-strip')){           // Esc twice must not save the strip as "original"
+    window._ceLeaveActions = acts.innerHTML;
+  }
+  var who = (window._crewEditName || '').split(' ')[0];
+  acts.innerHTML =
+      '<div id="ce-leave-strip" style="flex:1;align-self:center;font-size:11px;color:#f59e0b">Unsaved changes to '
+    +   escapeHtml(who ? who + '’s' : 'these') + ' details</div>'
+    + entityBtn('Stay', 'ceLeaveStay()')
+    + entityBtn('Discard', 'ceLeaveDiscard()')
+    + entityBtn(mode === 'close' ? 'Save and close' : 'Save and continue', 'ceLeaveSave()', {primary: true, id: 'ce-leave-save'});
+  // The action row sits at the foot of a scrolling panel, and the Details form
+  // is long: pressed from mid-form, a plain strip would appear off-screen and
+  // Esc would look dead. Pin the row to the bottom of the panel while it asks.
+  _ceStripPin(true);
+}
+function _ceStripPin(on){
+  var acts = document.getElementById('entity-modal-actions');
+  if(!acts) return;
+  acts.style.position = on ? 'sticky' : '';
+  acts.style.bottom   = on ? '0' : '';
+  acts.style.zIndex   = on ? '1' : '';
+}
+function _ceLeaveRestore(){
+  _ceStripPin(false);
+  var acts = document.getElementById('entity-modal-actions');
+  if(acts && window._ceLeaveActions != null) acts.innerHTML = window._ceLeaveActions;
+  window._ceLeaveActions = null;
+}
+function ceLeaveStay(){ window._ceLeavePending = null; _ceLeaveRestore(); }
+function ceLeaveDiscard(){
+  var fn = window._ceLeavePending;
+  window._ceLeavePending = null; window._ceLeaveActions = null;
+  window._ceSnapshot = null;
+  _ceStripPin(false);
+  if(fn) fn();
+}
+async function ceLeaveSave(){
+  var fn = window._ceLeavePending;
+  var btn = document.getElementById('ce-leave-save');
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  var ok = await _ceSaveDetails(window._ceEditId);
+  if(!ok){ window._ceLeavePending = null; _ceLeaveRestore(); return; }   // error is in #ce-error
+  window._ceLeavePending = null; window._ceLeaveActions = null;
+  _ceStripPin(false);
+  if(fn) fn();
+}
+
+// Links between the two dialogs.
+function ceOpenCall(crewId, bookingId, callId){
+  entityLeave(function(){
+    entityStackPush('crew:'+crewId, 'crew', function(){ openCrewEdit(String(crewId), {tab: 'shifts'}); });
+    openCallDialog(String(bookingId), String(callId));
+  }, 'nav');
+}
+function entityOpenCrew(bookingId, callId, crewId){
+  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
+  openCrewEdit(String(crewId));
+}
+// From the Visa / Licence registers: keep the register (its filter and where
+// its list was scrolled) instead of throwing it away.
+function entityOpenCrewFromRegister(kind, userId){
+  var rows = document.getElementById(kind === 'visa' ? 'visa-reg-rows' : 'lic-reg-rows');
+  var y = rows ? rows.scrollTop : 0;
+  entityStackPush(kind+'-register', 'register', function(){
+    var o = {keep: true, rowsScroll: y};
+    if(kind === 'visa') openVisaRegisterModal(o); else openLicenceRegisterModal(o);
+  });
+  openCrewEdit(String(userId));
 }
 
 // Put the parent back where it was. Called at the end of a view's render, once
@@ -16817,8 +17076,8 @@ function entityRestoreScroll(){
 // X, Esc and the backdrop: step back if there is somewhere to step back to.
 function entityBack(){
   if(window._keypay && window._keypay.writing) return;   // same guard as closeEntityModal
-  if(_entityStack.length){ entityStackBack(); return; }
-  closeEntityModal();
+  if(_entityStack.length){ entityLeave(entityStackBack, 'nav'); return; }
+  entityLeave(closeEntityModal, 'close');
 }
 
 // The shared dialog shell opens at ENTITY_MODAL_W. A view that needs more room
@@ -16840,6 +17099,9 @@ function closeEntityModal(){
   // would drop the outcome screen. Applies to the ✕, backdrop click and global Esc.
   if(window._keypay && window._keypay.writing) return;
   _entityStack = [];
+  window._entityTrailOpen = false;
+  window._ceSnapshot = null;
+  entityRenderTrail();
   document.getElementById('entity-modal').style.display = 'none';
   goatHarryStop();
 }
@@ -17606,7 +17868,10 @@ async function openCallDialog(bookingId, callId){
     const d = await dRes.json();
     if(d.error){
       document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(d.error)+'</div>';
-      document.getElementById('entity-modal-actions').innerHTML = entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
+      var _errBack = entityStackTop();
+      document.getElementById('entity-modal-actions').innerHTML =
+          (_errBack ? entityBtn('‹ Back to '+escapeHtml(_errBack.name || _errBack.label), 'entityBack()') : '')
+        + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
       return;
     }
     // Prefer the booking endpoint's per-call crew (carries mobile + status);
@@ -17614,9 +17879,11 @@ async function openCallDialog(bookingId, callId){
     let crew = null;
     let bookingVenue = '';
     let editSrc = null;
+    window._curCallBookingName = '';
     try{
       const bData = await bRes.json();
       if(bData){
+        if(bData.name) window._curCallBookingName = decodeEntities(String(bData.name));
         if(bData.venue && bData.venue.name) bookingVenue = bData.venue.name;
         if(bData.calls){
           const match = bData.calls.find(function(c){ return String(c.call_id) === String(callId); });
@@ -17644,7 +17911,13 @@ async function openCallDialog(bookingId, callId){
 function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   window._curCallEdit = editSrc || null;
   document.getElementById('entity-modal-title').textContent = d.call_name || 'Call';
-  document.getElementById('entity-modal-sub').textContent = 'Call #'+callId+' · Booking #'+bookingId;
+  // A bare "LOAD OUT" means nothing when you arrive from a crew record — name
+  // the booking in the sub-line and in this view's breadcrumb.
+  var _bkName = window._curCallBookingName || '';
+  document.getElementById('entity-modal-sub').textContent =
+    (_bkName ? _bkName + ' · ' : '') + 'Call #'+callId+' · Booking #'+bookingId;
+  entitySetCrumb(_bkName ? _bkName + ' · ' + (d.call_name || 'Call') : (d.call_name || 'Call'));
+  entityRenderTrail();
   const req = (editSrc && editSrc.required != null) ? editSrc.required : (d.crew_required || 0);
   const confirmedCount = crew.filter(function(c){ return (c.status||'').toLowerCase()==='confirmed'; }).length;
   // ── CANCELLATION STATE ────────────────────────────────────────────────────
@@ -17715,7 +17988,14 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // change_pending, guarded to status 5/7).
         var chg = c.change_pending ? ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>' : '';
         var promo = crewPromoAckPill(c, bookingId, callId);
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+boss+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+(isCancelled ? '' : crewBossControl(c, bookingId, callId))+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
+        // Admin only: the crew record is /api/admin/crew. The fallback roster
+        // (/api/booked-crew) carries no id, so those names stay plain text.
+        var nm = escapeHtml(decodeEntities(c.name));
+        if(window._cohort === 'admin' && Number(c.id) > 0){
+          nm = '<button type="button" class="ce-call-link" title="Open crew record" onclick="entityOpenCrew('
+            + Number(bookingId) + ',' + Number(callId) + ',' + Number(c.id) + ')">' + nm + '</button>';
+        }
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+(isCancelled ? '' : crewBossControl(c, bookingId, callId))+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       cancelBanner
@@ -17753,7 +18033,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   entityRestoreScroll();   // stepped back into this view -- put it where it was
   var _backTo = entityStackTop();
   document.getElementById('entity-modal-actions').innerHTML =
-      (_backTo ? entityBtn('‹ Back to '+_backTo.label, 'entityBack()') : '')
+      (_backTo ? entityBtn('‹ Back to '+escapeHtml(_backTo.name || _backTo.label), 'entityBack()') : '')
     + (isCancelled ? '' : entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true}))
     + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')")
     + (window._curCallEdit
@@ -27816,12 +28096,9 @@ function toggleSchedBooking(bid){
 // so it uses isReadOnlyCohort (the existing leadership-class helper) rather
 // than the _cohort !== 'admin' test the neighbours use. Not an oversight.
 function openCrewNotes(bookingId, callId){
-  // Reached from the booking (no callId) and from a call. Remember whichever
-  // one sent us here.
-  entityStackPush(callId ? 'call:'+bookingId+':'+callId : 'booking:'+bookingId,
-                  callId ? 'call' : 'booking',
-                  callId ? function(){ openCallDialog(bookingId, callId); }
-                         : function(){ openBookingDialog(bookingId); });
+  // Opens Crew Hub in a browser window; the dialog does not change, so there is
+  // no frame to push. (It used to push one, which left the stack pointing at the
+  // view already on screen: the next X re-opened the same call.)
   if(!bookingId) return;
   if(window._cohort !== 'admin' && !window.isReadOnlyCohort()) return;
   // A callId targets that call's notes panel: the portal auto-expands it,
@@ -28169,6 +28446,7 @@ function applyGoldRows(){
     <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
                 border-bottom:1px solid var(--border);background:#0a0a0a">
       <div style="min-width:0">
+        <div id="entity-modal-trail" style="display:none;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);margin-bottom:3px;white-space:nowrap;overflow:hidden"></div>
         <div id="entity-modal-title" style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.06em;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
         <div id="entity-modal-sub" style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace"></div>
       </div>
