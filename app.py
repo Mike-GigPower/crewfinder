@@ -14141,6 +14141,65 @@ def _find_sheet_by_name(booking_id):
         return None
 
 
+def _existing_sheets_for_booking(booking_id):
+    """Every live (not-in-the-bin) Google Sheet THE GOAT has generated for this
+    booking, newest first, as [{id, name, url, created, modified}].
+
+    Looks in Google DRIVE, not only the local timesheet_links.json: every Ops
+    install authorises as the same Google account, so Drive is the one place that
+    knows about sheets made on OTHER machines. The local link is merged in as well,
+    so a sheet whose name someone has edited (losing the [#id] tag) is still found
+    on the machine that made it.
+
+    The Drive query is a loose 'contains', so results are re-checked here for the
+    exact '[#<id>]' tag — otherwise booking 118 would match '[#11815]'.
+
+    Raises on a Google/auth failure. Callers decide what 'couldn't check' means;
+    it must never be read as 'no sheet'."""
+    from googleapiclient.discovery import build
+    from timesheet_gsheet import _user_creds
+    bid = int(booking_id)
+    drive = build("drive", "v3", credentials=_user_creds(_gsheet_token_path()),
+                  cache_discovery=False)
+    fields = "id,name,createdTime,modifiedTime,webViewLink,trashed"
+    q = ("name contains '#%d' and trashed = false and "
+         "mimeType = 'application/vnd.google-apps.spreadsheet'") % bid
+    found = drive.files().list(
+        q=q, fields="files(%s)" % fields,
+        orderBy="createdTime desc", pageSize=25,
+        supportsAllDrives=True, includeItemsFromAllDrives=True,
+    ).execute().get("files", [])
+    tag = re.compile(r"\[#%d\]" % bid)
+    by_id = {}
+    for f in found:
+        if tag.search(f.get("name") or ""):
+            by_id[f["id"]] = f
+
+    link = _lookup_timesheet_link(bid)
+    lid = (link or {}).get("spreadsheet_id")
+    if lid and lid not in by_id:
+        try:
+            f = drive.files().get(fileId=lid, fields=fields,
+                                  supportsAllDrives=True).execute()
+            if not f.get("trashed"):
+                by_id[f["id"]] = f
+        except Exception:
+            pass   # deleted for good, or no longer shared — not an existing sheet
+
+    out = []
+    for f in by_id.values():
+        out.append({
+            "id":       f["id"],
+            "name":     f.get("name") or "",
+            "url":      f.get("webViewLink") or
+                        "https://docs.google.com/spreadsheets/d/%s/edit" % f["id"],
+            "created":  f.get("createdTime") or "",
+            "modified": f.get("modifiedTime") or "",
+        })
+    out.sort(key=lambda x: x["created"], reverse=True)
+    return out
+
+
 # ── Shared import-preview builder (both .xlsx upload and live Google Sheet) ──────
 def _call_sched_dt(c):
     """A call's scheduled start as a datetime (start_date unix + start_time HH:MM)."""
@@ -14651,6 +14710,19 @@ def api_generate_gsheet(booking_id):
     if not os.path.exists(token_path):
         return jsonify({"error": "Google not authorized yet — run 'python3 gsheet_authorize.py' in your gigpower folder, then try again"}), 500
 
+    # Duplicate guard. Unless the operator has already seen the warning and chosen
+    # "Create another anyway" (?force=1), refuse when Drive already holds a sheet
+    # for this booking and hand the list back so the UI can offer to open it.
+    # If the CHECK fails we carry on and generate: the check exists to prevent
+    # accidents, and blocking real work on a Drive hiccup would be worse.
+    if request.args.get("force") != "1":
+        try:
+            existing = _existing_sheets_for_booking(booking_id)
+        except Exception:
+            existing = []
+        if existing:
+            return jsonify({"error": "exists", "sheets": existing}), 409
+
     booking_name, gen_calls, err = _gather_timesheet_calls(ss, booking_id)
     if err:
         return jsonify({"error": "Couldn't load booking: %s" % err}), 502
@@ -14666,6 +14738,24 @@ def api_generate_gsheet(booking_id):
         _save_timesheet_link(booking_id, result["spreadsheet_id"], result.get("url"))
 
     return jsonify(result)
+
+
+@app.route("/api/booking/<booking_id>/gsheet-status", methods=["GET"])
+@require_cohort("admin")
+def api_gsheet_status(booking_id):
+    """Has a Google Sheet already been generated for this booking (on ANY Ops
+    machine)? Read-only. Returns {exists: true|false, sheets: [...]}, or
+    {exists: null, error} when Drive couldn't be asked — the UI shows nothing
+    rather than a false "no sheet yet"."""
+    try:
+        int(str(booking_id).strip())
+    except (TypeError, ValueError):
+        return jsonify({"exists": None, "error": "bad booking id"}), 400
+    try:
+        sheets = _existing_sheets_for_booking(booking_id)
+    except Exception as e:
+        return jsonify({"exists": None, "error": str(e)}), 502
+    return jsonify({"exists": bool(sheets), "sheets": sheets})
 
 
 # ─── LIVE CHECK-IN PILOT MODE (booking dialog switch) ─────────────────────────

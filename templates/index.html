@@ -19509,6 +19509,7 @@ async function abToggle(bookingId){
     // change made in the booking dialog since. The two views never sync live —
     // each just reads fresh when it opens.
     bkLoadCheckinMode(bookingId, 'ab-checkin-'+bookingId);
+    gsheetLoadStatus(bookingId);
     return;
   }
 
@@ -19527,7 +19528,7 @@ async function abToggle(bookingId){
       return;
     }
     const genBtn = '<div onclick="openEntityModal();openCrewLists(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📋 Crew Lists</div>';
-    const gsheetBtn = '<div onclick="generateGoogleSheet(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📊 Google Sheet</div>';
+    const gsheetBtn = '<div id="ab-gsheet-'+bookingId+'" onclick="generateGoogleSheet(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📊 Google Sheet</div>';
     const importBtn = '<div onclick="openEntityModal();openTimesImport(\''+bookingId+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">📥 Import times</div>';
     // The pilot switch sits directly under the timesheet actions it will one day
     // replace, and this list is where bookings get chosen for the pilot. Its own
@@ -19558,6 +19559,7 @@ async function abToggle(bookingId){
     }).join('');
     body.setAttribute('data-loaded','1');
     bkLoadCheckinMode(bookingId, 'ab-checkin-'+bookingId);   // async, never awaited
+    gsheetLoadStatus(bookingId);                              // async, never awaited
   }catch(e){
     body.innerHTML = '<div style="color:var(--conflict);font-size:11px;padding:4px">Couldn\'t load calls: '+escapeHtml(e.message)+'</div>';
   }
@@ -20169,11 +20171,111 @@ async function generateTimesheet(bookingId){
   }catch(e){ showFeedback('Generate failed: '+e.message); }
 }
 
+// ── "Has a Google Sheet already been made for this booking?" ──────────────────
+// Asks the server, which asks Google DRIVE — not this Mac's own link file — so a
+// sheet Rich made on his machine shows up on Monty's. Fills whichever of the three
+// places are on screen: the All Bookings row button (ab-gsheet-<id>), and the
+// booking dialog's button (bk-gsheet-btn) plus its status line (bk-gsheet-wrap).
+// If Drive can't be asked, everything is left exactly as it was: "couldn't check"
+// must never be shown as "no sheet yet".
+function _gsheetWhen(iso){
+  if(!iso) return '';
+  var d = new Date(iso);
+  if(isNaN(d)) return '';
+  return d.toLocaleString('en-AU', {day:'numeric', month:'short', hour:'numeric', minute:'2-digit'});
+}
+
+async function gsheetLoadStatus(bookingId){
+  var j = null;
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/gsheet-status',
+                        { headers: { 'Accept': 'application/json' } });
+    if(r.ok) j = await r.json();
+  }catch(e){ /* silent — see above */ }
+  if(!j || j.exists === null || j.exists === undefined) return;
+  var sheets = j.sheets || [];
+
+  // All Bookings row button
+  var rowBtn = document.getElementById('ab-gsheet-' + bookingId);
+  if(rowBtn && rowBtn.isConnected){
+    if(sheets.length){
+      rowBtn.innerHTML = '📊 Sheet exists' + (sheets.length > 1 ? ' ×' + sheets.length : ' ✓');
+      rowBtn.style.borderStyle = 'solid';
+      rowBtn.style.borderColor = 'var(--warn)';
+      rowBtn.style.color = 'var(--warn)';
+      rowBtn.title = 'A Google Sheet was already generated for this booking — click to open it';
+    } else {
+      rowBtn.innerHTML = '📊 Google Sheet';
+      rowBtn.style.borderStyle = 'dashed';
+      rowBtn.style.borderColor = 'var(--accent)';
+      rowBtn.style.color = 'var(--accent)';
+      rowBtn.title = 'No Google Sheet generated for this booking yet';
+    }
+  }
+
+  // Booking dialog — only if it's still showing THIS booking
+  var sub = document.getElementById('entity-modal-sub');
+  var wrap = document.getElementById('bk-gsheet-wrap');
+  var btn = document.getElementById('bk-gsheet-btn');
+  if(btn && btn.isConnected){
+    btn.innerHTML = sheets.length ? '📊 Sheet exists ✓' : '📊 Generate Google Sheet';
+    btn.style.color = sheets.length ? 'var(--warn)' : 'var(--muted)';
+    btn.style.borderColor = sheets.length ? 'var(--warn)' : 'var(--border)';
+  }
+  if(wrap && wrap.isConnected){
+    var head = '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Google Sheet</div>';
+    if(!sheets.length){
+      wrap.innerHTML = head + '<div style="font-size:12px;color:var(--muted)">None generated yet.</div>';
+    } else {
+      wrap.innerHTML = head + sheets.map(function(s){
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;border:1px solid var(--warn);border-radius:4px;margin-bottom:5px;background:var(--warn-bg)">'
+          + '<span style="font-size:12px;color:var(--text)">✓ Created ' + escapeHtml(_gsheetWhen(s.created)) + '</span>'
+          + '<a href="' + escapeHtml(s.url) + '" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none;white-space:nowrap">Open ↗</a>'
+          + '</div>';
+      }).join('')
+      + (sheets.length > 1
+          ? '<div style="font-size:11px;color:var(--warn);line-height:1.4">This booking has ' + sheets.length
+            + ' sheets. Check which one the crew boss is using and move the others to the Bin in Google Drive.</div>'
+          : '');
+    }
+  }
+}
+
+// Shown instead of generating when the booking already has a sheet. "Open" is a
+// real link (a user click), so pop-up blockers never swallow it.
+function _gsheetShowExists(bookingId, sheets){
+  var newest = sheets[0];
+  document.getElementById('entity-modal-title').textContent = 'This booking already has a Google Sheet';
+  document.getElementById('entity-modal-sub').textContent   = 'Booking ' + bookingId;
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:10px">'
+    + (sheets.length > 1
+        ? 'There are already <b style="color:var(--warn)">' + sheets.length + ' sheets</b> for this booking. '
+        : 'A timesheet sheet was already generated for this booking. ')
+    + 'Creating another means crew times could end up split across two sheets.</div>'
+    + sheets.map(function(s){
+        return '<div style="font-size:13px;margin-bottom:6px">'
+          + '<a href="' + escapeHtml(s.url) + '" target="_blank" style="color:var(--accent);text-decoration:none">📊 '
+          + escapeHtml(s.name || 'Google Sheet') + ' ↗</a>'
+          + '<div style="font-size:11px;color:var(--muted)">Created ' + escapeHtml(_gsheetWhen(s.created))
+          + (s.modified ? ' · last edited ' + escapeHtml(_gsheetWhen(s.modified)) : '') + '</div></div>';
+      }).join('');
+  document.getElementById('entity-modal-actions').innerHTML =
+      '<a href="' + escapeHtml(newest.url) + '" target="_blank" style="padding:7px 14px;border:1px solid var(--accent);'
+    + 'border-radius:4px;background:var(--surface2);color:var(--accent);cursor:pointer;font-size:12px;text-decoration:none">Open existing sheet ↗</a>'
+    + '<button onclick="generateGoogleSheet(\'' + bookingId + '\', true)" style="padding:7px 14px;border:1px solid var(--warn);'
+    + 'border-radius:4px;background:var(--surface2);color:var(--warn);cursor:pointer;font-size:12px">Create another anyway</button>'
+    + '<button onclick="closeEntityModal()" style="padding:7px 14px;border:1px solid var(--border);'
+    + 'border-radius:4px;background:var(--surface2);color:var(--muted);cursor:pointer;font-size:12px">Cancel</button>';
+  openEntityModal();
+  showFeedback('');
+}
+
 // Guards against a second click while a sheet is already being generated —
 // each click would otherwise create a separate Google Sheet for the booking.
 var _gsheetInFlight = false;
 
-async function generateGoogleSheet(bookingId){
+async function generateGoogleSheet(bookingId, force){
   if(_gsheetInFlight) return;
   _gsheetInFlight = true;
 
@@ -20186,15 +20288,23 @@ async function generateGoogleSheet(bookingId){
     '<div style="display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);line-height:1.5;padding:4px 0">'
     + '<div style="width:14px;height:14px;flex:none;border:2px solid var(--border);border-top-color:var(--accent);'
     + 'border-radius:50%;animation:spin .7s linear infinite"></div>'
-    + '<div>Copying the crew master and building a tab for each call. This can take '
+    + '<div>' + (force ? '' : 'Checking Google Drive for an existing sheet first, then ')
+    + (force ? 'Copying' : 'copying') + ' the crew master and building a tab for each call. This can take '
     + 'a few seconds — please don&#39;t click again.</div></div>';
   document.getElementById('entity-modal-actions').innerHTML = '';
   openEntityModal();
 
   try{
-    const res = await fetch('/api/booking/'+bookingId+'/generate-gsheet');
+    const res = await fetch('/api/booking/'+bookingId+'/generate-gsheet' + (force ? '?force=1' : ''));
     let j = {};
     try{ j = await res.json(); }catch(e){}
+
+    // Already has one — nothing was created. Offer to open it instead.
+    if(res.status === 409 && j.error === 'exists' && (j.sheets || []).length){
+      _gsheetShowExists(bookingId, j.sheets);
+      gsheetLoadStatus(bookingId);   // bring the row button up to date too
+      return;
+    }
 
     // Failure — persistent popup instead of a 2.5s toast, so it can't be missed
     if(!res.ok || j.error){
@@ -20223,6 +20333,7 @@ async function generateGoogleSheet(bookingId){
             + '<a href="'+escapeHtml(url)+'" target="_blank" style="color:var(--accent);text-decoration:none">'
             + '📊 Open the Google Sheet ↗</a></div>'
           : '<div style="font-size:12px;color:var(--muted)">Sheet created, but no link was returned.</div>');
+    gsheetLoadStatus(bookingId);   // flip the row button to "Sheet exists"
     document.getElementById('entity-modal-actions').innerHTML =
       (url
         ? '<a href="'+escapeHtml(url)+'" target="_blank" style="padding:7px 14px;border:1px solid var(--accent);'
@@ -21015,8 +21126,10 @@ function renderBookingDialog(bookingId, d, cached){
   document.getElementById('entity-modal-body').innerHTML =
       rows
     + '<div id="bk-calls-wrap">' + callsSection + '</div>'
+    + '<div id="bk-gsheet-wrap"></div>'
     + '<div id="bk-checkin-wrap"></div>';
   bkLoadCheckinMode(bookingId, 'bk-checkin-wrap');   // async, never awaited
+  gsheetLoadStatus(bookingId);                        // async, never awaited
   entityRestoreScroll();   // stepped back into this view -- put it where it was
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
@@ -21026,7 +21139,7 @@ function renderBookingDialog(bookingId, d, cached){
     + entityBtn('📋 Crew Lists', "openCrewLists('"+bookingId+"')")
     + entityBtn('💬 Crew Notes', "openCrewNotes('"+bookingId+"')", {title:'Post notes for crew in the Crew Hub'})
     + entityBtn('📥 Import Times', "openTimesImport('"+bookingId+"')")
-    + entityBtn('📊 Generate Google Sheet', "generateGoogleSheet('"+bookingId+"')")
+    + entityBtn('📊 Generate Google Sheet', "generateGoogleSheet('"+bookingId+"')", {id:'bk-gsheet-btn'})
     + entityBtn('Close', 'closeEntityModal()');
 }
 
