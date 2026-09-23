@@ -1,6 +1,6 @@
 {
-  "version": "5.60.0",
+  "version": "5.61.0",
   "release_date": "2026-09-23",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.60.0/TheGOAT.dmg",
-  "release_notes": "Message a crew member from their record: it lands in their Crew Hub messages and on their phone. Deleting a licence now offers to tell them, and licence chips on Crew Records open that licence."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.61.0/TheGOAT.dmg",
+  "release_notes": "THE GOAT now shows when a booking already has a Google Sheet, and asks before creating a second one."
 }
