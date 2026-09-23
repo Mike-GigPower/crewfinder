@@ -1,6 +1,6 @@
 {
-  "version": "5.58.0",
-  "release_date": "2026-09-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.58.0/TheGOAT.dmg",
-  "release_notes": "Applicants parked on Hold with their paperwork complete can now be moved back to Ready to convert, so a start date several weeks out no longer strands them. Moving an applicant back through Attended also no longer re-sends the details form to someone who has already submitted it."
+  "version": "5.59.0",
+  "release_date": "2026-09-23",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.59.0/TheGOAT.dmg",
+  "release_notes": "Crew records and calls now link to each other: click a call on a crew member's Calls tab to open it, or a name in a call to open their record. A breadcrumb trail above each dialog shows where you came from, and THE GOAT now asks before discarding unsaved crew details."
 }
