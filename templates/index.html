@@ -361,6 +361,7 @@ body.cf-nm-resizing{cursor:col-resize;user-select:none}
 /* Crew <-> call links in the shared dialog: read as text until hovered. */
 .ce-call-link{background:none;border:none;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
 .ce-call-link:hover,.ce-call-link:focus-visible{color:var(--accent);text-decoration:underline;outline:none}
+.crew-lic-chip:hover,.crew-lic-chip:focus-visible{border-color:var(--accent)!important;color:var(--accent)!important;outline:none}
 #crew-card .cc-sh-empty{font-size:11px;color:var(--muted);font-style:italic;margin-bottom:8px}
 #crew-card .cc-sh-row{padding:2px 0}
 #crew-card .cc-sh-line1{display:flex;align-items:baseline;justify-content:space-between;gap:6px;font-size:11px;line-height:1.4;color:var(--text)}
@@ -11721,6 +11722,8 @@ async function openCrewEdit(id, opts){
   entityStackTrim('crew:'+id);       // Crew A -> call -> Crew A collapses the trail
   window._ceSnapshot = null;         // nothing to guard until the form is on screen
   window._ceEditId = String(id);
+  window._ceLicHighlight = opts.licence || null;   // Records licence chip
+  if(window._ceLicDeleted && String(window._ceLicDeleted.crewId) !== String(id)) window._ceLicDeleted = null;
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Edit Crew Member';
   document.getElementById('entity-modal-sub').textContent   = '';
@@ -11827,6 +11830,7 @@ async function openCrewEdit(id, opts){
     + '<div id="ce-panel-unavail" style="display:none"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Cancel', "entityLeave(closeEntityModal, 'close')")
+    + entityBtn('\u2709 Message', "ceOpenMessage("+Number(c.id)+")", {title:'Send this person a message in Crew Hub'})
     + entityBtn('Save changes', "submitCrewEdit('"+String(c.id)+"')", {primary:true, id:'ce-submit'});
   ceSnapshot();
   var _ceTab = opts.tab || 'details';
@@ -13137,6 +13141,205 @@ function licPill(s){
 
 function licDate(d){ return d ? escapeHtml(d) : '\u2014'; }
 
+// ── Direct message to one crew member (DESIGN-crew-direct-message v0.2) ──
+// Stored in their Crew Hub inbox and pushed if they have a device. Crew see it
+// from "Gig Power"; the operator is recorded server-side for audit only.
+// Every name and text here goes through escapeHtml or .value — the only things
+// inside onclick strings are numeric ids.
+function _ceFirstName(){ return String(window._crewEditName || '').split(' ')[0] || 'them'; }
+
+function _ceLicDeletedStrip(crewId){
+  var d = window._ceLicDeleted;
+  if(!d || String(d.crewId) !== String(crewId)) return '';
+  return '<div id="ce-lic-told" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 8px;'
+    + 'padding:8px 10px;border:1px solid var(--border-gold);border-radius:4px;background:rgba(212,175,55,0.08)">'
+    + '<span style="flex:1;font-size:12px;color:var(--text)">' + escapeHtml(decodeEntities(d.label)) + ' removed. Tell '
+    + escapeHtml(_ceFirstName()) + '?</span>'
+    + entityBtn('✉ Write message', 'ceMessageForDeletedLicence(' + Number(crewId) + ')', {primary: true})
+    + entityBtn('Dismiss', 'ceDismissLicDeleted(' + Number(crewId) + ')')
+    + '</div>';
+}
+function ceDismissLicDeleted(crewId){
+  window._ceLicDeleted = null;
+  var s = document.getElementById('ce-lic-told'); if(s) s.remove();
+}
+
+// Drafts. WWCC carries the approved Volunteer-class wording (design D4); any
+// other licence gets a neutral opening the operator finishes.
+function _ceLicDraft(code, label){
+  var first = _ceFirstName();
+  if(String(code).toUpperCase() === 'WWCC'){
+    return {
+      title: 'Your WWCC has been removed',
+      body:  'Hi ' + first + ", we've removed the Working with Children Check from your Gig Power record because it's a Volunteer card. "
+           + 'For our work you need an Employee WWCC. You can apply or change it at workingwithchildren.vic.gov.au, '
+           + 'then upload the new card in Crew Hub under Licences. Thanks — Gig Power'
+    };
+  }
+  var nice = decodeEntities(label || code || 'licence');
+  return {
+    title: ('Your ' + nice + ' has been removed').slice(0, 80),
+    body:  'Hi ' + first + ", we've removed your " + nice + ' from your Gig Power record because '
+  };
+}
+function ceMessageForDeletedLicence(crewId){
+  var d = window._ceLicDeleted || {};
+  var dr = _ceLicDraft(d.code, d.label);
+  ceOpenMessage(crewId, {title: dr.title, body: dr.body, topic: d.code ? 'licence:' + d.code : null,
+                         backTab: 'licences'});
+}
+
+function _ceVisibleTab(){
+  var tabs = ['details','inductions','licences','visa','documents','payslips','emergency','shifts','unavail'];
+  for(var i = 0; i < tabs.length; i++){
+    var p = document.getElementById('ce-panel-' + tabs[i]);
+    if(p && p.style.display === 'block') return tabs[i];
+  }
+  return 'details';
+}
+
+function ceOpenMessage(crewId, preset){
+  preset = preset || {};
+  entityLeave(function(){
+    var back = preset.backTab || _ceVisibleTab();
+    entityStackPush('crew:' + crewId, 'crew', function(){ openCrewEdit(String(crewId), {tab: back}); });
+    _ceRenderCompose(crewId, preset);
+  }, 'nav');
+}
+
+function _ceRenderCompose(crewId, preset){
+  var who = window._crewEditNameLF || window._crewEditName || ('ID ' + crewId);
+  window._ceMsg = {crewId: crewId, topic: preset.topic || null, sending: false};
+  document.getElementById('entity-modal-title').textContent = 'Message';
+  document.getElementById('entity-modal-sub').textContent = 'To ' + decodeEntities(who) + ' · from Gig Power';
+  var inp = "width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:7px 9px;font:inherit;font-size:13px";
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div id="cm-reach" style="font-size:11px;color:var(--muted);min-height:14px;margin-bottom:10px"></div>'
+    + '<label style="display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px">Title <span id="cm-tcount"></span></label>'
+    + '<input id="cm-title" type="text" maxlength="80" style="' + inp + '">'
+    + '<label style="display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:10px 0 3px">Message <span id="cm-bcount"></span></label>'
+    + '<textarea id="cm-body" rows="7" maxlength="1000" style="' + inp + ';resize:vertical"></textarea>'
+    + '<div id="cm-result" style="font-size:12px;min-height:16px;padding:8px 0"></div>'
+    + '<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:10px">'
+    +   '<div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Sent before</div>'
+    +   '<div id="cm-history" style="font-size:12px;color:var(--muted)">Loading…</div>'
+    + '</div>';
+  var t = document.getElementById('cm-title'), b = document.getElementById('cm-body');
+  t.value = preset.title || 'Message from Gig Power';
+  b.value = preset.body || '';
+  function counts(){
+    document.getElementById('cm-tcount').textContent = '(' + t.value.length + '/80)';
+    document.getElementById('cm-bcount').textContent = '(' + b.value.length + '/1000)';
+  }
+  t.addEventListener('input', counts); b.addEventListener('input', counts); counts();
+  _ceComposeActions(crewId, false);
+  setTimeout(function(){ b.focus(); b.setSelectionRange(b.value.length, b.value.length); }, 0);
+  _ceLoadMessageHistory(crewId);
+}
+
+function _ceComposeActions(crewId, done){
+  var back = entityStackTop();
+  document.getElementById('entity-modal-actions').innerHTML =
+      (back ? entityBtn('‹ Back to ' + escapeHtml(back.name || back.label), 'entityBack()') : '')
+    + (done ? '' : entityBtn('✉ Send', 'ceSendMessage(' + Number(crewId) + ')', {primary: true, id: 'cm-send'}));
+}
+
+async function _ceLoadMessageHistory(crewId){
+  var box = document.getElementById('cm-history');
+  var reach = document.getElementById('cm-reach');
+  var d;
+  try{
+    var r = await fetch('/api/admin/crew/' + encodeURIComponent(crewId) + '/messages');
+    d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+  }catch(e){
+    // An error, never "none sent": the two must not look alike (design §4).
+    if(box) box.innerHTML = '<span style="color:var(--conflict)">Couldn&#39;t load message history: ' + escapeHtml(e.message) + '</span>';
+    return;
+  }
+  if(!box || !window._ceMsg || Number(window._ceMsg.crewId) !== Number(crewId)) return;   // moved on
+  var first = escapeHtml(_ceFirstName());
+  if(reach){
+    if(d.push_ok === true)       reach.textContent = decodeEntities(_ceFirstName()) + ' has Crew Hub notifications on.';
+    else if(d.push_ok === false) reach.innerHTML = '<span style="color:#f59e0b">' + first + ' has no Crew Hub notifications on</span> — they’ll see this next time they open Crew Hub.';
+  }
+  var msgs = d.messages || [];
+  if(!msgs.length){ box.textContent = 'Nothing sent to ' + decodeEntities(_ceFirstName()) + ' yet.'; return; }
+  box.innerHTML = msgs.map(function(m){
+    var when = m.createdAt ? new Date(m.createdAt).toLocaleString('en-AU', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) : '';
+    var read = m.readAt
+      ? '<span style="color:var(--ok,#10b981)">read ✓ ' + escapeHtml(new Date(m.readAt).toLocaleString('en-AU', {day:'numeric', month:'short'})) + '</span>'
+      : '<span>unread</span>';
+    var via = (m.pushSent > 0) ? 'pushed' : (m.pushSent === 0 ? 'inbox only' : '');
+    return '<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
+      + '<div style="display:flex;justify-content:space-between;gap:8px"><span style="color:var(--text)">' + escapeHtml(m.title || '') + '</span>'
+      + '<span style="white-space:nowrap">' + escapeHtml(when) + '</span></div>'
+      + '<div style="font-size:11px">' + read + (via ? ' · ' + via : '') + '</div></div>';
+  }).join('');
+}
+
+async function ceSendMessage(crewId){
+  var st = window._ceMsg || {};
+  if(st.sending) return;
+  var t = (document.getElementById('cm-title') || {}).value || '';
+  var b = (document.getElementById('cm-body') || {}).value || '';
+  var out = document.getElementById('cm-result');
+  t = t.trim(); b = b.trim();
+  if(!t || !b){ out.innerHTML = '<span style="color:var(--conflict)">A title and a message are both needed.</span>'; return; }
+  var btn = document.getElementById('cm-send');
+  st.sending = true;
+  if(btn){ btn.disabled = true; btn.textContent = 'Sending…'; }
+  try{
+    var r = await fetch('/api/admin/crew/' + encodeURIComponent(crewId) + '/message', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title: t, body: b, topic: st.topic})
+    });
+    var d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+    var n = Number(d.sent) || 0;
+    // Nothing turns green unless something actually reached a phone.
+    out.innerHTML = n > 0
+      ? '<span style="color:var(--ok,#10b981)">Sent — reached ' + n + ' device' + (n === 1 ? '' : 's') + ', and saved to their Crew Hub messages.</span>'
+      : '<span style="color:#f59e0b">Saved to their Crew Hub messages — no device to push to right now.</span>'
+        + (d.push_error ? ' <span style="color:var(--muted)">(' + escapeHtml(d.push_error) + ')</span>' : '');
+    document.getElementById('cm-title').disabled = true;
+    document.getElementById('cm-body').disabled = true;
+    if(st.topic && window._ceLicDeleted && String(window._ceLicDeleted.crewId) === String(crewId)) window._ceLicDeleted = null;
+    _ceComposeActions(crewId, true);
+    _ceLoadMessageHistory(crewId);
+  }catch(e){
+    out.innerHTML = '<span style="color:var(--conflict)">Not sent: ' + escapeHtml(e.message) + '</span>';
+    if(btn){ btn.disabled = false; btn.textContent = '✉ Send'; }
+  }finally{
+    st.sending = false;
+  }
+}
+
+// Crew -> Records licence chip (Joe/Mike, 23 Sep 2026): open that person's
+// record straight on the Licences tab with the clicked licence highlighted.
+function crewLicChipOpen(ev, el, crewId){
+  if(ev) ev.stopPropagation();            // the row underneath opens Details
+  var code = (el && el.getAttribute('data-lic-code')) || '';
+  openCrewEdit(String(crewId), {tab: 'licences', licence: code});
+}
+
+// Mark the row(s) for window._ceLicHighlight and bring the first into view.
+// Matches on the canonical code, falling back to the raw type for untriaged
+// rows -- the same identity the Records chip is built from.
+function _ceLicApplyHighlight(){
+  var code = window._ceLicHighlight;
+  if(!code) return;
+  var first = null;
+  document.querySelectorAll('#ce-panel-licences [data-lic-row]').forEach(function(r){
+    if(r.getAttribute('data-lic-row') !== code) return;
+    r.style.background = 'rgba(212,175,55,0.10)';
+    r.style.boxShadow  = 'inset 3px 0 0 var(--accent)';
+    r.style.paddingLeft = '8px';
+    if(!first) first = r;
+  });
+  if(first && first.scrollIntoView) first.scrollIntoView({block: 'center'});
+}
+
 async function ceLoadLicences(id){
   var panel = document.getElementById('ce-panel-licences');
   if(!panel) return;
@@ -13171,7 +13374,7 @@ async function ceLoadLicences(id){
     ? lics.map(function(l){
         var legacy  = (!l.pdf_file && l.has_image);
         var hasFile = (l.pdf_file || l.has_image);
-        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
+        return '<div data-lic-row="'+escapeHtml(l.type_canonical || l.type || '')+'" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
           + '<div style="min-width:0">'
           +   '<div style="font-size:13px;color:var(--text)">'+escapeHtml(l.type||'')
           +     (legacy ? ' <span style="font-size:9px;color:var(--muted)">(image)</span>' : '')+'</div>'
@@ -13221,9 +13424,11 @@ async function ceLoadLicences(id){
 
   panel.innerHTML =
       '<div style="font-size:11px;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px">'+(summary.length?escapeHtml(summary.join(' \u00b7 ')):'No licences on record')+'</div>'
+    + _ceLicDeletedStrip(id)
     + rows
     + '<div id="lic-edit-slot"></div>'
     + addForm;
+  _ceLicApplyHighlight();
 }
 
 // Format a workslip week_ending (unix SECONDS) as "Week ending Tue 14/04/26",
@@ -13496,9 +13701,17 @@ async function submitLicenceEdit(id, licId){
 async function licDelete(id, licId){
   if(!confirm('Delete this licence? The file is removed too. This cannot be undone.')) return;
   try{
+    var gone = (window._ceLicences || []).filter(function(l){ return Number(l.id) === Number(licId); })[0] || {};
     var r = await fetch('/api/licence/'+licId+'/delete', {method:'POST'});
     var d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP '+r.status));
+    // Offer, never send: the reason differs case by case (design D2).
+    // Crew read the catalogue NAME ("Forklift truck"), never the code ("LF") --
+    // a triaged row's `type` holds the code. Falls back to the raw type.
+    var goneCode = String(gone.type_canonical || gone.type || '');
+    var goneCat  = (_licCatalogue || []).filter(function(e){ return e.code === goneCode; })[0];
+    window._ceLicDeleted = {crewId: String(id), code: goneCode,
+                            label: String((goneCat && goneCat.name) || gone.type || goneCode || 'licence')};
     window._ceLoaded.licences = false;
     ceLoadLicences(id);
   }catch(e){
@@ -14013,9 +14226,11 @@ function _renderCrewList(){
       const live = mine.filter(function(r){ return !r.expiry || r.expiry >= today; });
       const pick = live.length ? live[0] : mine[0];
       const dead = !live.length;
-      out.push('<span style="font-family:\'Share Tech Mono\',monospace;font-size:10px;padding:1px 5px;border-radius:3px;'
+      out.push('<button type="button" class="crew-lic-chip" title="Open this licence" data-lic-code="' + escapeHtml(pick.code) + '"'
+        + ' onclick="crewLicChipOpen(event, this, ' + Number(c.id) + ')"'
+        + ' style="font-family:\'Share Tech Mono\',monospace;font-size:10px;padding:1px 5px;border-radius:3px;background:none;cursor:pointer;'
         + (dead ? 'border:1px solid var(--warn);color:var(--warn)' : 'border:1px solid var(--border);color:var(--muted)')
-        + '">' + escapeHtml(pick.code) + (dead ? ' expired' : '') + '</span>');
+        + '">' + escapeHtml(pick.code) + (dead ? ' expired' : '') + '</button>');
     });
     return out.length
       ? '<div style="display:flex;gap:4px;flex-wrap:wrap;padding-top:4px">' + out.join('') + '</div>'
