@@ -183,6 +183,10 @@ def gp_notify_offer(crew_id, call):
         pass   # never let a push break the offer/SMS loop
 
 GP_PROMOTE_URL = "https://crew.gigpower.com/api/push/promote"
+# Direct message to one crew member (crew record -> Message). Unlike the offer /
+# promote pushes this is NOT fire-and-forget: the operator is shown the result.
+GP_MESSAGE_URL  = "https://crew.gigpower.com/api/push/message"
+GP_MESSAGES_URL = "https://crew.gigpower.com/api/push/messages"
 
 _gp_promote_notified = {}   # (crew_id, call_id) -> last-sent epoch; in-memory dedup
 
@@ -15836,6 +15840,107 @@ def api_admin_crew_shifts(crew_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(data)
+
+
+def _crew_ein_for(ss, crew_id):
+    """EIN for one crew member, read server-side from get-crew.php — never taken
+    from the browser, so the operator cannot address a message to anyone but
+    the record they have open. Returns (ein, error)."""
+    data, err = ss_get_crew(ss, crew_id)
+    if err:
+        return None, err
+    ein = str((data or {}).get("ein") or "").strip()
+    if not ein.isdigit():
+        return None, "this crew member has no EIN on record"
+    return ein, None
+
+
+def _message_sender_label():
+    """'Name (EIN n)' for the HUMAN who pressed Send — the pre-elevation identity
+    during an admin step-up, same rule as _keypay_acting_user_id. Audit only:
+    Crew Hub stores it and never shows it to crew (crew see 'Gig Power')."""
+    acting = current_identity() or {}
+    pre    = _pre_elevation.get(session.get("sid")) or {}
+    human  = pre.get("ident") or acting
+    name   = str(human.get("name", "") or "").strip()
+    ein    = str(human.get("ein", "") or "").strip()
+    label  = name + (f" (EIN {ein})" if ein else "")
+    return (label or "THE GOAT")[:120]
+
+
+@app.route("/api/admin/crew/<crew_id>/message", methods=["POST"])
+@require_cohort("admin")
+def api_admin_crew_message(crew_id):
+    """Send one crew member a direct message: stored in their Crew Hub inbox and
+    pushed if they have a device. The Hub's answer is returned as-is so the
+    operator sees whether it reached a phone or only the inbox.
+
+    An empty GP_PUSH_SECRET is an ERROR here, not a silent no-op: a packaged build
+    without the secret would otherwise report every send as undelivered."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    if not GP_PUSH_SECRET:
+        return jsonify({"error": "Crew Hub messaging is not configured on this install (no push secret)."}), 503
+    body  = request.get_json(silent=True) or {}
+    title = str(body.get("title") or "").strip()
+    text  = str(body.get("body") or "").strip()
+    topic = str(body.get("topic") or "").strip()[:64] or None
+    if not (1 <= len(title) <= 80):
+        return jsonify({"error": "Title must be 1-80 characters."}), 400
+    if not (1 <= len(text) <= 1000):
+        return jsonify({"error": "Message must be 1-1000 characters."}), 400
+    ein, err = _crew_ein_for(ss, crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    try:
+        r = http.post(
+            GP_MESSAGE_URL,
+            json={"ein": ein, "title": title, "body": text, "topic": topic,
+                  "sent_by": _message_sender_label()},
+            headers={"X-Push-Secret": GP_PUSH_SECRET},
+            timeout=10,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Could not reach Crew Hub: {e}"}), 502
+    try:
+        out = r.json()
+    except Exception:
+        out = {"error": (r.text or "")[:200]}
+    if r.status_code != 200 or not out.get("ok"):
+        return jsonify({"error": out.get("error") or f"Crew Hub HTTP {r.status_code}"}), 502
+    app.logger.info(f"[crew-message] crew={crew_id} ein={ein} id={out.get('id')} "
+                    f"topic={topic or '-'} sent={out.get('sent')}")
+    return jsonify(out)
+
+
+@app.route("/api/admin/crew/<crew_id>/messages")
+@require_cohort("admin")
+def api_admin_crew_messages(crew_id):
+    """History: the last 20 messages sent to this crew member, with read state.
+    A failed read is an error, never an empty list — 'could not read' and
+    'nothing sent' must not look the same to someone deciding whether to send."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    if not GP_PUSH_SECRET:
+        return jsonify({"error": "Crew Hub messaging is not configured on this install (no push secret)."}), 503
+    ein, err = _crew_ein_for(ss, crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    try:
+        r = http.get(GP_MESSAGES_URL, params={"ein": ein},
+                     headers={"X-Push-Secret": GP_PUSH_SECRET}, timeout=8)
+        out = r.json()
+    except Exception as e:
+        return jsonify({"error": f"Could not read message history: {e}"}), 502
+    if r.status_code != 200 or not isinstance(out.get("messages"), list):
+        return jsonify({"error": out.get("error") or f"Crew Hub HTTP {r.status_code}"}), 502
+    # Whether a send would reach a phone. None = unknown (Hub reachability read
+    # failed) and the panel then says nothing rather than guessing either way.
+    reachable, _ = gp_fetch_push_reachable()
+    out["push_ok"] = (ein in reachable) if reachable is not None else None
+    return jsonify(out)
 
 
 @app.route("/api/admin/crew/<crew_id>/inductions", methods=["POST"])
