@@ -138,7 +138,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.62.0"
+APP_VERSION    = "5.63.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -187,6 +187,9 @@ GP_PROMOTE_URL = "https://crew.gigpower.com/api/push/promote"
 # promote pushes this is NOT fire-and-forget: the operator is shown the result.
 GP_MESSAGE_URL  = "https://crew.gigpower.com/api/push/message"
 GP_MESSAGES_URL = "https://crew.gigpower.com/api/push/messages"
+# Per-offer push delivery outcomes for the Ops 'Confirmations to chase' lane.
+# Crew Hub classifies with the same function its /admin/dashboard uses.
+GP_OFFER_OUTCOMES_URL = "https://crew.gigpower.com/api/push/offer-outcomes"
 
 _gp_promote_notified = {}   # (crew_id, call_id) -> last-sent epoch; in-memory dedup
 
@@ -8743,6 +8746,78 @@ def fetch_open_offers_bulk(ss, start, end):
     return data, None
 
 
+OPS_DELIVERY_KEYS = ("delivered", "no_device", "no_attempt", "failed", "pre_tracking")
+
+
+def _ops_lead_bucket(start_iso, now):
+    """Lead time -> the house bucket shared by every Ops lane that has one:
+    under48 / from48to168 / over168. now and start_iso are both Melbourne wall
+    clock (the box tz). A missing or unparseable start falls to the least-urgent
+    bucket so the row still counts and the lane identities stay exact. A call
+    that has already started today has negative lead -> under48, the urgent
+    bucket, which is right."""
+    if not start_iso:
+        return "over168"
+    try:
+        start_dt = datetime.strptime(start_iso, "%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return "over168"
+    lead = (start_dt - now).total_seconds()
+    if lead < 172800:        # < 48h
+        return "under48"
+    if lead < 604800:        # 48h-168h (2-7 days)
+        return "from48to168"
+    return "over168"         # > 168h
+
+
+def gp_fetch_offer_outcomes(offers):
+    """Crew Hub per-offer delivery outcome for each open offer, IN ORDER.
+
+    Returns (outcomes, tracking_since, error). outcomes is a list of delivery
+    keys the same length as offers, or None on ANY failure: no secret, network,
+    non-200, malformed body, a count mismatch, or any (ein, call_id) pair out of
+    step with what was sent. None means UNKNOWN and the lane shows 'Delivery
+    unavailable'; it must never be read as a list of 'not attempted'. The Hub
+    returns non-200 on its own errors for exactly this reason.
+
+    The classifier (including the pre-tracking clamp and its Melbourne
+    wall-clock conversion) lives in Crew Hub only. Never re-derive it here."""
+    if not GP_PUSH_SECRET:
+        return None, None, "GP_PUSH_SECRET not set"
+    payload = [{"ein": (None if o.get("ein") in (None, "") else str(o.get("ein"))),
+                "call_id": int(o.get("call_id") or 0),
+                "created_at": o.get("created_at") or None} for o in offers]
+    if not payload:
+        return [], None, None
+    try:
+        r = http.post(GP_OFFER_OUTCOMES_URL,
+                      headers={"X-Push-Secret": GP_PUSH_SECRET},
+                      json={"offers": payload}, timeout=8)
+    except Exception as e:
+        return None, None, f"request failed: {e}"
+    if r.status_code != 200:
+        return None, None, f"HTTP {r.status_code}"
+    try:
+        body = r.json()
+    except Exception:
+        return None, None, "bad JSON"
+    outs = body.get("outcomes") if isinstance(body, dict) else None
+    if not isinstance(outs, list) or len(outs) != len(payload):
+        return None, None, "outcome count mismatch"
+    keys = []
+    for sent, got in zip(payload, outs):
+        if not isinstance(got, dict):
+            return None, None, "malformed outcome"
+        if (str(got.get("ein")) if got.get("ein") is not None else None) != sent["ein"] \
+           or int(got.get("call_id") or 0) != sent["call_id"]:
+            return None, None, "outcome order mismatch"
+        d = got.get("delivery")
+        if d not in OPS_DELIVERY_KEYS:
+            return None, None, f"unknown outcome {d!r}"
+        keys.append(d)
+    return keys, body.get("tracking_since"), None
+
+
 @app.route("/api/ops/offers", methods=["GET"])
 @require_cohort(*READ_ALL_COHORTS)
 def api_ops_offers():
@@ -8770,6 +8845,33 @@ def api_ops_offers():
     if err is not None:
         app.logger.warning(f"[ops-offers] unavailable: {err}")
         return jsonify({"unavailable": True, "error": err})
+
+    # Two derived dimensions, computed HERE once so the donuts and the list can
+    # never disagree (the PHP still owns the rows, age_bucket and counts.age):
+    #   lead_bucket - how long until the call starts (the chase order)
+    #   delivery    - did the offer reach them (Crew Hub), replacing the SMS-era
+    #                 status 0/1 split, which froze when SMS was retired (24 Jul)
+    offers = data.get("offers") or []
+    counts = data.setdefault("counts", {})
+    now = datetime.now()                       # one now for every row
+    c_lead = {"under48": 0, "from48to168": 0, "over168": 0}
+    for o in offers:
+        o["lead_bucket"] = _ops_lead_bucket(o.get("start"), now)
+        c_lead[o["lead_bucket"]] += 1
+    counts["lead"] = c_lead
+
+    keys, since, derr = gp_fetch_offer_outcomes(offers)
+    if keys is None:
+        app.logger.warning(f"[ops-offers] delivery unavailable: {derr}")
+        data["delivery_available"] = False
+    else:
+        c_del = {k: 0 for k in OPS_DELIVERY_KEYS}
+        for o, k in zip(offers, keys):
+            o["delivery"] = k
+            c_del[k] += 1
+        counts["delivery"] = c_del
+        data["delivery_available"] = True
+        data["tracking_since"] = since
     return jsonify(data)
 
 
@@ -8938,20 +9040,8 @@ def api_ops_calls():
         # client reads the tag and never recomputes the boundary. start_iso is a
         # computed column and always present; a parse failure falls to the least-
         # urgent bucket so the row still counts (identities below stay exact).
-        lead_bucket = "over168"
         start_iso   = r.get("start_iso")
-        if start_iso:
-            try:
-                start_dt = datetime.strptime(start_iso, "%Y-%m-%dT%H:%M:%S")
-                lead     = (start_dt - now).total_seconds()
-                if lead < 172800:        # < 48h
-                    lead_bucket = "under48"
-                elif lead < 604800:      # 48h–168h (2–7 days)
-                    lead_bucket = "from48to168"
-                else:                    # > 168h
-                    lead_bucket = "over168"
-            except Exception:
-                lead_bucket = "over168"
+        lead_bucket = _ops_lead_bucket(start_iso, now)   # shared with the offers lane
 
         c_fill[fill_state] += 1
         c_lead[lead_bucket] += 1
