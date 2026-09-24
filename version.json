@@ -1,6 +1,6 @@
 {
-  "version": "5.62.0",
+  "version": "5.63.0",
   "release_date": "2026-09-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.62.0/TheGOAT.dmg",
-  "release_notes": "Utilization, Inductions and Records now share one layout, with the same columns, filters, sorting and crew hover card. Records adds licence expiry, reliability, Crew Hub push and CSV export."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.63.0/TheGOAT.dmg",
+  "release_notes": "Operations: Confirmations to chase now shows how soon each call starts and whether the offer reached the crew member's phone, with the soonest calls first."
 }
