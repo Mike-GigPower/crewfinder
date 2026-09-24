@@ -413,6 +413,23 @@ body.cf-nm-resizing{cursor:col-resize;user-select:none}
 .ce-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:0 0 14px;margin-bottom:12px;border-bottom:1px solid var(--border)}
 .ce-hdr-left{min-width:0;flex:1}
 .ce-hdr-right{flex-shrink:0}
+/* Notes sit in the header, between Reliability and the photo, so they are in
+   view on every tab. Still the Details field: Save changes writes it. */
+.ce-hdr-left{flex:0 0 auto;max-width:190px}
+.ce-hdr-notes{flex:1;min-width:0;display:flex;flex-direction:column}
+.ce-hdr-notes-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 4px}
+.ce-hdr-notes textarea{flex:1;width:100%;box-sizing:border-box;min-height:76px;resize:vertical;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 8px;font:inherit;font-size:12px;line-height:1.4}
+.ce-hdr-notes textarea::placeholder{color:var(--muted)}
+/* Photo matches the Notes column: one height for both, set here. The photo is
+   square at that height; the Notes box scrolls rather than growing, so the two
+   stay level. Scoped to .ce-hdr — the Crew Finder panel's photo keeps 76px. */
+.ce-hdr{--ce-hdr-h:112px}
+.ce-hdr-notes-label{height:14px;line-height:14px}
+.ce-hdr-notes textarea{flex:none;height:calc(var(--ce-hdr-h) - 18px);min-height:0;resize:none;overflow-y:auto}
+.ce-hdr .ce-hdr-right .ce-hdr-photo,
+.ce-hdr .ce-hdr-right .ce-hdr-photo-ph{width:var(--ce-hdr-h);height:var(--ce-hdr-h);box-sizing:border-box}
+/* A message that has been sent is read-only; make that obvious. */
+#cm-title:disabled,#cm-body:disabled{opacity:.5;cursor:not-allowed;background:transparent}
 .ce-hdr-photo{width:76px;height:76px;object-fit:cover;border-radius:6px;border:1px solid var(--border);background:var(--surface);display:block}
 .ce-hdr-photo-ph{width:76px;height:76px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px dashed var(--border);background:var(--surface);color:var(--muted);font-size:10px;text-align:center;padding:4px}
 /* reuse the CrewFinder rollover stat styling outside #crew-card */
@@ -545,6 +562,43 @@ body.cf-sb-collapsed #tab-crew-finder > .sidebar{width:0;min-width:0;border-righ
 .ind-table td:first-child{position:sticky;left:0;background:var(--surface2);z-index:1;font-weight:500;white-space:nowrap}
 .ind-table tr:hover td{background:var(--surface)}
 .ind-table tr:hover td:first-child{background:var(--surface)}
+/* Crew views share Utilization's identity columns: Name, Phone, star rating, EIN
+   (Mike, 24 Sep 2026). Header text styled like .fc-table's; venue headers keep theirs. */
+.ind-table th.cid-h{font-size:9px;letter-spacing:.08em;text-transform:uppercase;font-weight:600}
+.ind-table th:first-child,.ind-table td:first-child{min-width:180px}
+.ind-table .cid-phone{width:120px;min-width:120px;white-space:nowrap}
+.ind-table .cid-stars{width:100px;min-width:100px;white-space:nowrap;overflow:hidden}
+.ind-table .cid-ein{width:70px;min-width:70px;white-space:nowrap}
+#crew-list-rows{flex:1;min-width:0}
+.crew-rec-table tbody tr{cursor:pointer}
+.crew-rec-table td{overflow:hidden;text-overflow:ellipsis}
+.crew-rec-table td.fc-col-name{white-space:nowrap}
+.crew-rec-table td.fc-col-stars{text-overflow:clip}
+.crew-rec-table th.rec-sort{cursor:pointer;user-select:none}
+.crew-rec-table th.rec-sort:hover{color:var(--accent)}
+.crew-rec-table th.rec-sort.on{color:var(--accent)}
+.crew-rec-table .rec-lic{cursor:pointer}
+.crew-rec-table .rec-lic:hover{text-decoration:underline}
+#crew-card .cc-hint{margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:10px;color:var(--muted);font-style:italic}
+/* Crew views share one filter layout (Mike, 24 Sep 2026): search first in the
+   toolbar; a row beneath with Utilization-style group chips and MIN star at its right. */
+.crew-search{width:200px}
+.crew-filter-row{display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.crew-filter-chips{display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0}
+.crew-filter-stars{display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:auto}
+.crew-filter-stars .section-label{margin:0}
+.crew-min-stars-val{font-size:11px;color:var(--accent);min-width:12px}
+th.crew-sort{cursor:pointer;user-select:none}
+th.crew-sort:hover,th.crew-sort.on{color:var(--accent)}
+.crew-count-line{font-size:11px;color:var(--muted);padding:6px 16px 0;min-height:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0}
+.crew-count-line b{color:var(--accent);font-weight:600}
+.crew-clear-btn{background:none;border:1px solid var(--accent);color:var(--accent);border-radius:10px;padding:1px 8px;font-size:10px;cursor:pointer;font-family:inherit}
+.crew-clear-btn:hover{background:var(--accent);color:#000}
+/* The global table{min-width:700px} stretched the Inductions Name column to fill
+   700px whenever only a few venues were ticked; pin it to Utilization's 180px. */
+.ind-table{min-width:0}
+.ind-table th:first-child,.ind-table td:first-child{width:180px;max-width:180px;overflow:hidden;text-overflow:ellipsis}
+[data-cc-id]:focus-visible{outline:1px solid var(--accent);outline-offset:2px;border-radius:2px}
 .ind-cell{display:flex;align-items:center;justify-content:center}
 .ind-dot{width:14px;height:14px;border-radius:50%;flex-shrink:0;cursor:default}
 .ind-dot.complete{background:#22c55e}
@@ -673,7 +727,7 @@ body.cf-sb-collapsed #tab-crew-finder > .sidebar{width:0;min-width:0;border-righ
 .fc-table tr:hover td{background:var(--surface2)}
 .fc-col-name{width:180px}
 .fc-col-phone{width:120px}
-.fc-col-stars{width:80px;white-space:nowrap;overflow:hidden}
+.fc-col-stars{width:100px;white-space:nowrap;overflow:hidden}
 .fc-col-id{width:70px}
 .fc-col-hours{width:64px}
 .fc-col-bar{width:auto}
@@ -2098,8 +2152,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   <div class="tab-panel" id="tab-induction-checker">
     <div class="ind-panel">
       <div class="ind-toolbar">
-        <span class="ind-filter-label">Name:</span><input class="ind-search" id="ind-name-search" type="text" placeholder="Search..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; renderInductionTable()"><span class="ind-filter-label">Group:</span>
-        <div class="ind-group-chips" id="ind-group-chips"></div>
+        <input class="ind-search crew-search" id="ind-name-search" type="text" placeholder="Search name, EIN or phone..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; renderInductionTable()">
         <div class="venue-selector" id="venue-selector">
           <button class="venue-selector-btn" onclick="toggleVenueDropdown()">
             &#9660; Venues <span class="badge" id="venue-badge">All</span>
@@ -2124,6 +2177,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
           <button class="btn" onclick="loadInductions(true)">&#8635; Refresh</button>
         </div>
       </div>
+      <div class="crew-filter-row"><div class="crew-filter-chips" id="ind-group-chips"></div><div class="crew-filter-stars"><span class="section-label">MIN ★</span><input type="range" class="fc-stars-slider crew-min-stars" min="0" max="10" value="0" oninput="crewSetMinStars(this.value)"><span class="crew-min-stars-val">0</span></div></div>
+      <div class="crew-count-line" id="ind-count"></div>
       <div class="ind-table-wrap" id="ind-table-wrap">
         <div class="empty-state"><div class="empty-sub">Loading inductions...</div></div>
       </div>
@@ -2408,6 +2463,10 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 
       <!-- Toolbar -->
       <div class="forecast-toolbar">
+        <input type="text" class="ind-search crew-search" id="fc-search" placeholder="Search name, EIN or phone..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; renderForecastTable()">
+
+        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+
         <span class="section-label">FROM</span>
         <input type="date" class="fc-date-input" id="fc-start-date" onchange="loadForecast()">
         <input type="number" id="fc-days" value="28" min="1" max="90"
@@ -2417,24 +2476,6 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
                title="Number of days (max 90)"
                oninput="this.value=Math.min(90,Math.max(1,this.value||1))">
         <span style="font-size:10px;color:var(--muted)">days</span>
-
-        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
-
-        <input type="text" class="fc-search" id="fc-search" placeholder="Search name..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; renderForecastTable()">
-
-        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
-
-        <span class="section-label">MIN ★</span>
-        <input type="range" class="fc-stars-slider" id="fc-min-stars" min="0" max="10" value="0" oninput="document.getElementById('fc-stars-val').textContent=this.value;renderForecastTable()">
-        <span id="fc-stars-val" style="font-size:11px;color:var(--accent);min-width:12px">0</span>
-
-        <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
-
-        <span class="section-label">SORT</span>
-        <button class="fc-sort-btn active" id="fc-sort-name"    onclick="setFcSort('name')">Name</button>
-        <button class="fc-sort-btn"        id="fc-sort-rating"  onclick="setFcSort('rating')">Stars</button>
-        <button class="fc-sort-btn"        id="fc-sort-id"      onclick="setFcSort('id')">EIN</button>
-        <button class="fc-sort-btn"        id="fc-sort-hours"   onclick="setFcSort('hours')">Hours</button>
 
         <div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
 
@@ -2452,7 +2493,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
       </div>
 
       <!-- Group chips -->
-      <div id="fc-group-chips" style="display:flex;gap:6px;padding:8px 16px;flex-wrap:wrap;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0"></div>
+      <div class="crew-filter-row"><div class="crew-filter-chips" id="fc-group-chips"></div><div class="crew-filter-stars"><span class="section-label">MIN ★</span><input type="range" class="fc-stars-slider crew-min-stars" min="0" max="10" value="0" oninput="crewSetMinStars(this.value)"><span class="crew-min-stars-val">0</span></div></div>
+      <div class="crew-count-line" id="fc-count"></div>
 
       <!-- Body -->
       <div class="forecast-body" id="forecast-body">
@@ -2478,8 +2520,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   <div class="tab-panel" id="tab-crew-records">
     <div class="ind-panel">
       <div class="ind-toolbar">
-        <span class="ind-filter-label">Name:</span><input class="ind-search" id="crew-list-search" type="text" placeholder="Search name, EIN or phone..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; _renderCrewList()"><span class="ind-filter-label">Group:</span>
-        <div class="ind-group-chips" id="crew-list-chips"></div>
+        <input class="ind-search crew-search" id="crew-list-search" type="text" placeholder="Search name, EIN or phone..." autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="crewFilter.q=this.value; _renderCrewList()">
+        <div id="crew-list-seg" style="display:inline-flex;gap:6px"></div>
         <!-- Licence lives in a popover, not inline: ~44 catalogue codes cannot sit
              in a single-row toolbar. Same control the Crew Finder offers, same
              chip styles, so it reads as one feature in two places. -->
@@ -2494,12 +2536,13 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         </span>
         <div class="ind-actions">
           <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="adminAddUser()">+ Add Crew Member</button>
-          <div id="crew-list-seg" style="display:inline-flex;gap:6px"></div>
+          <button class="btn" onclick="exportCrewRecordsCSV()">&#8659; Export CSV</button>
           <button class="btn" onclick="_loadCrewList()">&#8635; Refresh</button>
         </div>
       </div>
+      <div class="crew-filter-row"><div class="crew-filter-chips" id="crew-list-chips"></div><div class="crew-filter-stars"><span class="section-label">MIN ★</span><input type="range" class="fc-stars-slider crew-min-stars" min="0" max="10" value="0" oninput="crewSetMinStars(this.value)"><span class="crew-min-stars-val">0</span></div></div>
       <div id="crew-lic-chips" style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 16px 0"></div>
-      <div id="crew-list-count" style="font-size:11px;color:var(--muted);padding:6px 16px 0;min-height:14px"></div>
+      <div class="crew-count-line" id="crew-list-count"></div>
       <div id="crew-inactive-note" style="display:none;font-size:11px;color:var(--muted);padding:2px 16px 0">Inactive crew aren&rsquo;t scheduled or inducted &mdash; Utilization and Inductions are unavailable for them.</div>
       <div class="ind-table-wrap"><div id="crew-list-rows" style="padding:0 16px"><div style="color:var(--muted);font-size:12px;padding:8px 0">Loading&hellip;</div></div></div>
     </div>
@@ -4344,18 +4387,21 @@ function crewStatsHtml(crew){
 // ±48h shift list for the crew hover card. Reads crew.shifts, which already rides
 // along on every /api/availability row — no extra request. Renders nothing when
 // there are no targets or no shifts array, so it degrades to today's card.
-function crewShiftsHtml(crew){
-  const targets = (currentResult && currentResult.targets) || [];
-  if(!targets.length) return '';
+// span (optional): {start, end} in ms. The Crew views (Utilization, Inductions,
+// Records) have no searched call, so they pass +/-48h of now and there is no
+// target relationship to colour against: every shift is tagged on its own status.
+function crewShiftsHtml(crew, span){
+  const targets = span ? [] : ((currentResult && currentResult.targets) || []);
+  if(!span && !targets.length) return '';
   const shifts = (crew && crew.shifts) || [];
-  const rel = targetRelationship(crew);
-  const label = '<div class="cc-sh-label">Shifts ±48h</div>';
+  const rel = span ? null : targetRelationship(crew);
+  const label = '<div class="cc-sh-label">'+(span ? 'Shifts ±48h of now' : 'Shifts ±48h')+'</div>';
 
   // Span = hard targets only (ignore soft_targets), widened by 48h each side.
   // Parse the ISO local strings (no offset) so day-boundary maths can't drift.
   const H48 = 48*3600*1000;
-  const spanStart = Math.min.apply(null, targets.map(t=>new Date(t.start_dt).getTime())) - H48;
-  const spanEnd   = Math.max.apply(null, targets.map(t=>new Date(t.end_dt).getTime()))   + H48;
+  const spanStart = span ? span.start : Math.min.apply(null, targets.map(t=>new Date(t.start_dt).getTime())) - H48;
+  const spanEnd   = span ? span.end   : Math.max.apply(null, targets.map(t=>new Date(t.end_dt).getTime()))   + H48;
 
   // Overlap, not start-within: a night shift beginning before the span but running
   // into it must still appear. Then chronological ascending by start.
@@ -10381,7 +10427,36 @@ function toggleBookingGroup(el){
 // Views keep their own toolbars for now (slice 1) — they read and write this
 // instead of their own local state. Consolidating the two toolbars into one bar
 // is a later, purely cosmetic step.
-const crewFilter = { q: '', group: null, active: true };
+const crewFilter = { q: '', group: null, active: true, minStars: 0 };
+
+// ONE sort for the three Crew views (Mike, 24 Sep 2026). A view that doesn't
+// have the chosen column (Hours, Licence expiry...) shows Name A-Z without
+// changing the shared choice; see crewSortFor.
+const crewSort = { key: 'name', dir: 1 };
+
+// Group, MIN star and sort are remembered between sessions. The search text is
+// deliberately not: a stale name search on launch reads as missing crew. The
+// count line always says when a filter is on, with Clear filters beside it.
+const CREW_VIEWS_STORE = 'goat.crewViews.v1';
+function crewPersistSave(){
+  try{
+    localStorage.setItem(CREW_VIEWS_STORE, JSON.stringify({
+      group: crewFilter.group, minStars: crewFilter.minStars || 0,
+      sortKey: crewSort.key, sortDir: crewSort.dir }));
+  }catch(e){}
+}
+(function crewPersistLoad(){
+  try{
+    const d = JSON.parse(localStorage.getItem(CREW_VIEWS_STORE) || 'null');
+    if(!d) return;
+    if(typeof d.group === 'string' && d.group) crewFilter.group = d.group;
+    const m = parseInt(d.minStars, 10);
+    if(m > 0 && m <= 10) crewFilter.minStars = m;
+    if(typeof d.sortKey === 'string' && /^(name|rating|ein|hours|lic|rel|push)$/.test(d.sortKey)){
+      crewSort.key = d.sortKey; crewSort.dir = (d.sortDir === -1) ? -1 : 1;
+    }
+  }catch(e){}
+})();
 
 // Bring a Crew view's toolbar into line with the shared filter, then re-render.
 // Called on every entry to a Crew view — including re-entry, where no load runs
@@ -10392,6 +10467,7 @@ const crewFilter = { q: '', group: null, active: true };
 // leave the view empty with no chip lit and nothing to click to recover. Clearing
 // it is the safe failure: the operator sees everyone, not nobody.
 function crewFilterApplyToUI(tab){
+  crewSyncMinStarsUI();
   if(tab === 'crew-records'){
     const inp = document.getElementById('crew-list-search');
     if(inp) inp.value = crewFilter.q;
@@ -10525,9 +10601,10 @@ function renderGroupChips(elId, crewArr, toggleFn){
   if(!el) return;
   const groups = new Set();
   (crewArr||[]).forEach(c => (c.groups||[]).forEach(g => groups.add(g)));
+  // Same element and classes as Utilization's renderFcGroupChips (Mike, 24 Sep 2026).
   el.innerHTML = [...groups].sort().map(g =>
-    '<button class="ind-chip' + (crewFilter.group === g ? ' active' : '') + '"'
-    + ' onclick="' + toggleFn + '(\'' + g + '\')">' + g + '</button>'
+    '<span class="fc-group-chip' + (crewFilter.group === g ? ' active' : '') + '"'
+    + ' onclick="' + toggleFn + '(\'' + g + '\')">' + g + '</span>'
   ).join('');
 }
 
@@ -10545,10 +10622,22 @@ function renderInductionTable(){
 
   // Filter crew
   let crew=_indData.crew.filter(c=>{
-    if(nameQ && !(c.name||'').toLowerCase().includes(nameQ)) return false;
+    if(nameQ && !crewMatchesQuery(c, nameQ)) return false;
     if(crewFilter.group && !(c.groups||[]).includes(crewFilter.group)) return false;
+    if((crewFilter.minStars||0) && (Number(c.rating)||0) < crewFilter.minStars) return false;
     return true;
   });
+  const is = crewSortFor(['name','rating','ein']);
+  crew = crew.slice().sort(function(a, b){
+    const k = is.key;
+    const av = k==='rating' ? (Number(a.rating)||0) : k==='ein' ? (parseInt(a.ein,10)||0) : decodeEntities(a.name||'').toLowerCase();
+    const bv = k==='rating' ? (Number(b.rating)||0) : k==='ein' ? (parseInt(b.ein,10)||0) : decodeEntities(b.name||'').toLowerCase();
+    if(av < bv) return -1 * is.dir;
+    if(av > bv) return  1 * is.dir;
+    const an = decodeEntities(a.name||'').toLowerCase(), bn = decodeEntities(b.name||'').toLowerCase();
+    return an < bn ? -1 : an > bn ? 1 : 0;
+  });
+  crewCountLineRender('ind-count', crew.length, (_indData.crew||[]).length, 'crew', 0);
 
   if(!crew.length){
     document.getElementById('ind-table-wrap').innerHTML='<div class="empty-state"><div class="empty-sub">No matching resources</div></div>';
@@ -10571,8 +10660,13 @@ function renderInductionTable(){
   const thead=document.createElement('thead');
   const hrow=document.createElement('tr');
   const nameTh=document.createElement('th');
-  nameTh.textContent='Resource';
+  crewSortThDom(nameTh, 'Name', 'cid-h', 'name', is, 'crewSortBy');
   hrow.appendChild(nameTh);
+  [['Phone','cid-phone',''],['\u2605','cid-stars','rating'],['EIN','cid-ein','ein']].forEach(function(h){
+    const th=document.createElement('th');
+    crewSortThDom(th, h[0], 'cid-h '+h[1], h[2], is, 'crewSortBy');
+    hrow.appendChild(th);
+  });
   venues.forEach(v=>{
     const th=document.createElement('th');
     th.className='venue-th';
@@ -10588,8 +10682,20 @@ function renderInductionTable(){
   crew.forEach(c=>{
     const tr=document.createElement('tr');
     const nameTd=document.createElement('td');
-    nameTd.textContent=c.name||c.ein||c.id;
+    nameTd.innerHTML=crewNameHoverHtml(c, false, '');
     tr.appendChild(nameTd);
+    const phTd=document.createElement('td');
+    phTd.className='cid-phone';
+    phTd.innerHTML=phoneLink(c.phone);
+    tr.appendChild(phTd);
+    const stTd=document.createElement('td');
+    stTd.className='cid-stars';
+    stTd.innerHTML=crewStarsHtml(c.rating);
+    tr.appendChild(stTd);
+    const einTd=document.createElement('td');
+    einTd.className='cid-ein';
+    einTd.innerHTML='<span class="fc-id">'+escapeHtml(String(c.ein||c.id||''))+'</span>';
+    tr.appendChild(einTd);
     venues.forEach(v=>{
       const td=document.createElement('td');
       const vs=c.venue_status[v];
@@ -11723,6 +11829,7 @@ async function openCrewEdit(id, opts){
   window._ceSnapshot = null;         // nothing to guard until the form is on screen
   window._ceEditId = String(id);
   window._ceLicHighlight = opts.licence || null;   // Records licence chip
+  if(typeof crewViewCardInvalidate === 'function') crewViewCardInvalidate();   // re-read notes on next hover
   if(window._ceLicDeleted && String(window._ceLicDeleted.crewId) !== String(id)) window._ceLicDeleted = null;
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = 'Edit Crew Member';
@@ -11777,6 +11884,8 @@ async function openCrewEdit(id, opts){
   const ceHeader =
       '<div class="ce-hdr">'
     +   '<div class="ce-hdr-left">' + crewStatsHtml({stats: c.stats}) + _ceVisaBadge(c) + '</div>'
+    +   '<div class="ce-hdr-notes"><div class="ce-hdr-notes-label">Notes</div>'
+    +     '<textarea id="ce-notes" rows="4" placeholder="No notes">' + escapeHtml(c.notes == null ? '' : String(c.notes)) + '</textarea></div>'
     +   '<div class="ce-hdr-right">' + _cePhoto + '</div>'
     + '</div>';
 
@@ -11796,7 +11905,6 @@ async function openCrewEdit(id, opts){
     + efRow('Rating (0-10)',   efInput('ce-rating', c.rating, 'number'))
     + efRow('Status',          activeSel)
     + efRow('Groups',          groupGrid)
-    + efRow('Notes',           efTextarea('ce-notes', c.notes))
     + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
@@ -14166,6 +14274,101 @@ async function ceUnavailDelete(id, eventId){
 }
 
 // ── _renderCrewList — rows are now click-to-edit ─────────────────────────────
+// \u2500\u2500 Records: extra columns + sort (Mike, 24 Sep 2026) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Sort state lives here, not in crewFilter: it is a Records-only control.
+// Sorting is shared by the three Crew views (crewSort, beside crewFilter).
+// First click on a column: names and EINs A-Z; stars, hours, licences and
+// reliability worst-or-highest first; push "Off" first. A second click reverses.
+const CREW_REC_SORT_FIRST_DIR = { name: 1, ein: 1, rating: -1, hours: -1, lic: -1, rel: -1, push: 1 };
+let _crewRecLastRows = [];   // what Records last drew, in order, for Export CSV
+function crewRecSortBy(key){ crewSortBy(key); }
+
+// Expired / expiring (next 30 days) licence CODES for one person, judged per
+// code on the latest row: a renewed card beside its expired predecessor is not
+// expired. A row with no expiry never expires. null = licence data unavailable,
+// which must not read as "nothing expired".
+function crewRecLicState(c, today, soon){
+  if(!_crewListLicOk || !Array.isArray(c.licences)) return null;
+  const best = {};
+  c.licences.forEach(function(r){
+    if(!r || !r.code) return;
+    const e = r.expiry || '';
+    if(!(r.code in best)) best[r.code] = e;
+    else if(best[r.code] !== '' && (e === '' || e > best[r.code])) best[r.code] = e;
+  });
+  const expired = [], expiring = [];
+  Object.keys(best).sort().forEach(function(code){
+    const e = best[code];
+    if(e === '') return;
+    if(e < today) expired.push(code);
+    else if(e <= soon) expiring.push(code);
+  });
+  return { expired: expired, expiring: expiring, held: Object.keys(best).length };
+}
+
+// Unknown values sort as -1 so they fall to the end of a worst-first sort.
+function crewRecSortVal(c, key, ctx){
+  switch(key){
+    case 'rating': return Number(c.rating) || 0;
+    case 'ein':    return parseInt(c.ein, 10) || 0;
+    case 'lic': {
+      const s = crewRecLicState(c, ctx.today, ctx.soon);
+      return s ? s.expired.length * 1000 + s.expiring.length : -1;
+    }
+    case 'rel': {
+      const s = c.stats;
+      return s ? (Number(s.noshow_12mo) || 0) * 1000 + (Number(s.late_12mo) || 0) : -1;
+    }
+    case 'push': return c.push_ok === false ? 0 : (c.push_ok === true ? 2 : 1);
+    default:     return decodeEntities(c.name || '').toLowerCase();
+  }
+}
+
+function crewRecLicHtml(c, today, soon){
+  const s = crewRecLicState(c, today, soon);
+  const dash = function(t){ return '<span style="color:var(--muted)" title="'+t+'">\u2014</span>'; };
+  if(!s) return dash('Licence data unavailable');
+  if(!s.expired.length && !s.expiring.length){
+    return s.held
+      ? '<span style="color:var(--muted)" title="Nothing expired or expiring within 30 days">All current ('+s.held+')</span>'
+      : '<span style="color:var(--muted)" title="No licences recorded">None on file</span>';
+  }
+  const name = function(code){ return licChipLabel(code); };
+  const tip = [];
+  if(s.expired.length)  tip.push('Expired: ' + s.expired.map(name).join(', '));
+  if(s.expiring.length) tip.push('Expiring within 30 days: ' + s.expiring.map(name).join(', '));
+  const parts = [];
+  if(s.expired.length)  parts.push('<span style="color:var(--conflict)">'+s.expired.length+' expired</span>');
+  if(s.expiring.length) parts.push('<span style="color:var(--warn)">'+s.expiring.length+' expiring</span>');
+  const first = (s.expired[0] || s.expiring[0]);
+  // Opens the record on the Licences tab with the first one highlighted, like the chips.
+  return '<span class="rec-lic" title="'+escapeHtml(tip.join('\n'))+'" data-lic-code="'+escapeHtml(first)+'"'
+    + ' onclick="crewLicChipOpen(event, this, '+Number(c.id)+')">'
+    + parts.join(' <span style="color:var(--muted)">\u00b7</span> ') + '</span>';
+}
+
+// Same figures and colours as the hover card's 12-month row. A zero is muted, not
+// hidden, so "0 no-shows" and "no data" never look alike.
+function crewRecRelHtml(c){
+  const s = c.stats;
+  if(!s) return '<span style="color:var(--muted)" title="Reliability data unavailable">\u2014</span>';
+  const n = function(v){ return Number(v) || 0; };
+  const cell = function(label, v, col){
+    return '<span style="color:'+(n(v) ? col : 'var(--muted)')+';font-weight:'+(n(v) ? '600' : '400')+'">'+label+' '+n(v)+'</span>';
+  };
+  return '<span title="Last 12 months. All time: Late '+n(s.late_all)+', No-show '+n(s.noshow_all)+'">'
+    + cell('Late', s.late_12mo, 'var(--warn)') + ' &nbsp;' + cell('No-show', s.noshow_12mo, 'var(--conflict)') + '</span>';
+}
+
+// push_ok comes from the crew cache's Crew Hub stamp (refreshed with the cache).
+// Absent means unknown, e.g. Crew Hub didn't answer, or inactive crew who aren't
+// in the cache. Unknown is a dash, never "Off".
+function crewRecPushHtml(c){
+  if(c.push_ok === true)  return '<span style="color:var(--muted)" title="Crew Hub notifications on">On</span>';
+  if(c.push_ok === false) return '<span style="color:var(--warn)" title="No Crew Hub push notifications on file">\ud83d\udd15 Off</span>';
+  return '<span style="color:var(--muted)" title="Not known">\u2014</span>';
+}
+
 function _renderCrewList(){
   // q comes from the shared crew filter (kept for the no-match message below).
   // Name/EIN/phone match is a deliberate superset of the other two views, which
@@ -14182,6 +14385,7 @@ function _renderCrewList(){
   // returning nobody (reads as a real empty result) are both wrong, and both
   // look like a working screen.
   if(lic.length && !_crewListLicOk){
+    _crewRecLastRows = [];
     if(cnt) cnt.textContent = '';
     if(target) target.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:8px 0">'
       + 'Licence data is unavailable, so the licence filter can’t be applied. Clear it to filter without it.</div>';
@@ -14194,6 +14398,7 @@ function _renderCrewList(){
        && String(c.ein||'').indexOf(needle) < 0
        && (c.phone||'').toLowerCase().indexOf(needle) < 0) return false;
     if(crewFilter.group && !((c.groups||[]).includes(crewFilter.group))) return false;
+    if((crewFilter.minStars||0) && (Number(c.rating)||0) < crewFilter.minStars) return false;
     // AND across ticked codes, matching the group filter and the Crew Finder:
     // two codes means both. Driver classes match upward via expandLicCode.
     if(lic.length){
@@ -14247,30 +14452,62 @@ function _renderCrewList(){
     }
     if(needle) parts.push(parts.length ? 'and match “' + escapeHtml(q) + '”' : 'No crew match “' + escapeHtml(q) + '”');
     if(crewFilter.group) parts.push('in ' + escapeHtml(crewFilter.group));
+    if(crewFilter.minStars) parts.push('with ' + crewFilter.minStars + '\u2605 or more');
     return (parts.length ? parts.join(' ') : 'No crew to show') + '.';
   }
 
-  if(cnt) cnt.textContent = rows.length + ' of ' + _crewListData.length + ' shown';
+  crewCountLineRender('crew-list-count', rows.length, _crewListData.length, (crewFilter.active ? 'active' : 'inactive') + ' crew', lic.length);
 
+  // Same identity columns as Utilization, then Licences (expired / expiring),
+  // Reliability (12 mo), Push, the matched-licence chips while a licence filter
+  // is ticked, and Status. Headers sort; see crewRecSortBy.
+  const soon = _goatLocalISODate(new Date(Date.now() + 30*86400000));
+  const ctx = { today: today, soon: soon };
+  const rs = crewSortFor(['name','rating','ein','lic','rel','push']);
+  const sk = rs.key, sd = rs.dir;
+  const sorted = rows.slice().sort(function(a, b){
+    const av = crewRecSortVal(a, sk, ctx), bv = crewRecSortVal(b, sk, ctx);
+    if(av < bv) return -1 * sd;
+    if(av > bv) return  1 * sd;
+    const an = crewRecSortVal(a, 'name', ctx), bn = crewRecSortVal(b, 'name', ctx);
+    return an < bn ? -1 : an > bn ? 1 : 0;       // ties always A-Z
+  });
+  _crewRecLastRows = sorted;
+  const th = function(label, key, cls, style){
+    const on = (sk === key);
+    return '<th class="'+(cls||'')+(key ? ' rec-sort crew-sort'+(on ? ' on' : '') : '')+'"'
+      + (style ? ' style="'+style+'"' : '')
+      + (key ? ' onclick="crewRecSortBy(\''+key+'\')" title="Sort"' : '') + '>'
+      + label + (on ? (sd > 0 ? ' \u25b2' : ' \u25bc') : '') + '</th>';
+  };
   const html = rows.length
-    ? rows.map(function(c){
+    ? '<table class="fc-table crew-rec-table"><thead><tr>'
+      + th('Name', 'name', 'fc-col-name') + th('Phone', '', 'fc-col-phone')
+      + th('\u2605', 'rating', 'fc-col-stars') + th('EIN', 'ein', 'fc-col-id')
+      + th('Licence expiry', 'lic', '', 'width:150px')
+      + th('Reliability 12 mo', 'rel', '', 'width:160px')
+      + th('Push', 'push', '', 'width:70px')
+      + th(lic.length ? 'Matched' : '', '', '')
+      + th('Status', '', '', 'width:70px') + th('', '', '', 'width:36px')
+      + '</tr></thead><tbody>'
+      + sorted.map(function(c){
         const status = c.active
           ? '<span style="color:var(--ok,#10b981);font-size:11px">Active</span>'
           : '<span style="color:var(--muted);font-size:11px">Inactive</span>';
-        const tel = (c.phone||'').replace(/\s+/g,'');
-        const phoneHtml = c.phone
-          ? ' \u00b7 <a href="tel:'+escapeHtml(tel)+'" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">'+escapeHtml(fmtPhone(c.phone))+'</a>'
-          : '';
-        return '<div onclick="openCrewEdit(\''+String(c.id)+'\')" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer">'
-          + '<div style="flex:1;min-width:0">'
-            + '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(c.name||'')+'</div>'
-            + '<div style="font-size:11px;color:var(--muted)">EIN '+escapeHtml(String(c.ein||''))+phoneHtml+'</div>'
-            + matchedLicHtml(c)
-          + '</div>'
-          + status
-          + '<span style="color:var(--muted);font-size:14px">\u203a</span>'
-          + '</div>';
+        return '<tr onclick="openCrewEdit(\''+String(c.id)+'\')">'
+          + '<td class="fc-col-name">'+crewNameHoverHtml(c, !c.active, 'Click to open their record')+'</td>'
+          + '<td class="fc-col-phone"><span onclick="event.stopPropagation()">'+phoneLink(c.phone)+'</span></td>'
+          + '<td class="fc-col-stars">'+crewStarsHtml(c.rating)+'</td>'
+          + '<td class="fc-col-id"><span class="fc-id">'+escapeHtml(String(c.ein||''))+'</span></td>'
+          + '<td>'+crewRecLicHtml(c, today, soon)+'</td>'
+          + '<td>'+crewRecRelHtml(c)+'</td>'
+          + '<td>'+crewRecPushHtml(c)+'</td>'
+          + '<td>'+matchedLicHtml(c)+'</td>'
+          + '<td>'+status+'</td>'
+          + '<td style="color:var(--muted);font-size:14px;text-align:right;text-overflow:clip">\u203a</td>'
+          + '</tr>';
       }).join('')
+      + '</tbody></table>'
     : '<div style="color:var(--muted);font-size:12px;padding:8px 0">'+emptyMsg()+'</div>';
 
   if(target) target.innerHTML = html;
@@ -17188,6 +17425,9 @@ function _ceDetailsState(){
     parts.push((el.id || el.className || el.name || '') + '=' +
       ((el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? '1' : '0') + ':' + el.value : el.value));
   });
+  // Notes moved to the header (5.62.0) and is outside the panel; include it.
+  var hn = document.querySelector('.ce-hdr-notes #ce-notes');
+  if(hn) parts.push('ce-notes=' + hn.value);
   return parts.join('\u0001');
 }
 function ceSnapshot(){ window._ceSnapshot = _ceDetailsState(); }
@@ -21662,16 +21902,7 @@ function toggleFcGroup(g){
 }
 
 function setFcSort(field){
-  if(_fcLastSort === field){
-    _fcSortDir *= -1;
-  } else {
-    _fcSortDir = field === 'hours' || field === 'rating' ? -1 : 1;
-  }
-  _fcLastSort = field;
-  _fcSort = field;
-  document.querySelectorAll('.fc-sort-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('fc-sort-' + field)?.classList.add('active');
-  renderForecastTable();
+  crewSortBy(field === 'id' ? 'ein' : field);   // shared sort; Utilization calls EIN 'id'
 }
 
 // ── Utilisation hover card: call details behind a booked cell ────────────────
@@ -21724,15 +21955,17 @@ function fcHideCallCard(){
 
 function renderForecastTable(){
   if(!_fcData) return;
+  { const fs = crewSortFor(['name','rating','ein','hours']);
+    _fcSort = (fs.key === 'ein') ? 'id' : fs.key; _fcSortDir = fs.dir; _fcLastSort = _fcSort; }
   _fcCards = [];   // fresh per render; indices below are only valid for this pass
 
   const search   = (crewFilter.q||'').toLowerCase().trim();
-  const minStars = parseInt(document.getElementById('fc-min-stars').value) || 0;
+  const minStars = crewFilter.minStars || 0;   // shared across the Crew views
   const dates    = _fcData.dates; // 28 YYYY-MM-DD strings
 
   // Filter
   let crew = _fcData.crew.filter(c => {
-    if(search && !c.name.toLowerCase().includes(search)) return false;
+    if(search && !crewMatchesQuery(c, search)) return false;
     if(minStars && (c.rating||0) < minStars) return false;
     if(crewFilter.group && !(c.groups||[]).includes(crewFilter.group)) return false;
     return true;
@@ -21752,6 +21985,8 @@ function renderForecastTable(){
     if(av > bv) return  1 * _fcSortDir;
     return 0;
   });
+
+  crewCountLineRender('fc-count', crew.length, _fcData.crew.length, 'crew', 0);
 
   // Build header
   const startDt   = new Date(_fcData.start_date + 'T00:00:00');
@@ -21776,11 +22011,11 @@ function renderForecastTable(){
 
   document.getElementById('fc-thead').innerHTML = `
     <tr>
-      <th class="fc-col-name">Name</th>
+      ${fcSortTh('Name', 'name', 'fc-col-name', '')}
       <th class="fc-col-phone">Phone</th>
-      <th class="fc-col-stars">★</th>
-      <th class="fc-col-id">EIN</th>
-      <th class="fc-col-hours" style="text-align:right">Hours</th>
+      ${fcSortTh('\u2605', 'rating', 'fc-col-stars', '')}
+      ${fcSortTh('EIN', 'id', 'fc-col-id', '')}
+      ${fcSortTh('Hours', 'hours', 'fc-col-hours', 'text-align:right')}
       ${dayLabels}
     </tr>`;
 
@@ -21834,9 +22069,12 @@ function renderForecastTable(){
 
     return `<tr>
       <td class="fc-col-name"><span class="fc-name" style="cursor:pointer;text-decoration:underline;text-decoration-color:rgba(212,175,55,0.3);text-underline-offset:2px"
-            title="Manage unavailability" tabindex="0"
+            aria-label="Manage unavailability" tabindex="0"
+            data-cc-id="${escapeHtml(String(c.id||''))}"
+            data-cc-name="${escapeHtml(String(c.name||''))}"
+            data-cc-hint="Click the name to manage unavailability"
             data-unavail-crew="${escapeHtml(String(c.id||''))}"
-            data-unavail-crewname="${escapeHtml(String(c.name||''))}">${escapeHtml(c.name)}</span></td>
+            data-unavail-crewname="${escapeHtml(String(c.name||''))}">${escapeHtml(decodeEntities(c.name))}</span></td>
       <td class="fc-col-phone">${phoneLink(c.phone)}</td>
       <td class="fc-col-stars"><span style="color:#f59e0b;font-size:8px;letter-spacing:0">${stars}</span><span style="color:var(--border);font-size:8px;letter-spacing:0">${noStars}</span></td>
       <td class="fc-col-id"><span class="fc-id">${c.ein||c.id}</span></td>
@@ -21877,6 +22115,286 @@ function renderForecastTable(){
     if(!t || !t.hasAttribute('tabindex')) return;
     ev.preventDefault();
     fire(t);
+  });
+})();
+
+
+// ── CREW VIEWS: shared identity columns + name-hover card ────────────────────
+// Utilization is the standard (Mike, 24 Sep 2026): Name, Phone, star rating, EIN,
+// and hovering the name shows the Crew Finder card. Utilization keeps its own
+// inline markup; Inductions and Records build theirs with these two helpers.
+
+function crewSortBy(key){
+  if(crewSort.key === key) crewSort.dir = -crewSort.dir;
+  else { crewSort.key = key; crewSort.dir = CREW_REC_SORT_FIRST_DIR[key] || 1; }
+  crewPersistSave();
+  crewRenderVisible();
+}
+function crewSortFor(keys){
+  return keys.indexOf(crewSort.key) >= 0 ? crewSort : { key: 'name', dir: 1 };
+}
+function crewRenderVisible(){
+  const vis = function(id){ const p = document.getElementById(id); return p && p.classList.contains('active'); };
+  if(vis('tab-forecast')) renderForecastTable();
+  if(vis('tab-induction-checker')) renderInductionTable();
+  if(vis('tab-crew-records')) _renderCrewList();
+}
+
+// "12 of 494 crew shown · Filtered by Fork, 4* or more  [Clear filters]".
+// Filters carry across the three views and group / MIN star are remembered, so a
+// narrowed list must always say so, on every view, in the same place.
+function crewCountLineRender(id, shown, total, noun, licCount){
+  const el = document.getElementById(id);
+  crewPersistSave();
+  if(!el) return;
+  const f = [];
+  const q = (crewFilter.q || '').trim();
+  if(q) f.push('<b>\u201c' + escapeHtml(q) + '\u201d</b>');
+  if(crewFilter.group) f.push('<b>' + escapeHtml(crewFilter.group) + '</b>');
+  if(crewFilter.minStars) f.push('<b>' + crewFilter.minStars + '\u2605 or more</b>');
+  if(licCount) f.push('<b>' + licCount + (licCount === 1 ? ' licence' : ' licences') + '</b>');
+  el.innerHTML = '<span>' + shown + ' of ' + total + ' ' + escapeHtml(noun) + ' shown</span>'
+    + (f.length
+        ? '<span>\u00b7 Filtered by ' + f.join(', ') + '</span>'
+          + '<button type="button" class="crew-clear-btn" onclick="crewClearFilters()">Clear filters</button>'
+        : '');
+}
+
+function crewClearFilters(){
+  crewFilter.q = ''; crewFilter.group = null; crewFilter.minStars = 0;
+  if(typeof _crewRecLicences !== 'undefined' && _crewRecLicences.size){
+    _crewRecLicences.clear();
+    const grid = document.getElementById('crew-lic-grid');
+    if(grid) grid.querySelectorAll('.group-chip.active').forEach(function(b){ b.classList.remove('active'); });
+    crewLicRenderChips();
+  }
+  ['fc-search', 'ind-name-search', 'crew-list-search'].forEach(function(id){
+    const i = document.getElementById(id); if(i) i.value = '';
+  });
+  crewSyncMinStarsUI();
+  crewPersistSave();
+  const vis = function(id){ const p = document.getElementById(id); return p && p.classList.contains('active'); };
+  if(vis('tab-forecast')) crewFilterApplyToUI('forecast');
+  if(vis('tab-induction-checker')) crewFilterApplyToUI('induction-checker');
+  if(vis('tab-crew-records')) crewFilterApplyToUI('crew-records');
+}
+
+// Exactly what Records shows, in its current order and filter. Dates are the
+// caller's job in goatExportCSV; there are none here. Unknown stays "Unknown",
+// never a zero or "Off".
+function exportCrewRecordsCSV(){
+  const today = _goatLocalISODate(new Date());
+  const soon  = _goatLocalISODate(new Date(Date.now() + 30*86400000));
+  const rows = (_crewRecLastRows || []).map(function(c){
+    const ls = crewRecLicState(c, today, soon);
+    const s  = c.stats;
+    const n  = function(v){ return s ? (Number(v) || 0) : ''; };
+    return [
+      decodeEntities(c.name || ''), c.ein || '', c.phone || '', Number(c.rating) || 0,
+      c.active ? 'Active' : 'Inactive',
+      ls ? ls.expired.join(' ') : 'Unknown', ls ? ls.expiring.join(' ') : 'Unknown',
+      n(s && s.late_12mo), n(s && s.noshow_12mo), n(s && s.late_all), n(s && s.noshow_all),
+      c.push_ok === true ? 'On' : (c.push_ok === false ? 'Off' : 'Unknown'),
+      (c.groups || []).join(' ')
+    ];
+  });
+  goatExportCSV('crew-records-' + (crewFilter.active ? 'active' : 'inactive'),
+    ['Name', 'EIN', 'Phone', 'Stars', 'Status', 'Licences expired', 'Licences expiring (30 days)',
+     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Crew Hub push', 'Groups'],
+    rows);
+}
+
+// Search matches name, EIN or phone on every Crew view: the Records rule,
+// adopted everywhere (Mike, 24 Sep 2026). needle is already lowercased and trimmed.
+function crewMatchesQuery(c, needle){
+  if(!needle) return true;
+  return (c.name||'').toLowerCase().indexOf(needle) >= 0
+      || decodeEntities(c.name||'').toLowerCase().indexOf(needle) >= 0
+      || String(c.ein||'').indexOf(needle) >= 0
+      || String(c.phone||'').toLowerCase().indexOf(needle) >= 0;
+}
+
+// MIN star is shared like the search and the group: set it on one view and the
+// others carry it. Every slider shows the same value.
+function crewSyncMinStarsUI(){
+  const v = crewFilter.minStars || 0;
+  document.querySelectorAll('.crew-min-stars').forEach(function(el){ el.value = v; });
+  document.querySelectorAll('.crew-min-stars-val').forEach(function(el){ el.textContent = v; });
+}
+function crewSetMinStars(v){
+  crewFilter.minStars = Math.max(0, Math.min(10, parseInt(v, 10) || 0));
+  crewSyncMinStarsUI();
+  const vis = function(id){ const p = document.getElementById(id); return p && p.classList.contains('active'); };
+  if(vis('tab-forecast')) renderForecastTable();
+  if(vis('tab-induction-checker')) renderInductionTable();
+  if(vis('tab-crew-records')) _renderCrewList();
+}
+
+// Sortable header, the Records pattern: click to sort, click again to reverse,
+// an arrow on the active column.
+function fcSortTh(label, field, cls, style){
+  const on = (_fcSort === field);
+  return '<th class="' + cls + ' crew-sort' + (on ? ' on' : '') + '"' + (style ? ' style="' + style + '"' : '')
+    + ' onclick="setFcSort(\'' + field + '\')" title="Sort">'
+    + label + (on ? (_fcSortDir > 0 ? ' \u25b2' : ' \u25bc') : '') + '</th>';
+}
+// Kept for anything still calling it; sorting is shared now.
+function indSortBy(key){ crewSortBy(key); }
+function crewSortThDom(th, label, cls, key, state, fnName){
+  const on = key && state.key === key;
+  th.className = cls + (key ? ' crew-sort' + (on ? ' on' : '') : '');
+  th.textContent = label + (on ? (state.dir > 0 ? ' \u25b2' : ' \u25bc') : '');
+  if(key){ th.title = 'Sort'; th.onclick = function(){ window[fnName](key); }; }
+}
+
+// Same markup as Utilization's star cell.
+function crewStarsHtml(rating){
+  const r = Math.max(0, Math.min(Number(rating)||0, 10));
+  return '<span style="color:#f59e0b;font-size:8px;letter-spacing:0">'+'\u2605'.repeat(r)+'</span>'
+       + '<span style="color:var(--border);font-size:8px;letter-spacing:0">'+'\u2605'.repeat(10-r)+'</span>';
+}
+
+// The name text is the hover TRIGGER (not the cell), the Crew Finder rule from
+// 21 Sep 2026, so chips beside it never open the card. The card anchors to the cell.
+function crewNameHoverHtml(c, inactive, hint){
+  const label = c.name || c.ein || c.id || '';
+  return '<span class="fc-name" tabindex="0" style="text-decoration:underline;text-decoration-color:rgba(212,175,55,0.3);text-underline-offset:2px"'
+    + ' data-cc-id="'+escapeHtml(String(c.id||''))+'"'
+    + ' data-cc-name="'+escapeHtml(String(c.name||''))+'"'
+    + (inactive ? ' data-cc-inactive="1"' : '')
+    + (hint ? ' data-cc-hint="'+escapeHtml(hint)+'"' : '')
+    + '>'+escapeHtml(decodeEntities(String(label)))+'</span>';
+}
+
+// Card data comes from /api/crew-cards: one roster read plus one shift read,
+// fetched on the first hover and kept for five minutes per active/inactive set.
+// A failed fetch is not kept, so the next hover tries again.
+const _ccView = { data: {}, token: 0, open: false, pending: false };
+const CC_VIEW_TTL_MS = 5*60*1000;
+
+function crewViewCardData(inactive){
+  const k = inactive ? 'inactive' : 'active';
+  const e = _ccView.data[k];
+  if(e && (Date.now() - e.at) < CC_VIEW_TTL_MS) return e.p;
+  const p = fetch('/api/crew-cards' + (inactive ? '?active=0' : ''))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d || d.error || !d.cards) throw new Error((d && d.error) || 'no card data');
+      return {
+        cards: d.cards,
+        span: { start: new Date(d.span_start).getTime(), end: new Date(d.span_end).getTime() },
+        shifts_ok: d.shifts_ok !== false,
+      };
+    });
+  _ccView.data[k] = { at: Date.now(), p: p };
+  p.catch(function(){
+    if(_ccView.data[k] && _ccView.data[k].p === p) delete _ccView.data[k];
+  });
+  return p;
+}
+// Called when a crew record opens, so notes edited there are re-read on the next hover.
+function crewViewCardInvalidate(){ _ccView.data = {}; }
+
+function crewViewCardBody(st){
+  if(st.loading) return '<div class="cc-sh-empty">Loading\u2026</div>';
+  if(st.error)   return '<div class="cc-sh-empty">Couldn\u2019t load notes and shifts.</div>';
+  if(!st.card)   return '<div class="cc-sh-empty">No details on file.</div>';
+  const crew = { notes: st.card.notes, stats: st.card.stats, shifts: st.card.shifts || [] };
+  // A failed shift read must not read as a free diary.
+  const shifts = st.shifts_ok
+    ? crewShiftsHtml(crew, st.span)
+    : '<div class="cc-sh-label">Shifts \u00b148h of now</div><div class="cc-sh-empty">Shifts unavailable</div>';
+  const hasNotes = crew.notes && String(crew.notes).trim();
+  const notes = hasNotes
+    ? '<div class="cc-notes">'+escapeHtml(decodeEntities(crew.notes))+'</div>'
+    : '<div class="cc-notes empty">No notes on file</div>';
+  return crewStatsHtml(crew) + shifts + '<div class="cc-notes-label">Notes</div>' + notes;
+}
+
+function crewViewCardShow(t, tok){
+  _ccView.pending = false;
+  if(tok !== _ccView.token || !document.body.contains(t)) return;
+  const id       = t.getAttribute('data-cc-id') || '';
+  const name     = t.getAttribute('data-cc-name') || t.textContent || '';
+  const inactive = t.getAttribute('data-cc-inactive') === '1';
+  const hint     = t.getAttribute('data-cc-hint') || '';
+  const anchor   = t.closest('td') || t;
+  const el = _ensureCrewCardEl();
+  const photo = id
+    ? '<img class="cc-photo" src="/api/crew-photo/'+encodeURIComponent(id)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;cc-photo-ph&quot;>No photo on file</div>\'">'
+    : '<div class="cc-photo-ph">No photo on file</div>';
+  el.innerHTML = '<div class="cc-name">'+escapeHtml(decodeEntities(name))+'</div>' + photo
+    + '<div class="cc-view-body">'+crewViewCardBody({loading: true})+'</div>'
+    + (hint ? '<div class="cc-hint">'+escapeHtml(hint)+'</div>' : '');
+  el.style.display = 'block';
+  _ccView.open = true;
+  _positionCrewCard(el, anchor);
+  const fill = function(st){
+    if(tok !== _ccView.token) return;          // moved on to another name, or left
+    const body = el.querySelector('.cc-view-body');
+    if(!body) return;
+    body.innerHTML = crewViewCardBody(st);
+    _positionCrewCard(el, anchor);             // height changed; keep it on screen
+  };
+  crewViewCardData(inactive).then(
+    function(d){ fill({ card: d.cards[String(id)], span: d.span, shifts_ok: d.shifts_ok }); },
+    function(){ fill({ error: true }); }
+  );
+}
+
+function crewViewCardHide(){
+  clearTimeout(_crewCardTimer);
+  _ccView.token++;
+  _ccView.pending = false;
+  if(_ccView.open){ hideCrewCard(); _ccView.open = false; }
+}
+
+// Delegated, because all three tables are rebuilt on every filter keystroke.
+// Crew Finder's card uses its own per-row listeners and no data-cc-id, so the two
+// never trigger each other.
+(function(){
+  if(window._ccViewBound) return;
+  window._ccViewBound = true;
+  const trig = function(el){ return (el && el.closest) ? el.closest('[data-cc-id]') : null; };
+  document.addEventListener('mouseover', function(ev){
+    const t = trig(ev.target);
+    if(!t || (ev.relatedTarget && t.contains(ev.relatedTarget))) return;
+    clearTimeout(_crewCardTimer);
+    const tok = ++_ccView.token;
+    _ccView.pending = true;
+    _crewCardTimer = setTimeout(function(){ crewViewCardShow(t, tok); }, 220);   // same intent delay as Crew Finder
+  });
+  document.addEventListener('mouseout', function(ev){
+    const t = trig(ev.target);
+    if(!t || (ev.relatedTarget && t.contains(ev.relatedTarget))) return;
+    crewViewCardHide();
+  });
+  // A click opens a record or the unavailability manager. The card must not
+  // pop up over it, or linger after it.
+  document.addEventListener('mousedown', function(){
+    if(_ccView.open || _ccView.pending) crewViewCardHide();
+  }, true);
+  // Keyboard focus (Tab) shows the card at once; a mouse click that focuses the
+  // name does not, because it is about to open something. Escape hides it.
+  document.addEventListener('focusin', function(ev){
+    const t = trig(ev.target);
+    if(!t || t !== ev.target) return;
+    let kb = true;
+    try{ kb = t.matches(':focus-visible'); }catch(e){}
+    if(!kb) return;
+    clearTimeout(_crewCardTimer);
+    crewViewCardShow(t, ++_ccView.token);
+  });
+  document.addEventListener('focusout', function(ev){
+    if(trig(ev.target) && trig(ev.target) === ev.target) crewViewCardHide();
+  });
+  document.addEventListener('keydown', function(ev){
+    if(ev.key === 'Escape' && _ccView.open){ crewViewCardHide(); return; }
+    if(ev.key !== 'Enter') return;
+    const t = trig(ev.target);
+    if(!t || t !== ev.target || t.hasAttribute('data-unavail-crew')) return;   // Utilization has its own
+    const tr = t.closest('tr[onclick]');
+    if(tr){ ev.preventDefault(); crewViewCardHide(); tr.click(); }
   });
 })();
 
