@@ -1,6 +1,6 @@
 {
-  "version": "5.61.0",
-  "release_date": "2026-09-23",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.61.0/TheGOAT.dmg",
-  "release_notes": "THE GOAT now shows when a booking already has a Google Sheet, and asks before creating a second one."
+  "version": "5.62.0",
+  "release_date": "2026-09-24",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.62.0/TheGOAT.dmg",
+  "release_notes": "Utilization, Inductions and Records now share one layout, with the same columns, filters, sorting and crew hover card. Records adds licence expiry, reliability, Crew Hub push and CSV export."
 }
