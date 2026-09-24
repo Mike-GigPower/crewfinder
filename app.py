@@ -138,7 +138,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.61.0"
+APP_VERSION    = "5.62.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -8214,7 +8214,7 @@ def api_inductions():
 
         venue_status = _compute_induction_status(inductions)
 
-        result.append({"id": data.get("user_id", cid), "ein": data.get("ein", data.get("user_id", cid)), "name": name, "groups": groups, "rating": rating, "venue_status": venue_status})
+        result.append({"id": data.get("user_id", cid), "ein": data.get("ein", data.get("user_id", cid)), "name": name, "phone": data.get("phone", "") or "", "groups": groups, "rating": rating, "venue_status": venue_status})
 
     result.sort(key=lambda x: x["name"] or "")
     return jsonify({"crew": result, "venues": all_venues})
@@ -13018,6 +13018,10 @@ def api_admin_crew_list():
     crew, err = fetch_crew_bulk(ss, include_inactive=(not want_active))
     if err:
         return jsonify({"error": err}), 502
+    # push_ok is read from the crew cache, which the refresh stamps from Crew Hub.
+    # Anything but a real bool (never stamped, Hub down at refresh, inactive crew
+    # not in the cache) goes out as None, so the page shows "unknown", not "Off".
+    cache, _ = load_cache()
     rows = []
     for c in (crew or []):
         if int(c.get("active", 1)) != (1 if want_active else 0):
@@ -13029,6 +13033,10 @@ def api_admin_crew_list():
             "phone":  c.get("phone", "") or "",
             "active": int(c.get("active", 1)),
             "groups": c.get("groups", []) or [],
+            "rating": int(c.get("rating") or 0),
+            "stats":  c.get("stats") or None,
+            "push_ok": (lambda v: v if isinstance(v, bool) else None)(
+                           (cache.get(str(c["id"])) or {}).get("push_ok")),
         }
         if "licences" in c:
             row["licences"] = c["licences"]
@@ -13041,6 +13049,74 @@ def api_admin_crew_list():
     # guard, so the two surfaces refuse under exactly the same conditions.
     lic_ok = (not crew) or any("licences" in c for c in crew)
     return jsonify({"crew": rows, "licences_ok": lic_ok})
+
+
+@app.route("/api/crew-cards")
+@require_cohort(*READ_ALL_COHORTS)
+def api_crew_cards():
+    """Name-hover card data for Utilization, Inductions and Records, keyed by
+    SmartStaff userID (the same id /api/crew-photo takes): {notes, stats, shifts}.
+
+    The Crew Finder card reads these fields straight off its search rows. These
+    three views have no search, so the card fetches them here on the first
+    hover and the page keeps them for five minutes.
+
+    Open to leadership as well as admin (Mike, 24 Sep 2026): they already read
+    all-crew data on Utilization and Inductions, and list-crew-bulk.php allows
+    admin or leadership.
+
+    Two SmartStaff calls, strictly serial (same per-session PHP lock as the ops
+    push roster): list-crew-bulk.php for notes and reliability, then
+    get-shifts-bulk.php for shifts within 48h either side of NOW.
+
+    shifts_ok is False when the shift fetch failed. The card then says shifts
+    are unavailable instead of "No shifts", which would read as a free diary.
+    There is deliberately no fallback to the HTML scraper: a hover must never
+    set off a multi-page scrape.
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    include_inactive = request.args.get("active", "1") == "0"
+    crew, err = fetch_crew_bulk(ss, include_inactive=include_inactive)
+    if err:
+        return jsonify({"error": err}), 502
+
+    now        = datetime.now()
+    span_start = now - timedelta(hours=48)
+    span_end   = now + timedelta(hours=48)
+    # get-shifts-bulk.php takes whole dates. Widen a day each side, then trim to
+    # the exact span below, so a night shift crossing the edge is kept.
+    by_name, _unavails, s_err = fetch_shifts_bulk(
+        ss, span_start - timedelta(days=1), span_end + timedelta(days=1))
+    shifts_ok = s_err is None
+    if not shifts_ok:
+        app.logger.warning(f"[crew-cards] shifts unavailable: {s_err}")
+        by_name = {}
+
+    cards = {}
+    for c in (crew or []):
+        mine = []
+        for s in by_name.get(c.get("name", ""), []):
+            try:
+                st = datetime.fromisoformat(s["start"])
+                en = datetime.fromisoformat(s["end"])
+            except Exception:
+                continue
+            if en > span_start and st < span_end:
+                mine.append({k: s.get(k) for k in
+                             ("start", "end", "venue", "call_name", "booking_name", "status")})
+        cards[str(c["id"])] = {
+            "notes":  c.get("notes") or "",
+            "stats":  c.get("stats") or {},
+            "shifts": mine,
+        }
+    return jsonify({
+        "cards":      cards,
+        "span_start": span_start.strftime("%Y-%m-%dT%H:%M:%S"),
+        "span_end":   span_end.strftime("%Y-%m-%dT%H:%M:%S"),
+        "shifts_ok":  shifts_ok,
+    })
 @app.route("/api/admin/add-user", methods=["POST"])
 @require_cohort("admin")
 def api_admin_add_user():
