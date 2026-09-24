@@ -1539,6 +1539,14 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-lbl.lbl-aw{color:var(--accent);background:var(--accent-bg)}
 .ops-lbl.lbl-sf{color:#f97316;background:rgba(249,115,22,0.12)}
 .ops-lbl.lbl-cb{color:var(--suggest);background:var(--suggest-bg)}
+/* Confirmations lane delivery pills (5.63.0) — same colours as the Delivery donut. */
+.ops-lbl.dv-delivered{color:#22c55e;background:rgba(34,197,94,0.12)}
+.ops-lbl.dv-no_device{color:var(--warn);background:rgba(245,158,11,0.12)}
+.ops-lbl.dv-no_attempt{color:var(--accent2);background:var(--accent2-bg)}
+.ops-lbl.dv-failed,.ops-lbl.dv-pre_tracking{color:var(--muted);background:rgba(255,255,255,0.05)}
+.ops-deliv-unavail{font-size:12px;color:var(--muted);padding:40px 12px;text-align:center;max-width:220px}
+.ops-deliv-note{font-size:11px;color:var(--muted);padding:0 2px 6px}
+.ops-deliv-warn{font-size:12px;color:var(--accent2);padding:0 2px 8px}
 .ops-subhead{font-size:12px;color:var(--muted);padding:2px 2px 10px}
 .ops-row-fill{grid-column:1 / -1;display:flex;align-items:center;gap:8px;margin-top:2px}
 .ops-offered{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
@@ -23217,7 +23225,7 @@ function toggleSchedBack(){
 // window (opsSyncDetail) — the card itself draws graphics only.
 const OPS_LANES = [
   { key:'confirmations', label:'Confirmations to chase',
-    load: loadOpsOffers, render: renderOpsOffers, list: renderOpsList, dims:['status','age'] },
+    load: loadOpsOffers, render: renderOpsOffers, list: renderOpsList, dims:['lead','delivery'] },
   // 'day' is a dimension with no donut: the calendar view sets it when a date is
   // clicked. Declaring it here is what makes the chips bar, the window subhead
   // and the clear-on-close in closeOpsDetail handle it without naming it.
@@ -23305,6 +23313,26 @@ const OPS_STATUS_COLORS = {
   awaiting:    'var(--accent)'   // status 1 — ball is with them
 };
 const OPS_STATUS_LABELS = { not_messaged:'Not messaged', awaiting:'Awaiting reply' };
+// Lane 2 (confirmations) DELIVERY, 5.63.0 (Mike, 24 Sep 2026). Replaces the
+// status donut above for this lane: call_crew_map.status 0/1 froze when SMS was
+// retired on 24 Jul, so every open offer read "Not messaged" in solid red. The
+// outcome comes from Crew Hub, classified by the SAME function /admin/dashboard
+// uses (never re-derived here). "Send failed" is deliberately quiet (it is rare)
+// and "Before tracking" is neutral (offers made before 20 Sep cannot be
+// classified; it is never a fault). "Not attempted" is the only red: after
+// tracking began it means a Crew Hub webhook failed.
+const OPS_DELIVERY_COLORS = {
+  delivered:'#22c55e', no_device:'var(--warn)', no_attempt:'var(--accent2)',
+  failed:'var(--muted)', pre_tracking:'#4b5563'
+};
+const OPS_DELIVERY_LABELS = {
+  delivered:'Delivered', no_device:'No device', no_attempt:'Not attempted',
+  failed:'Send failed', pre_tracking:'Before tracking'
+};
+const OPS_DELIVERY_PILLS = {
+  delivered:'Delivered', no_device:'No device \u2014 ring', no_attempt:'Not attempted',
+  failed:'Send failed', pre_tracking:'Before tracking'
+};
 
 // Lane 4 (times_outstanding) reuses the `status` DIMENSION rather than
 // inventing one, so opsChipsBar and OPS_DIM_LABELS keep working untouched — its
@@ -23417,7 +23445,7 @@ const OPS_BAND_LABELS = { severe:'20% and over', elevated:'10–19%', watch:'Und
 // Chip labels by dimension — lets opsChipsBar render any lane's active filters
 // without naming lanes. Defined after the per-dim label maps above exist.
 const OPS_DIM_LABELS = {
-  status: OPS_STATUS_LABELS, age: OPS_AGE_LABELS,
+  status: OPS_STATUS_LABELS, age: OPS_AGE_LABELS, delivery: OPS_DELIVERY_LABELS,
   fill:   OPS_FILL_LABELS,   lead: OPS_LEAD_LABELS,
   kind:   OPS_KIND_LABELS,   risk: OPS_RISK_LABELS,
   venue:  OPS_VENUE_LABELS,
@@ -23674,19 +23702,43 @@ function renderOpsOffers(lane){
     opsSyncDetail(lane);
     return;
   }
-  const statusSegs = ['not_messaged','awaiting'].map(function(k){
-    return { key:k, value:(counts.status && counts.status[k]) || 0,
-             color:OPS_STATUS_COLORS[k], label:OPS_STATUS_LABELS[k] };
+  // Call starts in (the chase order) first, then Delivery. Both read the tags
+  // /api/ops/offers stamped, so a segment and the filtered list always agree.
+  const leadSegs = ['under48','from48to168','over168'].map(function(k){
+    return { key:k, value:(counts.lead && counts.lead[k]) || 0,
+             color:OPS_LEAD_COLORS[k], label:OPS_LEAD_LABELS[k] };
   });
-  const ageSegs = ['under24','from24to72','over72','unknown'].map(function(k){
-    return { key:k, value:(counts.age && counts.age[k]) || 0,
-             color:OPS_AGE_COLORS[k], label:OPS_AGE_LABELS[k] };
-  });
+  const delivOk = !!(data && data.delivery_available && counts.delivery);
+  let delivBlock, notes = '';
+  if(delivOk){
+    const dsegs = ['delivered','no_device','no_attempt','failed','pre_tracking'].map(function(k){
+      return { key:k, value:counts.delivery[k] || 0,
+               color:OPS_DELIVERY_COLORS[k], label:OPS_DELIVERY_LABELS[k] };
+    });
+    delivBlock = opsDonutBlock(lane, 'Delivery', 'delivery', dsegs);
+    const na = counts.delivery.no_attempt || 0;
+    if(na) notes += '<div class="ops-deliv-warn">\u26a0 ' + na + (na === 1 ? ' offer was' : ' offers were')
+      + ' made after tracking began but ' + (na === 1 ? 'has' : 'have') + ' no push recorded. That points to a'
+      + ' Crew Hub fault, not a crew member. Tell Mike.</div>';
+    if((counts.delivery.pre_tracking || 0) && data.tracking_since){
+      const ts = new Date(String(data.tracking_since).slice(0, 10) + 'T00:00:00');
+      const when = isNaN(ts.getTime()) ? String(data.tracking_since).slice(0, 10)
+                 : ts.toLocaleDateString('en-AU', { day:'numeric', month:'short' });
+      notes += '<div class="ops-deliv-note">Delivery is tracked from ' + escapeHtml(when)
+        + '. \u201cBefore tracking\u201d offers were made earlier and can\u2019t be classified \u2014 not a fault.</div>';
+    }
+  } else {
+    // Crew Hub didn't answer: say so, never show zeroes (they would read as
+    // "not attempted"). Call starts in still works.
+    delivBlock = '<div class="ops-donut-block"><div class="ops-donut-title">Delivery</div>'
+      + '<div class="ops-deliv-unavail">Delivery unavailable \u2014 Crew Hub didn\u2019t answer. Try Refresh.</div></div>';
+  }
   body.innerHTML = ''
     + '<div class="ops-donuts">'
-    +   opsDonutBlock(lane, 'Status', 'status', statusSegs)
-    +   opsDonutBlock(lane, 'Age',    'age',    ageSegs)
-    + '</div>';
+    +   opsDonutBlock(lane, 'Call starts in', 'lead', leadSegs)
+    +   delivBlock
+    + '</div>'
+    + notes;
   setOpsLaneDetail(lane, true);
   opsSyncDetail(lane);
 }
@@ -23793,31 +23845,29 @@ function opsClearChip(laneKey, dim){
   if(lane) lane.render(lane);
 }
 
-function opsStatusKey(o){ return (o.status === 0) ? 'not_messaged' : 'awaiting'; }
-
-// Filter on the server's tag (age_bucket) and passed-through status enum — never
-// a recomputed age boundary. If the list length ever disagrees with a donut
-// segment, this rule was broken.
+// Filter on the tags /api/ops/offers stamped (lead_bucket, delivery) — never a
+// recomputed boundary. If the list length ever disagrees with a donut segment,
+// this rule was broken. A delivery chip left over from a load where Crew Hub
+// answered matches nothing once it doesn't, which is honest.
 function opsFilteredRows(lane){
   const st = _opsLaneState[lane.key];
   let rows = (st.data && st.data.offers) ? st.data.offers.slice() : [];
-  if(st.chips.status) rows = rows.filter(function(o){ return opsStatusKey(o) === st.chips.status; });
-  if(st.chips.age)    rows = rows.filter(function(o){ return o.age_bucket === st.chips.age; });
+  if(st.chips.lead)     rows = rows.filter(function(o){ return o.lead_bucket === st.chips.lead; });
+  if(st.chips.delivery) rows = rows.filter(function(o){ return o.delivery === st.chips.delivery; });
   return rows;
 }
 
-// Oldest first, unknown age always last, then by call start time.
+// Soonest call first — the chase order. Within one call, the oldest offer first,
+// unknown age last. (Was: oldest offer first.)
 function opsSortRows(rows){
   return rows.slice().sort(function(a, b){
+    const as = a.start || '\uffff', bs = b.start || '\uffff';   // no start sorts last
+    if(as !== bs) return as < bs ? -1 : 1;
     const au = (a.age_bucket === 'unknown' || !a.created_at);
     const bu = (b.age_bucket === 'unknown' || !b.created_at);
-    if(au !== bu) return au ? 1 : -1;                 // unknown always last
-    if(!au){
-      if(a.created_at < b.created_at) return -1;      // earlier created = older = first
-      if(a.created_at > b.created_at) return 1;
-    }
-    const as = a.start || '', bs = b.start || '';
-    return as < bs ? -1 : (as > bs ? 1 : 0);
+    if(au !== bu) return au ? 1 : -1;
+    if(!au && a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+    return 0;
   });
 }
 
@@ -23861,9 +23911,10 @@ function opsCallWhen(o){
 // Non-exclusive labels — one offer can carry several.
 function opsRowLabels(o){
   const L = [];
-  if(o.status === 0)      L.push('<span class="ops-lbl lbl-nm">Not messaged</span>');
-  else if(o.status === 1) L.push('<span class="ops-lbl lbl-aw">Awaiting reply</span>');
-  if(o.sms_fail !== null && o.sms_fail !== undefined) L.push('<span class="ops-lbl lbl-sf">SMS failed</span>');
+  // The delivery outcome replaces the frozen SMS-era labels (Not messaged /
+  // Awaiting reply / SMS failed). Absent when Crew Hub didn't answer.
+  if(o.delivery && OPS_DELIVERY_PILLS[o.delivery])
+    L.push('<span class="ops-lbl dv-' + o.delivery + '">' + OPS_DELIVERY_PILLS[o.delivery] + '</span>');
   if(o.is_call_boss === 1) L.push('<span class="ops-lbl lbl-cb">Call boss</span>');
   return L.join('');
 }
