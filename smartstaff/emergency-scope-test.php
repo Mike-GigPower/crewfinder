@@ -40,6 +40,7 @@
 		define('GOAT_EMERGENCY_TAIL_DAYS', 40000);
 	}
 
+	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('emergency-scope.php');
 

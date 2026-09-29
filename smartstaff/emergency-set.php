@@ -27,6 +27,7 @@
 	/* errors, so a caller never sees "Unexpected token '<'".
 	*/
 
+	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
 	include(dirname(__FILE__) . '/emergency-db.php');

@@ -23,6 +23,7 @@
 	/* PHP 5.6. JSON on every path.
 	*/
 
+	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
 	include(dirname(__FILE__) . '/emergency-scope.php');

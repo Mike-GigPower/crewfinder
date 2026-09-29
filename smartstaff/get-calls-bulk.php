@@ -3,6 +3,7 @@
 	/*
 	/* global file */
 
+	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
 	/* For goat_feeds_have_mode() only — this endpoint deliberately keeps its

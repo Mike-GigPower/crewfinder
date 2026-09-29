@@ -3,6 +3,7 @@
 	/*
 	/* global file */
 
+	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
 	include('call-graph.php');
