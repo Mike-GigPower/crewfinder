@@ -1,6 +1,6 @@
 {
-  "version": "5.63.0",
-  "release_date": "2026-09-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.63.0/TheGOAT.dmg",
-  "release_notes": "Operations: Confirmations to chase now shows how soon each call starts and whether the offer reached the crew member's phone, with the soonest calls first."
+  "version": "5.64.0",
+  "release_date": "2026-10-01",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.64.0/TheGOAT.dmg",
+  "release_notes": "Recruitment: a new Waiting on us pile lists every candidate whose next step is ours, and a matching card on Today, Operations shows the count by action and by how long they have waited."
 }
