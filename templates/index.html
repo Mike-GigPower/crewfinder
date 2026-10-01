@@ -1188,6 +1188,17 @@ body.cohort-readonly #unavail-add-section{display:none}
 /* The "· N ⚠" exception segment inside a pile chip's count, e.g. "Attended (23 · 6 ⚠)".
    Amber to match every other "wants chasing" signal; flips to black on the gold
    active chip so it stays legible. */
+/* "Waiting on us" — the cross-stage pseudo-pile at the FRONT of the chip row. Gold
+   outline when it holds anyone, so the chip reads as "work for us" without
+   borrowing the amber that means "chase the candidate". */
+.recruit-filter-waiting.has-items{border-color:var(--accent);color:var(--accent)}
+.recruit-filter-waiting.active,
+.recruit-filter-waiting.has-items.active{background:var(--accent);border-color:var(--accent);color:#000}
+/* Row tag in that pile: the action we owe + days waiting. Neutral when fresh,
+   amber at the stage threshold, red at twice it (WAITING_THRESHOLDS). */
+.recruit-waiting-tag{display:inline-block;margin-left:6px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;color:var(--accent);border:1px solid var(--accent);background:var(--accent-bg);padding:1px 8px;border-radius:20px;white-space:nowrap}
+.recruit-waiting-tag.amber{color:var(--warn);border-color:var(--warn);background:var(--warn-bg)}
+.recruit-waiting-tag.red{color:var(--conflict);border-color:var(--conflict);background:var(--conf-bg)}
 .recruit-chip-warn{color:var(--warn);font-weight:700}
 .recruit-filter.active .recruit-chip-warn{color:#000}
 /* Reason chip — why a candidate is in Needs attention. Amber, matching the ageing
@@ -1501,6 +1512,17 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-modal-body{padding:14px 18px;overflow-y:auto}
 .ops-lane-status{color:var(--muted);font-size:12px;padding:10px 2px}
 .ops-empty{font-size:13px;color:var(--text);padding:12px 2px}
+/* Recruitment — waiting on us: four action rows, count + oldest wait. */
+.ops-rw{display:flex;flex-direction:column;gap:2px;padding:6px 0 4px}
+.ops-rw-row{display:grid;grid-template-columns:minmax(0,1fr) 48px 140px;align-items:center;gap:10px;padding:7px 8px;border-radius:5px;cursor:pointer}
+.ops-rw-row:hover{background:var(--surface2)}
+.ops-rw-row.zero{cursor:default;opacity:.45}
+.ops-rw-row.zero:hover{background:none}
+.ops-rw-label{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;color:var(--text)}
+.ops-rw-count{font-family:'Share Tech Mono',monospace;font-size:14px;color:var(--accent);text-align:right}
+.ops-rw-age{font-size:11px;color:var(--muted);text-align:right}
+.ops-rw-age.amber{color:var(--warn)}
+.ops-rw-age.red{color:var(--conflict)}
 .ops-unavail{font-size:13px;color:var(--warn);padding:12px 2px}
 .ops-donuts{display:flex;flex-wrap:wrap;gap:26px;padding:8px 0 14px}
 .ops-donut-block{display:flex;flex-direction:column;align-items:center;gap:8px}
@@ -5796,6 +5818,138 @@ let _recruitSortDir = 'asc';
 // '' = every candidate; 'none' = candidates with no session booked; otherwise the
 // session's epoch-milliseconds as a string.
 let _recruitSession = '';
+
+// ── "Waiting on us" (BRIEF-recruit-waiting-on-us, Mike 1 Oct 2026) ────────────
+// Candidates whose NEXT move belongs to ops, across stages. The pipeline review
+// (FINDINGS-recruitment-pipeline-gaps-2026-10-01) showed every stage where we act
+// next piling up while candidates move within a day when it is their turn — and
+// nothing on screen separated the two.
+//
+// ONE predicate, used by BOTH the Recruitment pile and the Today › Operations
+// tile, so the two counts cannot disagree. Do not write a second copy.
+//
+// Deliberately separate from recruitExceptions / ⚠ Needs attention: that flag
+// mixes "chase the candidate" with "we owe them a move", and only fires after an
+// ageing limit. This one counts from day one in the stage.
+//
+// Keys are in precedence order (by status they cannot overlap, but the order is
+// stated so nobody has to reason about it).
+const WAITING_KEYS = ['convert', 'send_eh', 'attendance', 'invite'];
+const WAITING_LABELS = {
+  convert:    'Phone & convert',
+  send_eh:    'Send to EH',
+  attendance: 'Mark attendance',
+  invite:     'Invite',
+};
+// Days waiting at which the tag turns amber; red at TWICE this. Defaults from the
+// usual time each step takes (median 1.5 d to convert, 5.9 d to send to EH) —
+// tune with Rich and Monty. NOT RECRUIT_AGING_THRESHOLDS: that table has no value
+// for New and uses different limits for a different question.
+const WAITING_THRESHOLDS = { convert: 2, send_eh: 3, attendance: 1, invite: 2 };
+
+// Seats left across sessions that can still take a booking. Mirrors the SQL
+// function induction_seat_supply: state 'open', starts in the future, and before
+// booking_closes_at (or the start, if no close time). Seats per session are
+// capacity − booked, never below 0 (capacity can be set below current bookings).
+// Takes EVERY intake's sessions — a second open intake must not be missed.
+function recruitSeatsOpen(sessions){
+  const now = Date.now();
+  let seats = 0;
+  (sessions || []).forEach(s => {
+    if(!s || s.state !== 'open') return;
+    const starts = Date.parse(s.starts_at);
+    if(isNaN(starts) || starts <= now) return;
+    const closes = s.booking_closes_at ? Date.parse(s.booking_closes_at) : starts;
+    if(isNaN(closes) || now >= closes) return;
+    seats += Math.max(0, (Number(s.capacity) || 0) - (Number(s.booked) || 0));
+  });
+  return seats;
+}
+// Fetch every intake's sessions (intake_label null → the edge function's
+// admin_list_induction_sessions returns all intakes) and return seats open.
+// NEVER throws: a failure means 0, so the `invite` key goes quiet rather than
+// claiming New candidates are actionable when we cannot tell.
+async function loadRecruitSeats(){
+  try{
+    const res = await postSessions({ action:'list', intake_label:null });
+    if(res.httpError){
+      console.warn('[waiting-on-us] sessions list failed (' + res.status + ') — treating seats open as 0');
+      return 0;
+    }
+    return recruitSeatsOpen((res.body || {}).sessions);
+  }catch(e){
+    console.warn('[waiting-on-us] sessions list failed — treating seats open as 0', e);
+    return 0;
+  }
+}
+// The Recruitment tab's copy of ctx.seatsOpen, refreshed with every candidate load.
+let _recruitSeats = 0;
+
+// THE predicate. Returns a WAITING_KEYS key, or null when the next move is not
+// ours. ctx = { seatsOpen }. Test fixtures never count.
+function recruitWaitingOnUs(c, ctx){
+  if(!c || c.is_test) return null;
+  const st = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
+  if(st === 'all_docs_received') return 'convert';
+  if(st === 'details_submitted'
+     && Array.isArray(c.induction_codes) && c.induction_codes.length > 0) return 'send_eh';
+  if(st === 'booked' && c.session_date) {
+    const ms = Date.parse(c.session_date);
+    if(!isNaN(ms) && ms < Date.now()) return 'attendance';
+  }
+  if(st === 'applied' && ctx && ctx.seatsOpen > 0) return 'invite';
+  return null;
+}
+// Whole days the candidate has been waiting on us. For a missed attendance mark
+// the clock starts when the SESSION ran, not when they booked.
+function recruitWaitingDays(c, key){
+  return recruitDaysSince(key === 'attendance' ? c.session_date : c.status_changed_at);
+}
+// '' (fresh) | 'amber' | 'red'.
+function recruitWaitingLevel(key, days){
+  const t = WAITING_THRESHOLDS[key];
+  if(days === null || t === undefined) return '';
+  if(days >= 2 * t) return 'red';
+  if(days >= t) return 'amber';
+  return '';
+}
+// Counts per key plus the oldest wait in each — what the Ops tile draws.
+function recruitWaitingSummary(rows, ctx){
+  const byKey = {};
+  WAITING_KEYS.forEach(k => { byKey[k] = { count: 0, oldest: null }; });
+  let total = 0;
+  (rows || []).forEach(c => {
+    const k = recruitWaitingOnUs(c, ctx);
+    if(!k) return;
+    total++;
+    byKey[k].count++;
+    const d = recruitWaitingDays(c, k);
+    if(d !== null && (byKey[k].oldest === null || d > byKey[k].oldest)) byKey[k].oldest = d;
+  });
+  return { total, byKey };
+}
+// Is this candidate in the given pile? One rule for the list AND the cross-pile
+// search hint, so the two can never disagree about what a pile holds.
+function recruitInPile(c, pile){
+  if(pile === 'all') return true;
+  if(pile === 'waiting') return recruitWaitingOnUs(c, { seatsOpen: _recruitSeats }) !== null;
+  const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
+  return s === pile;
+}
+// Row tag shown in the Waiting on us pile only: the action we owe + days waiting.
+function recruitWaitingTag(c){
+  const k = recruitWaitingOnUs(c, { seatsOpen: _recruitSeats });
+  if(!k) return '';
+  const days = recruitWaitingDays(c, k);
+  const lvl = recruitWaitingLevel(k, days);
+  const when = (days === null) ? ''
+    : (days === 0) ? ' · today'
+    : (days === 1) ? ' · 1 day'
+    : ` · ${days} days`;
+  return `<span class="recruit-waiting-tag${lvl ? ' ' + lvl : ''}"`
+    + ` title="Waiting on us${lvl === 'red' ? ' — overdue' : lvl === 'amber' ? ' — ageing' : ''}">`
+    + `${recruitEsc(WAITING_LABELS[k])}${when}</span>`;
+}
 // Format a session instant for display, in Melbourne. Only used as a FALLBACK —
 // session_date_text carries TryBooking's own wording and is preferred, so the
 // label an operator reads matches the label on the booking page.
@@ -5895,10 +6049,9 @@ function recruitRenderCrossPileHint(){
   if(!_recruitSearch || _recruitFilter === 'all'){
     el.style.display = 'none'; el.innerHTML = ''; return;
   }
-  const others = _recruitRows.filter(c => {
-    const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
-    return recruitInSession(c) && s !== _recruitFilter && recruitMatches(c, _recruitSearch);
-  }).length;
+  const others = _recruitRows.filter(c =>
+    recruitInSession(c) && !recruitInPile(c, _recruitFilter) && recruitMatches(c, _recruitSearch)
+  ).length;
   if(others === 0){ el.style.display = 'none'; el.innerHTML = ''; return; }
   el.style.display = '';
   el.innerHTML = `${others} match${others === 1 ? '' : 'es'} in other piles`
@@ -7080,7 +7233,12 @@ async function loadRecruitment(){
   statusEl.textContent = 'Loading applicants…';
   listEl.innerHTML = '';
   try{
+    // Seats are fetched alongside the candidates for the Waiting on us `invite`
+    // key. loadRecruitSeats never throws, so a sessions failure cannot block the
+    // list — it only means New candidates are not counted as waiting on us.
+    const seatsP = loadRecruitSeats();
     await loadRecruitCandidates();
+    _recruitSeats = await seatsP;
     renderRecruit();
   }catch(e){
     filtersEl.innerHTML = '';
@@ -7205,11 +7363,16 @@ function renderRecruit(){
   // on_hold, so those piles never grow a ⚠ segment (E3).
   const counts = {}, exCount = {};
   RECRUIT_STATUS_ORDER.forEach(s => { counts[s] = 0; exCount[s] = 0; });
-  let exAll = 0;
+  let exAll = 0, waitCount = 0, exWaiting = 0;
+  const waitCtx = { seatsOpen: _recruitSeats };
   inSession.forEach(c => {
     const s = (c.status && counts.hasOwnProperty(c.status)) ? c.status : 'applied';
     counts[s]++;
-    if(recruitExceptions(c).length > 0){ exCount[s]++; exAll++; }
+    const hasEx = recruitExceptions(c).length > 0;
+    if(hasEx){ exCount[s]++; exAll++; }
+    // The Waiting on us pseudo-pile spans stages, so it is counted separately and
+    // is NOT part of the per-status sum (which still adds up to All).
+    if(recruitWaitingOnUs(c, waitCtx)){ waitCount++; if(hasEx) exWaiting++; }
   });
   // A ⚠ count segment for a chip, or '' when the pile is clean (a clean pile reads
   // clean — no permanent warning). The count sits inside the chip's parens.
@@ -7220,13 +7383,21 @@ function renderRecruit(){
     `<button class="recruit-filter ${_recruitFilter===s?'active':''}" onclick="setRecruitFilter('${s}')">`
     + `${RECRUIT_STATUS_LABELS[s]} (${counts[s]}${warnSeg(exCount[s])})</button>`
   );
+  // "Waiting on us" goes FIRST: it is the question ops opens the tab to answer.
+  // No ⚠ segment on this chip — every row in it is already something we owe.
+  chips.unshift(`<button class="recruit-filter recruit-filter-waiting ${_recruitFilter==='waiting'?'active':''}`
+    + `${waitCount > 0 ? ' has-items' : ''}" onclick="setRecruitFilter('waiting')"`
+    + ` title="Candidates whose next step is ours: convert, send to EH, mark attendance, or invite (when a session has seats)">`
+    + `Waiting on us (${waitCount})</button>`);
   chips.push(`<button class="recruit-filter ${_recruitFilter==='all'?'active':''}" onclick="setRecruitFilter('all')">`
     + `All (${inSession.length}${warnSeg(exAll)})</button>`);
   // The within-pile "Needs attention" TOGGLE (not a pile of its own): it narrows
   // whatever pile is showing to the rows that need chasing. Its count is that
   // pile's exception count, so the operator can see how many the toggle will keep
   // before pressing it. Amber only when this pile actually has some.
-  const pileEx = (_recruitFilter === 'all') ? exAll : (exCount[_recruitFilter] || 0);
+  const pileEx = (_recruitFilter === 'all') ? exAll
+    : (_recruitFilter === 'waiting') ? exWaiting
+    : (exCount[_recruitFilter] || 0);
   chips.push(`<button class="recruit-filter recruit-filter-attn ${_recruitAttentionOnly ? 'active' : ''}`
     + `${pileEx > 0 ? ' has-items' : ''}" onclick="recruitToggleAttention()"`
     + ` title="Show only the candidates in this pile that need chasing">`
@@ -7243,18 +7414,24 @@ function renderRecruit(){
   // Candidates in the chosen pile, BEFORE search. Selection is scoped to this
   // (see recruitToggleAll / the prune below), so typing in the search box never
   // silently unticks a row.
-  const inPile = inSession.filter(c => {
-    if(_recruitFilter === 'all') return true;
-    const s = (c.status && RECRUIT_STATUS_LABELS.hasOwnProperty(c.status)) ? c.status : 'applied';
-    return s === _recruitFilter;
-  });
+  const inPile = inSession.filter(c => recruitInPile(c, _recruitFilter));
   // What actually renders: the pile, narrowed by search AND (when the toggle is on)
   // by the needs-attention filter, then sorted. Both narrowings are pure VIEW —
   // selection is pruned against `inPile` below, NOT against `visible`, so neither
   // typing a search nor flipping the toggle ever unticks a row (brief §3.5 / B1).
-  const visible = recruitSortRows(inPile.filter(c =>
+  let visible = recruitSortRows(inPile.filter(c =>
     recruitMatches(c, _recruitSearch)
     && (!_recruitAttentionOnly || recruitExceptions(c).length > 0)));
+  // Waiting on us, with no column sort chosen: longest wait first. A header sort
+  // still wins when the operator picks one.
+  if(_recruitFilter === 'waiting' && !_recruitSortBy){
+    const wd = c => {
+      const k = recruitWaitingOnUs(c, waitCtx);
+      const d = k ? recruitWaitingDays(c, k) : null;
+      return d === null ? -1 : d;
+    };
+    visible = [...visible].sort((a, b) => wd(b) - wd(a));
+  }
 
   if(visible.length === 0){
     statusEl.style.display = '';
@@ -7263,8 +7440,11 @@ function renderRecruit(){
       : (_recruitAttentionOnly
           ? (_recruitSession ? 'Nothing needs attention in this pile for this session.'
                              : 'Nothing needs attention in this pile.')
-          : (_recruitSession ? 'No applicants in this pile for this session.'
-                             : 'No applicants in this pile.'));
+          : (_recruitFilter === 'waiting'
+              ? (_recruitSession ? 'Nothing is waiting on us for this session.'
+                                 : 'Nothing is waiting on us.')
+              : (_recruitSession ? 'No applicants in this pile for this session.'
+                                 : 'No applicants in this pile.')));
     listEl.innerHTML = '';
     // Still show the cross-pile hint — the person you are looking for is very
     // often in a DIFFERENT pile, and that is exactly when this matters most.
@@ -9151,7 +9331,10 @@ function renderRecruitRow(c, i){
           <div class="recruit-block recruit-withdrawn"><span class="recruit-label">Reason for withdrawing</span>${withdrawReason}</div>` : '';
   // Current status (default unknown/missing to "applied"/New).
   const cur = RECRUIT_STATUS_LABELS.hasOwnProperty(c.status) ? c.status : 'applied';
-  const pill = `<span class="recruit-pill st-${cur}">${RECRUIT_STATUS_LABELS[cur]}</span>`;
+  const pill = `<span class="recruit-pill st-${cur}">${RECRUIT_STATUS_LABELS[cur]}</span>`
+    // In the Waiting on us pile only: what we owe this candidate and for how long.
+    // The stage pill stays, so the stage is still readable on a mixed-stage list.
+    + (_recruitFilter === 'waiting' ? recruitWaitingTag(c) : '');
   // "Time in current stage" label (display only). '' when status_changed_at is
   // missing, so nothing shows rather than a broken value.
   const age = recruitStageAge(c);
@@ -23271,8 +23454,40 @@ const OPS_LANES = [
   // SmartStaff calls (the active roster, then the confirmed shifts), so the six
   // ahead of it fill first. The frame is progressive — nothing waits on it.
   { key:'push_gaps', label:'Shadowlands',
-    load: loadOpsPush, render: renderOpsPush, list: renderOpsPushList, dims:['lead','exposure','reason'] }
+    load: loadOpsPush, render: renderOpsPush, list: renderOpsPushList, dims:['lead','exposure','reason'] },
+  // Recruitment — waiting on us (BRIEF-recruit-waiting-on-us). LAST, after
+  // Shadowlands: it is not a SmartStaff call, but the candidates feed takes
+  // ~1–2.5 s (~530 KB), so it goes behind every other lane rather than delaying
+  // them. Two optional lane fields, both new with this lane:
+  //   cohorts — who sees the lane. Ops routes allow leadership, but
+  //             /api/recruitment/candidates does not, so leadership gets NO lane
+  //             (not an error card). Lanes without `cohorts` are unchanged.
+  //   open    — what a head click does instead of opsOpenDetail. This lane has no
+  //             detail window: the work happens in the Recruitment tab.
+  { key:'recruit_waiting', label:'Recruitment — waiting on us',
+    cohorts:['admin','operations'],
+    load: loadOpsRecruitWaiting, render: renderOpsRecruitWaiting,
+    open: opsOpenRecruitWaiting, dims:[] }
 ];
+
+// Does the signed-in cohort see this lane? A lane with no `cohorts` is for everyone
+// who can reach the Operations page (unchanged behaviour for the first eight).
+function opsLaneVisible(lane){
+  return !lane.cohorts || lane.cohorts.indexOf(window._cohort) !== -1;
+}
+// Head click: the lane's own `open` when it declares one, else the detail window.
+// Same inert rule as opsOpenDetail — an empty/loading/unavailable lane does nothing.
+function opsLaneHeadClick(key){
+  const lane = OPS_LANES.find(function(l){ return l.key === key; });
+  if(!lane) return;
+  if(lane.open){
+    const el = document.getElementById('ops-lane-'+key);
+    if(el && el.classList.contains('no-detail')) return;
+    lane.open(lane);
+    return;
+  }
+  opsOpenDetail(key);
+}
 
 // Shared-source cache: name -> in-flight/resolved Promise<responseJSON>. Memoised
 // so two lanes declaring the same source trigger exactly ONE fetch. loadOps
@@ -23499,6 +23714,12 @@ async function loadOpsCycle(force){
   if(force){ for(const k in _opsSourceCache) delete _opsSourceCache[k]; }
   for(let i = 0; i < OPS_LANES.length; i++){
     const lane = OPS_LANES[i];
+    // Cohort-gated lane the viewer cannot use: hide its card and skip the fetch.
+    // Checked every cycle (not only when the frame is built) because the frame is
+    // built once and the cohort can resolve after it.
+    const laneEl = document.getElementById('ops-lane-'+lane.key);
+    if(!opsLaneVisible(lane)){ if(laneEl) laneEl.style.display = 'none'; continue; }
+    if(laneEl && laneEl.dataset.hidden403 !== '1') laneEl.style.display = '';
     if(!_opsLaneState[lane.key]){
       const chips = {};
       lane.dims.forEach(function(d){ chips[d] = null; });
@@ -23541,7 +23762,8 @@ function renderOpsFrame(){
   wrap.innerHTML = OPS_LANES.map(function(lane){
     return ''
       + '<div class="ops-lane" id="ops-lane-'+lane.key+'">'
-      +   '<div class="ops-lane-head" onclick="opsOpenDetail(\''+lane.key+'\')" title="Open detail">'
+      +   '<div class="ops-lane-head" onclick="opsLaneHeadClick(\''+lane.key+'\')"'
+      +     ' title="'+(lane.open ? 'Open in Recruitment' : 'Open detail')+'">'
       +     '<span class="ops-lane-caret" id="ops-caret-'+lane.key+'">▸</span>'
       +     '<span class="ops-lane-label">'+escapeHtml(lane.label)+'</span>'
       +     '<span class="ops-lane-badge" id="ops-badge-'+lane.key+'">…</span>'
@@ -23683,6 +23905,86 @@ function renderOpsUnavailable(lane){
     + '</div>';
   setOpsLaneDetail(lane, false);
   opsSyncDetail(lane);
+}
+
+// ── Lane: Recruitment — waiting on us ────────────────────────────────────────
+// Same feed and the SAME predicate (recruitWaitingOnUs) as the Recruitment tab's
+// "Waiting on us" pile, so the tile total and the chip count always agree. A
+// fresh fetch every cycle — Refresh must show the current state, not whatever the
+// Recruitment tab happened to load earlier.
+async function loadOpsRecruitWaiting(lane, force){
+  const st = _opsLaneState[lane.key];
+  const laneEl = document.getElementById('ops-lane-'+lane.key);
+  try{
+    const seatsP = loadRecruitSeats();             // never throws; 0 on failure
+    const r = await fetch('/api/recruitment/candidates', {cache:'no-store'});
+    if(r.status === 403){
+      // No recruitment access: hide the card rather than show an error. Sticky for
+      // the session (a 403 does not change between refreshes).
+      st.status = 'hidden';
+      if(laneEl){ laneEl.dataset.hidden403 = '1'; laneEl.style.display = 'none'; }
+      return;
+    }
+    if(!r.ok) throw new Error('candidates ' + r.status);
+    const rows = await r.json();
+    const seatsOpen = await seatsP;
+    st.status = 'ready';
+    st.data = recruitWaitingSummary(Array.isArray(rows) ? rows : [], { seatsOpen: seatsOpen });
+    st.data.seatsOpen = seatsOpen;
+    renderOpsRecruitWaiting(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = (e && e.message) || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+function renderOpsRecruitWaiting(lane){
+  const st    = _opsLaneState[lane.key];
+  const data  = (st && st.data) || { total:0, byKey:{} };
+  const total = data.total || 0;
+  st.total = total;
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">Nothing waiting on us.</div>';
+    setOpsLaneDetail(lane, false);
+    return;
+  }
+  // Four rows, always in pipeline-urgency order. A zero row stays (muted) so the
+  // card's shape never changes — "0 to invite" is information, not absence.
+  const rowsHtml = WAITING_KEYS.map(function(k){
+    const b = (data.byKey && data.byKey[k]) || { count:0, oldest:null };
+    const lvl = b.count ? recruitWaitingLevel(k, b.oldest) : '';
+    const oldest = (!b.count || b.oldest === null) ? ''
+      : (b.oldest === 0 ? 'today' : (b.oldest === 1 ? 'oldest 1 day' : 'oldest ' + b.oldest + ' days'));
+    // The invite row explains its own zero: it only counts while a session has seats.
+    const note = (k === 'invite' && !b.count && !data.seatsOpen) ? 'no session has seats' : oldest;
+    return '<div class="ops-rw-row' + (b.count ? '' : ' zero') + '"'
+      + (b.count ? ' onclick="event.stopPropagation();opsOpenRecruitWaiting()" title="Open in Recruitment"' : '')
+      + '>'
+      +   '<span class="ops-rw-label">' + escapeHtml(WAITING_LABELS[k]) + '</span>'
+      +   '<span class="ops-rw-count">' + b.count + '</span>'
+      +   '<span class="ops-rw-age' + (lvl ? ' ' + lvl : '') + '">' + escapeHtml(note) + '</span>'
+      + '</div>';
+  }).join('');
+  body.innerHTML = '<div class="ops-rw">' + rowsHtml + '</div>';
+  setOpsLaneDetail(lane, true);
+}
+
+// Jump to Recruitment on the Waiting on us pile. Session, search and the Needs
+// attention toggle are reset first, so the list shows exactly the tile's total
+// (the tile counts every session; a leftover filter would make them disagree).
+function opsOpenRecruitWaiting(){
+  _recruitSession = '';
+  _recruitAttentionOnly = false;
+  const s = document.getElementById('recruit-search');
+  if(s) s.value = '';
+  _recruitSearch = '';
+  _recruitFilter = 'waiting';
+  _recruitSelected.clear();
+  switchTab('recruitment');            // loadRecruitment() refetches, keeps the pile
 }
 
 function renderOpsOffers(lane){
