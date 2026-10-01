@@ -1194,6 +1194,8 @@ body.cohort-readonly #unavail-add-section{display:none}
 .recruit-filter-waiting.has-items{border-color:var(--accent);color:var(--accent)}
 .recruit-filter-waiting.active,
 .recruit-filter-waiting.has-items.active{background:var(--accent);border-color:var(--accent);color:#000}
+.recruit-waiting-focus{display:inline-flex;align-items:center;gap:6px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;padding:5px 6px 5px 12px;border-radius:20px;border:1px dashed var(--accent);color:var(--accent)}
+.recruit-waiting-focus button{background:none;border:none;color:var(--accent);font-size:15px;line-height:1;cursor:pointer;padding:0 4px}
 /* Row tag in that pile: the action we owe + days waiting. Neutral when fresh,
    amber at the stage threshold, red at twice it (WAITING_THRESHOLDS). */
 .recruit-waiting-tag{display:inline-block;margin-left:6px;font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;color:var(--accent);border:1px solid var(--accent);background:var(--accent-bg);padding:1px 8px;border-radius:20px;white-space:nowrap}
@@ -1512,17 +1514,8 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-modal-body{padding:14px 18px;overflow-y:auto}
 .ops-lane-status{color:var(--muted);font-size:12px;padding:10px 2px}
 .ops-empty{font-size:13px;color:var(--text);padding:12px 2px}
-/* Recruitment — waiting on us: four action rows, count + oldest wait. */
-.ops-rw{display:flex;flex-direction:column;gap:2px;padding:6px 0 4px}
-.ops-rw-row{display:grid;grid-template-columns:minmax(0,1fr) 48px 140px;align-items:center;gap:10px;padding:7px 8px;border-radius:5px;cursor:pointer}
-.ops-rw-row:hover{background:var(--surface2)}
-.ops-rw-row.zero{cursor:default;opacity:.45}
-.ops-rw-row.zero:hover{background:none}
-.ops-rw-label{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;color:var(--text)}
-.ops-rw-count{font-family:'Share Tech Mono',monospace;font-size:14px;color:var(--accent);text-align:right}
-.ops-rw-age{font-size:11px;color:var(--muted);text-align:right}
-.ops-rw-age.amber{color:var(--warn)}
-.ops-rw-age.red{color:var(--conflict)}
+/* Recruitment — waiting on us: the line under the two donuts. */
+.ops-rw-note{font-size:11px;color:var(--muted);padding:0 2px 4px}
 .ops-unavail{font-size:13px;color:var(--warn);padding:12px 2px}
 .ops-donuts{display:flex;flex-wrap:wrap;gap:26px;padding:8px 0 14px}
 .ops-donut-block{display:flex;flex-direction:column;align-items:center;gap:8px}
@@ -5913,20 +5906,55 @@ function recruitWaitingLevel(key, days){
   if(days >= t) return 'amber';
   return '';
 }
-// Counts per key plus the oldest wait in each — what the Ops tile draws.
+// The "days waiting" bands, named. Same thresholds as the row tag colours, so a
+// red tag is always an Overdue segment and vice versa. A missing timestamp counts
+// as on time (we cannot claim it is late).
+const WAITING_LEVEL_KEYS   = ['on_time', 'ageing', 'overdue'];
+const WAITING_LEVEL_LABELS = { on_time:'On time', ageing:'Ageing', overdue:'Overdue' };
+function recruitWaitingLevelKey(c, ctx){
+  const k = recruitWaitingOnUs(c, ctx);
+  if(!k) return null;
+  const lvl = recruitWaitingLevel(k, recruitWaitingDays(c, k));
+  return lvl === 'red' ? 'overdue' : lvl === 'amber' ? 'ageing' : 'on_time';
+}
+// Counts per action and per band, plus the oldest wait per action — what the Ops
+// tile draws. Built from the same two functions the pile uses, never re-derived.
 function recruitWaitingSummary(rows, ctx){
-  const byKey = {};
+  const byKey = {}, byLevel = {};
   WAITING_KEYS.forEach(k => { byKey[k] = { count: 0, oldest: null }; });
+  WAITING_LEVEL_KEYS.forEach(l => { byLevel[l] = 0; });
   let total = 0;
   (rows || []).forEach(c => {
     const k = recruitWaitingOnUs(c, ctx);
     if(!k) return;
     total++;
     byKey[k].count++;
+    byLevel[recruitWaitingLevelKey(c, ctx)]++;
     const d = recruitWaitingDays(c, k);
     if(d !== null && (byKey[k].oldest === null || d > byKey[k].oldest)) byKey[k].oldest = d;
   });
-  return { total, byKey };
+  return { total, byKey, byLevel };
+}
+// Narrowing inside the Waiting on us pile, set by a donut segment on the Ops tile:
+// { dim:'action'|'wait', seg:<key> } or null. A VIEW layer like Needs attention —
+// the chip count stays the whole pile. Cleared by any pile change.
+let _recruitWaitingFocus = null;
+function recruitWaitingFocusMatch(c){
+  const f = _recruitWaitingFocus;
+  if(!f) return true;
+  const ctx = { seatsOpen: _recruitSeats };
+  if(f.dim === 'action') return recruitWaitingOnUs(c, ctx) === f.seg;
+  if(f.dim === 'wait')   return recruitWaitingLevelKey(c, ctx) === f.seg;
+  return true;
+}
+function recruitWaitingFocusLabel(){
+  const f = _recruitWaitingFocus;
+  if(!f) return '';
+  return (f.dim === 'action' ? WAITING_LABELS : WAITING_LEVEL_LABELS)[f.seg] || f.seg;
+}
+function clearRecruitWaitingFocus(){
+  _recruitWaitingFocus = null;
+  renderRecruit();
 }
 // Is this candidate in the given pile? One rule for the list AND the cross-pile
 // search hint, so the two can never disagree about what a pile holds.
@@ -7388,7 +7416,12 @@ function renderRecruit(){
   chips.unshift(`<button class="recruit-filter recruit-filter-waiting ${_recruitFilter==='waiting'?'active':''}`
     + `${waitCount > 0 ? ' has-items' : ''}" onclick="setRecruitFilter('waiting')"`
     + ` title="Candidates whose next step is ours: convert, send to EH, mark attendance, or invite (when a session has seats)">`
-    + `Waiting on us (${waitCount})</button>`);
+    + `Waiting on us (${waitCount})</button>`
+    // The narrowing chip from an Ops donut segment, right beside its pile. × clears it.
+    + (_recruitFilter === 'waiting' && _recruitWaitingFocus
+        ? `<span class="recruit-waiting-focus">Showing: ${recruitEsc(recruitWaitingFocusLabel())}`
+          + `<button title="Show everything waiting on us" onclick="clearRecruitWaitingFocus()">×</button></span>`
+        : ''));
   chips.push(`<button class="recruit-filter ${_recruitFilter==='all'?'active':''}" onclick="setRecruitFilter('all')">`
     + `All (${inSession.length}${warnSeg(exAll)})</button>`);
   // The within-pile "Needs attention" TOGGLE (not a pile of its own): it narrows
@@ -7421,7 +7454,8 @@ function renderRecruit(){
   // typing a search nor flipping the toggle ever unticks a row (brief §3.5 / B1).
   let visible = recruitSortRows(inPile.filter(c =>
     recruitMatches(c, _recruitSearch)
-    && (!_recruitAttentionOnly || recruitExceptions(c).length > 0)));
+    && (!_recruitAttentionOnly || recruitExceptions(c).length > 0)
+    && (_recruitFilter !== 'waiting' || recruitWaitingFocusMatch(c))));
   // Waiting on us, with no column sort chosen: longest wait first. A header sort
   // still wins when the operator picks one.
   if(_recruitFilter === 'waiting' && !_recruitSortBy){
@@ -7441,8 +7475,9 @@ function renderRecruit(){
           ? (_recruitSession ? 'Nothing needs attention in this pile for this session.'
                              : 'Nothing needs attention in this pile.')
           : (_recruitFilter === 'waiting'
-              ? (_recruitSession ? 'Nothing is waiting on us for this session.'
-                                 : 'Nothing is waiting on us.')
+              ? (_recruitWaitingFocus ? 'Nothing waiting on us matches “' + recruitWaitingFocusLabel() + '”.'
+                 : _recruitSession ? 'Nothing is waiting on us for this session.'
+                                   : 'Nothing is waiting on us.')
               : (_recruitSession ? 'No applicants in this pile for this session.'
                                  : 'No applicants in this pile.')));
     listEl.innerHTML = '';
@@ -7503,6 +7538,7 @@ function recruitToggleRow(i){
 // so clear it — you don't want a Hold action landing on someone from the New pile.
 function setRecruitFilter(status){
   _recruitFilter = status;
+  _recruitWaitingFocus = null;   // a donut narrowing belongs to one visit to the pile
   _recruitSelected.clear();
   renderRecruit();
 }
@@ -23467,7 +23503,7 @@ const OPS_LANES = [
   { key:'recruit_waiting', label:'Recruitment — waiting on us',
     cohorts:['admin','operations'],
     load: loadOpsRecruitWaiting, render: renderOpsRecruitWaiting,
-    open: opsOpenRecruitWaiting, dims:[] }
+    open: opsOpenRecruitWaiting, dims:['action','wait'] }
 ];
 
 // Does the signed-in cohort see this lane? A lane with no `cohorts` is for everyone
@@ -23657,6 +23693,13 @@ const OPS_PROFILE_LABELS = { no_shows_only:'No-shows only', both:'Both', lates_o
 const OPS_BAND_COLORS = { severe:'var(--accent2)', elevated:'var(--warn)', watch:'var(--muted)' };
 const OPS_BAND_LABELS = { severe:'20% and over', elevated:'10–19%', watch:'Under 10%' };
 
+// Recruitment — waiting on us. `action` is categorical (which job we owe), so it
+// takes neutral identity colours and none of the alarm hues. `wait` is the
+// severity read, and uses exactly the colours of the row tags in the pile:
+// green on time, amber ageing, red overdue — so a red tag is always a red arc.
+const OPS_ACTION_COLORS = { convert:'var(--accent)', send_eh:'var(--suggest)', attendance:'#38bdf8', invite:'#9ca3af' };
+const OPS_WAIT_COLORS   = { on_time:'#22c55e', ageing:'var(--warn)', overdue:'var(--accent2)' };
+
 // Chip labels by dimension — lets opsChipsBar render any lane's active filters
 // without naming lanes. Defined after the per-dim label maps above exist.
 const OPS_DIM_LABELS = {
@@ -23666,6 +23709,9 @@ const OPS_DIM_LABELS = {
   venue:  OPS_VENUE_LABELS,
   exposure: OPS_EXPOSURE_LABELS, reason: OPS_REASON_LABELS,
   profile: OPS_PROFILE_LABELS, band: OPS_BAND_LABELS,
+  // Recruitment — waiting on us. The label maps live with the predicate
+  // (WAITING_LABELS / WAITING_LEVEL_LABELS) so the tile and the pile share words.
+  action: WAITING_LABELS, wait: WAITING_LEVEL_LABELS,
   // A date has no fixed segment list, so this entry is a FORMATTER rather than a
   // map. opsDimLabel() below is the single reader that knows the difference, so
   // every existing dim keeps working untouched. (Hoisted declaration — naming it
@@ -23940,7 +23986,7 @@ async function loadOpsRecruitWaiting(lane, force){
 
 function renderOpsRecruitWaiting(lane){
   const st    = _opsLaneState[lane.key];
-  const data  = (st && st.data) || { total:0, byKey:{} };
+  const data  = (st && st.data) || { total:0, byKey:{}, byLevel:{} };
   const total = data.total || 0;
   st.total = total;
   const badge = document.getElementById('ops-badge-'+lane.key);
@@ -23952,31 +23998,44 @@ function renderOpsRecruitWaiting(lane){
     setOpsLaneDetail(lane, false);
     return;
   }
-  // Four rows, always in pipeline-urgency order. A zero row stays (muted) so the
-  // card's shape never changes — "0 to invite" is information, not absence.
-  const rowsHtml = WAITING_KEYS.map(function(k){
-    const b = (data.byKey && data.byKey[k]) || { count:0, oldest:null };
-    const lvl = b.count ? recruitWaitingLevel(k, b.oldest) : '';
-    const oldest = (!b.count || b.oldest === null) ? ''
-      : (b.oldest === 0 ? 'today' : (b.oldest === 1 ? 'oldest 1 day' : 'oldest ' + b.oldest + ' days'));
-    // The invite row explains its own zero: it only counts while a session has seats.
-    const note = (k === 'invite' && !b.count && !data.seatsOpen) ? 'no session has seats' : oldest;
-    return '<div class="ops-rw-row' + (b.count ? '' : ' zero') + '"'
-      + (b.count ? ' onclick="event.stopPropagation();opsOpenRecruitWaiting()" title="Open in Recruitment"' : '')
-      + '>'
-      +   '<span class="ops-rw-label">' + escapeHtml(WAITING_LABELS[k]) + '</span>'
-      +   '<span class="ops-rw-count">' + b.count + '</span>'
-      +   '<span class="ops-rw-age' + (lvl ? ' ' + lvl : '') + '">' + escapeHtml(note) + '</span>'
-      + '</div>';
-  }).join('');
-  body.innerHTML = '<div class="ops-rw">' + rowsHtml + '</div>';
+  // Same two-donut shape as every other lane. Segments are in pipeline-urgency
+  // order; a zero segment stays in the legend (muted) so the card's shape never
+  // changes. Clicking an arc or legend row goes through opsToggleChip, which
+  // hands it to opsOpenRecruitWaiting (this lane's `open`) to narrow the pile.
+  const actionSegs = WAITING_KEYS.map(function(k){
+    return { key:k, value:((data.byKey || {})[k] || {}).count || 0,
+             color:OPS_ACTION_COLORS[k], label:WAITING_LABELS[k] };
+  });
+  const waitSegs = WAITING_LEVEL_KEYS.map(function(k){
+    return { key:k, value:(data.byLevel || {})[k] || 0,
+             color:OPS_WAIT_COLORS[k], label:WAITING_LEVEL_LABELS[k] };
+  });
+  // The longest single wait, and why Invite is zero when no session has seats —
+  // the two things a donut cannot say on its own.
+  let oldestKey = null, oldest = -1;
+  WAITING_KEYS.forEach(function(k){
+    const b = (data.byKey || {})[k];
+    if(b && b.count && b.oldest !== null && b.oldest > oldest){ oldest = b.oldest; oldestKey = k; }
+  });
+  const notes = [];
+  if(oldestKey) notes.push('Longest wait: ' + WAITING_LABELS[oldestKey] + ', '
+    + (oldest === 1 ? '1 day' : oldest + ' days') + '.');
+  if(!data.seatsOpen) notes.push('Invite counts only while a session has seats — none right now.');
+  body.innerHTML = ''
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Action', 'action', actionSegs)
+    +   opsDonutBlock(lane, 'Days waiting', 'wait', waitSegs)
+    + '</div>'
+    + (notes.length ? '<div class="ops-rw-note">' + escapeHtml(notes.join(' ')) + '</div>' : '');
   setOpsLaneDetail(lane, true);
 }
 
 // Jump to Recruitment on the Waiting on us pile. Session, search and the Needs
-// attention toggle are reset first, so the list shows exactly the tile's total
-// (the tile counts every session; a leftover filter would make them disagree).
-function opsOpenRecruitWaiting(){
+// attention toggle are reset first, so the list shows exactly what the tile
+// counted (the tile counts every session; a leftover filter would make them
+// disagree). `focus` ({dim, seg}) comes from a donut segment and narrows the pile
+// to that action or band; a head click passes none and shows the whole pile.
+function opsOpenRecruitWaiting(lane, focus){
   _recruitSession = '';
   _recruitAttentionOnly = false;
   const s = document.getElementById('recruit-search');
@@ -23984,7 +24043,8 @@ function opsOpenRecruitWaiting(){
   _recruitSearch = '';
   _recruitFilter = 'waiting';
   _recruitSelected.clear();
-  switchTab('recruitment');            // loadRecruitment() refetches, keeps the pile
+  _recruitWaitingFocus = (focus && focus.dim && focus.seg) ? { dim: focus.dim, seg: focus.seg } : null;
+  switchTab('recruitment');            // loadRecruitment() refetches, keeps pile + focus
 }
 
 function renderOpsOffers(lane){
@@ -24133,6 +24193,11 @@ function opsChipsBar(lane){
 // donuts show the active segment and the list re-filters together.
 function opsToggleChip(laneKey, dim, seg){
   const st = _opsLaneState[laneKey]; if(!st) return;
+  // A lane with its own `open` has no detail window: the segment is carried to
+  // wherever that lane opens instead (Recruitment — waiting on us narrows the
+  // pile to it). No chip state is kept on the card.
+  const own = OPS_LANES.find(function(l){ return l.key === laneKey; });
+  if(own && own.open){ own.open(own, { dim: dim, seg: seg }); return; }
   st.chips[dim] = (st.chips[dim] === seg) ? null : seg;
   const lane = OPS_LANES.find(function(l){ return l.key === laneKey; });
   if(!lane) return;
