@@ -100,6 +100,9 @@ An endpoint uploaded before its include fails with `Call to undefined function`.
 
 ### T4. Lint and hash (test)
 
+Lint runs on **`/opt/alt/php56/usr/bin/php`**: it must be the same PHP that
+serves the site, or syntax that only fails on 5.6 (such as `??`) could pass.
+
 - [ ] cPanel → Terminal, paste:
       ```bash
       cd /home/smartst/test.smartstaffsolutions.com/ajax/crew
@@ -107,12 +110,12 @@ An endpoint uploaded before its include fails with `Call to undefined function`.
                respond-to-promotion.php dismiss-promo-ack.php my-shifts.php open-callout.php \
                close-callout.php callout-sweep.php my-call-offers.php get-calls-bulk.php \
                get-booking.php get-crew-shifts.php; do
-        php -l "$f" | grep -v '^No syntax errors' ; sha256sum "$f"
+        /opt/alt/php56/usr/bin/php -l "$f" | grep -v '^No syntax errors' ; sha256sum "$f"
       done
       ```
 - [ ] Every hash matches the list above. **Any mismatch: stop** — the upload is not
       the committed file.
-- [ ] No `php -l` output other than the hashes. (A `Deprecated` line is not a
+- [ ] No lint output other than the hashes. (A `Deprecated` line is not a
       failure, but paste it back.)
 
 ### T5. The sweep runs from the CLI (test)
@@ -190,8 +193,18 @@ link-safe Promote takes effect for every installed GOAT the moment
 - [ ] **P1 Migration (prod):** same SQL and verification as T1, on `smartst_smartstaff`.
 - [ ] **P2 Includes (prod):** `callout.php`, then `promo-group.php`.
 - [ ] **P3 Endpoints (prod):** the T3 list, same order.
-- [ ] **P4 Lint and hash (prod):** the T4 block with
-      `cd /home/smartst/public_html/ajax/crew`.
+- [ ] **P4 Lint and hash (prod):** on `/opt/alt/php56/usr/bin/php`, the PHP that
+      serves the site, so syntax that only fails on 5.6 (such as `??`) cannot pass:
+      ```bash
+      cd /home/smartst/public_html/ajax/crew
+      for f in callout.php promo-group.php respond-to-call.php update-crew-status.php \
+               respond-to-promotion.php dismiss-promo-ack.php my-shifts.php open-callout.php \
+               close-callout.php callout-sweep.php my-call-offers.php get-calls-bulk.php \
+               get-booking.php get-crew-shifts.php; do
+        /opt/alt/php56/usr/bin/php -l "$f" | grep -v '^No syntax errors' ; sha256sum "$f"
+      done
+      ```
+      Every hash matches the list above; no lint output other than the hashes.
 - [ ] **P5 Four-point check:** every file's hash agrees across the Mac working copy,
       test, prod and the GitHub blob at the merge commit.
 - [ ] **P6 Sweep from the CLI (prod):**
