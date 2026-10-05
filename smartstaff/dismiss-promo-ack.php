@@ -27,6 +27,8 @@
 	/* who will never clear it themselves.
 	/*
 	/* Contract: POST ?id=<callID> with JSON body {userID}. Status is NEVER touched.
+	/* Clears every unanswered row in that row's promotion group (same
+	/* promoted_at), not just this call's.
 	/*
 	/* PHP 5.x — mysql_*, no null-coalescing (??), no short array syntax.
 	*/
@@ -86,9 +88,26 @@
 		die('{"error":"userID is required"}');
 	}
 
+	/*
+	/* Dismiss the whole GROUP. Link-safe Promote writes every row of one
+	/* promotion with the same promoted_at, and one phone call answers one
+	/* promotion — so the pill on any one call clears all of that
+	/* promotion's unanswered rows for this user. A single-call promotion is a
+	/* group of one and behaves exactly as before.
+	*/
+
+	include_once('promo-group.php');
+
+	$groupCalls = goat_promo_group($userID, $callID);
+
+	if (!in_array($callID, $groupCalls))
+	{
+		$groupCalls[] = $callID;   /* nothing pending: the UPDATE below is the old no-op */
+	}
+
 	mysql_query(
 		'UPDATE call_promo_ack SET acked_at=' . time() . ", acked_src='ops'" .
-		' WHERE callID=' . intval($callID) . ' AND userID=' . intval($userID) .
+		' WHERE callID IN (' . implode(',', $groupCalls) . ') AND userID=' . intval($userID) .
 		' AND acked_at IS NULL'
 	);
 
@@ -101,10 +120,11 @@
 	$cleared = (mysql_affected_rows() > 0);
 
 	echo json_encode(array(
-		'ok'      => true,
-		'call_id' => $callID,
-		'user_id' => $userID,
-		'cleared' => $cleared
+		'ok'          => true,
+		'call_id'     => $callID,
+		'user_id'     => $userID,
+		'cleared'     => $cleared,
+		'group_calls' => $groupCalls
 	));
 
 ?>

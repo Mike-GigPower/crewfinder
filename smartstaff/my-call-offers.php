@@ -155,6 +155,29 @@
 	/* has started.
 	*/
 
+	/*
+	/* Offers re-opened by an open backup call-out (brief §D7, Part F): Crew
+	/* Hub shows the call-out wording ("A place has opened … first to accept
+	/* gets it") on these. One query on idx_user_call; empty when no call-out
+	/* is running, and also if the tables are missing (PHP ahead of the
+	/* migration) — every offer then reads callout:false.
+	*/
+
+	$calloutCalls = array();
+
+	$cres = mysql_query("SELECT cm.callID
+	                     FROM call_callout_member cm
+	                     INNER JOIN call_callout co ON co.id = cm.callout_id AND co.closed_at IS NULL
+	                     WHERE cm.userID = " . (int) $userID);
+
+	if ($cres !== false)
+	{
+		while ($crow = mysql_fetch_object($cres))
+		{
+			$calloutCalls[(int) $crow->callID] = true;
+		}
+	}
+
 	$offers = array();
 
 	foreach ($rows as $r)
@@ -206,6 +229,7 @@
 			'declining_withdraws' => goat_declining_withdraws($userID, (int) $row->call_id),
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss,
+			'callout'      => isset($calloutCalls[(int) $row->call_id]) ? true : false,
 			/* contact hierarchy — everything emitted here is upcoming by
 			   construction (pass 2 drops started offers and started packages) */
 			'contacts'     => goat_resolve_call_contact((int) $row->call_id, $userID)

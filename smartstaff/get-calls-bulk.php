@@ -179,6 +179,18 @@
 			COUNT(CASE WHEN (ccm.status IN (5,7) AND cca.id IS NOT NULL)
 			             OR (ccm.status = 5 AND cpa.id IS NOT NULL AND cpa.acked_at IS NULL)
 			           THEN 1 END) AS awaiting,
+			/* Promotion-pending: status 5 with an unanswered promotion. The SAME
+			/* guard as the promotion half of `awaiting` above and get-booking.php
+			/* — one rule. Additive: booked / full / awaiting are unchanged, so an
+			/* older GOAT behaves exactly as before (promotion brief, decision 8). */
+			COUNT(CASE WHEN ccm.status = 5 AND cpa.id IS NOT NULL AND cpa.acked_at IS NULL
+			           THEN 1 END) AS promo_pending,
+			/* Call-out (brief §D7). backups = rows on standby. callout_open
+			/* comes from a derived table of calls with an open call-out —
+			/* DISTINCT, so the join can never multiply crew rows and skew the
+			/* counts above, and computed once rather than per row. */
+			COUNT(CASE WHEN ccm.status = 7 THEN 1 END) AS backups,
+			MAX(CASE WHEN coo.callID IS NOT NULL THEN 1 ELSE 0 END) AS callout_open,
 			c.notes       AS notes,
 			b.name        AS booking_name,
 			v.venue       AS venue_name,
@@ -193,6 +205,8 @@
 		                            AND cca.userID = ccm.userID
 		LEFT JOIN call_promo_ack  cpa ON cpa.callID = ccm.callID
 		                            AND cpa.userID = ccm.userID
+		LEFT JOIN (SELECT DISTINCT callID FROM call_callout WHERE closed_at IS NULL) coo
+		                              ON coo.callID = c.id
 		WHERE c.start_date >= $start_i
 		  AND c.start_date <  $end_i
 		  AND (b.hidden IS NULL OR b.hidden = 0)
@@ -245,6 +259,9 @@
 			'required'     => $required,
 			'committed'    => (int) $row->committed,
 			'awaiting'     => (int) $row->awaiting,
+			'promo_pending' => (int) $row->promo_pending,
+			'backups'      => (int) $row->backups,
+			'callout_open' => (int) $row->callout_open,
 			'link_group'   => ($row->link_group === null ? null : (int) $row->link_group),
 			'full'         => ($booked >= $required && $required > 0),
 			'notes'        => $row->notes,

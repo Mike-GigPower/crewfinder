@@ -267,6 +267,65 @@
 	               ? ', cancelled_at, cancelled_by, cancel_reason, cancel_charge'
 	               : '';
 
+	/*
+	/* Open call-outs touching this booking (brief §D7), in two booking-wide
+	/* queries so the per-call emit is a lookup:
+	/*
+	/*   $calloutOf[callID]       — the open call-out OPENED on that call, with
+	/*                              counts from its member rows on that call
+	/*                              (downstream rows reset with it are not
+	/*                              double-counted as extra people asked)
+	/*   $calloutMember[callID][userID] — a member row in ANY open call-out,
+	/*                              which includes downstream rows reset by a
+	/*                              call-out opened on an upstream call
+	/*
+	/* If the tables are missing (PHP ahead of the migration) both queries fail
+	/* and every call reads callout:null, callout_member:false.
+	*/
+
+	$calloutOf     = array();
+	$calloutMember = array();
+
+	$cores = mysql_query("SELECT co.id, co.callID, co.opened_at, co.places,
+	                             COUNT(cm.id)                                       AS asked,
+	                             COUNT(CASE WHEN cm.outcome = 'confirmed' THEN 1 END) AS confirmed,
+	                             COUNT(CASE WHEN cm.outcome = 'declined'  THEN 1 END) AS declined,
+	                             COUNT(CASE WHEN cm.outcome = 'backup'    THEN 1 END) AS backup
+	                      FROM call_callout co
+	                      INNER JOIN calls c ON c.id = co.callID AND c.bookingID = " . $bookingID . "
+	                      LEFT JOIN call_callout_member cm ON cm.callout_id = co.id AND cm.callID = co.callID
+	                      WHERE co.closed_at IS NULL
+	                      GROUP BY co.id");
+
+	if ($cores !== false)
+	{
+		while ($co = mysql_fetch_object($cores))
+		{
+			$calloutOf[(int) $co->callID] = array(
+				'id'        => (int) $co->id,
+				'opened_at' => (int) $co->opened_at,
+				'places'    => (int) $co->places,
+				'asked'     => (int) $co->asked,
+				'confirmed' => (int) $co->confirmed,
+				'declined'  => (int) $co->declined,
+				'backup'    => (int) $co->backup,
+			);
+		}
+	}
+
+	$cmres = mysql_query("SELECT cm.callID, cm.userID
+	                      FROM call_callout_member cm
+	                      INNER JOIN call_callout co ON co.id = cm.callout_id AND co.closed_at IS NULL
+	                      INNER JOIN calls c ON c.id = cm.callID AND c.bookingID = " . $bookingID);
+
+	if ($cmres !== false)
+	{
+		while ($cm = mysql_fetch_object($cmres))
+		{
+			$calloutMember[(int) $cm->callID][(int) $cm->userID] = true;
+		}
+	}
+
 	$calls = array();
 	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes, link_group" . $callCancelSel . "
 	                     FROM calls
@@ -342,6 +401,13 @@
 					*/
 					$promoPending = ($st === 5 && $cr->promo_at !== null && $cr->promo_acked_at === null) ? true : false;
 
+					/*
+					/* Call-out tag: re-offered by an open call-out and not yet
+					/* answered. GUARDED to status 1 — once they answer, or the
+					/* close reverts them to 7, the tag goes.
+					*/
+					$calloutMem = ($st === 1 && isset($calloutMember[$callID][(int) $cr->id])) ? true : false;
+
 					$crew[] = array(
 						'id'             => (int) $cr->id,
 						'name'           => trim($cr->firstname . ' ' . $cr->lastname),
@@ -362,6 +428,11 @@
 						'is_call_boss'   => (int) $cr->is_call_boss,
 						'change_pending' => $changePending,
 						'promo_pending'  => $promoPending,
+						/* The promotion's group key (its promoted_at) while pending,
+						/* else null. Rows sharing it were promoted together, so the
+						/* dialog can say "promoted with the load-out" (brief Part A). */
+						'promo_group'    => $promoPending ? (int) $cr->promo_at : null,
+						'callout_member' => $calloutMem,
 					);
 				}
 			}
@@ -408,6 +479,7 @@
 				'booked'     => $booked,
 				'confirmed'  => $confirmed,
 				'cancelled'  => $cancelled,
+				'callout'    => isset($calloutOf[$callID]) ? $calloutOf[$callID] : null,
 				'crew'       => $crew,
 			);
 		}

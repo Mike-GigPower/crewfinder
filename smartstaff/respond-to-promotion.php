@@ -26,20 +26,24 @@
 	/* respond-to-change.php too: that one's authorisation is a call_change_ack
 	/* row, a different question with different semantics.
 	/*
-	/* Contract: POST callID, action in {accept, decline}. SINGLE CALL only — no
-	/* link-group cascade in v1, matching respond-to-change.php. (A declined
-	/* promotion on a load-out can strand an upstream load-in the crew member
-	/* already holds; that cascade is deliberate follow-up work, see the design
-	/* doc's open questions.)
+	/* Contract: POST callID, action in {accept, decline}. The answer covers the
+	/* posted call's whole GROUP — every unanswered row of this user's sharing
+	/* its promoted_at (DESIGN-backup-callout §3.2). A Crew Hub build that still
+	/* shows one card per call answers the group from the first card; the
+	/* second then gets the 'no pending promotion' no-op, which is harmless.
 	/*
 	/*   accept:
-	/*     - time-gated: refuse if the call has already started (Melbourne
+	/*     - time-gated on the earliest-starting call in the group (Melbourne
 	/*       wall-clock, same computation as respond-to-call.php)
-	/*     - stamp acked_at + acked_src='crew'; status LEFT UNTOUCHED (5 stays 5)
+	/*     - stamp acked_at + acked_src='crew' on every group row; status LEFT
+	/*       UNTOUCHED (5 stays 5)
 	/*   decline:
 	/*     - never time-gated
-	/*     - status 5 -> 6 (Declined) + removeFromCalendar
-	/*     - stamp acked_at + acked_src='crew'
+	/*     - every group row: status 5 -> 6 (Declined) + removeFromCalendar
+	/*     - Confirmed rows upstream of the group are withdrawn too (5 -> 6)
+	/*     - stamp acked_at + acked_src='crew' on every group row
+	/*
+	/* Response adds group_calls and, on decline, withdrawn_calls.
 	/*
 	/* Self-scoped, service-key trust — same identity path as
 	/* respond-to-call.php. Reuses $db and $sss from global.php so the
@@ -71,23 +75,26 @@
 		die('{"error":"action must be accept or decline"}');
 	}
 
+	include_once('promo-group.php');
+
 	/*
 	/* Require an UNANSWERED promotion for THIS user on THIS call. The pending
 	/* row's presence is the whole authorisation: no row, or an already-answered
-	/* row, means nothing to answer.
+	/* row, means nothing to answer — goat_promo_group returns empty.
+	/*
+	/* The GROUP — one promotion: this user's unanswered rows sharing the
+	/* posted row's promoted_at (promo-group.php). Always contains $callID. A
+	/* single-call promotion is a group of one and behaves exactly as before.
 	*/
-	$promo = $db->selectFirst(
-		'id',
-		'call_promo_ack',
-		'callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID) .
-		' AND acked_at IS NULL'
-	);
+	$groupCalls = goat_promo_group($userID, $callID);
 
-	if (!$promo)
+	if (!count($groupCalls))
 	{
 		echo json_encode(array('ok' => false, 'error' => 'no pending promotion'));
 		exit;
 	}
+
+	$groupIn = implode(',', $groupCalls);
 
 	$mapRow      = $db->selectFirst(
 		'status',
@@ -102,37 +109,49 @@
 		/* Time guard — a promotion onto a shift that has ALREADY STARTED can no
 		/* longer be confirmed. Melbourne wall-clock, so correct whatever
 		/* timezone the server runs in. Mirrors respond-to-change.php.
+		/*
+		/* Gated on the EARLIEST-starting call in the group: the group is
+		/* answered as one, so once its first call has started it is too late.
 		*/
-		$cRow = $db->selectFirst('start_date, start_time', 'calls', 'id=' . $db->sc($callID));
+		$melTz   = new DateTimeZone('Australia/Melbourne');
+		$nowTs   = time();
+		$firstTs = false;
 
-		if ($cRow)
+		$tres = mysql_query('SELECT start_date, start_time FROM calls WHERE id IN (' . $groupIn . ')');
+
+		if ($tres !== false)
 		{
-			$melTz   = new DateTimeZone('Australia/Melbourne');
-			$nowTs   = time();
-			$cDate   = date('Y-m-d', (int) $cRow->start_date);
-			$startTs = false;
-
-			try {
-				$dt = new DateTime($cDate . ' ' . $cRow->start_time, $melTz);
-				$startTs = $dt->getTimestamp();
-			} catch (Exception $e) {
-				$startTs = false;
-			}
-
-			if ($startTs !== false && $startTs <= $nowTs)
+			while ($cRow = mysql_fetch_object($tres))
 			{
-				echo json_encode(array(
-					'ok'      => false,
-					'expired' => true,
-					'error'   => 'This shift has already started, so it can no longer be confirmed.'
-				));
-				exit;
+				$cDate = date('Y-m-d', (int) $cRow->start_date);
+
+				try {
+					$dt = new DateTime($cDate . ' ' . $cRow->start_time, $melTz);
+					$ts = $dt->getTimestamp();
+				} catch (Exception $e) {
+					continue;
+				}
+
+				if ($firstTs === false || $ts < $firstTs)
+				{
+					$firstTs = $ts;
+				}
 			}
+		}
+
+		if ($firstTs !== false && $firstTs <= $nowTs)
+		{
+			echo json_encode(array(
+				'ok'      => false,
+				'expired' => true,
+				'error'   => 'This shift has already started, so it can no longer be confirmed.'
+			));
+			exit;
 		}
 
 		mysql_query(
 			'UPDATE call_promo_ack SET acked_at=' . time() . ", acked_src='crew'" .
-			' WHERE callID=' . intval($callID) . ' AND userID=' . intval($userID) .
+			' WHERE callID IN (' . $groupIn . ') AND userID=' . intval($userID) .
 			' AND acked_at IS NULL'
 		);
 
@@ -145,7 +164,8 @@
 		echo json_encode(array(
 			'ok'            => true,
 			'action'        => 'accept',
-			'result_status' => $priorStatus   /* unchanged */
+			'result_status' => $priorStatus,   /* unchanged */
+			'group_calls'   => $groupCalls
 		));
 		exit;
 	}
@@ -153,31 +173,73 @@
 	/*
 	/* action == decline (never time-gated). Only a row currently Confirmed (5)
 	/* flips to Declined (6) — a promotion only ever lands on 5. Anything else is
-	/* a no-op status-wise but still stamps the ack.
+	/* a no-op status-wise but still stamps the ack. Every call in the group.
 	*/
-	$db->update(
-		'call_crew_map',
-		array('status' => $db->sc(6)),
-		'status = 5 AND callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
-	);
+	$declined = false;
 
-	if (mysql_error())
+	foreach ($groupCalls as $gc)
 	{
-		http_response_code(500);
-		die('{"error":"decline update failed: ' . addslashes(mysql_error()) . '"}');
+		$db->update(
+			'call_crew_map',
+			array('status' => $db->sc(6)),
+			'status = 5 AND callID=' . $db->sc($gc) . ' AND userID=' . $db->sc($userID)
+		);
+
+		if (mysql_error())
+		{
+			http_response_code(500);
+			die('{"error":"decline update failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		if (mysql_affected_rows() > 0)
+		{
+			/* A promoted row IS confirmed, so it always has a calendar row to remove. */
+			$sss->removeFromCalendar($gc, $userID);
+
+			if ($gc == $callID)
+			{
+				$declined = true;
+			}
+		}
 	}
 
-	$declined = (mysql_affected_rows() > 0);
+	/*
+	/* Withdraw Confirmed rows UPSTREAM of what was just declined — the same
+	/* rule a normal decline applies (respond-to-call.php's $breakCommitment,
+	/* via the shared goat_decline_scope). Without this, declining a promoted
+	/* load-out would leave them Confirmed on the load-in that commits them to
+	/* it, which is the one state the feed rules forbid (DESIGN §6).
+	/*
+	/* goat_promo_withdraw_ids takes the union over EVERY call in the group,
+	/* and is the same code my-shifts.php uses for promo_declining_withdraws,
+	/* so the warning Crew Hub showed is exactly what happens here.
+	*/
+	$withdrawn = array();
 
-	/* A promoted row IS confirmed, so it always has a calendar row to remove. */
-	if ($declined)
+	foreach (goat_promo_withdraw_ids($userID, $groupCalls) as $wc)
 	{
-		$sss->removeFromCalendar($callID, $userID);
+		$db->update(
+			'call_crew_map',
+			array('status' => $db->sc(6)),
+			'status = 5 AND callID=' . $db->sc($wc) . ' AND userID=' . $db->sc($userID)
+		);
+
+		if (mysql_error())
+		{
+			http_response_code(500);
+			die('{"error":"upstream withdraw failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		if (mysql_affected_rows() > 0)
+		{
+			$sss->removeFromCalendar($wc, $userID);
+			$withdrawn[] = $wc;
+		}
 	}
 
 	mysql_query(
 		'UPDATE call_promo_ack SET acked_at=' . time() . ", acked_src='crew'" .
-		' WHERE callID=' . intval($callID) . ' AND userID=' . intval($userID) .
+		' WHERE callID IN (' . $groupIn . ') AND userID=' . intval($userID) .
 		' AND acked_at IS NULL'
 	);
 
@@ -188,9 +250,11 @@
 	}
 
 	echo json_encode(array(
-		'ok'            => true,
-		'action'        => 'decline',
-		'result_status' => $declined ? 6 : $priorStatus
+		'ok'              => true,
+		'action'          => 'decline',
+		'result_status'   => $declined ? 6 : $priorStatus,
+		'group_calls'     => $groupCalls,
+		'withdrawn_calls' => $withdrawn   /* upstream Confirmed rows taken back */
 	));
 
 ?>

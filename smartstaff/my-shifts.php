@@ -205,6 +205,8 @@
 	$shifts   = array();
 	$unavails = array();
 
+	$promoWithdrawMemo = array();   /* promoted_at => promo_declining_withdraws (C5) */
+
 	while ($row = mysql_fetch_object($result))
 	{
 		$entry = array(
@@ -310,11 +312,33 @@
 			/* A call_promo_ack row with no acked_at means ops promoted this crew
 			/* member off standby and they have not answered. The portal renders
 			/* Accept/Decline. No match, or already answered -> omit entirely.
+			/*
+			/* promo_declining_withdraws (brief C5): the calls declining this
+			/* promotion would also withdraw, OUTSIDE the group — the decline
+			/* warning, in the shape my-call-offers.php uses for
+			/* declining_withdraws. Computed by the same helper
+			/* respond-to-promotion.php acts on, so the warning cannot disagree
+			/* with the action. Per group, so every entry in a group carries
+			/* the same list; memoised on promoted_at.
 			*/
 			if ($row->promoted_at !== null && $row->promo_acked_at === null)
 			{
 				$entry['promo_pending'] = true;
 				$entry['promoted_at']   = (int) $row->promoted_at;
+
+				$pkey = (int) $row->promoted_at;
+
+				if (!isset($promoWithdrawMemo[$pkey]))
+				{
+					include_once('promo-group.php');
+
+					$promoWithdrawMemo[$pkey] = goat_promo_declining_withdraws(
+						$userID,
+						goat_promo_group($userID, (int) $row->call_id)
+					);
+				}
+
+				$entry['promo_declining_withdraws'] = $promoWithdrawMemo[$pkey];
 			}
 
 			$shifts[] = $entry;

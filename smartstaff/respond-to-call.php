@@ -7,6 +7,7 @@
 	include('../../global.php');
 	include('cohort.php');
 	include('call-graph.php');
+	include_once('callout.php');
 
 	/*
 	/* JSON response */
@@ -119,7 +120,11 @@
 				'statuses'      => array(),
 				'unconfirmed'   => array(),
 				'package'       => array($callID),
-				'linked'        => false
+				'linked'        => false,
+				/* The race loser usually lands HERE: the fill-close already put
+				/* them back on 7, so Accept reads as "already Backup". callout
+				/* tells Crew Hub it was a call-out they lost (Part F). */
+				'callout'       => goat_callout_answer_flag($userID, array($callID))
 			));
 			die();
 		}
@@ -284,6 +289,37 @@
 	}
 
 	/*
+	/* CAPACITY LOCK — accepts only (DESIGN-backup-callout §5; callout.php).
+	/*
+	/* The capacity check below is read-compare-write. Two accepts racing for
+	/* the last place could both read "room" and both write 5. A call-out
+	/* invites exactly that race, so accepts are serialised on one MariaDB
+	/* named lock, goat_capacity_<database> (works on MyISAM, no transactions
+	/* needed).
+	/*
+	/* ONE lock for all calls, not one per call: a package spans several calls,
+	/* and per-call locks would have to be taken in a fixed order to avoid
+	/* deadlock. Accepts are short and infrequent, so a single name costs
+	/* nothing at this volume.
+	/*
+	/* Declines never take it — a decline cannot fill a call.
+	/*
+	/* If the lock is not granted within 3 s the accept is refused with 503
+	/* retry:true. It must never proceed unlocked. 3 s, not longer: Crew Hub
+	/* gives up on a request at 10 s, and an accept that got the lock after
+	/* that would confirm someone who had already been shown an error.
+	/*
+	/* Released after the apply loop and the call-out bookkeeping, and by a
+	/* shutdown function on every other exit (die, exit, fatal).
+	*/
+
+	if ($callStatus == 5 && !goat_capacity_lock(3))
+	{
+		http_response_code(503);
+		die('{"ok":false,"error":"busy","retry":true}');
+	}
+
+	/*
 	/* Capacity — checked on the package ROOTS, then PEELED.
 	/*
 	/* A root is a call in the package that no other package member feeds. It
@@ -338,7 +374,7 @@
 			$remaining[] = (int) $cid;
 		}
 
-		$fullMemo = array();
+		$fullMemo = array();   /* fresh under the lock — nothing read before it is reused */
 		$guard    = 0;
 
 		while (count($remaining) && $guard < 20)
@@ -497,6 +533,105 @@
 		}
 	}
 
+	/*
+	/* CALL-OUT BOOKKEEPING (DESIGN-backup-callout §4.5, brief §D4) — still
+	/* holding the lock on accepts.
+	/*
+	/* 1. This user's member rows in an OPEN call-out, on the calls just
+	/*    answered. With no call-out running, this and every lookup below is
+	/*    a single indexed query that returns nothing.
+	/* 2. Stamp each row's outcome from what was actually written: 5
+	/*    confirmed, 7 backup (the call filled first), 6 declined.
+	/* 3. The `callout` response flag (goat_callout_answer_flag), taken
+	/*    BEFORE any close below, so a member whose own accept fills the call
+	/*    still reads as having answered a call-out. A member who lost the
+	/*    race — the call-out already closed 'filled' and reverted them — is
+	/*    flagged too; that is the "filled just before you" case.
+	/* 4. Accepts only: close every call-out that is now full, 'filled',
+	/*    which puts every member still at 1 back on 7. Checked on both
+	/*      - the call-outs this user is a member of, and
+	/*      - every OPEN call-out on a call this request wrote to 5 — so a
+	/*        non-member's ordinary accept that fills the call closes it too.
+	/*    FRESH memo, since this request's own writes changed the counts.
+	/*    A decline writes no 5 and cannot fill a call.
+	*/
+
+	$calloutHit = false;
+
+	if (count($callIDs))
+	{
+		$mres = mysql_query('SELECT cm.id, cm.callID, cc.id AS callout_id, cc.callID AS callout_call
+		                     FROM call_callout_member cm
+		                     JOIN call_callout cc ON cc.id = cm.callout_id AND cc.closed_at IS NULL
+		                     WHERE cm.userID = ' . $userID . '
+		                       AND cm.callID IN (' . implode(',', array_map('intval', $callIDs)) . ')');
+
+		$openCallouts = array();   /* callout id => its call */
+
+		if ($mres !== false)
+		{
+			$outcomeOf = array(5 => 'confirmed', 7 => 'backup', 6 => 'declined');
+			$nowStamp  = time();
+
+			while ($mrow = mysql_fetch_object($mres))
+			{
+				$mcid = (int) $mrow->callID;
+
+				$openCallouts[(int) $mrow->callout_id] = (int) $mrow->callout_call;
+
+				if (!isset($writtenStatus[$mcid]) || !isset($outcomeOf[$writtenStatus[$mcid]]))
+				{
+					continue;   /* row did not move — nothing answered */
+				}
+
+				mysql_query("UPDATE call_callout_member
+				             SET outcome = '" . $outcomeOf[$writtenStatus[$mcid]] . "', answered_at = " . $nowStamp . "
+				             WHERE id = " . (int) $mrow->id . " AND outcome IS NULL");
+			}
+		}
+
+		$calloutHit = goat_callout_answer_flag($userID, $callIDs);
+
+		if ($callStatus == 5)
+		{
+			$wrote5 = array();
+
+			foreach ($writtenStatus as $wc => $ws)
+			{
+				if ((int) $ws === 5)
+				{
+					$wrote5[] = (int) $wc;
+				}
+			}
+
+			if (count($wrote5))
+			{
+				$ores = mysql_query('SELECT id, callID FROM call_callout
+				                     WHERE closed_at IS NULL AND callID IN (' . implode(',', $wrote5) . ')');
+
+				if ($ores !== false)
+				{
+					while ($orow = mysql_fetch_object($ores))
+					{
+						$openCallouts[(int) $orow->id] = (int) $orow->callID;
+					}
+				}
+			}
+
+			$freshMemo = array();
+
+			foreach ($openCallouts as $coID => $coCall)
+			{
+				if (goat_rtc_root_is_full($coCall, $freshMemo))
+				{
+					goat_callout_close($coID, 'filled');
+				}
+			}
+		}
+	}
+
+	goat_capacity_unlock();
+
 	/* names for the response, so the Hub and ops can say what actually moved */
 
 	$changedNames = array();
@@ -552,7 +687,8 @@
 		'changed_names'  => $changedNames,
 		'unconfirmed'    => $unconfirmed,                            /* accepted shifts taken back */
 		'package'        => $package,
-		'linked'         => count($callIDs) > 1 ? true : false       /* preserved for compatibility */
+		'linked'         => count($callIDs) > 1 ? true : false,      /* preserved for compatibility */
+		'callout'        => $calloutHit                              /* answered a call-out offer — with backup:true, "filled just before you" */
 	));
 
 ?>

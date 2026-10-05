@@ -57,11 +57,15 @@
 			c.est_length     AS est_length,
 			b.id             AS booking_id,
 			b.name           AS booking_name,
-			v.venue          AS venue_name
+			v.venue          AS venue_name,
+			cpa.id           AS promo_id,
+			cpa.acked_at     AS promo_acked_at
 		FROM call_crew_map ccm
 		LEFT JOIN calls    c ON c.id  = ccm.callID
 		LEFT JOIN bookings b ON b.id  = c.bookingID
 		LEFT JOIN venues   v ON v.id  = b.venueID
+		LEFT JOIN call_promo_ack cpa ON cpa.callID = ccm.callID
+		                            AND cpa.userID = ccm.userID
 		WHERE ccm.userID = " . $id . "
 		  AND c.id IS NOT NULL
 		ORDER BY c.start_date DESC, c.start_time DESC
@@ -123,7 +127,12 @@
 			'status'       => $st,
 			'status_label' => $status_label,
 			'is_call_boss' => (int) $row->is_call_boss,
-			'is_late'      => $is_late
+			'is_late'      => $is_late,
+			/* Promoted off standby, not yet answered — the same guard as
+			/* get-booking.php and get-calls-bulk.php. status and status_label
+			/* are left as they were so an older GOAT keeps working; the
+			/* client relabels (promotion brief §2.2, §3.5). */
+			'promo_pending' => ($st === 5 && $row->promo_id !== null && $row->promo_acked_at === null) ? 1 : 0
 		);
 	}
 

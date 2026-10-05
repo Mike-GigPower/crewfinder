@@ -142,6 +142,145 @@
 
 	$prevStatus = (int) $existingRow->status;   /* status BEFORE this update — lets us flag a 7->5 promotion */
 
+	$isPromotion = ($prevStatus === 7 && $status === 5);
+	$now         = time();   /* once — every row in a promotion shares one promoted_at, the group key */
+
+	/* ---- link-safe Promote: a 7 -> 5 move promotes downstream too ----
+	/*
+	/* DESIGN-backup-callout §3.1. Being Confirmed on X commits the crew member
+	/* to everything X feeds over a locked edge. Promoting X alone would leave
+	/* them Confirmed upstream of a call they are only Backup on, which is the
+	/* one state the feed rules forbid.
+	/*
+	/* So every downstream call must already be held (5 or 7). If any is not —
+	/* no row, declined, no-show, cancelled — refuse and write nothing (D10):
+	/* ops fixes those first. Rows at 7 are promoted with X and flagged with
+	/* the same promoted_at, so the crew member answers them as one promotion.
+	/* Rows already at 5 are left alone.
+	/*
+	/* Upstream rows are never touched: holding the load out never required
+	/* holding the load-in. Every other transition skips this block. */
+
+	$promotedCalls = array();
+
+	if ($isPromotion)
+	{
+		include_once('call-graph.php');
+
+		$down = goat_calls_downstream($callID);   /* locked edges only */
+
+		if (count($down))
+		{
+			$downStatus = array();
+
+			$dres = mysql_query("SELECT callID, status FROM call_crew_map
+			                     WHERE userID = " . intval($userID) . "
+			                       AND callID IN (" . implode(',', array_map('intval', $down)) . ")");
+
+			if ($dres !== false)
+			{
+				while ($drow = mysql_fetch_object($dres))
+				{
+					$downStatus[(int) $drow->callID] = (int) $drow->status;
+				}
+			}
+
+			$notHeld = array();
+
+			foreach ($down as $d)
+			{
+				$d = (int) $d;
+
+				if (!isset($downStatus[$d]) || ($downStatus[$d] !== 5 && $downStatus[$d] !== 7))
+				{
+					$notHeld[$d] = isset($downStatus[$d]) ? $downStatus[$d] : null;
+				}
+			}
+
+			if (count($notHeld))
+			{
+				$names = array();
+				$nres  = mysql_query("SELECT id, call_name FROM calls
+				                      WHERE id IN (" . implode(',', array_keys($notHeld)) . ")");
+
+				if ($nres !== false)
+				{
+					while ($nrow = mysql_fetch_object($nres))
+					{
+						$names[(int) $nrow->id] = $nrow->call_name;
+					}
+				}
+
+				$calls = array();
+
+				foreach ($notHeld as $d => $st)
+				{
+					$calls[] = array(
+						'call_id'   => $d,
+						'call_name' => isset($names[$d]) ? $names[$d] : '',
+						'status'    => $st   /* null = no row on that call */
+					);
+				}
+
+				send_status(409, 'Conflict');
+				echo json_encode(array('ok' => false, 'error' => 'downstream_not_held', 'calls' => $calls));
+				die();
+			}
+
+			/* Downstream-most first, as respond-to-call.php: under MyISAM a
+			/* partial failure that leaves someone Confirmed downstream but not
+			/* upstream is recoverable; the reverse breaks the invariant. */
+
+			$toPromote = array();
+			$depthOf   = array();
+
+			foreach ($down as $d)
+			{
+				$d = (int) $d;
+
+				if ($downStatus[$d] === 7)
+				{
+					$toPromote[] = $d;
+					$depthOf[$d]   = count(goat_calls_downstream($d));
+				}
+			}
+
+			usort($toPromote, function($a, $b) use ($depthOf) {
+				return $depthOf[$a] - $depthOf[$b];
+			});
+
+			foreach ($toPromote as $d)
+			{
+				$db->update('call_crew_map', array('status' => $db->sc(5)),
+				            'status = 7 AND callID=' . $d . ' AND userID=' . $userID);
+
+				$err = mysql_error();
+
+				if ($err !== '')
+				{
+					send_status(500, 'Internal Server Error');
+					echo json_encode(array('error' => 'downstream promotion failed', 'detail' => $err, 'call_id' => $d));
+					die();
+				}
+
+				$sss->addToCalendar($d, $userID);
+
+				/* DELETE-then-INSERT, for the reason given at the promo-ack block below */
+
+				mysql_query('DELETE FROM call_promo_ack WHERE callID=' . intval($d) .
+				            ' AND userID=' . intval($userID));
+
+				$db->insert('call_promo_ack', array(
+					'callID'      => $db->sc($d),
+					'userID'      => $db->sc($userID),
+					'promoted_at' => $db->sc($now)
+				));
+
+				$promotedCalls[] = $d;
+			}
+		}
+	}
+
 	/* ---- update status ---- */
 
 	$updFields = array('status' => $db->sc($status));
@@ -200,11 +339,15 @@
 	/*
 	/* Placed AFTER the status write and addToCalendar so a failed promotion
 	/* never leaves an orphan flag. Not gated on affected_rows: re-saving the
-	/* same status changes 0 rows but is not a failure. */
+	/* same status changes 0 rows but is not a failure.
+	/*
+	/* Since link-safe Promote this runs once per promoted row: the downstream
+	/* rows above, then X here, all with the same $now so they share one
+	/* promoted_at and are answered as one group. */
 
 	$promoFlagged = 0;
 
-	if ($prevStatus === 7 && $status === 5)
+	if ($isPromotion)
 	{
 		mysql_query('DELETE FROM call_promo_ack WHERE callID=' . intval($callID) .
 		            ' AND userID=' . intval($userID));
@@ -212,10 +355,41 @@
 		$db->insert('call_promo_ack', array(
 			'callID'      => $db->sc($callID),
 			'userID'      => $db->sc($userID),
-			'promoted_at' => $db->sc(time())
+			'promoted_at' => $db->sc($now)
 		));
 
 		$promoFlagged = (mysql_error() === '') ? 1 : 0;
+
+		$promotedCalls[] = $callID;   /* X last */
+	}
+
+	/* ---- call-out fill check (brief, Part F follow-up) ----
+	/*
+	/* Ops setting someone to Confirmed can fill a call that has a call-out
+	/* running. Close it 'filled' the same as a filling accept would, so the
+	/* members still at offered go back on Backup instead of sitting on a
+	/* call-out card for a full call. Every call written to 5 counts: X, and
+	/* the downstream calls a link-safe Promote moved with it.
+	/*
+	/* Under the capacity lock, which goat_callout_close requires. The status
+	/* write above is already done and is NOT undone if the lock is busy: the
+	/* call-out then stays open and callout-sweep.php's full-call catch-all
+	/* closes it within 15 minutes. */
+
+	$calloutsClosed = array();
+
+	if ($status === 5)
+	{
+		include_once('callout.php');
+
+		$wrote5   = $promotedCalls;
+		$wrote5[] = $callID;
+
+		if (goat_capacity_lock(3))
+		{
+			$calloutsClosed = goat_callout_close_if_full($wrote5);
+			goat_capacity_unlock();
+		}
 	}
 
 	echo json_encode(array(
@@ -224,7 +398,9 @@
 		'booking_id'      => $bookingID,
 		'user_id'         => $userID,
 		'status'          => $status,
-		'promoted'        => ($prevStatus === 7 && $status === 5) ? true : false,
+		'promoted'        => $isPromotion,
+		'promoted_calls'  => $promotedCalls,   /* downstream-most first, X last; empty unless promoted */
+		'callouts_closed' => $calloutsClosed,  /* call-outs this write filled and closed */
 		'promo_flagged'   => $promoFlagged,
 		'calendar_synced' => $calendarSynced,
 		'affected_rows'   => $updAffected,
