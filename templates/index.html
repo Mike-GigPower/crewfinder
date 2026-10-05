@@ -18324,7 +18324,19 @@ async function changeCrewStatus(bookingId, callId, userId, sel){
       body: JSON.stringify({status: next})
     });
     var j = await r.json();
+    if(r.status === 409 && j.error === 'downstream_not_held'){
+      sel.value = String(prev);
+      alert(promoteRefusalText(j));
+      return;
+    }
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    // F1: this write filled the call and closed its call-out (members reverted
+    // to Backup). The open strip and the "called out" tags are now stale, and
+    // more than this one row changed — reload rather than patch in place.
+    if((j.callouts_closed || []).length > 0){
+      openCallDialog(bookingId, callId);
+      return;
+    }
     var cols = crewStatusColors(next);
     sel.style.color = cols[0];
     sel.style.background = cols[1];
@@ -18597,18 +18609,44 @@ async function closeCallout(bookingId, callId, btn){
 // Short neutral notice at the foot of the window — the session toast's shape
 // in the GOAT's own colours. Used for results ops should see but need not
 // dismiss (Promote across linked calls, call-out reach).
+//
+// z-index ABOVE the modals (entity-modal is 99991, the palette 99993), below
+// the confetti/starburst layers (99997+). Both callers fire from inside the
+// call dialog, so the session toast's 9999 drew it behind the dialog's
+// full-screen backdrop — rendered, but never seen.
 function goatInfoToast(msg, ms){
   var t = document.createElement('div');
   t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);'
     + 'background:rgba(20,20,20,0.95);color:var(--accent);border:1px solid var(--accent);'
     + 'padding:10px 20px;border-radius:4px;font-family:\'Rajdhani\',sans-serif;font-size:13px;'
-    + 'font-weight:600;z-index:9999;letter-spacing:.05em;box-shadow:0 4px 12px rgba(0,0,0,.4);transition:opacity .3s';
+    + 'font-weight:600;z-index:99996;letter-spacing:.05em;box-shadow:0 4px 12px rgba(0,0,0,.4);transition:opacity .3s';
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(function(){ t.style.opacity = '0'; setTimeout(function(){ t.remove(); }, 300); }, ms || 5000);
 }
+// The sentence for a refused Promote (409 downstream_not_held): promoting here
+// also promotes every call this one feeds, so they must already hold each one.
+// Shared by the Promote button and the status dropdown (a 7 -> 5 there is the
+// same promotion, and gets the same refusal).
+function promoteRefusalText(j){
+  var names = (j.calls || []).map(function(c){ return decodeEntities(c.call_name || ('call '+c.call_id)); });
+  return 'Can\'t promote \u2014 they don\'t hold '+(names.join(', ') || 'a linked call')+'. Fix those first.';
+}
 async function promoteBackup(bookingId, callId, userId, btn){
-  if(!confirm('Promote this backup to Confirmed?\n\nThey\'ll be booked onto the call, added to the calendar, and asked to confirm.')) return;
+  // F3: the confirm no longer promises an outcome the server may refuse. When
+  // this call feeds others over a LOCKED edge, it says the promotion carries
+  // onto them and may be refused — read from the dialog's own call (feeds
+  // minus feeds_recommended), not a re-implementation of the server's check.
+  var src = window._curCallEdit || {};
+  var recSet = {};
+  (src.feeds_recommended || []).forEach(function(t){ recSet[String(t)] = true; });
+  var nLocked = (src.feeds || []).filter(function(t){ return !recSet[String(t)]; }).length;
+  var msg = 'Promote this backup to Confirmed?\n\nThey\'ll be booked onto the call, added to the calendar, and asked to confirm.';
+  if(nLocked > 0){
+    msg += '\n\nThis call feeds '+(nLocked === 1 ? 'another call' : nLocked+' other calls')
+         + ': they\'ll be promoted there too wherever they\'re on standby. If they don\'t hold one of those calls, the promotion is refused and nothing changes.';
+  }
+  if(!confirm(msg)) return;
   if(btn) btn.disabled = true;
   try{
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {
@@ -18622,8 +18660,7 @@ async function promoteBackup(bookingId, callId, userId, btn){
     // not hold one of those calls. Say which, and do NOT reload as if it worked.
     if(r.status === 409 && j.error === 'downstream_not_held'){
       if(btn) btn.disabled = false;
-      var names = (j.calls || []).map(function(c){ return decodeEntities(c.call_name || ('call '+c.call_id)); });
-      alert('Can\'t promote \u2014 they don\'t hold '+(names.join(', ') || 'a linked call')+'. Fix those first.');
+      alert(promoteRefusalText(j));
       return;
     }
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
@@ -29328,7 +29365,7 @@ function renderSchedule(){
               ${booking.venue ? ' · ' + booking.venue : ''}
               · ${totalCalls} call${totalCalls!==1?'s':''}
               ${fullCalls ? `<span style="color:#22c55e"> · ${fullCalls} full</span>` : ''}
-              ${awaitingCalls ? `<span style="color:var(--warn)"> · ${awaitingCalls} awaiting re-confirm</span>` : ''}
+              ${awaitingCalls ? `<span style="color:var(--warn)" title="Full on paper, but someone has not answered: a timing re-confirm or a promotion off standby"> · ${awaitingCalls} awaiting reply</span>` : ''}
               ${partialCalls ? `<span style="color:var(--warn)"> · ${partialCalls} partial</span>` : ''}
               ${emptyCalls ? `<span style="color:var(--accent2)"> · ${emptyCalls} empty</span>` : ''}
               ${overCalls ? `<span style="color:var(--accent2)"> · ${overCalls} over-booked</span>` : ''}
