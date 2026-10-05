@@ -3450,6 +3450,7 @@ async function loadCalls(force=false){
           +'<span class="call-num">#'+c.call_num+'</span>'
           +'<span class="call-name" onclick="event.stopPropagation();openCallDialog(\''+c.booking_id+'\',\''+c.call_id+'\')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="View call">'+(c.call_name||'Call')+'</span>'
           +finderFeedChips(c)
+          +finderCalloutChips(c)
           +'</div>'
           +'<div class="call-meta">'
           +'<span>'+c.date+'</span><span>'+c.time+'</span><span>'+c.length+'h</span>'
@@ -3524,6 +3525,21 @@ function _finderConsideredCalls(call){
   return out;
 }
 
+// Backup call-out (brief E3): "{n} on standby" when the call has backups to
+// call out, "Call-out open" while one is running. Amber, the same family as the
+// promotion chip. `|| 0` so the scrape fallback simply shows neither.
+function finderCalloutChips(c){
+  var s = 'display:inline-flex;align-items:center;font-size:9px;font-weight:600;'
+        + 'border-radius:3px;padding:0 4px;margin-left:6px;color:#f59e0b;border:1px solid #f59e0b';
+  var out = '';
+  var n = c.backups || 0;
+  if(n > 0) out += '<span title="'+n+' crew on Backup for this call — Call out backups in the call dialog offers them the open places" style="'+s+'">'
+    + n+' on standby</span>';
+  if(c.callout_open) out += '<span title="A backup call-out is running — first to accept gets the place" style="'+s
+    + ';background:rgba(245,158,11,0.12)">Call-out open</span>';
+  return out;
+}
+
 function finderFeedChips(c){
   var out = '';
   var nDownRec = (c.feeds_recommended  || []).length;
@@ -3554,11 +3570,27 @@ function finderFeedChips(c){
   return out;
 }
 
+// Promoted off standby and not yet answered (promotion brief §3.2). Their
+// place is held — the capacity check still counts them — but they have not
+// said yes, so the card shows it beside the count rather than inside it.
+// Classed call-booked warn on purpose: checkAllBooked() reads every
+// .call-booked, so the confetti waits until the promotion is answered — the
+// same rule as the Schedule starburst.
+function finderPromoChip(c){
+  var n = c.promo_pending || 0;
+  if(n <= 0) return '';
+  return ' <span class="call-booked warn" title="Promoted off standby and has not confirmed. Their place is held — chase them before offering it to someone else.">'
+    + '\u23f3 '+n+' awaiting repl'+(n === 1 ? 'y' : 'ies')+'</span>';
+}
+
 function finderBookedSpan(c){
   // Three-part count only when slots are actually reserved. Falls back to the
   // plain booked/required for unfed calls AND for fed calls whose feeders are
   // already full (reserved 0) — which is most migrated links, so the fallback
   // is the common path, not the edge case.
+  //
+  // Feed maths is unchanged by unanswered promotions (promotion brief,
+  // decision 7): on a fed call the chip simply follows the four figures.
   if(c.reserved > 0 || c.likely > 0){
     var ftf = (typeof c.free_to_fill === 'number') ? c.free_to_fill : 0;
     var parts = [(c.required||0)+' required'];
@@ -3566,10 +3598,13 @@ function finderBookedSpan(c){
     if(c.likely > 0)   parts.push(c.likely+' likely');
     parts.push(ftf+' to fill');
     return '<span class="call-booked '+(ftf < 0 ? 'warn' : 'ok')+'">'
-      + parts.join(' \u00b7 ')+'</span>';
+      + parts.join(' \u00b7 ')+'</span>' + finderPromoChip(c);
   }
-  var bookedOk = c.booked >= c.required;
-  return '<span class="call-booked '+(bookedOk?'ok':'warn')+'">'+(c.booked+'/'+c.required)+' booked</span>';
+  // The filled figure: booked minus unanswered promotions, the same rule as
+  // app.py's _filled(). `|| 0` keeps the scrape fallback on plain booked.
+  var filled   = (c.booked||0) - (c.promo_pending||0);
+  var bookedOk = filled >= c.required;
+  return '<span class="call-booked '+(bookedOk?'ok':'warn')+'">'+(filled+'/'+c.required)+' booked</span>' + finderPromoChip(c);
 }
 
 function handleCallClick(event, call){
@@ -14069,13 +14104,21 @@ async function ceLoadShifts(id){
   }
   var shifts = data.shifts || [];
   if(!shifts.length){ panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No calls on record.</div>'; return; }
+  // Promoted off standby and not yet answered (get-crew-shifts.php
+  // promo_pending, promotion brief §3.5): still status 5 on the server, but
+  // not Confirmed until they reply. The label is decided here, client side,
+  // so the PHP's status_label stays what older GOATs expect.
+  function slabel(s){
+    return (s.status===5 && s.promo_pending) ? 'Promoted \u2014 awaiting reply' : (s.status_label||'');
+  }
   function spill(s){
     var st = s.status;
-    var col = st===5 ? '#1f8f4e' : st===6 ? 'var(--conflict)' : (st===0||st===1) ? '#b8860b' : '#555';
-    return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+col+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(s.status_label||'')+'</span>';
+    var col = (st===5 && s.promo_pending) ? '#b8860b'
+            : st===5 ? '#1f8f4e' : st===6 ? 'var(--conflict)' : (st===0||st===1) ? '#b8860b' : '#555';
+    return '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+col+';border-radius:10px;padding:2px 8px;white-space:nowrap">'+escapeHtml(slabel(s))+'</span>';
   }
   var counts = {};
-  shifts.forEach(function(s){ counts[s.status_label] = (counts[s.status_label]||0)+1; });
+  shifts.forEach(function(s){ var k = slabel(s); counts[k] = (counts[k]||0)+1; });
   var summaryParts = Object.keys(counts).map(function(k){ return counts[k]+' '+String(k).toLowerCase(); });
   var lateCount = shifts.filter(function(s){ return s.is_late; }).length;
   if(lateCount) summaryParts.push(lateCount+' late');
@@ -18258,7 +18301,11 @@ function crewStatusControl(c, bookingId, callId){
   var opts = CREW_STATUS_OPTS.map(function(o){
     return '<option value="'+o[0]+'"'+(o[0]===cur?' selected':'')+'>'+o[1]+'</option>';
   }).join('');
+  // data-promo-pending: refreshCallCrewSummary() must not count an unanswered
+  // promotion as booked, or any status change elsewhere in the dialog would
+  // silently put them back in the count (promotion brief §3.4).
   return '<select id="crew-status-'+callId+'-'+c.id+'" data-prev="'+cur+'"'
+    + (c.promo_pending ? ' data-promo-pending="1"' : '')
     + ' onchange="changeCrewStatus(\''+bookingId+'\',\''+callId+'\','+c.id+',this)"'
     + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+cols[0]+';background:'+cols[1]
     + ';border:1px solid '+cols[0]+';border-radius:3px;padding:2px 6px;font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">'
@@ -18293,15 +18340,21 @@ async function changeCrewStatus(bookingId, callId, userId, sel){
 }
 
 // Recompute the "x booked / y required" confirmed count from the live selects
-// after an in-place status change (no full dialog re-fetch).
+// after an in-place status change (no full dialog re-fetch). A select still on
+// Confirmed but marked data-promo-pending is an unanswered promotion: it holds
+// the place but is not booked, so it is left out, the same as the initial
+// render (promotion brief §3.4).
 function refreshCallCrewSummary(callId){
   var el = document.getElementById('call-confirmed-count-'+callId);
   if(!el) return;
-  var confirmed = 0;
+  var confirmed = 0, pending = 0;
   document.querySelectorAll('[id^="crew-status-'+callId+'-"]').forEach(function(s){
-    if(parseInt(s.value,10)===5) confirmed++;
+    if(parseInt(s.value,10)!==5) return;
+    if(s.getAttribute('data-promo-pending')==='1') pending++; else confirmed++;
   });
   el.textContent = confirmed;
+  var note = document.getElementById('call-promo-note-'+callId);
+  if(note) note.textContent = pending > 0 ? '· '+pending+' promoted, awaiting reply' : '';
 }
 // Admin-only crew remove (the X). Removes a person from the call ENTIRELY (not a
 // status change / decline) -- for fixing wrong-person assignments. Hits our
@@ -18385,6 +18438,175 @@ async function dismissPromoAck(bookingId, callId, userId, el){
     alert('Could not dismiss: '+(e.message||e));
   }
 }
+// ── BACKUP CALL-OUT (brief E2) ──────────────────────────────────────────────
+// Every eligible Backup on the call is turned back into an open offer and
+// pushed; first to accept gets the place. open-callout.php decides who is
+// eligible — the confirmation panel shows its dry run, so what ops confirm is
+// exactly what Send does.
+
+// Has the call started? Melbourne wall-clock: start_date is the server's
+// local midnight, start_time its HH:MM, and this box runs in the same zone.
+// The endpoint refuses a started call anyway; this only hides the button.
+function callHasStarted(src){
+  if(!src || !src.start_date) return false;
+  var d = new Date(Number(src.start_date) * 1000);
+  var hm = String(src.start_time || '00:00').split(':');
+  d.setHours(parseInt(hm[0],10) || 0, parseInt(hm[1],10) || 0, 0, 0);
+  return d.getTime() <= Date.now();
+}
+
+// "Call out backups (N)": same gate as Promote, shown only when it can work —
+// not started, no call-out open, short on confirmed (raw status 5, the figure
+// open-callout.php counts places from) and at least one Backup.
+function callCalloutButton(bookingId, callId, crew, src, confirmedCount, req, isCancelled){
+  if(window._cohort !== 'admin' || !src || isCancelled) return '';
+  if(src.callout || callHasStarted(src) || !(confirmedCount < req)) return '';
+  var n = crew.filter(function(c){ return crewStatusInt(c.status) === 7; }).length;
+  if(n <= 0) return '';
+  return ' <button type="button" title="Offer the open places to everyone on standby — first to accept gets each one"'
+    + ' onclick="openCalloutPreview(\''+bookingId+'\',\''+callId+'\')"'
+    + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#f59e0b;'
+    + 'background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:3px;padding:2px 6px;margin-left:8px;'
+    + 'font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&#128227; Call out backups ('+n+')</button>';
+}
+
+// While a call-out is open: who has been asked and how it is going, with Close.
+function callCalloutStrip(bookingId, callId, src, isCancelled){
+  var co = src && src.callout;
+  if(!co || isCancelled) return '';
+  var txt = 'Call-out open \u00b7 '+co.places+' place'+(co.places === 1 ? '' : 's')
+          + ' \u00b7 asked '+co.asked+' \u00b7 '+co.confirmed+' confirmed \u00b7 '+co.declined+' declined';
+  var btn = (window._cohort === 'admin')
+    ? '<button type="button" onclick="closeCallout(\''+bookingId+'\',\''+callId+'\',this)"'
+      + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#f59e0b;background:transparent;'
+      + 'border:1px solid #f59e0b;border-radius:3px;padding:2px 6px;font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">Close call-out</button>'
+    : '';
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:6px;'
+    + 'font-size:11px;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:4px;padding:6px 8px">'
+    + '<span>'+escapeHtml(txt)+'</span>'+btn+'</div>';
+}
+
+// The refusal sentences, by open-callout.php's error key.
+function calloutRefusalText(j){
+  switch(j && j.error){
+    case 'started':             return 'This call has already started, so it can\'t be called out.';
+    case 'callout_open':        return 'A call-out is already open on this call.';
+    case 'full':                return 'The call is full \u2014 nothing to call out.';
+    case 'no_eligible_backups': return 'No backup on this call can be called out.';
+    case 'busy':                return 'Busy \u2014 try again in a moment.';
+  }
+  return (j && j.error) ? String(j.error) : 'Something went wrong.';
+}
+
+function calloutSkippedRows(skipped){
+  return (skipped || []).map(function(p){
+    return '<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)">'
+      + '<span style="font-size:12px;color:var(--muted)">'+escapeHtml(decodeEntities(p.name || ''))+'</span>'
+      + '<span style="font-size:11px;color:var(--muted);text-align:right">'+escapeHtml(decodeEntities(p.reason || ''))+'</span></div>';
+  }).join('');
+}
+
+async function openCalloutPreview(bookingId, callId){
+  document.getElementById('entity-modal-title').textContent = 'Call out backups';
+  document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' \u00b7 Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Checking who can be called out\u2026</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  var back = entityBtn('\u2039 Back to call', "openCallDialog('"+bookingId+"','"+callId+"')");
+  var j;
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/callout');
+    j = await r.json();
+    if(!r.ok || !j.ok){
+      document.getElementById('entity-modal-body').innerHTML =
+          '<div style="font-size:12px;color:var(--conflict);margin-bottom:10px">'+escapeHtml(calloutRefusalText(j))+'</div>'
+        + ((j.skipped && j.skipped.length)
+            ? '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Skipped ('+j.skipped.length+')</div>'+calloutSkippedRows(j.skipped)
+            : '');
+      document.getElementById('entity-modal-actions').innerHTML = back + entityBtn('Close','closeEntityModal()');
+      return;
+    }
+  }catch(e){
+    document.getElementById('entity-modal-body').innerHTML = '<div style="font-size:12px;color:var(--conflict)">Couldn\'t check: '+escapeHtml(e.message||String(e))+'</div>';
+    document.getElementById('entity-modal-actions').innerHTML = back + entityBtn('Close','closeEntityModal()');
+    return;
+  }
+  var names = j.call_names || {};
+  var members = (j.members || []).map(function(m){
+    var also = (m.calls || []).filter(function(c){ return String(c) !== String(callId); })
+      .map(function(c){ return decodeEntities(names[String(c)] || ('call '+c)); });
+    return '<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)">'
+      + '<span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(m.name || ''))+'</span>'
+      + (also.length ? '<span style="font-size:11px;color:var(--muted);text-align:right">also on '+escapeHtml(also.join(', '))+'</span>' : '')
+      + '</div>';
+  }).join('');
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="border:1px solid #f59e0b;border-left:3px solid #f59e0b;background:rgba(245,158,11,0.12);border-radius:4px;padding:9px 11px;margin-bottom:14px">'
+    +   '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:4px">'+j.places+' place'+(j.places === 1 ? '' : 's')+' open</div>'
+    +   '<div style="font-size:12px;color:var(--text)">Everyone below is turned back into an open offer and sent a push. The first to accept gets each place; anyone who accepts after it fills stays on standby. When the call fills, everyone who hasn\'t answered goes back on standby automatically.</div>'
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Will be asked ('+(j.members||[]).length+')</div>'
+    + members
+    + ((j.skipped && j.skipped.length)
+        ? '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 4px">Skipped ('+j.skipped.length+')</div>'+calloutSkippedRows(j.skipped)
+        : '')
+    + '<div id="co-error" style="margin-top:10px"></div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Send call-out', "sendCallout('"+bookingId+"','"+callId+"')", {primary:true})
+    + entityBtn('Cancel', "openCallDialog('"+bookingId+"','"+callId+"')");
+}
+
+async function sendCallout(bookingId, callId){
+  var errEl = document.getElementById('co-error');
+  if(errEl) errEl.innerHTML = '<div style="font-size:12px;color:var(--muted)">Sending\u2026</div>';
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/callout', {method:'POST'});
+    var j = await r.json();
+    if(!r.ok || !j.ok){
+      if(errEl) errEl.innerHTML = '<div style="font-size:12px;color:var(--conflict);background:var(--conf-bg);border:1px solid var(--conflict);border-radius:4px;padding:7px 9px">'+escapeHtml(calloutRefusalText(j))+'</div>';
+      return;
+    }
+    // "Sent to 4 · 1 skipped · 2 had no push device". Sent to = people called
+    // out; the push figures come from the route's push results.
+    var p = j.push || {};
+    var parts = ['Sent to '+(j.members || []).length];
+    if((j.skipped || []).length) parts.push(j.skipped.length+' skipped');
+    if(p.no_device) parts.push(p.no_device+' had no push device');
+    if(p.failed)    parts.push(p.failed+' push failed');
+    if(p.recent)    parts.push(p.recent+' already pushed for this call-out');
+    goatInfoToast(parts.join(' \u00b7 '), 8000);
+    openCallDialog(bookingId, callId);
+  }catch(e){
+    if(errEl) errEl.innerHTML = '<div style="font-size:12px;color:var(--conflict)">Couldn\'t send: '+escapeHtml(e.message||String(e))+'</div>';
+  }
+}
+
+async function closeCallout(bookingId, callId, btn){
+  if(!confirm('Close the call-out?\n\nAnyone who hasn\'t answered goes back on standby. Anyone who has already accepted keeps their place.')) return;
+  if(btn) btn.disabled = true;
+  try{
+    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/callout', {method:'DELETE'});
+    var j = await r.json();
+    if(!r.ok || !j.ok) throw new Error(calloutRefusalText(j));
+    openCallDialog(bookingId, callId);
+  }catch(e){
+    if(btn) btn.disabled = false;
+    alert('Could not close the call-out: '+(e.message||e));
+  }
+}
+
+// Short neutral notice at the foot of the window — the session toast's shape
+// in the GOAT's own colours. Used for results ops should see but need not
+// dismiss (Promote across linked calls, call-out reach).
+function goatInfoToast(msg, ms){
+  var t = document.createElement('div');
+  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);'
+    + 'background:rgba(20,20,20,0.95);color:var(--accent);border:1px solid var(--accent);'
+    + 'padding:10px 20px;border-radius:4px;font-family:\'Rajdhani\',sans-serif;font-size:13px;'
+    + 'font-weight:600;z-index:9999;letter-spacing:.05em;box-shadow:0 4px 12px rgba(0,0,0,.4);transition:opacity .3s';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function(){ t.style.opacity = '0'; setTimeout(function(){ t.remove(); }, 300); }, ms || 5000);
+}
 async function promoteBackup(bookingId, callId, userId, btn){
   if(!confirm('Promote this backup to Confirmed?\n\nThey\'ll be booked onto the call, added to the calendar, and asked to confirm.')) return;
   if(btn) btn.disabled = true;
@@ -18395,7 +18617,18 @@ async function promoteBackup(bookingId, callId, userId, btn){
       body: JSON.stringify({status: 5})
     });
     var j = await r.json();
+    // Link-safe Promote (brief E1): promoting here also promotes every call
+    // this one feeds, so it is refused — with nothing written — when they do
+    // not hold one of those calls. Say which, and do NOT reload as if it worked.
+    if(r.status === 409 && j.error === 'downstream_not_held'){
+      if(btn) btn.disabled = false;
+      var names = (j.calls || []).map(function(c){ return decodeEntities(c.call_name || ('call '+c.call_id)); });
+      alert('Can\'t promote \u2014 they don\'t hold '+(names.join(', ') || 'a linked call')+'. Fix those first.');
+      return;
+    }
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    var nPromoted = (j.promoted_calls || []).length;
+    if(nPromoted > 1) goatInfoToast('Promoted on '+nPromoted+' calls');
     openCallDialog(bookingId, callId);
   }catch(e){
     if(btn) btn.disabled = false;
@@ -18602,6 +18835,14 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   entityRenderTrail();
   const req = (editSrc && editSrc.required != null) ? editSrc.required : (d.crew_required || 0);
   const confirmedCount = crew.filter(function(c){ return (c.status||'').toLowerCase()==='confirmed'; }).length;
+  // Unanswered promotions hold their place but have not said yes, so the Crew
+  // line counts them separately, never inside "booked" (promotion brief §3.4,
+  // decision 4). Same guard as get-booking.php. confirmedCount itself stays raw
+  // for the boss-call check below, which is about who the crew will see.
+  const promoPendingCount = crew.filter(function(c){ return !!c.promo_pending && (c.status||'').toLowerCase()==='confirmed'; }).length;
+  const filledCount = confirmedCount - promoPendingCount;
+  const promoPendingNote = ' <span id="call-promo-note-'+callId+'" style="color:#f59e0b">'
+    + (promoPendingCount > 0 ? '· '+promoPendingCount+' promoted, awaiting reply' : '') + '</span>';
   // ── CANCELLATION STATE ────────────────────────────────────────────────────
   // The cancellation fields ride on the get-booking call object (editSrc), NOT
   // on d (/api/call/<b>/<c>), which has never carried them.
@@ -18670,6 +18911,10 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // change_pending, guarded to status 5/7).
         var chg = c.change_pending ? ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>' : '';
         var promo = crewPromoAckPill(c, bookingId, callId);
+        // Re-offered by an open backup call-out and not yet answered
+        // (get-booking.php callout_member, guarded to status 1). Amber, the
+        // promotion pill's family (brief E2).
+        if(c.callout_member) promo += ' <span title="Called out from standby — has not answered yet" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">called out</span>';
         // Admin only: the crew record is /api/admin/crew. The fallback roster
         // (/api/booked-crew) carries no id, so those names stay plain text.
         var nm = escapeHtml(decodeEntities(c.name));
@@ -18690,7 +18935,9 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     // fires from the status selects, and slice F1 removed those for status 9.
     + (isCancelled
         ? entityRow('Crew', '<span style="color:var(--muted)">'+crew.length+' assigned when cancelled · none working</span>')
-        : entityRow('Crew', '<span id="call-confirmed-count-'+callId+'">'+confirmedCount+'</span> booked / '+req+' required <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>'))
+        : entityRow('Crew', '<span id="call-confirmed-count-'+callId+'">'+filledCount+'</span> booked / '+req+' required'+promoPendingNote+' <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>'
+                            + callCalloutButton(bookingId, callId, crew, editSrc, confirmedCount, req, isCancelled))
+          + callCalloutStrip(bookingId, callId, editSrc, isCancelled))
     + bossCallWarn
     + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Booked Crew</div>'
     + crewRows;
@@ -28645,7 +28892,7 @@ async function loadSchedule(force=false){
       const _today = _schedData.today || (_schedData.dates || [])[0];
       const _calls = (_schedData.bookings || []).reduce((a,b)=>a.concat(b.calls||[]),[]);
       const _staffable = _calls.filter(c => (c.required||0) > 0 && c.date_iso >= _today);
-      _schedAllFull = _staffable.length > 0 && _staffable.every(c => c.full);
+      _schedAllFull = _staffable.length > 0 && _staffable.every(_schedSettled);
       _schedFirstLoad = false;
     }
     renderSchedule();
@@ -28655,6 +28902,33 @@ async function loadSchedule(force=false){
     document.getElementById('sched-loading').style.display = 'none';
     hideOverlay();
   }
+}
+
+/* Promotion-pending on the Schedule (BRIEF-promotion-pending-not-filled §3.3).
+   An unanswered promotion holds its place but has not said yes, so:
+     _schedFilled   the figure shown as booked: booked minus promo_pending
+     _schedSettled  "nothing left to do": full AND no promotion pending. The
+                    ONE rule for the Open filter and the all-booked starburst,
+                    so a call cannot leave Open while the egg still waits.
+     _schedPromoTag " · ⏳N" for the block label while any are pending.
+   `|| 0` is load-bearing: the scrape_schedule fallback carries no
+   promo_pending and must degrade to today's behaviour. */
+function _schedFilled(c){ return (c.booked || 0) - (c.promo_pending || 0); }
+function _schedSettled(c){ return !!c.full && !((c.promo_pending || 0) > 0); }
+function _schedPromoTag(c){ return (c.promo_pending || 0) > 0 ? ` · ⏳${c.promo_pending}` : ''; }
+// Tooltip text. awaiting already counts promotions (get-calls-bulk.php ORs the
+// two guards), so the re-confirm figure is awaiting minus promo_pending — a
+// row with both is reported once, as the promotion.
+// Call-out facts for the block tooltip (brief E3), same wording as the Finder.
+function _schedCalloutTitle(c){
+  const n = c.backups || 0;
+  return (n > 0 ? ` · ${n} on standby` : '') + (c.callout_open ? ' · Call-out open' : '');
+}
+function _schedAwaitTitle(c){
+  const pp = c.promo_pending || 0;
+  const rc = Math.max(0, (c.awaiting || 0) - pp);
+  return (rc > 0 ? ` · ⏳ ${rc} awaiting re-confirm` : '')
+       + (pp > 0 ? ` · ${pp} promoted, awaiting reply` : '');
 }
 
 /* Staffing colour for one call block in the Schedule.
@@ -28904,12 +29178,15 @@ function renderSchedule(){
                    && !b.venue.toLowerCase().includes(search))
       return false;
     if(_schedFilter === 'all') return true;
-    // 'open' = any call that is partial or unfilled
-    return b.calls.some(c => !c.full);
+    // 'open' = any call that is partial or unfilled, or full only because an
+    // unanswered promotion is holding a place (promotion brief §3.3)
+    return b.calls.some(c => !_schedSettled(c));
   });
 
   const totalRequired = bookings.reduce((sum, b) => sum + b.calls.reduce((s, c) => s + (c.required||0), 0), 0);
-  const totalBooked   = bookings.reduce((sum, b) => sum + b.calls.reduce((s, c) => s + (c.booked||0), 0), 0);
+  // Filled, not raw booked, so the headline agrees with the per-call labels
+  // (unanswered promotions are not on the job yet — _schedFilled).
+  const totalBooked   = bookings.reduce((sum, b) => sum + b.calls.reduce((s, c) => s + _schedFilled(c), 0), 0);
 
   document.getElementById('sched-summary').textContent =
     `${bookings.length} booking${bookings.length!==1?'s':''} · ${_schedData.total_calls} calls · ${totalBooked}/${totalRequired} resources`;
@@ -28981,7 +29258,7 @@ function renderSchedule(){
         // Past columns are neutral: see the .sched-call-block.past comment.
         // hasClash stays live so the tooltip still names the clashing crew.
         const cls      = isPast ? 'past' : (sev ? sev : _schedFillClass(c));
-        const label  = c.required > 0 ? `${c.booked}/${c.required}` : c.call_name;
+        const label  = c.required > 0 ? `${_schedFilled(c)}/${c.required}${_schedPromoTag(c)}` : c.call_name;
         let clashLabel = '';
         if(hasClash){
           const names = [...new Set(c.clashes.map(x => x.name))];
@@ -28989,8 +29266,8 @@ function renderSchedule(){
           const more  = names.length > 3 ? ` +${names.length - 3} more` : '';
           clashLabel  = ` · ${sev === 'clash' ? '⚡ Clash' : '⚠ Warning'}: ${shown}${more}`;
         }
-        const awaitLabel = (c.awaiting || 0) > 0 ? ` · ⏳ ${c.awaiting} awaiting re-confirm` : '';
-        const safeTitle = (`${c.call_name} ${c.time} · ${c.booked}/${c.required} · ${c.length}h${clashLabel}${awaitLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        const awaitLabel = _schedAwaitTitle(c) + _schedCalloutTitle(c);
+        const safeTitle = (`${c.call_name} ${c.time} · ${_schedFilled(c)}/${c.required} · ${c.length}h${clashLabel}${awaitLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         return `<div class="sched-call-block ${cls}" title="${safeTitle}"
                      data-call-id-block="${c.call_id}"
                      onclick="schedJumpToCrewFinder('${c.booking_id}','${c.call_id}')"
@@ -29092,9 +29369,9 @@ function renderSchedule(){
                  ${colIsToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
                  data-call-id-block="${call.call_id}"
                  onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
-                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?(()=>{const nm=[...new Set(call.clashes.map(x=>x.name))];return ' · '+(sev==='clash'?'⚡ ':'⚠ ')+nm.length+(sev==='clash'?' clash'+(nm.length>1?'es':''):' warning'+(nm.length>1?'s':''))+': '+nm.slice(0,3).join(', ')+(nm.length>3?' +'+(nm.length-3)+' more':'');})():''}${(call.awaiting||0)>0?' · ⏳ '+call.awaiting+' awaiting re-confirm':''}">
+                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?(()=>{const nm=[...new Set(call.clashes.map(x=>x.name))];return ' · '+(sev==='clash'?'⚡ ':'⚠ ')+nm.length+(sev==='clash'?' clash'+(nm.length>1?'es':''):' warning'+(nm.length>1?'s':''))+': '+nm.slice(0,3).join(', ')+(nm.length>3?' +'+(nm.length-3)+' more':'');})():''}${_schedAwaitTitle(call)}${_schedCalloutTitle(call)}">
               <div style="font-size:7px;opacity:.7">${call.time}</div>
-              ${call.booked}/${call.required}
+              ${_schedFilled(call)}/${call.required}${_schedPromoTag(call)}
             </div>
           </div>`;
         }
@@ -29121,7 +29398,7 @@ function renderSchedule(){
               </span>
               <span style="font-family:'Share Tech Mono',monospace;font-size:10px;
                            font-weight:700;color:${statusColor};margin-left:auto">
-                ${call.booked}/${call.required}
+                ${_schedFilled(call)}/${call.required}${_schedPromoTag(call)}
               </span>
             </div>
             <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
@@ -29615,7 +29892,9 @@ function checkSchedAllBooked(){
   // Today-and-forward only: past calls that were never filled never will be,
   // and would otherwise pin allFull to false for good once the back-window is on.
   const staffable = calls.filter(c => (c.required || 0) > 0 && c.date_iso >= today);
-  const allFull = staffable.length > 0 && staffable.every(c => c.full);
+  // _schedSettled, not c.full: no starburst while a promotion is unanswered
+  // (promotion brief §3.3) — the same rule as the Open filter.
+  const allFull = staffable.length > 0 && staffable.every(_schedSettled);
   if(allFull && !_schedAllFull) triggerStarburst();  // false → true edge only
   _schedAllFull = allFull;
 }

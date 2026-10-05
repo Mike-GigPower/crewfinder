@@ -226,6 +226,112 @@ def gp_notify_promotion(crew_id, call):
     except Exception:
         pass   # never let a push break the promote response
 
+GP_CALLOUT_URL = "https://crew.gigpower.com/api/push/callout"
+
+# How long the whole call-out push batch may take, however many backups are
+# called out. Same reasoning and figure as GP_CANCEL_BATCH_TIMEOUT below.
+GP_CALLOUT_BATCH_TIMEOUT = 12   # seconds
+
+_gp_callout_notified = {}   # (crew_id, callout_id) -> last-sent epoch; in-memory dedup
+
+def gp_notify_callout(crew_id, call, callout_id):
+    """Push to the Crew Hub when a backup is CALLED OUT: their standby row on
+    this call was turned back into an open offer by open-callout.php, and the
+    first to accept gets the place. crew_id = SmartStaff internal userID (the
+    portal resolves it to an EIN).
+
+    Mirrors gp_notify_promotion -- same X-Push-Secret, same dedup window --
+    with two differences:
+      - the dedup is keyed (crew_id, callout_id), NOT the call. A call-out that
+        is closed and re-opened is a new event and its backups must be pushed
+        again. A double-clicked Send never reaches here twice: the server
+        refuses the second open with callout_open.
+      - like GP_MESSAGE_URL and gp_notify_cancel it RETURNS a result instead of
+        firing and forgetting, so the operator sees how many people the
+        call-out actually reached.
+
+    Returns {"user_id", "result"} where result is one of:
+      sent       the portal delivered to at least one device
+      no_device  the portal answered, but they have no live push subscription
+      failed     anything else -- including a 404 while Crew Hub's
+                 /api/push/callout is not deployed yet. Never raised.
+      recent     suppressed by the dedup window: already pushed for THIS
+                 call-out (callout_id) in the last GP_PUSH_DEDUP_TTL seconds
+
+    Never raises. The call-out already happened; a push failure must not turn a
+    successful open into an error."""
+    out = {"user_id": crew_id, "result": "failed"}
+    try:
+        call_id = call.get("call_id")
+        key = (str(crew_id), str(callout_id))
+        now = time.time()
+        if now - _gp_callout_notified.get(key, 0) < GP_PUSH_DEDUP_TTL:
+            out["result"] = "recent"
+            return out
+        if len(_gp_callout_notified) > 5000:                 # bound memory
+            cutoff = now - GP_PUSH_DEDUP_TTL
+            for k in [k for k, v in list(_gp_callout_notified.items()) if v < cutoff]:
+                _gp_callout_notified.pop(k, None)
+        r = http.post(
+            GP_CALLOUT_URL,
+            json={
+                "user_id":      crew_id,
+                "call_id":      call_id,
+                "callout_id":   callout_id,
+                "call_name":    call.get("call_name", ""),
+                "booking_name": call.get("booking_name", ""),
+                "venue":        call.get("venue", ""),
+                "start":        call.get("start", ""),   # wall-clock ISO, "" if unknown
+            },
+            headers={"X-Push-Secret": GP_PUSH_SECRET},
+            timeout=4,
+        )
+        if r.status_code != 200:
+            return out
+        # Stamp the dedup only once the portal accepted it, so a failed push
+        # (Crew Hub not deployed yet) does not suppress the retry.
+        _gp_callout_notified[key] = now
+        sent = int((r.json() or {}).get("sent") or 0)
+        out["result"] = "sent" if sent > 0 else "no_device"
+        return out
+    except Exception:
+        return out
+
+def gp_notify_callout_batch(user_ids, call, callout_id):
+    """One call-out push per member, CONCURRENTLY, under one deadline -- the
+    gp_notify_cancel_batch pattern. Anyone whose result has not arrived by the
+    deadline counts as failed: the safe direction, since ops then ring them.
+
+    Returns {"sent", "no_device", "failed", "recent", "results": [...]}."""
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import wait as futures_wait
+
+    summary = {"sent": 0, "no_device": 0, "failed": 0, "recent": 0, "results": []}
+    if not user_ids:
+        return summary
+
+    ex = ThreadPoolExecutor(max_workers=min(8, len(user_ids)))
+    try:
+        futs = {ex.submit(gp_notify_callout, uid, call, callout_id): uid for uid in user_ids}
+        done, pending = futures_wait(list(futs.keys()), timeout=GP_CALLOUT_BATCH_TIMEOUT)
+        for f in done:
+            try:
+                res = f.result()
+            except Exception:
+                res = {"user_id": futs[f], "result": "failed"}
+            summary["results"].append(res)
+        for f in pending:
+            summary["results"].append({"user_id": futs[f], "result": "failed"})
+    finally:
+        try:
+            ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            ex.shutdown(wait=False)      # Python < 3.9
+
+    for res in summary["results"]:
+        summary[res["result"]] = summary.get(res["result"], 0) + 1
+    return summary
+
 GP_CHANGE_URL = "https://crew.gigpower.com/api/push/change"
 
 _gp_change_notified = {}   # (crew_id, call_id) -> last-sent epoch; in-memory dedup
@@ -4031,7 +4137,9 @@ def ss_update_crew_status(ss, call_id, user_id, status):
 
     Returns (result, error):
         result : {ok, call_id, booking_id, user_id, status, calendar_synced,
-                  affected_rows}
+                  affected_rows, promoted, promoted_calls}
+                 or, when a Promote is refused, {ok: false,
+                 error: "downstream_not_held", calls: [...]}
         error  : str or None
     """
     url = f"{BASE_URL}/ajax/crew/update-crew-status.php"
@@ -4040,6 +4148,17 @@ def ss_update_crew_status(ss, call_id, user_id, status):
                        json={"userID": user_id, "status": status}, timeout=60)
     except Exception as e:
         return None, f"request failed: {e}"
+    # Link-safe Promote refuses with 409 downstream_not_held and names the
+    # calls the crew member does not hold. That body is the message ops need,
+    # so it comes back as the RESULT (ok:false) rather than being flattened
+    # into an error string; the route turns it back into a 409.
+    if resp.status_code == 409:
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data.get("error") == "downstream_not_held":
+            return data, None
     if resp.status_code != 200:
         detail = ""
         try:
@@ -8631,6 +8750,23 @@ def fetch_calls_bulk(ss, days=14, back=0):
         return []
 
 
+def _filled(r):
+    """Confirmed crew who have actually agreed: status 5 minus unanswered
+    promotions (BRIEF-promotion-pending-not-filled §3.1).
+
+    The ONE rule for "is this call short?" wherever app.py decides it from a
+    get-calls-bulk.php row. A promoted crew member still HOLDS the place (the
+    PHP capacity check keeps counting them), but has not said yes — so ops
+    must see the call as unfilled and chase them. `booked` itself keeps its
+    old meaning; the pending figure is shown beside it, never silently
+    subtracted out of sight.
+
+    `or 0` is load-bearing: the dashboard-scrape fallback (scrape_calls) and
+    any PHP predating promo_pending carry no such field, and must degrade to
+    today's behaviour."""
+    return int(r.get("booked") or 0) - int(r.get("promo_pending") or 0)
+
+
 def _bulk_call_to_scrape_shape(r):
     """Map one get-calls-bulk.php row to the exact dict shape scrape_calls
     returns, so /api/calls, loadCalls, and the GOAT get_calls tool are unchanged.
@@ -8640,9 +8776,10 @@ def _bulk_call_to_scrape_shape(r):
         already falls back to call_id when the dashboard '#num' is absent, and
         /api/availability defaults call_num -> call_id, so call_id is the
         behaviour-preserving value here.
-      - unfilled: computed from booked/required exactly as scrape_calls does
-        (the endpoint exposes 'full'; we don't rely on it, to keep the rule in
-        one place)."""
+      - unfilled: computed from _filled()/required — booked minus unanswered
+        promotions, which degrades to scrape_calls' booked < required when
+        promo_pending is absent (the endpoint exposes 'full'; we don't rely on
+        it, to keep the rule in one place)."""
     booked   = int(r.get("booked") or 0)
     required = int(r.get("required") or 0)
     return {
@@ -8655,7 +8792,15 @@ def _bulk_call_to_scrape_shape(r):
         "call_name":    r.get("call_name", "") or "",
         "booked":       booked,
         "required":     required,
-        "unfilled":     booked < required,
+        "unfilled":     _filled(r) < required,
+        # Promoted off standby, not yet answered. Carried so the client can
+        # show the filled figure and the "awaiting reply" chip; `or 0` keeps a
+        # payload predating the field from putting None in front of it.
+        "promo_pending": int(r.get("promo_pending") or 0),
+        # Call-out (brief E3): rows on standby, and whether a call-out is
+        # running. Same `or 0` degradation as promo_pending.
+        "backups":       int(r.get("backups") or 0),
+        "callout_open":  int(r.get("callout_open") or 0),
         "venue":        r.get("venue", "") or "",
         "notes":        r.get("notes", "") or "",
         "booking_name": r.get("booking_name", "") or "",
@@ -8932,14 +9077,15 @@ def ops_day_totals(rows):
     re-derived here. Cancelled calls are already excluded upstream by
     get-calls-bulk.php's cancelled_at clause, so they cannot inflate a day.
 
-    `booked` (not `committed`) is the assigned figure, because that is the same
-    field the lane's shortfall pill and fill_state are built from — a day cell
-    and a call card must never disagree about how many people are on a job.
+    `booked` (not `committed`) is the assigned figure, taken through _filled()
+    so unanswered promotions are left out — the same figure the lane's
+    shortfall pill and fill_state are built from, because a day cell and a call
+    card must never disagree about how many people are on a job.
 
     Returns { "YYYY-MM-DD": {"booked": B, "required": R, "calls": N,
                              "unfilled": U} }
     where `unfilled` is the count of that day's calls still short of crew — the
-    same booked < required predicate the lane uses, so a day cell can be shaded
+    same _filled(r) < required predicate the lane uses, so a day cell can be shaded
     without the client re-deriving the boundary."""
     days = {}
     for r in rows:
@@ -8947,7 +9093,7 @@ def ops_day_totals(rows):
         if not key:
             continue
         required = int(r.get("required") or 0)
-        booked   = int(r.get("booked") or 0)
+        booked   = _filled(r)   # unanswered promotions are not on the job yet
         d = days.get(key)
         if d is None:
             d = days[key] = {"booked": 0, "required": 0, "calls": 0, "unfilled": 0}
@@ -9024,11 +9170,12 @@ def api_ops_calls():
     positions = 0
     for r in rows:
         required = int(r.get("required") or 0)
-        booked   = int(r.get("booked") or 0)
-        # Lane predicate: a future call with seats still to fill. This is the same
-        # booked < required comparison _bulk_call_to_scrape_shape exposes as
-        # `unfilled`; the duplication is noted for a later opportunistic tidy, not
-        # refactored in this slice.
+        booked   = _filled(r)   # booked minus unanswered promotions
+        # Lane predicate: a future call with seats still to fill. The same
+        # _filled(r) < required rule _bulk_call_to_scrape_shape exposes as
+        # `unfilled`, so a promoted-but-unanswered place keeps the call in the
+        # lane until they reply. The duplication of the comparison is noted
+        # for a later opportunistic tidy, not refactored in this slice.
         if not (required > 0 and booked < required):
             continue
         shortfall  = required - booked
@@ -13549,6 +13696,10 @@ def api_call_crew_status(booking_id, call_id, user_id):
     if err:
         return jsonify({"error": err}), 502
 
+    # Promote refused: a downstream call isn't held (D10). Nothing was written.
+    if isinstance(result, dict) and result.get("error") == "downstream_not_held":
+        return jsonify(result), 409
+
     # A backup (status 7) just promoted to confirmed (5): push "you're booked".
     # Fire-and-forget; the promotion already succeeded above, so this must never
     # block or fail the response. Fetch the call's name/venue for the message.
@@ -13587,6 +13738,128 @@ def api_call_dismiss_promo_ack(booking_id, call_id, user_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(result)
+
+def ss_callout(ss, call_id, action):
+    """Open or close a backup call-out via open-callout.php / close-callout.php
+    (admin-only, form-encoded POST callID).
+
+    Unlike the other ss_* helpers, a 409 (open refused: started, callout_open,
+    full, no_eligible_backups) and a 503 (busy, retry) are NOT flattened into
+    an error string -- their JSON bodies name the reason and, for
+    no_eligible_backups, who was skipped, which the confirmation dialog shows.
+
+    action: "open", "preview" (open-callout.php dry_run=1: every check and the
+    eligibility pass, nothing written) or "close".
+
+    Returns (status_code, body, error)."""
+    script = "close-callout.php" if action == "close" else "open-callout.php"
+    url = f"{BASE_URL}/ajax/crew/{script}"
+    form = {"callID": int(call_id)}
+    if action == "preview":
+        form["dry_run"] = 1
+    try:
+        resp = ss.post(url, data=form, timeout=60)
+    except Exception as e:
+        return None, None, f"request failed: {e}"
+    try:
+        body = resp.json()
+    except Exception:
+        return None, None, f"HTTP {resp.status_code}: bad JSON from {script}"
+    if resp.status_code in (200, 409, 503) and isinstance(body, dict):
+        return resp.status_code, body, None
+    detail = body.get("error", "") if isinstance(body, dict) else ""
+    return None, None, f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+
+
+def _callout_call_details(ss, booking_id, call_id):
+    """Name / booking / venue / wall-clock start of one call, for the push.
+    Best effort, the same lookup the promote route makes: a failure just sends
+    the push with blanks, it never blocks the call-out."""
+    call = {"call_id": call_id}
+    try:
+        bdata, berr = fetch_booking_bulk(ss, booking_id)
+        if berr is None and isinstance(bdata, dict):
+            call["booking_name"] = bdata.get("name", "")
+            venue = bdata.get("venue") or {}
+            call["venue"] = venue.get("name", "")
+            for c in (bdata.get("calls") or []):
+                if str(c.get("call_id")) == str(call_id):
+                    call["call_name"] = c.get("call_name", "")
+                    try:
+                        day = datetime.fromtimestamp(int(c.get("start_date") or 0)).strftime("%Y-%m-%d")
+                        call["start"] = datetime.strptime(
+                            f"{day} {(c.get('start_time') or '')[:5]}", "%Y-%m-%d %H:%M").isoformat()
+                    except Exception:
+                        pass
+                    break
+    except Exception:
+        pass
+    return call
+
+
+@app.route("/api/call/<booking_id>/<call_id>/callout", methods=["GET"])
+@require_cohort("admin")
+def api_call_callout_preview(booking_id, call_id):
+    """Who a call-out on this call WOULD ask, and who it would skip and why --
+    the confirmation dialog's content. open-callout.php's dry run: the same
+    checks and eligibility pass as the real open, so the preview cannot
+    disagree with what Send does. Nothing written, nobody pushed. Same gate."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    code, body, err = ss_callout(ss, call_id, "preview")
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(body), code
+
+
+@app.route("/api/call/<booking_id>/<call_id>/callout", methods=["POST"])
+@require_cohort("admin")
+def api_call_callout_open(booking_id, call_id):
+    """Call out the backups on a call (DESIGN-backup-callout §4.4). Same gate
+    as Promote (api_call_crew_status), D9.
+
+    Proxies open-callout.php, which turns every eligible backup back into an
+    open offer and returns {callout_id, places, members, skipped}. Then pushes
+    each member and adds push: {sent, no_device, failed, recent} so the operator
+    sees the reach ("Sent to 4 · 1 skipped · 2 had no push device").
+
+    A refusal (409) or busy (503) is passed through with its own status and
+    body; nothing was written and nobody is pushed."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    code, body, err = ss_callout(ss, call_id, "open")
+    if err:
+        return jsonify({"error": err}), 502
+    if code != 200 or not body.get("ok"):
+        return jsonify(body), (code if code != 200 else 409)
+
+    member_ids = [m.get("user_id") for m in (body.get("members") or []) if m.get("user_id")]
+    push = gp_notify_callout_batch(member_ids, _callout_call_details(ss, booking_id, call_id),
+                                   body.get("callout_id"))
+    body["push"] = push
+    return jsonify(body)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/callout", methods=["DELETE"])
+@require_cohort("admin")
+def api_call_callout_close(booking_id, call_id):
+    """Close the open call-out on a call (Close call-out in the call dialog).
+    Same gate as Promote. Proxies close-callout.php: members still at offered
+    go back to Backup, outcome 'reverted'. No push (D8). Closing when none is
+    open is ok:true, changed:false. booking_id is taken for URL symmetry."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    code, body, err = ss_callout(ss, call_id, "close")
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(body), code
+
 
 def ss_dismiss_change_ack(ss, call_id, user_id):
     """Clear a pending timing-change re-confirm as OPS via dismiss-change-ack.php
