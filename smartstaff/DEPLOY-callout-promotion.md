@@ -61,8 +61,6 @@ c902b244222b6a6c9bd83087c6d0f5fe154868b97c0cac3f9980fa556d69a09d  MIGRATION-call
       cd ~/dev/gigpower && git status --short smartstaff/ && git --no-pager log --oneline -1 c45c71e
       ```
       Nothing under `smartstaff/` for these 15 files should show as modified.
-- [ ] Note the PHP version the **site** runs (cPanel → MultiPHP Manager, test domain).
-      You need it for T5.
 
 ### T1. Migration (test)
 
@@ -119,18 +117,20 @@ An endpoint uploaded before its include fails with `Call to undefined function`.
 
 ### T5. The sweep runs from the CLI (test)
 
-The sweep is the one file run by the command-line PHP, which on cPanel is not
-always the same version as the site. `mysql_*` only exists on the old versions.
+The sweep is the one file run by the command-line PHP, so it is pinned to
+**`/opt/alt/php56/usr/bin/php`** here and in the cron line (P7). Confirmed on
+the server: installed, with `mysql`, `mysqli`, `mysqlnd` and `pdo_mysql`.
+
+**Why the full path:** cron's search path may not include `/usr/local/bin`,
+and plain `php` follows the account's PHP Selector — it would break silently if
+the site's PHP version changes.
 
 - [ ] ```bash
-      php -v
-      php /home/smartst/test.smartstaffsolutions.com/ajax/crew/callout-sweep.php; echo "exit $?"
+      /opt/alt/php56/usr/bin/php -v
+      /opt/alt/php56/usr/bin/php /home/smartst/test.smartstaffsolutions.com/ajax/crew/callout-sweep.php; echo "exit $?"
       ```
-      Expected: no output, `exit 0` (nothing open yet).
-- [ ] If it errors with `Call to undefined function mysql_query()`, or `php -v`
-      differs from the site's version, use the matching binary instead, e.g.
-      `/opt/cpanel/ea-php56/root/usr/bin/php` (adjust to the site's version), and
-      use that full path in the cron line later.
+      Expected: PHP 5.6 from the first line; no output and `exit 0` from the
+      second (nothing open yet).
 - [ ] Open the sweep from a browser:
       `https://test.smartstaffsolutions.com/ajax/crew/callout-sweep.php` → `Forbidden`.
 
@@ -194,14 +194,18 @@ link-safe Promote takes effect for every installed GOAT the moment
       `cd /home/smartst/public_html/ajax/crew`.
 - [ ] **P5 Four-point check:** every file's hash agrees across the Mac working copy,
       test, prod and the GitHub blob at the merge commit.
-- [ ] **P6 Sweep from the CLI (prod):** T5's first command with the prod path → no
-      output, `exit 0`.
-- [ ] **P7 Cron:** cPanel → Cron Jobs → add, every 15 minutes
-      (`*/15 * * * *`):
+- [ ] **P6 Sweep from the CLI (prod):**
+      ```bash
+      /opt/alt/php56/usr/bin/php /home/smartst/public_html/ajax/crew/callout-sweep.php; echo "exit $?"
       ```
-      php /home/smartst/public_html/ajax/crew/callout-sweep.php
+      No output, `exit 0`.
+- [ ] **P7 Cron:** cPanel → Cron Jobs → add:
       ```
-      Use the full versioned binary from T5 in place of `php` if T5 needed it. No
+      */15 * * * * /opt/alt/php56/usr/bin/php /home/smartst/public_html/ajax/crew/callout-sweep.php
+      ```
+      Full binary path, never plain `php`: cron's search path may not include
+      `/usr/local/bin`, and plain `php` follows the account's PHP Selector, so it
+      would break silently if the site's PHP version changes. No
       `cd` is needed: the script changes into its own folder before including
       `global.php`. It prints only when it closes something or fails, so cPanel's
       cron mail stays quiet.
