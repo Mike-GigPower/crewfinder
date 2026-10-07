@@ -443,6 +443,17 @@
 
 				$totals['scheduled_h'] += $sched;
 
+				/*
+				/* A padded row is NOT an overrun. Its finish was written to make
+				/* the four-hour minimum, so "recorded minus scheduled" on it is the
+				/* top-up, not time anyone stayed late. Counting it would inflate
+				/* the exact figure Rich asked for. Its hours still count (toward
+				/* probation, in recorded, and as topup_est_h); it just takes no
+				/* part in ran-over / finished-early.
+				*/
+				if ($recorded[$i]['at_minimum'])
+					continue;
+
 				if ($diff > 0)
 					$totals['over_h'] += $diff;
 				else

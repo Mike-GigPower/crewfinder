@@ -154,6 +154,14 @@
 		&& $b['data_quality']['no_estimate_rows'] === 1 && t_near($b['totals']['recorded_h'], 4),
 		json_encode($b['totals']));
 
+	/* 6d. A padded row is not an overrun */
+	$b = goat_crew_hours_build(array(t_row('2026-03-01', '14:00:00', '18:00:00', 2.5, array())));
+	t_ok('6d padded 2.5h call: top-up 1.5h, NOT ran over',
+		t_near($b['totals']['over_h'], 0) && $b['totals']['over_n'] === 0
+		&& t_near($b['totals']['topup_est_h'], 1.5) && t_near($b['totals']['recorded_h'], 4)
+		&& t_near($b['totals']['scheduled_h'], 2.5),
+		json_encode($b['totals']));
+
 	/* 7. Finished early */
 	$b = goat_crew_hours_build(array(t_row('2026-03-01', '08:00:00', '14:00:00', 8, array())));
 	t_ok('7  est 8, worked 6: early 2h',
