@@ -15413,10 +15413,15 @@ def ss_get_crew_hours(ss, crew_id):
     return _ss_crew_hours_get(ss, "get-crew-hours.php", {"id": int(crew_id)})
 
 
-def ss_list_probation_progress(ss):
+def ss_list_probation_progress(ss, force=False):
     """The Today lane's two lists -- pay rate due (crossed 144 in the last 30
-    days) and approaching (120+) -- via list-probation-progress.php."""
-    return _ss_crew_hours_get(ss, "list-probation-progress.php")
+    days) and approaching (120+) -- via list-probation-progress.php.
+
+    The PHP side SAVES its result for up to 3 hours: computing it costs ~10 s
+    of PHP 5.6 on the cPanel box (measured 7 Oct 2026), so a normal load is a
+    file read. force=True recomputes -- the lane's "Recalculate now"."""
+    return _ss_crew_hours_get(ss, "list-probation-progress.php",
+                              {"force": 1} if force else None)
 
 
 def ss_update_crew(ss, crew_id, fields):
@@ -16438,11 +16443,17 @@ def api_ops_probation():
 
     Soft-fails with HTTP 200 {"unavailable": true} so the lane renders
     'unavailable' and never takes the page down with it (the /api/ops/red-zone
-    pattern). No caching: Today's Refresh refetches."""
+    pattern).
+
+    No caching here: the saved result lives on the PHP side, shared by every
+    admin. ?force=1 is passed through ONLY from the lane's explicit
+    "Recalculate now" -- Today's ordinary Refresh must not trigger a ~10 s
+    recompute."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
-    data, err = ss_list_probation_progress(ss)
+    force = request.args.get("force") in ("1", "true", "yes")
+    data, err = ss_list_probation_progress(ss, force=force)
     if err is not None:
         app.logger.warning(f"[probation] unavailable: {err}")
         return jsonify({"unavailable": True, "error": err})
