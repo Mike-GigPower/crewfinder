@@ -15377,6 +15377,48 @@ def ss_get_crew_shifts(ss, crew_id):
     return data, None
 
 
+def _ss_crew_hours_get(ss, script, params=None):
+    """GET one of the crew-hours endpoints (get-crew-hours.php,
+    list-probation-progress.php). Returns (data, error).
+
+    timeout=60, not the session's 10 s default: the probation list reads every
+    confirmed shift for ~630 candidates in one streamed pass (Probe D, 6 Oct
+    2026: ~106k rows, a 2 s query) and must not be cut off on a slow day.
+    Both endpoints share crew-hours-lib.php, so the tab and the lane agree by
+    construction (BRIEF-crew-hours-probation.md)."""
+    url = f"{BASE_URL}/ajax/crew/{script}"
+    try:
+        resp = ss.get(url, params=params or {}, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+def ss_get_crew_hours(ss, crew_id):
+    """One crew member's hours (worked vs scheduled) and 144-hour probation
+    runs, via get-crew-hours.php. Returns (data, error)."""
+    return _ss_crew_hours_get(ss, "get-crew-hours.php", {"id": int(crew_id)})
+
+
+def ss_list_probation_progress(ss):
+    """The Today lane's two lists -- pay rate due (crossed 144 in the last 30
+    days) and approaching (120+) -- via list-probation-progress.php."""
+    return _ss_crew_hours_get(ss, "list-probation-progress.php")
+
+
 def ss_update_crew(ss, crew_id, fields):
     """Update one crew member's record via update-crew.php (form-encoded, so the
     endpoint's $_POST reads it). Returns (data, error)."""
@@ -16369,6 +16411,43 @@ def api_admin_crew_shifts(crew_id):
     if err:
         return jsonify({"error": err}), 502
     return jsonify(data)
+
+
+# ─── CREW HOURS + 144-HOUR PROBATION ──────────────────────────────────────────
+# Both admin-only: the Hours tab sits on the crew record, which is admin-only
+# (/api/admin/crew/<id>), and every lane row opens that record -- any other
+# cohort would 403 on every click (BRIEF-crew-hours-probation.md decision 7).
+
+@app.route("/api/admin/crew/<crew_id>/hours")
+@require_cohort("admin")
+def api_admin_crew_hours(crew_id):
+    """One crew member's hours, worked vs scheduled, and probation runs."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_crew_hours(ss, crew_id)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/api/ops/probation", methods=["GET"])
+@require_cohort("admin")
+def api_ops_probation():
+    """Ops landing -- the Probation (144 hours) lane.
+
+    Soft-fails with HTTP 200 {"unavailable": true} so the lane renders
+    'unavailable' and never takes the page down with it (the /api/ops/red-zone
+    pattern). No caching: Today's Refresh refetches."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_list_probation_progress(ss)
+    if err is not None:
+        app.logger.warning(f"[probation] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+    return jsonify(data)
+
 
 
 def _crew_ein_for(ss, crew_id):

@@ -175,39 +175,9 @@
 	}
 
 	/*
-	/* Parse "HH:MM" / "HH:MM:SS" to seconds.
-	/*
-	/* Returns null for an empty or unparseable value, and null for a MALFORMED
-	/* value — minutes or seconds >= 60. Those exist in live data ('00:75',
-	/* '01:75', '00:60'); PHP would happily coerce '00:75' to 75 minutes and the
-	/* over-subtraction would vanish into an aggregate. The caller counts every
-	/* null it gets back from a break column, because a silently coerced payroll
-	/* error is an invisible payroll error.
+	/* goat_perf_hms_to_seconds() now lives in perf-split-lib.php (moved
+	/* unchanged, Oct 2026) so crew-hours-lib.php shares the one parser.
 	*/
-	function goat_perf_hms_to_seconds($val)
-	{
-		$val = trim((string) $val);
-		if ($val === '')
-			return null;
-
-		/* A bare '0' / '00' is how "no break" is stored on some rows. That is a
-		   zero, not a malformed value — counting it as malformed would bury the
-		   21 real ones in noise. */
-		if (preg_match('/^0+$/', $val))
-			return 0;
-
-		if (!preg_match('/^(\d{1,3}):(\d{1,2})(?::(\d{1,2}))?$/', $val, $m))
-			return null;
-
-		$h = (int) $m[1];
-		$i = (int) $m[2];
-		$s = isset($m[3]) ? (int) $m[3] : 0;
-
-		if ($i > 59 || $s > 59)
-			return null;                       /* malformed — caller counts it */
-
-		return ($h * 3600) + ($i * 60) + $s;
-	}
 
 	/*
 	/* Split invoice_lines.description into its role and its (Period/Tier).
