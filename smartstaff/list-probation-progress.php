@@ -60,6 +60,59 @@
 	$today_ts  = strtotime('today');                         /* local midnight */
 	$today_iso = date('Y-m-d', $today_ts);
 
+	/*
+	/* ── SAVED RESULT ──────────────────────────────────────────────────────────
+	/*
+	/* WHY. Measured 7 Oct 2026 on the test box: the calculation for ~100k shifts
+	/* costs 2.85 s from the command line under PHP 5.6 (bench-crew-hours.php)
+	/* and 10.6 s inside a web request. No code change gets that under the 3 s
+	/* target, so the result is computed at most once per GOAT_PROBATION_CACHE_TTL
+	/* and every request in between is a file read.
+	/*
+	/* The list only moves when times are keyed or the date rolls over, so a few
+	/* hours' staleness costs nothing Rich would act on. ?force=1 recomputes on
+	/* demand (THE GOAT's "Recalculate now").
+	/*
+	/* WHERE. Outside every web root: four levels up from this file is the
+	/* account home on both boxes (/home/smartst), so the file is never served.
+	/* It holds names and EINs, so it is written 0600. The name carries a hash
+	/* of THIS directory, so test and prod — same account, different folders —
+	/* can never read each other's result.
+	/*
+	/* A cache that cannot be read or written is never an error: the request
+	/* computes live and says so in `cache`.
+	*/
+	if (!defined('GOAT_PROBATION_CACHE_TTL'))
+		define('GOAT_PROBATION_CACHE_TTL', 3 * 3600);
+
+	$cache_dir  = dirname(dirname(dirname(dirname(__FILE__)))) . '/goat-cache';
+	$cache_file = $cache_dir . '/probation-' . substr(md5(dirname(__FILE__)), 0, 12) . '.json';
+	$force      = isset($_GET['force']) && (string) $_GET['force'] === '1';
+
+	if (!$force && is_readable($cache_file))
+	{
+		$saved = json_decode((string) @file_get_contents($cache_file), true);
+
+		if (is_array($saved) && isset($saved['as_at'], $saved['generated_ts'])
+		    && $saved['as_at'] === $today_iso
+		    && (time() - (int) $saved['generated_ts']) < GOAT_PROBATION_CACHE_TTL)
+		{
+			$saved['cache'] = array(
+				'hit'   => 1,
+				'age_s' => time() - (int) $saved['generated_ts'],
+				'ttl_s' => GOAT_PROBATION_CACHE_TTL
+			);
+
+			$body = json_encode($saved);
+
+			if ($body !== false)
+			{
+				echo $body;
+				exit;
+			}
+		}
+	}
+
 	/* 18 calendar months back, clamped — the same boundary the library uses. */
 	$cand_from_iso = goat_add_months_clamped($today_iso, -GOAT_PROBATION_GAP_MONTHS);
 	$cand_from_ts  = strtotime($cand_from_iso);              /* local midnight */
@@ -278,9 +331,10 @@
 
 	$elapsed_ms = (int) round((microtime(true) - $t0) * 1000);
 
-	$body = json_encode(array(
+	$result = array(
 		'ok'            => true,
 		'generated_at'  => date('Y-m-d\TH:i:s'),
+		'generated_ts'  => time(),
 		'as_at'         => $today_iso,
 		'constants'     => goat_crew_hours_constants(),
 		'pay_rate_due'  => $pay_rate_due,
@@ -293,13 +347,38 @@
 			'rows_ms'       => max(0, $elapsed_ms - (int) round($t_cand * 1000) - (int) round($t_build * 1000)),
 			'build_ms'      => (int) round($t_build * 1000)
 		)
-	));
+	);
+
+	$body = json_encode($result);
 
 	if ($body === false)
 	{
 		goat_json_error(500, 'could not encode response');
 		exit;
 	}
+
+	/* Save it: temp file + rename, so a reader never sees half a file. */
+	$stored = 0;
+
+	if ((is_dir($cache_dir) || @mkdir($cache_dir, 0700)) && is_writable($cache_dir))
+	{
+		$tmp = $cache_file . '.' . getmypid() . '.tmp';
+
+		if (@file_put_contents($tmp, $body) !== false)
+		{
+			@chmod($tmp, 0600);
+			$stored = @rename($tmp, $cache_file) ? 1 : 0;
+			if (!$stored)
+				@unlink($tmp);
+		}
+	}
+
+	if (!$stored)
+		error_log('list-probation-progress: could not save result to ' . $cache_dir);
+
+	$result['cache'] = array('hit' => 0, 'age_s' => 0, 'ttl_s' => GOAT_PROBATION_CACHE_TTL,
+	                         'stored' => $stored, 'forced' => $force ? 1 : 0);
+	$body = json_encode($result);
 
 	echo $body;
 
