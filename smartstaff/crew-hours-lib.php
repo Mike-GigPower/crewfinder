@@ -121,6 +121,59 @@
 
 
 		/*
+		/* Memoised wrappers. The list endpoint runs ~100k rows through the
+		/* library, and the same few hundred time strings and call dates repeat
+		/* endlessly ('08:00:00', '00:00:00', one midnight per call date). The
+		/* parse is the shared goat_perf_hms_to_seconds() — unchanged, never
+		/* copied — only its RESULT is cached. Values are pure functions of
+		/* their input, so a cache cannot change an answer.
+		*/
+		function goat_crew_hours_hms($val)
+		{
+			static $cache = array();
+			$key = (string) $val;
+
+			if (!array_key_exists($key, $cache))
+			{
+				if (count($cache) > 5000)
+					$cache = array();          /* bound it; cheap to refill */
+				$cache[$key] = goat_perf_hms_to_seconds($val);
+			}
+
+			return $cache[$key];
+		}
+
+		function goat_crew_hours_date_iso($start_date)
+		{
+			static $cache = array();
+
+			if (!isset($cache[$start_date]))
+			{
+				if (count($cache) > 20000)
+					$cache = array();
+				$cache[$start_date] = date('Y-m-d', $start_date);   /* one clock: PHP's */
+			}
+
+			return $cache[$start_date];
+		}
+
+		/* goat_add_months_clamped(), memoised for the run walk. */
+		function goat_crew_hours_restart_from($date_iso)
+		{
+			static $cache = array();
+
+			if (!isset($cache[$date_iso]))
+			{
+				if (count($cache) > 20000)
+					$cache = array();
+				$cache[$date_iso] = goat_add_months_clamped($date_iso, GOAT_PROBATION_GAP_MONTHS);
+			}
+
+			return $cache[$date_iso];
+		}
+
+
+		/*
 		/* One raw call_crew_map row -> its per-row figures (§2.1–2.3).
 		/*
 		/* $raw keys: call_id, booking_id, call_name, booking_name, start_date,
@@ -145,7 +198,7 @@
 				'booking_id'   => isset($raw['booking_id']) ? (int) $raw['booking_id'] : 0,
 				'call_name'    => isset($raw['call_name'])    ? (string) $raw['call_name']    : '',
 				'booking_name' => isset($raw['booking_name']) ? (string) $raw['booking_name'] : '',
-				'date_iso'     => date('Y-m-d', $start_date),   /* one clock: PHP's */
+				'date_iso'     => goat_crew_hours_date_iso($start_date),
 				'start_time'   => isset($raw['start_time']) ? trim((string) $raw['start_time']) : '',
 				'state'        => 'recorded',
 				'scheduled_h'  => $est,
@@ -179,8 +232,8 @@
 			if ($off_raw === '00:00:00' && $on_raw !== '00:00:00')
 				return array('excluded' => 'ambiguous_off_rows');
 
-			$on  = goat_perf_hms_to_seconds($on_raw);
-			$off = goat_perf_hms_to_seconds($off_raw);
+			$on  = goat_crew_hours_hms($on_raw);
+			$off = goat_crew_hours_hms($off_raw);
 
 			if ($on === null || $off === null)
 				return array('excluded' => 'unparseable_time_rows');
@@ -205,7 +258,7 @@
 				if ($v === '')
 					continue;
 
-				$s = goat_perf_hms_to_seconds($v);
+				$s = goat_crew_hours_hms($v);
 
 				if ($s === null)
 				{
@@ -326,7 +379,7 @@
 				$d = $recorded[$i]['date_iso'];
 
 				$restart = ($prev_date === null)
-				        || ($d >= goat_add_months_clamped($prev_date, GOAT_PROBATION_GAP_MONTHS));
+				        || ($d >= goat_crew_hours_restart_from($prev_date));
 
 				if ($restart)
 				{

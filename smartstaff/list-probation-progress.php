@@ -65,13 +65,37 @@
 	$cand_from_ts  = strtotime($cand_from_iso);              /* local midnight */
 
 	/*
-	/* Candidates inline as a subquery (Probe D's shape) rather than a bound
-	/* list: an IN list of 633 placeholders buys nothing. The derived table
-	/* `x` is what lets MySQL/MariaDB accept the same table in the subquery.
+	/* TWO QUERIES, not one. v1 ran the candidates as an IN (derived-table)
+	/* subquery inside the rows query, ordered by user, date, time and call. On
+	/* test (7 Oct 2026, 522 candidates, 100,793 rows) that took 9.6 s against a
+	/* 3 s target, where Probe D's candidate query alone took 2.0 s on prod.
+	/*
+	/*   1. candidates — Probe D's inner query, on its own, buffered
+	/*   2. rows       — userID IN (<literal ints>), ORDER BY userID ONLY
+	/*
+	/* The ints are cast with (int) before they are joined, so the literal list
+	/* is injection-safe. Ordering by user alone is all the walk needs: the
+	/* library sorts each person's rows itself (goat_crew_hours_cmp), so a
+	/* four-column filesort over 100k rows bought nothing.
 	/*
 	/* Recorded = not BOTH on and off at midnight. Same eligibility as
 	/* get-crew-hours.php: status 5, booking not hidden, dated today or earlier.
+	/*
+	/* `timing` in the response splits the cost (candidates / rows / build) so
+	/* the next slow day says where it went instead of needing a probe.
 	*/
+	$sql_cand = "
+		SELECT DISTINCT ccm.userID AS user_id
+		FROM call_crew_map ccm
+		JOIN calls    c ON c.id = ccm.callID
+		JOIN bookings b ON b.id = c.bookingID
+		WHERE ccm.status   = 5
+		  AND b.hidden     = 0
+		  AND c.start_date >= :cand_from
+		  AND c.start_date <= :today
+		  AND NOT (ccm.`on` = '00:00:00' AND ccm.`off` = '00:00:00')
+	";
+
 	$sql = "
 		SELECT
 			ccm.userID      AS user_id,
@@ -98,21 +122,12 @@
 		  AND b.hidden     = 0
 		  AND c.start_date > 0
 		  AND c.start_date <= :today
-		  AND ccm.userID IN (
-		      SELECT x.userID FROM (
-		          SELECT DISTINCT ccm2.userID
-		          FROM call_crew_map ccm2
-		          JOIN calls    c2 ON c2.id = ccm2.callID
-		          JOIN bookings b2 ON b2.id = c2.bookingID
-		          WHERE ccm2.status   = 5
-		            AND b2.hidden     = 0
-		            AND c2.start_date >= :cand_from
-		            AND c2.start_date <= :today2
-		            AND NOT (ccm2.`on` = '00:00:00' AND ccm2.`off` = '00:00:00')
-		      ) x
-		  )
-		ORDER BY ccm.userID, c.start_date, c.start_time, c.id
+		  AND ccm.userID IN (%s)
+		ORDER BY ccm.userID
 	";
+
+	$t_cand  = 0.0;
+	$t_build = 0.0;
 
 	$pay_rate_due = array();
 	$approaching  = array();
@@ -167,16 +182,26 @@
 
 	try
 	{
-		/* Unbuffered for THIS statement only; restored straight after. Nothing
-		   else runs on the handle while the cursor is open. */
+		/* 1. candidates (buffered, a few hundred ints) */
+		$cstmt = $pdo->prepare($sql_cand);
+		$cstmt->execute(array(':cand_from' => $cand_from_ts, ':today' => $today_ts));
+
+		$ids = array();
+		while ($c = $cstmt->fetch(PDO::FETCH_ASSOC))
+			$ids[] = (int) $c['user_id'];
+		$cstmt->closeCursor();
+
+		$t_cand = microtime(true) - $t0;
+
+		if (!count($ids))
+			$ids[] = 0;                        /* matches nobody; keeps the SQL valid */
+
+		/* 2. rows. Unbuffered for THIS statement only; restored straight
+		   after. Nothing else runs on the handle while the cursor is open. */
 		$pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
 
-		$stmt = $pdo->prepare($sql);
-		$stmt->execute(array(
-			':today'     => $today_ts,
-			':today2'    => $today_ts,
-			':cand_from' => $cand_from_ts
-		));
+		$stmt = $pdo->prepare(sprintf($sql, implode(',', array_map('intval', $ids))));
+		$stmt->execute(array(':today' => $today_ts));
 
 		$person = null;
 		$rows   = array();
@@ -188,7 +213,9 @@
 
 			if ($person === null || $uid !== (int) $person['user_id'])
 			{
+				$tb = microtime(true);
 				goat_probation_flush($person, $rows, $today_iso, $pay_rate_due, $approaching);
+				$t_build += microtime(true) - $tb;
 
 				$candidates++;
 				$person = array(
@@ -216,7 +243,9 @@
 			);
 		}
 
+		$tb = microtime(true);
 		goat_probation_flush($person, $rows, $today_iso, $pay_rate_due, $approaching);
+		$t_build += microtime(true) - $tb;
 
 		$stmt->closeCursor();
 		$pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
@@ -247,6 +276,8 @@
 	usort($pay_rate_due, 'goat_probation_cmp_crossed');
 	usort($approaching,  'goat_probation_cmp_hours');
 
+	$elapsed_ms = (int) round((microtime(true) - $t0) * 1000);
+
 	$body = json_encode(array(
 		'ok'            => true,
 		'generated_at'  => date('Y-m-d\TH:i:s'),
@@ -256,7 +287,12 @@
 		'approaching'   => $approaching,
 		'candidates'    => $candidates,
 		'rows_read'     => $rows_read,
-		'elapsed_ms'    => (int) round((microtime(true) - $t0) * 1000)
+		'elapsed_ms'    => $elapsed_ms,
+		'timing'        => array(
+			'candidates_ms' => (int) round($t_cand * 1000),
+			'rows_ms'       => max(0, $elapsed_ms - (int) round($t_cand * 1000) - (int) round($t_build * 1000)),
+			'build_ms'      => (int) round($t_build * 1000)
+		)
 	));
 
 	if ($body === false)
