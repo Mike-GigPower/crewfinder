@@ -1,6 +1,6 @@
 {
-  "version": "5.66.0",
-  "release_date": "2026-10-07",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.66.0/TheGOAT.dmg",
-  "release_notes": "Crew records have a new Hours tab showing recorded vs scheduled hours and the count toward the 144-hour probation. Today has a new Probation tile listing crew whose pay rate is due and those approaching 144 hours."
+  "version": "5.66.1",
+  "release_date": "2026-10-08",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.66.1/TheGOAT.dmg",
+  "release_notes": "Crew Finder's Search button now shows the call name as well as the number, and call names with an ampersand or apostrophe display correctly above the results."
 }
