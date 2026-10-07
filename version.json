@@ -1,6 +1,6 @@
 {
-  "version": "5.65.0",
+  "version": "5.66.0",
   "release_date": "2026-10-07",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.65.0/TheGOAT.dmg",
-  "release_notes": "Call out backups: when a call is short, offer the place to everyone on standby at once and the first to accept gets it. Promote is now link-safe across linked calls, and unanswered promotions show as awaiting reply instead of filled."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.66.0/TheGOAT.dmg",
+  "release_notes": "Crew records have a new Hours tab showing recorded vs scheduled hours and the count toward the 144-hour probation. Today has a new Probation tile listing crew whose pay rate is due and those approaching 144 hours."
 }
