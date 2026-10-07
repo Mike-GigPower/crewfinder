@@ -1,6 +1,6 @@
 {
-  "version": "5.64.0",
-  "release_date": "2026-10-01",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.64.0/TheGOAT.dmg",
-  "release_notes": "Recruitment: a new Waiting on us pile lists every candidate whose next step is ours, and a matching card on Today, Operations shows the count by action and by how long they have waited."
+  "version": "5.65.0",
+  "release_date": "2026-10-07",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.65.0/TheGOAT.dmg",
+  "release_notes": "Call out backups: when a call is short, offer the place to everyone on standby at once and the first to accept gets it. Promote is now link-safe across linked calls, and unanswered promotions show as awaiting reply instead of filled."
 }
