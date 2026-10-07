@@ -47,3 +47,4 @@ visa-*-register.csv
 # The tests skip when the directory is absent, so it exists only on the build
 # machine and must never be committed.
 fixtures/
+import_log.json
