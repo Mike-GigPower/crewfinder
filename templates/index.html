@@ -1695,6 +1695,30 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .perf-key{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:11px;color:var(--muted)}
 .perf-key-i{display:flex;align-items:center;gap:6px}
 .perf-key-sw{width:14px;height:10px;border-radius:2px;flex-shrink:0;display:inline-block}
+/* Crew record → Hours tab (crew hours + 144 h probation) */
+.hours-note{font-size:11px;color:var(--muted);margin:-4px 0 10px;line-height:1.5}
+.hours-meter{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px 14px;margin-bottom:10px}
+.hours-meter.done{border-color:var(--accent)}
+.hours-meter-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;font-size:12px;color:var(--muted);margin-bottom:8px}
+.hours-meter-big{font-family:'Share Tech Mono',monospace;font-size:18px;color:var(--text)}
+.hours-meter.done .hours-meter-big{color:var(--accent)}
+.hours-bar{height:8px;border-radius:4px;background:var(--surface2);overflow:hidden}
+.hours-bar span{display:block;height:100%;border-radius:4px;background:var(--accent)}
+.hours-card{border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px 14px;margin-bottom:10px}
+.hours-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.hours-card-title{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.hours-table-wrap{margin-bottom:10px}
+.hours-table-wrap summary{cursor:pointer;font-size:12px;color:var(--accent);padding:4px 0}
+/* min-width:0 and white-space override the global table{min-width:700px} / td{nowrap} */
+.hours-table{width:100%;min-width:0;table-layout:fixed;border-collapse:collapse;font-size:11px;margin-top:6px}
+.hours-table th:nth-child(1){width:112px}.hours-table th.num{width:64px}
+.hours-table td{overflow-wrap:anywhere;white-space:normal}
+.hours-table th{text-align:left;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);padding:4px 6px}
+.hours-table td{border-bottom:1px solid var(--border);padding:4px 6px;color:var(--text);vertical-align:top}
+.hours-table .num{text-align:right;font-family:'Share Tech Mono',monospace;white-space:nowrap}
+.hours-table tr.hours-cross td{background:var(--accent-bg)}
+.hours-sub{color:var(--muted)}
+.hours-foot{font-size:11px;color:var(--muted);line-height:1.5;padding:2px 0 6px}
 /* Customer stack */
 .perf-stack{width:100%;display:block;margin-bottom:4px}
 .perf-stack rect[data-cust]{cursor:pointer}
@@ -12170,7 +12194,7 @@ async function openCrewEdit(id, opts){
     + efRow('New password',    efInput('ce-password', '', 'text') + '<div style="font-size:10px;color:var(--muted);padding-top:3px">Leave blank to keep current. Sets a new login password.</div>')
     + '<div id="ce-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
-  window._ceLoaded = {inductions:false, licences:false, visa:false, documents:false, payslips:false, emergency:false, shifts:false, unavail:false};
+  window._ceLoaded = {inductions:false, licences:false, visa:false, documents:false, payslips:false, emergency:false, shifts:false, hours:false, unavail:false};
 
   const ceTabBar =
       '<div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap">'
@@ -12180,7 +12204,7 @@ async function openCrewEdit(id, opts){
         // signature and commencement terms. Both tabs are absent for every other
         // cohort, not merely disabled.
         .concat(window._cohort === 'admin' ? [['visa','Visa'],['documents','Documents']] : [])
-        .concat([['payslips','Payslips'],['emergency','Emergency'],['shifts','Calls'],['unavail','Unavailability']])).map(function(t){
+        .concat([['payslips','Payslips'],['emergency','Emergency'],['shifts','Calls'],['hours','Hours'],['unavail','Unavailability']])).map(function(t){
         return '<button type="button" id="ce-tabbtn-'+t[0]+'" onclick="ceShowTab(\''+String(c.id)+'\',\''+t[0]+'\')" '
           + 'style="background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:\'Rajdhani\',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer">'+t[1]+'</button>';
       }).join('')
@@ -12197,6 +12221,7 @@ async function openCrewEdit(id, opts){
     + '<div id="ce-panel-payslips" style="display:none"></div>'
     + '<div id="ce-panel-emergency" style="display:none"></div>'
     + '<div id="ce-panel-shifts" style="display:none"></div>'
+    + '<div id="ce-panel-hours" style="display:none"></div>'
     + '<div id="ce-panel-unavail" style="display:none"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Cancel', "entityLeave(closeEntityModal, 'close')")
@@ -12207,7 +12232,7 @@ async function openCrewEdit(id, opts){
   ceShowTab(String(c.id), _ceTab);
   // The Calls tab loads asynchronously; restoring now would clamp to 0 while it
   // reads "Loading calls...", so ceLoadShifts restores once its rows are in.
-  if(_ceTab !== 'shifts') entityRestoreScroll();
+  if(_ceTab !== 'shifts' && _ceTab !== 'hours') entityRestoreScroll();
 }
 
 // Work Visa flag for the crew-details header. Renders nothing unless the crew
@@ -13314,7 +13339,7 @@ async function _ceSaveDetails(id){
 
 // ── Edit Crew Member: tabbed panels (Details / Inductions / Shifts / Unavailability) ──
 function ceShowTab(id, tab){
-  ['details','inductions','licences','visa','documents','payslips','emergency','shifts','unavail'].forEach(function(t){
+  ['details','inductions','licences','visa','documents','payslips','emergency','shifts','hours','unavail'].forEach(function(t){
     var panel = document.getElementById('ce-panel-'+t);
     var btn   = document.getElementById('ce-tabbtn-'+t);
     var on    = (t===tab);
@@ -13332,6 +13357,7 @@ function ceShowTab(id, tab){
   if(tab==='payslips'   && !window._ceLoaded.payslips){   window._ceLoaded.payslips = true;   ceLoadPayslips(id); }
   if(tab==='emergency'  && !window._ceLoaded.emergency){  window._ceLoaded.emergency = true;  ceLoadEmergency(id); }
   if(tab==='shifts'     && !window._ceLoaded.shifts){     window._ceLoaded.shifts = true;     ceLoadShifts(id); }
+  if(tab==='hours'      && !window._ceLoaded.hours){      window._ceLoaded.hours = true;      ceLoadHours(id); }
   if(tab==='unavail'    && !window._ceLoaded.unavail){    window._ceLoaded.unavail = true;    ceLoadUnavail(id); }
 }
 
@@ -14087,6 +14113,415 @@ async function licDelete(id, licId){
   }catch(e){
     alert('Couldn\u2019t delete licence: '+e.message);
   }
+}
+
+// ── Edit Crew Member → Hours (BRIEF-crew-hours-probation.md §5) ─────────────
+// Worked vs scheduled, and the 144-hour probation runs, for one crew member.
+// Every figure comes from get-crew-hours.php, which shares crew-hours-lib.php
+// with the Today lane's list-probation-progress.php — so this tab and the lane
+// cannot disagree about who crossed 144, or when. Nothing is re-derived here
+// except per-bucket chart sums of the server's own per-shift figures.
+//
+// Dates arrive as 'YYYY-MM-DD' strings on SmartStaff's clock. They are never
+// fed to new Date('YYYY-MM-DD') (that is UTC midnight and slides a day in
+// Melbourne); every bit of date arithmetic below goes through Date.UTC.
+const HOURS_PERIOD_KEY = 'goat.hours.period';
+const HOURS_PERIODS = [['week','Week'],['month','Month'],['year','Year']];
+const HOURS_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function hoursDayNum(iso){
+  const p = String(iso || '').split('-');
+  return Math.floor(Date.UTC(+p[0], (+p[1]) - 1, +p[2]) / 86400000);
+}
+function hoursIsoFromDay(n){
+  const d = new Date(n * 86400000);
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2,'0') + '-' + String(d.getUTCDate()).padStart(2,'0');
+}
+// ISO week key ('2026-W41') and its Monday, on UTC day numbers.
+function hoursWeekKey(iso){
+  const n = hoursDayNum(iso);
+  const dow = (new Date(n * 86400000).getUTCDay() + 6) % 7;      // Mon = 0
+  const thu = n - dow + 3;
+  const y = new Date(thu * 86400000).getUTCFullYear();
+  const jan4 = hoursDayNum(y + '-01-04');
+  const wk1Mon = jan4 - ((new Date(jan4 * 86400000).getUTCDay() + 6) % 7);
+  return y + '-W' + String(Math.floor((thu - 3 - wk1Mon) / 7) + 1).padStart(2,'0');
+}
+function hoursFmtDate(iso, withDow){
+  if(!iso) return '—';
+  const n = hoursDayNum(iso), d = new Date(n * 86400000);
+  const s = d.getUTCDate() + ' ' + HOURS_MONTHS[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
+  return withDow ? (['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()] + ' ' + s) : s;
+}
+function hoursH(v){
+  const n = Number(v || 0);
+  return (Math.round(n * 100) / 100).toLocaleString('en-AU', {maximumFractionDigits: 2}) + ' h';
+}
+function hoursGetPeriod(){
+  try{ const v = localStorage.getItem(HOURS_PERIOD_KEY); if(v === 'week' || v === 'month' || v === 'year') return v; }catch(e){}
+  return 'month';
+}
+function hoursSetPeriod(p){
+  try{ localStorage.setItem(HOURS_PERIOD_KEY, p); }catch(e){}
+  if(window._ceHours){ window._ceHours.period = p; ceRenderHours(); }
+}
+function hoursSetCumView(v){
+  if(window._ceHours){ window._ceHours.cumView = v; ceRenderHours(); }
+}
+
+async function ceLoadHours(id){
+  const panel = document.getElementById('ce-panel-hours');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading hours…</div>';
+  let data;
+  try{
+    const r = await fetch('/api/admin/crew/'+encodeURIComponent(id)+'/hours');
+    data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.error || ('HTTP '+r.status));
+  }catch(e){
+    panel.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load hours: '+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  window._ceHours = { id: String(id), data: data, period: hoursGetPeriod(), cumView: 'current' };
+  ceRenderHours();
+  entityRestoreScroll();     // after the rows are in, as the Calls tab does
+}
+
+// Bucket the recorded shifts for chart 1. Dense and zero-filled: a quiet week
+// must read as zero, not as a line drawn straight across it.
+function hoursBuckets(shifts, period, asAt){
+  const rec = shifts.filter(function(s){ return s.state === 'recorded'; });
+  const keyOf = period === 'week'  ? function(iso){ return hoursWeekKey(iso); }
+              : period === 'month' ? function(iso){ return iso.slice(0, 7); }
+              :                      function(iso){ return iso.slice(0, 4); };
+  const keys = [];
+  if(period === 'week'){
+    const end = hoursDayNum(asAt);
+    for(let i = 25; i >= 0; i--) keys.push(hoursWeekKey(hoursIsoFromDay(end - i * 7)));
+  } else if(period === 'month'){
+    let y = +asAt.slice(0, 4), m = +asAt.slice(5, 7);
+    const out = [];
+    for(let i = 0; i < 24; i++){ out.unshift(y + '-' + String(m).padStart(2,'0')); m--; if(m === 0){ m = 12; y--; } }
+    keys.push.apply(keys, out);
+  } else {
+    const first = rec.length ? +rec[0].date_iso.slice(0, 4) : +asAt.slice(0, 4);
+    for(let y = first; y <= +asAt.slice(0, 4); y++) keys.push(String(y));
+  }
+  const map = {};
+  keys.forEach(function(k){ map[k] = { key:k, recorded:0, topup:0, scheduled:0, n:0, over:0, early:0 }; });
+  rec.forEach(function(s){
+    const b = map[keyOf(s.date_iso)];
+    if(!b) return;                                   // outside the window
+    b.recorded += s.recorded_h || 0;
+    b.topup    += s.topup_est_h || 0;
+    b.n++;
+    if(s.scheduled_h > 0){
+      b.scheduled += s.scheduled_h;
+      // Same rule as crew-hours-lib.php: a padded (min) row is a top-up, not an
+      // overrun, so it takes no part in ran over / finished early.
+      if(!s.at_minimum){
+        const d = (s.recorded_h || 0) - s.scheduled_h;
+        if(d > 0) b.over += d; else b.early += -d;
+      }
+    }
+  });
+  return keys.map(function(k){ return map[k]; });
+}
+function hoursBucketLabel(key, period){
+  if(period === 'year') return key;
+  if(period === 'month') return HOURS_MONTHS[(+key.slice(5, 7)) - 1] + ' ' + key.slice(2, 4);
+  return 'W' + key.slice(6);
+}
+
+// Chart 1 — one bar per bucket: recorded hours, its top-up part in a lighter
+// tint of the same hue, and a scheduled tick across the bar. One axis.
+function hoursPeriodChart(buckets, period){
+  const accent = '#d4af37';
+  const W = 640, H = 210, padL = 40, padR = 8, padT = 12, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;
+  const maxV = perfNiceMax(Math.max.apply(null, buckets.map(function(b){ return Math.max(b.recorded, b.scheduled); }).concat([1])));
+  const Y = function(v){ return baseY - (v / maxV) * plotH; };
+  const step = plotW / buckets.length;
+  const bw = Math.max(3, Math.min(28, step * 0.62));
+  let grid = '';
+  for(let i = 1; i <= 4; i++){
+    const v = maxV * i / 4, y = Y(v);
+    grid += '<line class="perf-grid" x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(padL+plotW)+'" y2="'+y.toFixed(1)+'"/>'
+         +  '<text class="perf-ax" x="'+(padL-6)+'" y="'+(y+3).toFixed(1)+'" text-anchor="end">'+Math.round(v)+'</text>';
+  }
+  const every = Math.max(1, Math.ceil(buckets.length / 12));
+  let bars = '', labels = '', hits = '';
+  buckets.forEach(function(b, i){
+    const cx = padL + step * i + step / 2, x = cx - bw / 2;
+    if(b.recorded > 0){
+      const yTop = Y(b.recorded), yPad = Y(b.recorded - b.topup);
+      const solidH = Math.max(0, baseY - yPad);
+      if(solidH > 0) bars += '<rect x="'+x.toFixed(1)+'" y="'+yPad.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+solidH.toFixed(1)+'" rx="2" fill="'+perfRgba(accent, 0.85)+'"/>';
+      if(b.topup > 0) bars += '<rect x="'+x.toFixed(1)+'" y="'+yTop.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(1, yPad - yTop - 1).toFixed(1)+'" rx="2" fill="'+perfRgba(accent, 0.32)+'"/>';
+    }
+    if(b.scheduled > 0){
+      const ys = Y(b.scheduled);
+      bars += '<line x1="'+(x - 2).toFixed(1)+'" y1="'+ys.toFixed(1)+'" x2="'+(x + bw + 2).toFixed(1)+'" y2="'+ys.toFixed(1)+'" stroke="#f2f2f2" stroke-opacity=".55" stroke-width="2" stroke-linecap="round"/>';
+    }
+    // Every Nth label, plus the last — unless the last sits too close to the
+    // previous labelled one (that is what made "Sep 26 / Oct 26" collide).
+    const last = buckets.length - 1;
+    if((i % every === 0 && last - i >= every) || i === last)
+      labels += '<text class="perf-ax" x="'+cx.toFixed(1)+'" y="'+(baseY+16)+'" text-anchor="middle">'+escapeHtml(hoursBucketLabel(b.key, period))+'</text>';
+    const tip = hoursBucketLabel(b.key, period) + (period === 'week' ? ' (' + b.key + ')' : '') + '\n'
+      + 'Recorded ' + hoursH(b.recorded) + (b.topup > 0 ? '  (min. top-up ' + hoursH(b.topup) + ' est.)' : '') + '\n'
+      + 'Scheduled ' + hoursH(b.scheduled) + '\n'
+      + 'Ran over +' + hoursH(b.over) + ' · Finished early −' + hoursH(b.early) + '\n'
+      + b.n + (b.n === 1 ? ' shift' : ' shifts');
+    hits += '<rect class="perf-hit" x="'+(padL + step * i).toFixed(1)+'" y="'+padT+'" width="'+step.toFixed(1)+'" height="'+plotH+'"><title>'+escapeHtml(tip)+'</title></rect>';
+  });
+  return '<svg class="perf-chart" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Recorded and scheduled hours by '+period+'">'
+    + grid + bars
+    + '<line class="perf-grid" x1="'+padL+'" y1="'+baseY+'" x2="'+(padL+plotW)+'" y2="'+baseY+'"/>'
+    + labels + hits + '</svg>'
+    + '<div class="perf-key">'
+    +   '<span class="perf-key-i"><span class="perf-key-sw" style="background:'+perfRgba(accent,0.85)+'"></span>recorded</span>'
+    +   '<span class="perf-key-i"><span class="perf-key-sw" style="background:'+perfRgba(accent,0.32)+'"></span>of which 4-hour minimum top-up (est.)</span>'
+    +   '<span class="perf-key-i"><span class="perf-key-sw" style="background:#f2f2f2;opacity:.55;height:2px"></span>scheduled</span>'
+    + '</div>';
+}
+
+// Chart 2 — cumulative recorded hours toward 144. A step line per run: it
+// drops back to zero at a restart, and the gap is a break in the line, never a
+// slope. Its own chart (never a second axis on chart 1): the scales differ by
+// an order of magnitude.
+function hoursCumChart(d, view){
+  const accent = '#d4af37';
+  const P = (d.constants && d.constants.probation_hours) || 144;
+  const runs = d.runs || [];
+  const shifts = (d.shifts || []).filter(function(s){ return s.state === 'recorded'; });
+  if(!shifts.length) return '';
+  const cur = d.current_run;
+  const use = (view === 'current' && cur !== null) ? shifts.filter(function(s){ return s.run_index === cur; }) : shifts;
+  if(!use.length) return '';
+  const W = 640, H = 200, padL = 40, padR = 12, padT = 14, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB, baseY = padT + plotH;
+  const maxCum = Math.max.apply(null, use.map(function(s){ return s.cumulative_h || 0; }).concat([P]));
+  const maxV = perfNiceMax(maxCum * 1.04);
+  const Y = function(v){ return baseY - (v / maxV) * plotH; };
+
+  // ── x layout: one SEGMENT per run, laid side by side. The gap between runs
+  // (18+ months by definition) is collapsed to a fixed, labelled break rather
+  // than drawn to scale — to scale, two runs years apart become two vertical
+  // lines pinned to the edges. Within a segment, time is linear.
+  const byRun = {}, order = [];
+  use.forEach(function(s){
+    if(!byRun[s.run_index]){ byRun[s.run_index] = []; order.push(s.run_index); }
+    byRun[s.run_index].push(s);
+  });
+  const GAP = order.length > 1 ? 34 : 0;
+  const spans = order.map(function(k){
+    const rs = byRun[k];
+    return Math.max(14, hoursDayNum(rs[rs.length - 1].date_iso) - hoursDayNum(rs[0].date_iso));
+  });
+  const totalSpan = spans.reduce(function(a, b){ return a + b; }, 0);
+  const usable = plotW - GAP * (order.length - 1);
+  const segs = [];
+  let cursor = padL;
+  order.forEach(function(k, i){
+    // Floor each segment at 18% of the width so a short run stays readable.
+    const w = order.length > 1 ? Math.max(usable * 0.18, usable * spans[i] / totalSpan) : usable;
+    segs.push({ run:k, x0:cursor, w:w, d0:hoursDayNum(byRun[k][0].date_iso), span:spans[i] });
+    cursor += w + GAP;
+  });
+  // Re-scale if the floors pushed the total past the plot.
+  const over = (cursor - GAP) - (padL + plotW);
+  if(over > 0.5){
+    const k = usable / (usable + over);
+    let c = padL;
+    segs.forEach(function(sg){ sg.w *= k; sg.x0 = c; c += sg.w + GAP; });
+  }
+  const segOf = {};
+  segs.forEach(function(sg){ segOf[sg.run] = sg; });
+  const X = function(run, iso){
+    const sg = segOf[run];
+    return sg.x0 + ((hoursDayNum(iso) - sg.d0) / sg.span) * sg.w;
+  };
+
+  let grid = '';
+  for(let i = 1; i <= 4; i++){
+    const v = maxV * i / 4, y = Y(v);
+    grid += '<line class="perf-grid" x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(padL+plotW)+'" y2="'+y.toFixed(1)+'"/>'
+         +  '<text class="perf-ax" x="'+(padL-6)+'" y="'+(y+3).toFixed(1)+'" text-anchor="end">'+Math.round(v)+'</text>';
+  }
+  const yP = Y(P);
+  const rule = '<line x1="'+padL+'" y1="'+yP.toFixed(1)+'" x2="'+(padL+plotW)+'" y2="'+yP.toFixed(1)+'" stroke="#f2f2f2" stroke-opacity=".5" stroke-width="1" stroke-dasharray="5 4"/>'
+             // Label at the LEFT end, above the rule: every count starts at zero,
+             // so the line is always far below 144 there and the corner is clear.
+             + '<text class="perf-ax" x="'+(padL+4)+'" y="'+(yP-5).toFixed(1)+'">'+P+' h probation</text>';
+
+  let paths = '', xl = '', gaps = '';
+  segs.forEach(function(sg, i){
+    const rs = byRun[sg.run];
+    let p = 'M' + sg.x0.toFixed(1) + ',' + Y(0).toFixed(1);
+    rs.forEach(function(s){
+      p += ' H' + X(sg.run, s.date_iso).toFixed(1) + ' V' + Y(s.cumulative_h).toFixed(1);
+    });
+    paths += '<path d="'+p+'" fill="none" stroke="'+accent+'" stroke-width="2" stroke-linejoin="round"/>';
+    // Start date under each segment; the last segment also carries its end date.
+    xl += '<text class="perf-ax" x="'+sg.x0.toFixed(1)+'" y="'+(baseY+16)+'">'+escapeHtml(hoursFmtDate(rs[0].date_iso))+'</text>';
+    if(i === segs.length - 1)
+      xl += '<text class="perf-ax" x="'+(padL+plotW)+'" y="'+(baseY+16)+'" text-anchor="end">'+escapeHtml(hoursFmtDate(rs[rs.length-1].date_iso))+'</text>';
+    if(i > 0){
+      // The break: two short slashes on the baseline and the gap in months.
+      const gx = sg.x0 - GAP / 2;
+      const r = runs[sg.run] || {};
+      gaps += '<line x1="'+(gx-5).toFixed(1)+'" y1="'+(baseY+5)+'" x2="'+(gx-1).toFixed(1)+'" y2="'+(baseY-5)+'" stroke="#666" stroke-width="1.5"/>'
+            + '<line x1="'+(gx+1).toFixed(1)+'" y1="'+(baseY+5)+'" x2="'+(gx+5).toFixed(1)+'" y2="'+(baseY-5)+'" stroke="#666" stroke-width="1.5"/>'
+            + '<text class="perf-ax" x="'+gx.toFixed(1)+'" y="'+(baseY-10)+'" text-anchor="middle">'+(r.gap_before_months || '18+')+' mo</text>';
+    }
+  });
+
+  // Crossing markers. The date sits below-right of the marker: the line rises
+  // up and to the right, so that corner is clear.
+  let marks = '';
+  runs.forEach(function(r){
+    if(!r.crossed || !segOf[r.index]) return;
+    const cx = X(r.index, r.crossed.date_iso), cy = Y(r.crossed.cumulative_h);
+    const anchorEnd = cx > padL + plotW - 90;
+    marks += '<circle cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" r="6" fill="'+accent+'" stroke="#111111" stroke-width="2">'
+      + '<title>'+escapeHtml('Reached '+P+' h on '+hoursFmtDate(r.crossed.date_iso, true)+' · '+decodeEntities(r.crossed.call_name||'')+' · '+hoursH(r.crossed.cumulative_h))+'</title></circle>'
+      // At the right edge the line arrives from below-left, so the label goes
+      // ABOVE-left there instead (the rule's own label now sits at the far left).
+      + '<text class="perf-ax" x="'+(anchorEnd ? cx - 9 : cx + 9).toFixed(1)+'" y="'+(anchorEnd ? cy - 10 : cy + 16).toFixed(1)+'" text-anchor="'+(anchorEnd ? 'end' : 'start')+'">'
+      + escapeHtml(hoursFmtDate(r.crossed.date_iso))+'</text>';
+  });
+
+  // Hover: one target per shift, thinned so a 4,000-shift veteran stays cheap.
+  let hits = '';
+  const stride = Math.max(1, Math.ceil(use.length / 400));
+  for(let i = 0; i < use.length; i += stride){
+    const s = use[i];
+    hits += '<circle class="perf-hit" cx="'+X(s.run_index, s.date_iso).toFixed(1)+'" cy="'+Y(s.cumulative_h).toFixed(1)+'" r="7"><title>'
+      + escapeHtml(hoursFmtDate(s.date_iso, true)+' · '+decodeEntities(s.call_name||'')+'\n+'+hoursH(s.recorded_h)+' → '+hoursH(s.cumulative_h)+' in this count')
+      + '</title></circle>';
+  }
+  return '<svg class="perf-chart" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Cumulative recorded hours toward '+P+'">'
+    + grid + rule
+    + '<line class="perf-grid" x1="'+padL+'" y1="'+baseY+'" x2="'+(padL+plotW)+'" y2="'+baseY+'"/>'
+    + paths + gaps + marks + xl + hits + '</svg>';
+}
+
+function hoursToggle(opts, active, fn){
+  return '<span class="perf-units">' + opts.map(function(o){
+    const on = (o[0] === active);
+    return '<span class="perf-unit'+(on?' on':'')+'" role="button" aria-pressed="'+(on?'true':'false')+'"'
+      + ' onclick="'+fn+'(\''+o[0]+'\')">'+o[1]+'</span>';
+  }).join('') + '</span>';
+}
+
+function ceRenderHours(){
+  const st = window._ceHours;
+  const panel = document.getElementById('ce-panel-hours');
+  if(!st || !panel) return;
+  const d = st.data, t = d.totals || {}, P = (d.constants && d.constants.probation_hours) || 144;
+  const gapM = (d.constants && d.constants.gap_months) || 18;
+  const shifts = d.shifts || [];
+  const recN = shifts.filter(function(s){ return s.state === 'recorded'; }).length;
+  if(!recN && !t.awaiting_n){
+    panel.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">No worked shifts on record.</div>';
+    return;
+  }
+  const tile = function(val, lbl, sub, accent){
+    return '<div class="perf-head"><div class="perf-head-val'+(accent?' accent':'')+'">'+val+'</div>'
+      + '<div class="perf-head-lbl">'+lbl+'</div>'+(sub?'<div class="perf-head-sub">'+sub+'</div>':'')+'</div>';
+  };
+  const tiles = '<div class="perf-heads">'
+    + tile(escapeHtml(hoursH(t.recorded_h)), 'Recorded hours', 'all time', true)
+    + tile(escapeHtml(hoursH(t.scheduled_h)), 'Scheduled hours', 'same shifts')
+    + tile((t.over_h > 0.005 ? '+' : '')+escapeHtml(hoursH(t.over_h)), 'Ran over', t.over_n + (t.over_n === 1 ? ' shift' : ' shifts') + ' by 15 min or more')
+    + tile((t.early_h > 0.005 ? '−' : '')+escapeHtml(hoursH(t.early_h)), 'Finished early', t.early_n + (t.early_n === 1 ? ' shift' : ' shifts') + ' by 15 min or more')
+    + tile(escapeHtml(hoursH(t.topup_est_h)), 'Min. top-ups (est.)', 'short shifts paid to 4 h')
+    + '</div>'
+    + (t.awaiting_n ? '<div class="hours-note">'+t.awaiting_n+(t.awaiting_n === 1 ? ' shift is' : ' shifts are')+' awaiting times ('+escapeHtml(hoursH(t.awaiting_scheduled_h))+' scheduled) — not counted yet.</div>' : '');
+
+  // ── probation meter: always the CURRENT run ──
+  let meter = '';
+  const runs = d.runs || [];
+  const run = (d.current_run !== null && d.current_run !== undefined) ? runs[d.current_run] : null;
+  if(run){
+    if(run.crossed){
+      const row = shifts.filter(function(s){ return s.call_id === run.crossed.call_id; })[0];
+      const callTxt = escapeHtml(decodeEntities(run.crossed.call_name || 'call'));
+      const callLink = row
+        ? '<a href="#" onclick="event.preventDefault();entityOpenCall(\''+row.booking_id+'\',\''+row.call_id+'\')" style="color:var(--accent)">'+callTxt+'</a>'
+        : callTxt;
+      meter = '<div class="hours-meter done"><div class="hours-meter-head"><span class="hours-meter-big">Reached '+P+' h</span>'
+        + '<span>on '+escapeHtml(hoursFmtDate(run.crossed.date_iso, true))+' · '+callLink+'</span></div>'
+        + '<div class="hours-bar"><span style="width:100%"></span></div></div>';
+    } else {
+      const pct = Math.max(0, Math.min(100, (run.total_h / P) * 100));
+      meter = '<div class="hours-meter"><div class="hours-meter-head"><span class="hours-meter-big">'+escapeHtml(hoursH(run.total_h).replace(' h',''))+' of '+P+' h</span>'
+        + '<span>'+escapeHtml(hoursH(Math.max(0, P - run.total_h)))+' to go · probation count since '+escapeHtml(hoursFmtDate(run.start_date_iso))+'</span></div>'
+        + '<div class="hours-bar"><span style="width:'+pct.toFixed(1)+'%"></span></div></div>';
+    }
+    const extra = [];
+    if(runs.length > 1){
+      const prev = runs[runs.length - 2];
+      extra.push('Restarted '+hoursFmtDate(run.start_date_iso)+' after a '+(run.gap_before_months || gapM)+'-month gap · '
+        + (prev.crossed ? 'previously reached '+P+' h on '+hoursFmtDate(prev.crossed.date_iso) : 'previously '+hoursH(prev.total_h)));
+    }
+    // Dormant: the next shift starts a new count (same rule as the library).
+    const asAtDay = hoursDayNum(d.as_at);
+    const endP = run.end_date_iso.split('-');
+    let y = +endP[0], m = +endP[1] + gapM;
+    y += Math.floor((m - 1) / 12); m = ((m - 1) % 12) + 1;
+    const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const restartDay = hoursDayNum(y + '-' + String(m).padStart(2,'0') + '-' + String(Math.min(+endP[2], dim)).padStart(2,'0'));
+    if(asAtDay >= restartDay) extra.push('Last worked '+hoursFmtDate(run.end_date_iso)+' · next shift starts a new count');
+    if(extra.length) meter += '<div class="hours-note">'+extra.map(escapeHtml).join('<br>')+'</div>';
+  }
+
+  // ── charts ──
+  const buckets = hoursBuckets(shifts, st.period, d.as_at);
+  const chart1 = '<div class="hours-card"><div class="hours-card-head"><span class="hours-card-title">Hours by '+st.period+'</span>'
+    + hoursToggle(HOURS_PERIODS, st.period, 'hoursSetPeriod') + '</div>'
+    + hoursPeriodChart(buckets, st.period) + '</div>';
+  const cumToggle = runs.length > 1 ? hoursToggle([['current','Current count'],['all','Whole history']], st.cumView, 'hoursSetCumView') : '';
+  const chart2 = '<div class="hours-card"><div class="hours-card-head"><span class="hours-card-title">Toward '+P+' hours</span>'+cumToggle+'</div>'
+    + hoursCumChart(d, st.cumView) + '</div>';
+
+  // ── shifts table, newest first ──
+  const crossIds = {};
+  runs.forEach(function(r){ if(r.crossed) crossIds[r.crossed.call_id + ':' + r.crossed.date_iso] = 1; });
+  const rows = shifts.slice().reverse().map(function(s){
+    const isX = crossIds[s.call_id + ':' + s.date_iso];
+    const diff = (s.state === 'recorded' && s.scheduled_h > 0 && !s.at_minimum) ? (s.recorded_h - s.scheduled_h) : null;
+    const dtxt = diff === null ? '' : (Math.abs(diff) < 0.005 ? '0' : (diff > 0 ? '+' : '−') + (Math.round(Math.abs(diff) * 100) / 100));
+    const dcol = diff === null ? 'var(--muted)' : (diff > 0.25 ? 'var(--warn)' : 'var(--text)');
+    return '<tr'+(isX ? ' class="hours-cross"' : '')+'>'
+      + '<td>'+escapeHtml(hoursFmtDate(s.date_iso, true))+'</td>'
+      + '<td>'+escapeHtml(decodeEntities(s.call_name||''))+'<span class="hours-sub"> · '+escapeHtml(decodeEntities(s.booking_name||''))+'</span>'
+      +   (s.at_minimum ? ' <span class="ops-lbl lbl-aw" title="Exactly 4 h on a shorter call — likely a 4-hour minimum top-up">min</span>' : '')
+      +   (isX ? ' <span class="ops-lbl lbl-aw">reached '+P+' h</span>' : '') + '</td>'
+      + '<td class="num">'+(s.scheduled_h > 0 ? escapeHtml(String(s.scheduled_h)) : '—')+'</td>'
+      + '<td class="num">'+(s.state === 'recorded' ? escapeHtml(String(s.recorded_h)) : '<span class="hours-sub">awaiting</span>')+'</td>'
+      + '<td class="num" style="color:'+dcol+'">'+dtxt+'</td>'
+      + '<td class="num">'+(s.cumulative_h !== null && s.cumulative_h !== undefined ? escapeHtml(String(s.cumulative_h)) : '')+'</td>'
+      + '</tr>';
+  }).join('');
+  const table = '<details class="hours-table-wrap"><summary>All shifts ('+shifts.length+')</summary>'
+    + '<table class="hours-table"><thead><tr><th>Date</th><th>Call</th><th class="num">Scheduled</th><th class="num">Recorded</th><th class="num">±</th><th class="num">Count</th></tr></thead>'
+    + '<tbody>'+rows+'</tbody></table></details>';
+
+  // ── footnote ──
+  const dq = d.data_quality || {};
+  const dqParts = [];
+  if(dq.ambiguous_off_rows)    dqParts.push(dq.ambiguous_off_rows+' with a start but no finish time (not counted)');
+  if(dq.unparseable_time_rows) dqParts.push(dq.unparseable_time_rows+' with unreadable times (not counted)');
+  if(dq.nonpositive_rows)      dqParts.push(dq.nonpositive_rows+' with breaks as long as the shift (not counted)');
+  if(dq.malformed_breaks)      dqParts.push(dq.malformed_breaks+' unreadable break'+(dq.malformed_breaks === 1 ? '' : 's')+' (ignored, shift counted)');
+  if(dq.no_estimate_rows)      dqParts.push(dq.no_estimate_rows+' on calls with no booked length (counted, not compared)');
+  const foot = '<div class="hours-foot">Recorded hours are the times keyed after each shift, minus breaks. Short shifts are paid to a 4-hour minimum, so their true finish isn’t stored; those hours are marked <i>min</i> and counted, the same way Employment Hero counts them. '
+    + 'Probation is '+P+' recorded hours, and the count restarts after a gap of '+gapM+' months or more between shifts.'
+    + (dqParts.length ? '<br>Shifts needing a look: '+escapeHtml(dqParts.join('; '))+'.' : '') + '</div>';
+
+  panel.innerHTML = tiles + meter + chart1 + chart2 + table + foot;
 }
 
 async function ceLoadShifts(id){
@@ -23775,6 +24210,13 @@ const OPS_LANES = [
   // ahead of it fill first. The frame is progressive — nothing waits on it.
   { key:'push_gaps', label:'Shadowlands',
     load: loadOpsPush, render: renderOpsPush, list: renderOpsPushList, dims:['lead','exposure','reason'] },
+  // Probation — 144 hours (BRIEF-crew-hours-probation §6). Admin only: a row
+  // opens the crew record, which is admin-only. Before Recruitment, which stays
+  // last; this lane is normally a saved-result file read (see its loader).
+  { key:'probation', label:'Probation — 144 hours',
+    cohorts:['admin'],
+    load: loadOpsProbation, render: renderOpsProbation, list: renderOpsProbationList,
+    target: opsProbationTarget, dims:['group'] },
   // Recruitment — waiting on us (BRIEF-recruit-waiting-on-us). LAST, after
   // Shadowlands: it is not a SmartStaff call, but the candidates feed takes
   // ~1–2.5 s (~530 KB), so it goes behind every other lane rather than delaying
@@ -24236,6 +24678,162 @@ function renderOpsUnavailable(lane){
   setOpsLaneDetail(lane, false);
   opsSyncDetail(lane);
 }
+
+// ── Lane: Probation — 144 hours (BRIEF-crew-hours-probation.md §6) ──────────
+// Two groups, both about each person's CURRENT probation count:
+//   pay_rate_due  reached 144 h in the last 30 days — Rich changes the base
+//                 pay rate in Employment Hero
+//   approaching   120 h or more, not yet 144
+// The badge counts pay_rate_due only: that is the number someone has to act
+// on. The window lists both, so st.total is both (the red_zone precedent of a
+// badge and a headline being different numbers on purpose).
+//
+// The PHP side SAVES its result for up to 3 hours, because calculating it costs
+// ~10 s of PHP 5.6 on the cPanel box (measured on test, 7 Oct 2026). A normal
+// load is a file read. Today's Refresh does NOT recalculate; only the explicit
+// "Recalculate now" does (?force=1). The card says how old the figures are, and
+// never stamps the page-wide "as at", which would claim they are current.
+const OPS_PROBATION_LABELS = { pay_rate_due:'Pay rate due', approaching:'Approaching 144 h' };
+const OPS_PROBATION_COLORS = { pay_rate_due:'var(--accent)', approaching:'#60a5fa' };
+OPS_DIM_LABELS.group = OPS_PROBATION_LABELS;
+
+async function loadOpsProbation(lane, force){
+  // `force` from the Today cycle is deliberately ignored (see header).
+  return opsProbationFetch(lane, false);
+}
+
+async function opsProbationFetch(lane, recalc){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/probation' + (recalc ? '?force=1' : ''), {cache:'no-store'});
+    if(r.status === 403){                    // not admin: hide, never an error card
+      st.status = 'hidden';
+      const el = document.getElementById('ops-lane-'+lane.key);
+      if(el){ el.dataset.hidden403 = '1'; el.style.display = 'none'; }
+      return;
+    }
+    const d = await r.json();
+    if(!d || d.unavailable || d.error){
+      st.status = 'unavailable'; st.error = (d && (d.error || '')) || '';
+      renderOpsUnavailable(lane); return;
+    }
+    const rows = [];
+    (d.pay_rate_due || []).forEach(function(o){ rows.push(Object.assign({ group:'pay_rate_due' }, o)); });
+    (d.approaching  || []).forEach(function(o){ rows.push(Object.assign({ group:'approaching'  }, o)); });
+    st.status = 'ready';
+    st.data = d;
+    st.rows = rows;
+    renderOpsProbation(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = (e && e.message) || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+// "Recalculate now". Through opsGated like every SmartStaff call on this tab,
+// so it can never overlap a Today cycle on the per-session PHP lock.
+function opsProbationRecalc(ev){
+  if(ev){ ev.stopPropagation(); ev.preventDefault(); }
+  const lane = OPS_LANES.find(function(l){ return l.key === 'probation'; });
+  if(!lane) return;
+  const st = _opsLaneState[lane.key];
+  if(!st || st.status === 'loading') return;
+  st.status = 'loading';
+  const body = document.getElementById('ops-body-'+lane.key);
+  if(body) body.innerHTML = '<div class="ops-lane-status">Recalculating — this takes about 10 seconds…</div>';
+  setOpsLaneDetail(lane, false);
+  opsSyncDetail(lane);
+  opsGated(function(){ return opsProbationFetch(lane, true); });
+}
+
+// "calculated 15:22" — from the server's own clock, so it is Melbourne time.
+function opsProbationAge(d){
+  const g = String((d && d.generated_at) || '');
+  const hhmm = g.length >= 16 ? g.slice(11, 16) : '';
+  const age = d && d.cache && d.cache.hit ? Math.round((d.cache.age_s || 0) / 60) : 0;
+  return 'Calculated ' + (hhmm || '—') + (age >= 1 ? ' (' + age + ' min ago)' : '');
+}
+
+function opsProbationNote(d){
+  return '<div class="ops-rw-note">' + escapeHtml(opsProbationAge(d)) + ' · '
+    + '<a href="#" onclick="opsProbationRecalc(event)" style="color:var(--accent)">Recalculate now</a></div>';
+}
+
+function renderOpsProbation(lane){
+  const st   = _opsLaneState[lane.key];
+  const d    = (st && st.data) || {};
+  const due  = (d.pay_rate_due || []).length;
+  const appr = (d.approaching  || []).length;
+  st.total = due + appr;
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = due;
+  if(!body) return;
+  if(st.total === 0){
+    body.innerHTML = '<div class="ops-empty">Nobody near or just past 144 hours.</div>' + opsProbationNote(d);
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
+    return;
+  }
+  const segs = ['pay_rate_due','approaching'].map(function(k){
+    return { key:k, value:(k === 'pay_rate_due' ? due : appr), color:OPS_PROBATION_COLORS[k], label:OPS_PROBATION_LABELS[k] };
+  });
+  body.innerHTML = '<div class="ops-donuts">' + opsDonutBlock(lane, 'Probation', 'group', segs) + '</div>'
+    + opsProbationNote(d);
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
+}
+
+function renderOpsProbationList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const st  = _opsLaneState[lane.key];
+  const seg = st.chips && st.chips.group;
+  const rows = (st.rows || []).filter(function(o){ return !seg || o.group === seg; });
+  const idx = {};
+  rows.forEach(function(o){ idx[String(o.user_id)] = o; });
+  _opsRowIndex[lane.key] = idx;
+  const head = opsProbationNote(st.data);
+  if(!rows.length){
+    el.innerHTML = head + '<div class="ops-empty" style="padding:14px 2px">Nobody matches the current filter.</div>';
+    return;
+  }
+  el.innerHTML = head + rows.map(function(o){ return opsProbationCard(o, lane.key); }).join('');
+}
+
+// decodeEntities BEFORE escapeHtml — SmartStaff stores names HTML-encoded.
+function opsProbationCard(o, laneKey){
+  const nm  = escapeHtml(decodeEntities(o.name || ''));
+  const due = (o.group === 'pay_rate_due');
+  const when = due
+    ? 'Reached 144 h ' + hoursFmtDate(o.crossed_date_iso)
+    : hoursH(o.remaining_h) + ' to go';
+  const meta = due
+    ? [decodeEntities(o.crossed_call_name || ''), 'now ' + hoursH(o.current_total_h)].filter(Boolean).join(' · ')
+    : ['Last shift ' + hoursFmtDate(o.last_shift_iso), 'count since ' + hoursFmtDate(o.run_start_iso)].join(' · ');
+  const color = OPS_PROBATION_COLORS[o.group];
+  const pill  = due ? 'Pay rate due' : hoursH(o.current_total_h);
+  const L = [];
+  if(o.restarted) L.push('<span class="ops-lbl lbl-cb" title="Their count restarted after a gap of 18 months or more">Returner</span>');
+  if(!o.active)   L.push('<span class="ops-lbl lbl-nm">Inactive</span>');
+  return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\',\''+String(o.user_id)+'\')">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+(nm || '—')+'</span>'
+    +       '<span class="ops-row-when">EIN '+escapeHtml(String(o.ein || ''))+'</span>'
+    +     '</div>'
+    +     '<span class="ops-row-meta">'+escapeHtml(when)+' · '+escapeHtml(meta)+'</span>'
+    +   '</div>'
+    +   '<div class="ops-row-side">'
+    +     '<span class="ops-pill" style="color:'+color+';border-color:'+color+'">'+escapeHtml(pill)+'</span>'
+    +   '</div>'
+    +   (L.length ? '<div class="ops-row-labels">'+L.join('')+'</div>' : '')
+    + '</div>';
+}
+
+// A row opens that person's crew record on the Hours tab. Admin-only, like the
+// lane itself, so the click can never 403.
+function opsProbationTarget(o){ openCrewEdit(o.user_id, { tab:'hours' }); }
 
 // ── Lane: Recruitment — waiting on us ────────────────────────────────────────
 // Same feed and the SAME predicate (recruitWaitingOnUs) as the Recruitment tab's
