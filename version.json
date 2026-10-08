@@ -1,6 +1,6 @@
 {
-  "version": "5.66.1",
-  "release_date": "2026-10-08",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.66.1/TheGOAT.dmg",
-  "release_notes": "Crew Finder's Search button now shows the call name as well as the number, and call names with an ampersand or apostrophe display correctly above the results."
+  "version": "5.67.0",
+  "release_date": "2026-10-09",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.67.0/TheGOAT.dmg",
+  "release_notes": "Administration now lists Victoria's public holidays, read from the Estimator, in a new Reference data section at the bottom. Nothing else changes in this release."
 }
