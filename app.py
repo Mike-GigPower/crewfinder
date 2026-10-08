@@ -58,6 +58,7 @@ import sys as _sys
 import visa_extract
 import docs_render
 import docs_source
+import public_holidays
 # When running inside a PyInstaller bundle, use the executable's directory
 # When running as a script, use the script's directory
 if getattr(_sys, 'frozen', False):
@@ -69,6 +70,7 @@ CACHE_FILE  = os.path.join(BASE_DIR, "crew_cache.json")
 VENUE_CACHE_FILE = os.path.join(BASE_DIR, "venue_cache.json")  # venue geo, rebuilt with the crew cache
 # FORECAST_CACHE_FILE and UNAVAIL_CACHE_FILE removed in 3.4.5 (live reads).
 UNAVAIL_TIMES_FILE         = os.path.join(BASE_DIR, "unavail_times.json")
+PUBLIC_HOLIDAYS_CACHE_FILE = os.path.join(BASE_DIR, "public_holidays_cache.json")  # last good Estimator copy
 # FORECAST_CACHE_MAX_AGE_HRS and UNAVAIL_CACHE_MAX_AGE_HRS removed in 3.4.5.
 PROD_BASE_URL = "https://smartstaffsolutions.com"
 BASE_URL      = PROD_BASE_URL
@@ -125,6 +127,28 @@ def _anthropic_api_key():
         return str(load_config().get("anthropic_api_key") or "").strip()
     except Exception:
         return ""
+
+def _estimator_supabase():
+    """(url, key) for the Estimator's Supabase, read for public holidays only.
+    Same never-raise resolution as _anthropic_api_key: environment first, then
+    config.json (build_secrets.json is merged into it at build time). Missing
+    values come back as '' and public_holidays then reports 'unavailable'
+    rather than failing start-up. The key is publishable, but it is still
+    never printed or logged."""
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    def pick(name):
+        v = os.environ.get(name)
+        if v:
+            return v.strip()
+        return str(cfg.get(name) or "").strip()
+    return pick("ESTIMATOR_SUPABASE_URL"), pick("ESTIMATOR_SUPABASE_KEY")
+
+# Config only: no fetch here. The first load_holidays() call does the network
+# work, so a slow Estimator can never delay THE GOAT opening.
+public_holidays.configure(*_estimator_supabase(), PUBLIC_HOLIDAYS_CACHE_FILE)
 
 # Load Anthropic API key from config if not already in environment
 if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -8290,6 +8314,26 @@ def api_cache_status():
         "profiles":          len(cache),
         "induction_records": induction_records,
         "age":               age_str,
+    })
+
+@app.route("/api/public-holidays")
+@require_cohort(*READ_ALL_COHORTS)
+def api_public_holidays():
+    """VIC public holidays from the Estimator (read-only). ?force=1 skips the
+    12-hour memory cache, so a holiday just added in the Estimator shows at
+    once. Always 200: stale and unavailable are states, not errors."""
+    force = request.args.get("force") in ("1", "true", "yes")
+    rows, meta = public_holidays.load_holiday_rows(force=force)
+    dates = {r["date"] for r in rows}
+    return jsonify({
+        "ok":          True,
+        "holidays":    [{"date": r["date"].isoformat(), "name": r["name"]} for r in rows],
+        "years":       sorted(public_holidays.covered_years(dates)),
+        "stale":       bool(meta.get("stale")),
+        "unavailable": bool(meta.get("unavailable")),
+        "fetched_at":  meta.get("fetched_at"),
+        "source":      meta.get("source") or "Estimator",
+        "error":       meta.get("error"),
     })
 
 @app.route("/api/cache/refresh", methods=["POST"])

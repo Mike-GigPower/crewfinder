@@ -1059,6 +1059,18 @@ body.cohort-readonly #unavail-add-section{display:none}
 .admin-card-icon{font-size:22px;line-height:1;flex-shrink:0;margin-top:1px}
 .admin-card-title{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:700;color:var(--text);letter-spacing:.02em}
 .admin-card-desc{font-family:'Rajdhani',sans-serif;font-size:12px;color:var(--muted);margin-top:3px;line-height:1.35}
+/* Public holidays: read-only reference block (Estimator is the source) */
+.ph-block{padding:14px 15px;background:var(--surface);border:1px solid var(--border);border-radius:7px;font-family:'Rajdhani',sans-serif}
+.ph-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.ph-title{font-size:15px;font-weight:700;color:var(--text);letter-spacing:.02em}
+.ph-meta{font-size:12px;color:var(--muted)}
+.ph-refresh{margin-left:auto;font-size:12px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;font-family:inherit;text-decoration:underline}
+.ph-refresh:disabled{color:var(--muted);cursor:default;text-decoration:none}
+.ph-warn{margin-top:9px;padding:7px 11px;border:1px solid var(--warn);border-radius:5px;background:var(--warn-bg);color:var(--warn);font-size:13px}
+.ph-years{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px 24px;margin-top:12px}
+.ph-year{font-family:'Bebas Neue',sans-serif;font-size:14px;letter-spacing:.12em;color:var(--muted);margin:2px 0 4px}
+.ph-row{display:flex;gap:10px;font-size:13px;color:var(--text);line-height:1.5}
+.ph-date{color:var(--muted);min-width:88px;font-variant-numeric:tabular-nums}
 /* ── DOCS CENTRE ──────────────────────────────────────────────────────────── */
 /* Two columns inside the standard .tab-panel flex row: a fixed sidebar and a
    reading pane that scrolls on its own. Colours come from the existing
@@ -2806,6 +2818,17 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
             <div class="admin-card-desc">Control who can log in to the SmartStaff website directly.</div>
           </div>
         </button>
+      </div>
+
+      <div class="admin-hub-section">Reference data</div>
+      <div class="ph-block" id="ph-block">
+        <div class="ph-head">
+          <div class="ph-title">Public holidays (VIC)</div>
+          <div class="ph-meta" id="ph-meta">Not loaded yet.</div>
+          <button class="ph-refresh" id="ph-refresh" onclick="loadPublicHolidays(true)">Refresh</button>
+        </div>
+        <div id="ph-warn"></div>
+        <div class="ph-years" id="ph-list"></div>
       </div>
     </div>
   </div><!-- end tab-administration -->
@@ -5768,6 +5791,7 @@ function switchTab(tab){
   if(tab==='my-status') loadMyStatus();
   if(tab==='docs') initDocs();
   if(tab==='recruitment') loadRecruitment();
+  if(tab==='administration') loadPublicHolidays(false);
   if(tab==='recruitment-dashboard') loadRecruitMetrics();
   // Unconditional, not `if(!_recruitRows.length)`: book-on-behalf filters
   // _recruitRows and Sessions is now reachable directly (deep link, or the group's
@@ -11648,6 +11672,66 @@ function adminComingSoon(name){
   host.style.display = 'block';
   clearTimeout(host._t);
   host._t = setTimeout(function(){ host.style.display = 'none'; }, 4000);
+}
+// Public holidays — read-only. The Estimator owns the list; THE GOAT only reads
+// it (/api/public-holidays). Refresh passes force=1 to skip the server's
+// 12-hour memory cache, so a holiday just added in the Estimator shows at once.
+let _phLoading = false;
+async function loadPublicHolidays(force){
+  if(_phLoading) return;
+  const meta = document.getElementById('ph-meta');
+  const warn = document.getElementById('ph-warn');
+  const list = document.getElementById('ph-list');
+  const btn  = document.getElementById('ph-refresh');
+  if(!meta || !warn || !list) return;
+  _phLoading = true;
+  if(btn) btn.disabled = true;
+  if(force) meta.textContent = 'Refreshing…';
+  try{
+    const resp = await fetch('/api/public-holidays' + (force ? '?force=1' : ''));
+    const d = await resp.json().catch(function(){ return {}; });
+    if(!resp.ok) throw new Error(d.error || ('HTTP ' + resp.status));
+    const fetched = d.fetched_at ? new Date(d.fetched_at) : null;
+    const when = (fetched && !isNaN(fetched))
+      ? fetched.toLocaleString('en-AU', {weekday:'short', day:'numeric', month:'short', hour:'numeric', minute:'2-digit'})
+      : '—';
+    meta.textContent = 'Source: Estimator · last fetched ' + when;
+    const warns = [];
+    if(d.unavailable){
+      warns.push('Public holidays unavailable — the Estimator could not be reached and there is no saved copy. Working-hours maths is counting weekends only.');
+    } else if(d.stale){
+      warns.push('Showing the saved copy from ' + when + ' — the Estimator could not be reached just now.');
+    }
+    if(!d.unavailable){
+      const years = d.years || [];
+      const thisYear = new Date().getFullYear();
+      [thisYear, thisYear + 1].forEach(function(y){
+        if(years.indexOf(y) === -1) warns.push(y + ' public holidays not loaded — add them in the Estimator.');
+      });
+    }
+    warn.innerHTML = warns.map(function(w){ return '<div class="ph-warn">' + escapeHtml(w) + '</div>'; }).join('');
+    const byYear = {};
+    (d.holidays || []).forEach(function(h){
+      const y = String(h.date).slice(0, 4);
+      (byYear[y] = byYear[y] || []).push(h);
+    });
+    list.innerHTML = Object.keys(byYear).sort().map(function(y){
+      return '<div><div class="ph-year">' + escapeHtml(y) + ' · ' + byYear[y].length + '</div>'
+        + byYear[y].map(function(h){
+            const dt = new Date(h.date + 'T00:00:00');
+            const label = isNaN(dt) ? h.date
+              : dt.toLocaleDateString('en-AU', {weekday:'short', day:'numeric', month:'short'});
+            return '<div class="ph-row"><span class="ph-date">' + escapeHtml(label) + '</span><span>'
+              + escapeHtml(h.name || '') + '</span></div>';
+          }).join('')
+        + '</div>';
+    }).join('');
+  }catch(e){
+    meta.textContent = 'Could not load public holidays: ' + (e && e.message ? e.message : e);
+  }finally{
+    _phLoading = false;
+    if(btn) btn.disabled = false;
+  }
 }
 function auGroupsHtml(groups){
   if(!groups || !groups.length) return '<div style="font-size:11px;color:var(--muted);padding-top:4px">No crew groups found.</div>';
