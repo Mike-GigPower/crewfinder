@@ -24703,9 +24703,10 @@ function renderOpsUnavailable(lane){
 }
 
 // ── Lane: Probation — 144 hours (BRIEF-crew-hours-probation.md §6) ──────────
-// Two groups, both about each person's CURRENT probation count:
-//   pay_rate_due  reached 144 h in the last 30 days — Rich changes the base
-//                 pay rate in Employment Hero
+// Two groups, both about each person's CURRENT probation count, and both only
+// for crew still on the base grade T1/T2 (paygrade 10, filtered server-side):
+//   pay_rate_due  reached 144 h, however long ago — Rich changes the pay grade,
+//                 and they leave the list because they are no longer on T1/T2
 //   approaching   120 h or more, not yet 144
 // The badge counts pay_rate_due only: that is the number someone has to act
 // on. The window lists both, so st.total is both (the red_zone precedent of a
@@ -24778,7 +24779,7 @@ function opsProbationAge(d){
 }
 
 function opsProbationNote(d){
-  return '<div class="ops-rw-note">' + escapeHtml(opsProbationAge(d)) + ' · '
+  return '<div class="ops-rw-note">T1/T2 crew only · ' + escapeHtml(opsProbationAge(d)) + ' · '
     + '<a href="#" onclick="opsProbationRecalc(event)" style="color:var(--accent)">Recalculate now</a></div>';
 }
 
@@ -24831,6 +24832,8 @@ function opsProbationCard(o, laneKey){
   const when = due
     ? 'Reached 144 h ' + hoursFmtDate(o.crossed_date_iso)
     : hoursH(o.remaining_h) + ' to go';
+  // A crossing date long past means a promotion that was missed, not a new one.
+  // Only reachable since the 30-day window was dropped (8 Oct 2026).
   const meta = due
     ? [decodeEntities(o.crossed_call_name || ''), 'now ' + hoursH(o.current_total_h)].filter(Boolean).join(' · ')
     : ['Last shift ' + hoursFmtDate(o.last_shift_iso), 'count since ' + hoursFmtDate(o.run_start_iso)].join(' · ');

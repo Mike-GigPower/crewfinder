@@ -250,8 +250,23 @@
 		goat_crew_hours_lane_group($b, $today) === 'pay_rate_due', goat_crew_hours_lane_group($b, $today));
 
 	$b = goat_crew_hours_build(t_block('2026-08-20', 18, 8));          /* crosses 2026-09-06 = 31 days */
-	t_ok('14b crossed 31 days ago -> null',
-		goat_crew_hours_lane_group($b, $today) === null, $b['runs'][0]['crossed']['date_iso']);
+	t_ok('14b crossed 31 days ago -> still pay_rate_due (no recency window, 8 Oct 2026)',
+		goat_crew_hours_lane_group($b, $today) === 'pay_rate_due', $b['runs'][0]['crossed']['date_iso']);
+
+	$rows = t_block('2025-06-01', 18, 8);                               /* crosses mid-June 2025 */
+	$rows[] = t_row('2026-09-30', '08:00:00', '12:00:00', 4, array());  /* still working: live */
+	$b = goat_crew_hours_build($rows);
+	t_ok('14h crossed over a year ago, still working -> pay_rate_due (a missed promotion stays listed)',
+		goat_crew_hours_lane_group($b, $today) === 'pay_rate_due' && count($b['runs']) === 1,
+		json_encode($b['runs']));
+
+	$b = goat_crew_hours_build(t_block('2024-01-01', 18, 8));           /* crossed, then nothing for 18+ months */
+	t_ok('14i crossed but dormant 18+ months -> null (next shift starts a new count)',
+		goat_crew_hours_lane_group($b, $today) === null, $b['runs'][0]['end_date_iso']);
+
+	$g = goat_probation_grade_ids();
+	t_ok('14j base grade is exactly paygrade 10 (T1 by day, T2 by night)',
+		count($g) === 1 && $g[0] === 10, json_encode($g));
 
 	$b = goat_crew_hours_build(t_block('2026-09-01', 13, 10));         /* 130h */
 	t_ok('14c at 130h -> approaching',

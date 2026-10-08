@@ -14,10 +14,13 @@
 	/*
 	/* ADMIN endpoint — the Today › Operations "Probation — 144 hours" lane.
 	/*
-	/* Returns two lists, both about each person's CURRENT probation run:
+	/* Returns two lists, both about each person's CURRENT probation run, and
+	/* both ONLY for crew still on the base grade, T1/T2 (paygrade 10 —
+	/* goat_probation_grade_ids() in crew-hours-lib.php):
 	/*
-	/*   pay_rate_due  crossed 144 hours in the last 30 days — Rich changes their
-	/*                 base pay rate in Employment Hero
+	/*   pay_rate_due  crossed 144 hours, however long ago — Rich changes their
+	/*                 base pay rate. They leave the list when he does, because
+	/*                 their grade is no longer 10 (Rich / Mike, 8 Oct 2026).
 	/*   approaching   120 hours or more, not yet 144, run still live
 	/*
 	/* Every figure comes from goat_crew_hours_build() and
@@ -25,9 +28,9 @@
 	/* Hours tab's get-crew-hours.php calls — so a name in this list and that
 	/* person's Hours tab always agree (BRIEF-crew-hours-probation.md §3.5).
 	/*
-	/* CANDIDATES. Anyone with a recorded, confirmed shift in the last 18 months.
-	/* Nobody else can be in either list: without one, their next shift starts a
-	/* new run at zero. Probe D on prod, 6 Oct 2026: 633 candidates, 105,787 rows
+	/* CANDIDATES. Anyone ON THE BASE GRADE with a recorded, confirmed shift in
+	/* the last 18 months. Nobody else can be in either list: promoted crew are
+	/* done, and without a recent shift the next one starts a new run at zero. Probe D on prod, 6 Oct 2026: 633 candidates, 105,787 rows
 	/* across their whole histories, 2.0 s.
 	/*
 	/* ONE STREAMED PASS. The rows query runs UNBUFFERED, ordered by user, and is
@@ -85,6 +88,15 @@
 	if (!defined('GOAT_PROBATION_CACHE_TTL'))
 		define('GOAT_PROBATION_CACHE_TTL', 3 * 3600);
 
+	/*
+	/* Bump when the RULES change, so a result saved under the old ones is never
+	/* served: a deploy would otherwise show the old list for up to 3 hours.
+	/*   1  5.66.0 — crossed in the last 30 days, every grade
+	/*   2  base grade (T1/T2) only, no recency window — 8 Oct 2026
+	*/
+	if (!defined('GOAT_PROBATION_RULES'))
+		define('GOAT_PROBATION_RULES', 2);
+
 	$cache_dir  = dirname(dirname(dirname(dirname(__FILE__)))) . '/goat-cache';
 	$cache_file = $cache_dir . '/probation-' . substr(md5(dirname(__FILE__)), 0, 12) . '.json';
 	$force      = isset($_GET['force']) && (string) $_GET['force'] === '1';
@@ -95,6 +107,7 @@
 
 		if (is_array($saved) && isset($saved['as_at'], $saved['generated_ts'])
 		    && $saved['as_at'] === $today_iso
+		    && isset($saved['rules']) && (int) $saved['rules'] === GOAT_PROBATION_RULES
 		    && (time() - (int) $saved['generated_ts']) < GOAT_PROBATION_CACHE_TTL)
 		{
 			$saved['cache'] = array(
@@ -142,7 +155,9 @@
 		FROM call_crew_map ccm
 		JOIN calls    c ON c.id = ccm.callID
 		JOIN bookings b ON b.id = c.bookingID
+		JOIN users    u ON u.id = ccm.userID
 		WHERE ccm.status   = 5
+		  AND u.paygradeID IN (%s)
 		  AND b.hidden     = 0
 		  AND c.start_date >= :cand_from
 		  AND c.start_date <= :today
@@ -236,7 +251,8 @@
 	try
 	{
 		/* 1. candidates (buffered, a few hundred ints) */
-		$cstmt = $pdo->prepare($sql_cand);
+		/* (int)-cast literals, the same way as the candidate ids below. */
+		$cstmt = $pdo->prepare(sprintf($sql_cand, implode(',', array_map('intval', goat_probation_grade_ids()))));
 		$cstmt->execute(array(':cand_from' => $cand_from_ts, ':today' => $today_ts));
 
 		$ids = array();
@@ -335,6 +351,7 @@
 		'ok'            => true,
 		'generated_at'  => date('Y-m-d\TH:i:s'),
 		'generated_ts'  => time(),
+		'rules'         => GOAT_PROBATION_RULES,
 		'as_at'         => $today_iso,
 		'constants'     => goat_crew_hours_constants(),
 		'pay_rate_due'  => $pay_rate_due,

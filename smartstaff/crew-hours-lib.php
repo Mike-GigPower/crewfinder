@@ -39,7 +39,6 @@
 	if (!defined('GOAT_PROBATION_HOURS'))       define('GOAT_PROBATION_HOURS', 144);
 	if (!defined('GOAT_PROBATION_GAP_MONTHS'))  define('GOAT_PROBATION_GAP_MONTHS', 18);
 	if (!defined('GOAT_PROBATION_APPROACH_H'))  define('GOAT_PROBATION_APPROACH_H', 120);
-	if (!defined('GOAT_PROBATION_RECENT_DAYS')) define('GOAT_PROBATION_RECENT_DAYS', 30);
 	if (!defined('GOAT_HOURS_TOLERANCE_H'))     define('GOAT_HOURS_TOLERANCE_H', 0.25);
 
 	/* The four-hour minimum, in seconds — what a padded row's span equals. */
@@ -48,6 +47,27 @@
 
 	if (!function_exists('goat_crew_hours_build'))
 	{
+
+		/*
+		/* The pay grades that are STILL ON PROBATION — the base rate, before
+		/* Rich's promotion. Only crew on one of these appear in the Today lane
+		/* (Rich, 8 Oct 2026: "once they have changed to T1A/T2A or T1B/T2B they
+		/* do not need to be listed as the promotion has taken place").
+		/*
+		/* ONE paygrades row carries both names: id 10 is "T1" by day and "T2"
+		/* by night (day_desc / night_desc), exactly as 25 is T1A/T2A and 26 is
+		/* T1B/T2B. So "on T1 or T2" is the single id 10. Verified on prod
+		/* 8 Oct 2026: 233 active crew on 10, 17 on 25, 243 on 26. The ids 27-29
+		/* also say T2/T2A/T2B, but in night_desc of the Sunday rows, and carry no
+		/* crew — they are rate variants, not a person's grade.
+		/*
+		/* A function rather than a constant: define() cannot hold an array on
+		/* PHP 5.6.
+		*/
+		function goat_probation_grade_ids()
+		{
+			return array(10);
+		}
 
 		/*
 		/* 'Y-m-d' plus N calendar months, with the DAY CLAMPED to the end of the
@@ -483,13 +503,20 @@
 		/*
 		/* Which lane group the CURRENT run falls in, or null (§2.5).
 		/*
-		/*   pay_rate_due  crossed 144 on or after today − 30 days
-		/*   approaching   not crossed, total >= 120, and still LIVE
+		/*   pay_rate_due  crossed 144 — however long ago
+		/*   approaching   not crossed, total >= 120
 		/*
-		/* "Live" means the next shift would not restart the count: today is
-		/* before run end + 18 months. A run that has gone dormant is not
-		/* approaching anything — the next shift starts again at zero. A recent
-		/* crossing is always live, so pay_rate_due needs no such test.
+		/* Both only while the run is LIVE: today is before run end + 18 months.
+		/* A dormant run is neither due nor approaching — the next shift starts
+		/* a new count at zero.
+		/*
+		/* No recency window on pay_rate_due (Mike, 8 Oct 2026). The lane lists
+		/* only crew still on the base grade (goat_probation_grade_ids), so a
+		/* person leaves it the moment Rich promotes them; a window would only
+		/* hide someone who had been missed for longer than it.
+		/*
+		/* Pay grade is NOT tested here: this function sees shifts, not people.
+		/* The grade filter is the list endpoint's candidate query.
 		*/
 		function goat_crew_hours_lane_group($built, $today_iso)
 		{
@@ -498,16 +525,13 @@
 
 			$run = $built['runs'][$built['current_run']];
 
+			if ($today_iso >= goat_add_months_clamped($run['end_date_iso'], GOAT_PROBATION_GAP_MONTHS))
+				return null;                       /* dormant */
+
 			if ($run['crossed'] !== null)
-			{
-				$since = goat_date_minus_days($today_iso, GOAT_PROBATION_RECENT_DAYS);
-				return ($run['crossed']['date_iso'] >= $since) ? 'pay_rate_due' : null;
-			}
+				return 'pay_rate_due';
 
 			if ($run['total_h'] + 1e-9 < GOAT_PROBATION_APPROACH_H)
-				return null;
-
-			if ($today_iso >= goat_add_months_clamped($run['end_date_iso'], GOAT_PROBATION_GAP_MONTHS))
 				return null;
 
 			return 'approaching';
@@ -524,7 +548,7 @@
 				'probation_hours' => GOAT_PROBATION_HOURS,
 				'gap_months'      => GOAT_PROBATION_GAP_MONTHS,
 				'approach_h'      => GOAT_PROBATION_APPROACH_H,
-				'recent_days'     => GOAT_PROBATION_RECENT_DAYS,
+				'grade_ids'       => goat_probation_grade_ids(),
 				'tolerance_h'     => GOAT_HOURS_TOLERANCE_H
 			);
 		}
