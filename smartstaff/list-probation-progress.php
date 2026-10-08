@@ -15,8 +15,9 @@
 	/* ADMIN endpoint — the Today › Operations "Probation — 144 hours" lane.
 	/*
 	/* Returns two lists, both about each person's CURRENT probation run, and
-	/* both ONLY for crew still on the base grade, T1/T2 (paygrade 10 —
-	/* goat_probation_grade_ids() in crew-hours-lib.php):
+	/* both ONLY for ACTIVE crew still on the base grade, T1/T2 (paygrade 10 —
+	/* goat_probation_grade_ids() in crew-hours-lib.php), minus placeholder
+	/* accounts (goat_probation_excluded_user_ids()):
 	/*
 	/*   pay_rate_due  crossed 144 hours, however long ago — Rich changes their
 	/*                 base pay rate. They leave the list when he does, because
@@ -93,9 +94,10 @@
 	/* served: a deploy would otherwise show the old list for up to 3 hours.
 	/*   1  5.66.0 — crossed in the last 30 days, every grade
 	/*   2  base grade (T1/T2) only, no recency window — 8 Oct 2026
+	/*   3  also active crew only, and placeholder accounts left out — 8 Oct 2026
 	*/
 	if (!defined('GOAT_PROBATION_RULES'))
-		define('GOAT_PROBATION_RULES', 2);
+		define('GOAT_PROBATION_RULES', 3);
 
 	$cache_dir  = dirname(dirname(dirname(dirname(__FILE__)))) . '/goat-cache';
 	$cache_file = $cache_dir . '/probation-' . substr(md5(dirname(__FILE__)), 0, 12) . '.json';
@@ -158,6 +160,8 @@
 		JOIN users    u ON u.id = ccm.userID
 		WHERE ccm.status   = 5
 		  AND u.paygradeID IN (%s)
+		  AND u.active     = '1'
+		  AND u.id NOT IN (%s)
 		  AND b.hidden     = 0
 		  AND c.start_date >= :cand_from
 		  AND c.start_date <= :today
@@ -252,7 +256,12 @@
 	{
 		/* 1. candidates (buffered, a few hundred ints) */
 		/* (int)-cast literals, the same way as the candidate ids below. */
-		$cstmt = $pdo->prepare(sprintf($sql_cand, implode(',', array_map('intval', goat_probation_grade_ids()))));
+		/* u.active is compared to the STRING '1', the house pattern
+		   (list-licences.php, list-crew-bulk.php) -- safe whether the column is
+		   a char or an enum. */
+		$cstmt = $pdo->prepare(sprintf($sql_cand,
+			implode(',', array_map('intval', goat_probation_grade_ids())),
+			implode(',', array_map('intval', goat_probation_excluded_user_ids()))));
 		$cstmt->execute(array(':cand_from' => $cand_from_ts, ':today' => $today_ts));
 
 		$ids = array();

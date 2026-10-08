@@ -268,6 +268,11 @@
 	t_ok('14j base grade is exactly paygrade 10 (T1 by day, T2 by night)',
 		count($g) === 1 && $g[0] === 10, json_encode($g));
 
+	$x = goat_probation_excluded_user_ids();
+	$k = goat_crew_hours_constants();
+	t_ok('14k placeholder account 5227 (Casper) is excluded, and the constants say so',
+		in_array(5227, $x, true) && $k['excluded_user_ids'] === $x && $k['active_only'] === 1, json_encode($x));
+
 	$b = goat_crew_hours_build(t_block('2026-09-01', 13, 10));         /* 130h */
 	t_ok('14c at 130h -> approaching',
 		goat_crew_hours_lane_group($b, $today) === 'approaching', goat_crew_hours_lane_group($b, $today));

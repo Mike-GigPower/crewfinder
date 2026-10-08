@@ -70,6 +70,17 @@
 		}
 
 		/*
+		/* Users never listed in the probation lane, whatever their hours.
+		/*   5227  "The Ghost, Casper" (EIN 3357) -- a placeholder account, not a
+		/*         person: 2,425 h since 2010, still on T1 (Mike, 8 Oct 2026).
+		/* Inactive crew are left out by the list query itself (u.active = '1').
+		*/
+		function goat_probation_excluded_user_ids()
+		{
+			return array(5227);
+		}
+
+		/*
 		/* 'Y-m-d' plus N calendar months, with the DAY CLAMPED to the end of the
 		/* target month: 2024-08-31 + 18 = 2026-02-28, not 2026-03-03.
 		/*
@@ -549,6 +560,8 @@
 				'gap_months'      => GOAT_PROBATION_GAP_MONTHS,
 				'approach_h'      => GOAT_PROBATION_APPROACH_H,
 				'grade_ids'       => goat_probation_grade_ids(),
+				'excluded_user_ids' => goat_probation_excluded_user_ids(),
+				'active_only'     => 1,
 				'tolerance_h'     => GOAT_HOURS_TOLERANCE_H
 			);
 		}
