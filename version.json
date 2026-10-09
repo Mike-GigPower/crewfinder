@@ -1,6 +1,6 @@
 {
-  "version": "5.68.0",
+  "version": "5.69.0",
   "release_date": "2026-10-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.68.0/TheGOAT.dmg",
-  "release_notes": "See which calls have had their crew list sent. Mark lists as sent after you create them, make a list for a single call, and see when a sent list is out of date."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.69.0/TheGOAT.dmg",
+  "release_notes": "New Crew lists to send tile on Today › Operations: calls whose crew list is due, counted in working hours, grouped by booking, with Create crew lists and Mark as sent."
 }
