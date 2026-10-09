@@ -164,7 +164,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.72.0"
+APP_VERSION    = "5.73.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -13751,7 +13751,7 @@ def api_admin_crew_lookups():
 @require_cohort("admin")
 def api_admin_crew_list():
     """Crew list for Crew > Records: {id, name, ein, phone, active, groups,
-    licences?} plus a top-level licences_ok.
+    licences?, contract?} plus top-level licences_ok and contracts_ok.
 
     ?active=0 returns inactive crew; default (or ?active=1) returns active.
     id is the internal SmartStaff userId — the same one /crew/manage and
@@ -13765,6 +13765,14 @@ def api_admin_crew_list():
     the contract in fetch_crew_bulk. `licences_ok` hands the client that same
     distinction in one flag so the Records filter can refuse out loud instead of
     rendering an honest-looking empty list.
+
+    `contract` follows the same absent-key rule, from admin-list-contracts-bulk.php
+    (one call, made AFTER fetch_crew_bulk — never alongside it, per the
+    per-session PHP lock): {signed_at, version, has_pdf} when one is on file,
+    None when there is none, and the key ABSENT on every row when the lookup
+    failed. `contracts_ok` is that same distinction as one flag, so the
+    "No contract" chip refuses instead of matching nobody (or everybody). A
+    failed lookup is logged and the list still goes out.
     """
     ss = get_ss_session()
     if not ss:
@@ -13773,6 +13781,11 @@ def api_admin_crew_list():
     crew, err = fetch_crew_bulk(ss, include_inactive=(not want_active))
     if err:
         return jsonify({"error": err}), 502
+    # Sequential, after fetch_crew_bulk has returned: one SmartStaff request at
+    # a time (per-session PHP lock).
+    contracts, c_err = ss_list_contracts_bulk(ss)
+    if c_err:
+        print(f"[crew-list] WARNING: contract lookup failed, column will show unknown: {c_err}")
     # push_ok is read from the crew cache, which the refresh stamps from Crew Hub.
     # Anything but a real bool (never stamped, Hub down at refresh, inactive crew
     # not in the cache) goes out as None, so the page shows "unknown", not "Off".
@@ -13795,6 +13808,13 @@ def api_admin_crew_list():
         }
         if "licences" in c:
             row["licences"] = c["licences"]
+        if contracts is not None:
+            k = contracts.get(str(c["id"]))
+            row["contract"] = None if k is None else {
+                "signed_at": k.get("signed_at"),
+                "version":   k.get("version"),
+                "has_pdf":   bool(k.get("has_pdf")),
+            }
         rows.append(row)
     rows.sort(key=lambda r: (r["name"] or "").lower())
     # Judged on the WHOLE fetch, not the filtered rows: every crew member from
@@ -13803,7 +13823,8 @@ def api_admin_crew_list():
     # empty-roster branch and api_availability's `all_crew and not any(...)`
     # guard, so the two surfaces refuse under exactly the same conditions.
     lic_ok = (not crew) or any("licences" in c for c in crew)
-    return jsonify({"crew": rows, "licences_ok": lic_ok})
+    return jsonify({"crew": rows, "licences_ok": lic_ok,
+                    "contracts_ok": contracts is not None})
 
 
 @app.route("/api/crew-cards")
@@ -17730,6 +17751,35 @@ def ss_list_documents(ss, user_id):
     return (out.get("documents") or []), None
 
 
+def ss_list_contracts_bulk(ss):
+    """Everyone's contract via admin-list-contracts-bulk.php in one query, or
+    (None, err): {user_id_str: {signed_at, version, has_pdf}}. A crew member
+    with no contract is simply absent from the map — the bulk form of
+    ss_list_documents, for Crew > Records' Contract column.
+
+    Keys are coerced to str so they line up with str(c["id"]) everywhere else.
+    An empty map is a legitimate answer (nobody has a contract yet), not a
+    failure."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-list-contracts-bulk.php", timeout=20)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    contracts = out.get("contracts")
+    if not isinstance(contracts, dict):
+        # PHP's json_encode of an empty array is [] — the endpoint casts to
+        # (object), but don't let a [] turn into a crash if it ever doesn't.
+        contracts = {}
+    return {str(k): (v or {}) for k, v in contracts.items()}, None
+
+
 def ss_list_visa_workers(ss):
     """The visa register via list-visa-workers.php, or (None, err).
 
@@ -18258,27 +18308,19 @@ def _drive_active_roster(ss, fresh=False):
 
 
 def _users_with_contract(ss, user_ids):
-    """(has_contract, failed) as sets of user-id strings. admin-get-documents.php
-    has no bulk form, so this is one call per id on a small pool, like the other
-    bulk fetches here. A failed lookup is reported, never read as 'no contract'
-    — though saving stays safe either way, because admin-add-contract.php
+    """(has_contract, failed) as sets of user-id strings, from ONE
+    admin-list-contracts-bulk.php call. A failed lookup is reported, never read
+    as 'no contract' — if the bulk call fails, every id lands in `failed` —
+    though saving stays safe either way, because admin-add-contract.php
     refuses to overwrite."""
-    from concurrent.futures import ThreadPoolExecutor
     has, failed = set(), set()
-    ids = sorted(set(user_ids))
+    ids = sorted(set(str(u) for u in user_ids))
     if not ids:
         return has, failed
-
-    def one(uid):
-        docs, err = ss_list_documents(ss, uid)
-        return uid, docs, err
-
-    with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
-        for uid, docs, err in ex.map(one, ids):
-            if err:
-                failed.add(uid)
-            elif any((d or {}).get("doc_type") == "contract" for d in docs):
-                has.add(uid)
+    contracts, err = ss_list_contracts_bulk(ss)
+    if err:
+        return has, set(ids)
+    has = {uid for uid in ids if uid in contracts}
     return has, failed
 
 
