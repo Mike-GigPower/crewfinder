@@ -1595,6 +1595,17 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-dismiss:hover{filter:brightness(1.25)}
 .ops-ack-err{font-size:11px;color:var(--accent2)}
 .ops-row.ops-row--static{cursor:default}
+/* Crew lists to send — the detail window groups calls under their booking. */
+.ops-cl-group{display:flex;flex-direction:column;gap:6px;padding:0 0 12px}
+.ops-cl-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:4px 2px 0}
+.ops-cl-why{grid-column:1 / -1;font-size:11px;margin-top:2px;overflow-wrap:anywhere}
+.ops-cl-make{align-self:flex-start;font-size:11px;color:var(--accent);border:1px dashed var(--accent);border-radius:4px;padding:5px 10px;cursor:pointer;background:var(--surface2)}
+.ops-cl-make:hover{filter:brightness(1.25)}
+.ops-cl-acts{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.ops-cl-mark{color:var(--crewlist);border-color:var(--crewlist)}
+.ops-cl-confirm{font-size:12px;color:var(--text)}
+.ops-cl-msg{font-size:11px;color:var(--muted)}
+.ops-cl-msg.err{color:var(--accent2)}
 .ops-row.ops-row--static:hover{border-color:var(--border)}
 /* ── Push notifications lane: the coverage strip ─────────────────────────────
    Roster-wide numbers on an exceptions page. They are zone 2 (nav v0.2 §7.1) —
@@ -21282,6 +21293,10 @@ async function crewlistUndo(bookingId, callId){
 // All Bookings row's ✉.
 async function crewlistRefreshAfterChange(bookingId){
   var st = await bkLoadCrewlistStatus(bookingId);
+  // The Ops tile, after the status read so the two SmartStaff calls never
+  // overlap; queued through opsGated. Reloaded even if the status read failed —
+  // the mark itself succeeded.
+  if(typeof opsCrewlistsReload === 'function') opsCrewlistsReload();
   if(!st) return;
   var agg = st.bookings[String(bookingId)] || null;
 
@@ -24633,6 +24648,13 @@ const OPS_LANES = [
   // and the clear-on-close in closeOpsDetail handle it without naming it.
   { key:'calls_to_fill', label:'Calls to fill',
     load: loadOpsCalls, render: renderOpsCalls, list: renderOpsCallsList, dims:['fill','lead','day'] },
+  // Crew lists to send (DESIGN-crewlist-sent-v0_2 §8). Admin only: a row's main
+  // action is Create Crew Lists, which only admins can mark (D9). Rows open the
+  // call dialog through the default opsRowTarget, so no `target`.
+  { key:'crewlists', label:'Crew lists to send',
+    cohorts:['admin'],
+    load: loadOpsCrewlists, render: renderOpsCrewlists, list: renderOpsCrewlistsList,
+    dims:['due','why'] },
   { key:'acks', label:'Acknowledgements outstanding',
     load: loadOpsAcks, render: renderOpsAcks, list: renderOpsAcksList, dims:['kind','lead'] },
   // The backward-looking lane, sitting with the other work queues rather than
@@ -25141,6 +25163,286 @@ function renderOpsUnavailable(lane){
     + '</div>';
   setOpsLaneDetail(lane, false);
   opsSyncDetail(lane);
+}
+
+// ── Lane: Crew lists to send (DESIGN-crewlist-sent-v0_2 §8, D12–D18) ──────────
+// /api/ops/crewlists owns the predicate (confirmed >= 1, not cancelled, never
+// sent or changed since sent) and the due_bucket / why tags. `due` is WORKING
+// hours (Mon–Fri, no VIC public holidays), not the house elapsed-hours lead
+// time — the labels say "working h" so nobody reads the two as one scale.
+const OPS_DUE_LABELS  = { due24:'Due in 24 working h', due72:'24–72 working h', later:'Later (to 14 days)' };
+const OPS_DUE_COLORS  = { due24:'var(--accent2)', due72:'var(--warn)', later:'var(--muted)' };
+const OPS_DUE_HEADS   = { due24:'due in 24h', due72:'24–72h', later:'later' };
+const OPS_DUE_RANK    = { due24:0, due72:1, later:2 };
+const OPS_WHY_LABELS  = { never:'Never sent', changed:'Changed since sent' };
+const OPS_WHY_COLORS  = { never:'var(--muted)', changed:'var(--crewlist)' };
+OPS_DIM_LABELS.due = OPS_DUE_LABELS;
+OPS_DIM_LABELS.why = OPS_WHY_LABELS;
+
+async function loadOpsCrewlists(lane, force){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/crewlists', {cache:'no-store'});
+    if(r.status === 403){                    // not admin: hide, never an error card
+      st.status = 'hidden';
+      const el = document.getElementById('ops-lane-'+lane.key);
+      if(el){ el.dataset.hidden403 = '1'; el.style.display = 'none'; }
+      return;
+    }
+    const d = await r.json();
+    if(!d || d.unavailable || d.error){
+      st.status = 'unavailable'; st.error = (d && d.error) || '';
+      renderOpsUnavailable(lane); return;
+    }
+    st.status = 'ready'; st.data = d;
+    if(d.generated_at) setOpsAsAt(d.generated_at);
+    renderOpsCrewlists(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = (e && e.message) || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+// After a mark or undo (crewlistRefreshAfterChange). Only when the lane has
+// loaded at least once on this session, and through opsGated so it queues
+// behind any Today cycle — one SmartStaff request at a time.
+function opsCrewlistsReload(){
+  const lane = OPS_LANES.find(function(l){ return l.key === 'crewlists'; });
+  const st = _opsLaneState.crewlists;
+  if(!lane || !st || st.status === 'hidden' || !opsLaneVisible(lane)) return;
+  opsGated(function(){
+    st.status = 'loading';
+    setOpsLaneLoading(lane);
+    return loadOpsCrewlists(lane, true);
+  });
+}
+
+function opsCrewlistsSubhead(d){
+  const c = (d && d.counts) || {};
+  const n = c.total || 0, b = c.bookings || 0;
+  let s = n+' call'+(n===1?'':'s')+' · '+b+' booking'+(b===1?'':'s');
+  const h = (d && d.holidays) || {};
+  if(h.unavailable)  s += ' · holidays: weekends only';
+  else if(h.stale)   s += ' · holidays: saved copy';
+  return s;
+}
+
+function renderOpsCrewlists(lane){
+  const st     = _opsLaneState[lane.key];
+  const data   = st && st.data;
+  const counts = (data && data.counts) || {};
+  const total  = counts.total || 0;
+  st.total = total;      // badge counts CALLS, never bookings or crew
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  if(badge) badge.textContent = total;
+  if(!body) return;
+  if(total === 0){
+    body.innerHTML = '<div class="ops-empty">All crew lists sent.</div>';
+    setOpsLaneDetail(lane, false);
+    opsSyncDetail(lane);
+    return;
+  }
+  const dueSegs = ['due24','due72','later'].map(function(k){
+    return { key:k, value:(counts.due && counts.due[k]) || 0, color:OPS_DUE_COLORS[k], label:OPS_DUE_LABELS[k] };
+  });
+  const whySegs = ['never','changed'].map(function(k){
+    return { key:k, value:(counts.why && counts.why[k]) || 0, color:OPS_WHY_COLORS[k], label:OPS_WHY_LABELS[k] };
+  });
+  body.innerHTML = ''
+    + '<div class="ops-subhead">'+escapeHtml(opsCrewlistsSubhead(data))+'</div>'
+    + '<div class="ops-donuts">'
+    +   opsDonutBlock(lane, 'Due', 'due', dueSegs)
+    +   opsDonutBlock(lane, 'Why', 'why', whySegs)
+    + '</div>';
+  setOpsLaneDetail(lane, true);
+  opsSyncDetail(lane);
+}
+
+// Filter on the server's tags only — never a recomputed boundary.
+function opsFilteredCrewlists(lane){
+  const st = _opsLaneState[lane.key];
+  let rows = (st.data && st.data.calls) ? st.data.calls.slice() : [];
+  if(st.chips.due) rows = rows.filter(function(o){ return o.due_bucket === st.chips.due; });
+  if(st.chips.why) rows = rows.filter(function(o){ return o.why === st.chips.why; });
+  return rows;
+}
+
+// bookingId -> [call ids] of the group as last drawn, for the per-booking
+// "Create crew lists for these N calls" button. Follows the active filter, so
+// the button always means exactly the calls shown above it.
+let _opsCrewlistGroups = {};
+
+// PURE: rows -> [{booking_id, calls:[...], worst}], bookings ordered by their
+// most urgent call (bucket, then start), calls inside by start (D18, §8.5).
+function opsCrewlistGroups(rows){
+  const by = {}, order = [];
+  rows.forEach(function(o){
+    const k = String(o.booking_id);
+    if(!by[k]){ by[k] = { booking_id:o.booking_id, calls:[] }; order.push(k); }
+    by[k].calls.push(o);
+  });
+  const groups = order.map(function(k){
+    const g = by[k];
+    g.calls.sort(function(a, b){ const as = a.start || '￿', bs = b.start || '￿'; return as < bs ? -1 : (as > bs ? 1 : 0); });
+    g.worst = g.calls.reduce(function(w, o){ return OPS_DUE_RANK[o.due_bucket] < OPS_DUE_RANK[w] ? o.due_bucket : w; }, 'later');
+    g.first = g.calls.filter(function(o){ return o.due_bucket === g.worst; })[0].start || '￿';
+    return g;
+  });
+  groups.sort(function(a, b){
+    const r = OPS_DUE_RANK[a.worst] - OPS_DUE_RANK[b.worst];
+    if(r) return r;
+    return a.first < b.first ? -1 : (a.first > b.first ? 1 : 0);
+  });
+  return groups;
+}
+
+function renderOpsCrewlistsList(lane){
+  const el = document.getElementById('ops-list-'+lane.key);
+  if(!el) return;
+  const rows = opsFilteredCrewlists(lane);
+  const idx = {};
+  rows.forEach(function(o){ idx[o.call_id] = o; });
+  _opsRowIndex[lane.key] = idx;
+  _opsCrewlistGroups = {};
+  if(!rows.length){
+    el.innerHTML = '<div class="ops-empty" style="padding:14px 2px">No calls match the current filter.</div>';
+    return;
+  }
+  el.innerHTML = opsCrewlistGroups(rows).map(function(g){
+    const bid = String(g.booking_id);
+    _opsCrewlistGroups[bid] = g.calls.map(function(o){ return String(o.call_id); });
+    const o0  = g.calls[0];
+    const n   = g.calls.length;
+    const name = [o0.booking_name, o0.venue].map(function(x){ return escapeHtml(decodeEntities(x || '')); })
+                   .filter(Boolean).join(' — ');
+    return '<div class="ops-cl-group">'
+      +   '<div class="ops-cl-head">'
+      +     '<span class="ops-row-name">'+(name || '—')+'</span>'
+      +     '<span class="ops-row-when" style="color:'+OPS_DUE_COLORS[g.worst]+'">'
+      +       n+' call'+(n===1?'':'s')+' · '+escapeHtml(OPS_DUE_HEADS[g.worst])+'</span>'
+      +   '</div>'
+      +   g.calls.map(function(o){ return opsCrewlistCard(o, lane.key); }).join('')
+      +   '<div class="ops-cl-acts" id="ops-cl-acts-'+escapeHtml(bid)+'">'+opsCrewlistActsHtml(bid)+'</div>'
+      + '</div>';
+  }).join('');
+}
+
+// decodeEntities BEFORE escapeHtml on every displayed string.
+function opsCrewlistCard(o, laneKey){
+  const nm   = escapeHtml(decodeEntities(o.call_name || 'Call'));
+  const when = escapeHtml(opsCallWhen(o));
+  const dcol = OPS_DUE_COLORS[o.due_bucket] || 'var(--muted)';
+  const why  = (o.why === 'changed')
+    ? '<div class="ops-cl-why" style="color:var(--warn)">'
+        + escapeHtml(decodeEntities(crewlistDiffText(o.diff) || 'Changed since sent')) + '</div>'
+    : '<div class="ops-cl-why" style="color:var(--muted)">Never sent</div>';
+  return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(Number(o.call_id)||0)+')">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+nm+'</span>'
+    +       '<span class="ops-row-when">'+when+'</span>'
+    +     '</div>'
+    +     '<span class="ops-row-meta">'+(o.confirmed||0)+' confirmed</span>'
+    +   '</div>'
+    +   '<div class="ops-row-side">'
+    +     '<span class="ops-pill" style="color:'+dcol+';border-color:'+dcol+'">'+escapeHtml(OPS_DUE_HEADS[o.due_bucket] || '')+'</span>'
+    +   '</div>'
+    +   why
+    + '</div>';
+}
+
+// The action row under a booking group: Create crew lists, and the backlog
+// "✉ Mark as sent" (tracking started 9 Oct, so lists Rich had already sent show
+// as never sent; this clears them without printing). Admin only, as the lane is.
+function opsCrewlistActsHtml(bid){
+  const ids = _opsCrewlistGroups[String(bid)] || [];
+  const n = ids.length;
+  const b = escapeHtml(String(bid));
+  return '<div class="ops-cl-make" onclick="event.stopPropagation();opsCrewlistsMake(\''+b+'\')">'
+    +   '📋 Create crew lists for '+(n===1 ? 'this call' : 'these '+n+' calls')+'</div>'
+    + '<div class="ops-cl-make ops-cl-mark" onclick="event.stopPropagation();opsCrewlistsAskMark(\''+b+'\')">✉ Mark as sent</div>';
+}
+
+function _opsClActs(bid){ return document.getElementById('ops-cl-acts-'+String(bid)); }
+
+// Inline confirm in the group's own row — never confirm()/alert().
+function opsCrewlistsAskMark(bid){
+  const el = _opsClActs(bid);
+  const n = (_opsCrewlistGroups[String(bid)] || []).length;
+  if(!el || !n) return;
+  const b = escapeHtml(String(bid));
+  el.innerHTML = '<span class="ops-cl-confirm">Mark '+(n===1 ? 'this call' : 'these '+n+' calls')+' as sent without printing?</span>'
+    + '<div class="ops-cl-make ops-cl-mark" onclick="event.stopPropagation();opsCrewlistsDoMark(\''+b+'\')">Mark '+n+' as sent</div>'
+    + '<div class="ops-cl-make" onclick="event.stopPropagation();opsCrewlistsCancelMark(\''+b+'\')">Cancel</div>';
+}
+
+function opsCrewlistsCancelMark(bid){
+  const el = _opsClActs(bid);
+  if(el) el.innerHTML = opsCrewlistActsHtml(bid);
+}
+
+function _opsClMsg(bid, text, isErr){
+  const el = _opsClActs(bid);
+  if(!el) return;
+  el.innerHTML = opsCrewlistActsHtml(bid)
+    + '<span class="ops-cl-msg'+(isErr ? ' err' : '')+'">'+escapeHtml(text)+'</span>';
+}
+
+// The payload comes from the EXISTING crewlistSnapshot over a fresh
+// /api/booking read, for exactly this group's call ids — so confirmed-only
+// crew and both cancelled rules are Slice B's. A "changed" call is re-marked
+// with its current details, which is intended. The refresh afterwards is the
+// same one a printed mark runs: tile, Schedule, dialog and All Bookings.
+async function opsCrewlistsDoMark(bid){
+  const ids = (_opsCrewlistGroups[String(bid)] || []).slice();
+  const el = _opsClActs(bid);
+  if(!el || !ids.length) return;
+  el.innerHTML = '<span class="ops-cl-msg">Marking…</span>';
+  // Both reads go through opsGated (one SmartStaff request at a time on this
+  // tab); the refresh runs after the gate is released, since it queues a reload.
+  const ok = await opsGated(function(){ return _opsCrewlistsMarkGated(bid, ids, el); });
+  if(ok) crewlistRefreshAfterChange(String(bid));   // async, never awaited; reloads this lane
+}
+
+async function _opsCrewlistsMarkGated(bid, ids, el){
+  try{
+    const rb = await fetch('/api/booking/'+encodeURIComponent(bid));
+    const data = await rb.json().catch(function(){ return {}; });
+    if(!rb.ok || !data || data.error){
+      _opsClMsg(bid, 'Couldn\'t read the booking: '+((data && data.error) || ('HTTP '+rb.status)), true);
+      return false;
+    }
+    const snap = crewlistSnapshot(data, ids);
+    if(!snap.length){
+      _opsClMsg(bid, 'Nothing to mark — these calls are cancelled.', true);
+      return false;
+    }
+    const r = await fetch('/api/crewlist/mark', {method:'POST', headers:{'Content-Type':'application/json'},
+                                                 body: JSON.stringify({calls: snap})});
+    const j = await r.json().catch(function(){ return {}; });
+    if(!r.ok || !j.ok){
+      _opsClMsg(bid, 'Couldn\'t mark as sent: '+(j.error || ('HTTP '+r.status)), true);
+      return false;
+    }
+    const n = (j.marked || snap).length;
+    el.innerHTML = '<span class="ops-cl-msg" style="color:var(--crewlist)">Marked '+n+' call'+(n===1?'':'s')+' as sent.</span>';
+    return true;
+  }catch(e){
+    _opsClMsg(bid, 'Couldn\'t mark as sent: '+((e && e.message) || 'request failed'), true);
+    return false;
+  }
+}
+
+// Opens Create Crew Lists with only this group's calls ticked (D6). Same entry
+// as All Bookings: openCrewLists puts the booking dialog on the Back trail, and
+// openBookingDialog is NOT called first — its async render would race the form.
+// The lane reloads from crewlistRefreshAfterChange after a mark.
+function opsCrewlistsMake(bookingId){
+  const ids = _opsCrewlistGroups[String(bookingId)];
+  if(!ids || !ids.length) return;
+  openEntityModal();
+  openCrewLists(bookingId, ids.slice());
 }
 
 // ── Lane: Probation — 144 hours (BRIEF-crew-hours-probation.md §6) ──────────

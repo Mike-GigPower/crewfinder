@@ -9369,6 +9369,148 @@ def api_ops_calls_calendar():
     })
 
 
+# ── Ops lane: Crew lists to send (DESIGN-crewlist-sent-v0_2 §8, D12–D18) ──────
+# Calls in the next 15 days (today + 14) with at least one confirmed crew member
+# whose crew list was never marked sent, or was marked and has changed since.
+# The buckets are WORKING hours (Mon–Fri, not a VIC public holiday), not the
+# house _ops_lead_bucket elapsed hours: the donut labels say so.
+
+OPS_CREWLIST_DAYS = 14      # window is today .. today + 14, both ends included
+
+# The SAME cancelled test as _clIsCancelled / crewlistSnapshot in the template:
+# cancelled_at is the truth, the "CANCELLED -" name prefix cancel-call.php writes
+# is the backstop. get-calls-bulk.php already drops cancelled_at rows, but not
+# the prefix-only ones, and those would sit here as "never sent" for ever.
+_CREWLIST_CANCELLED_RE = re.compile(r"^\s*cancelled\s*-", re.I)
+
+
+def _crewlist_is_cancelled(r):
+    return bool(r.get("cancelled_at") or r.get("cancelled") is True
+                or _CREWLIST_CANCELLED_RE.match(r.get("call_name") or ""))
+
+
+def crewlist_due_bucket(now, start_dt, holidays):
+    """PURE. Working hours from now to the call start -> due24 / due72 / later.
+    `<=`, not `<`: a Saturday call joins due24 AT Fri 00:00, when the working
+    hours left are exactly 24 (D12, "from midnight Thursday"). A call already
+    started has 0 working hours left -> due24: overdue is still due (D17).
+    holidays is passed in (a set of dates; empty = weekends only) so a caller
+    loads it once and tests can inject it."""
+    wh = public_holidays.working_hours(now, start_dt, holidays)
+    if wh <= 24:
+        return "due24"
+    if wh <= 72:
+        return "due72"
+    return "later"
+
+
+def ops_crewlist_rows(calls, status_calls, now, holidays):
+    """PURE. get-calls-bulk.php rows + get-crewlist-status.php `calls` -> the
+    lane's rows and counts. The server owns the buckets; the UI never
+    recomputes them.
+
+    Kept: not cancelled (either test above), confirmed >= 1 (RAW status-5
+    `booked`, not _filled(): an unanswered promotion is still confirmed, and is
+    on the list crewlistSnapshot prints and marks), and state none (absent from
+    status_calls) or changed. state sent is dropped (D15, D16, D17)."""
+    out = []
+    c_due = {"due24": 0, "due72": 0, "later": 0}
+    c_why = {"never": 0, "changed": 0}
+    for r in calls:
+        if _crewlist_is_cancelled(r):
+            continue
+        confirmed = int(r.get("booked") or 0)
+        if confirmed < 1:
+            continue
+        st = status_calls.get(str(r.get("call_id"))) or {}
+        state = st.get("state") or "none"
+        if state == "sent":
+            continue
+        why = "changed" if state == "changed" else "never"
+        start_iso = r.get("start_iso")
+        try:
+            start_dt = datetime.strptime(start_iso, "%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            start_dt = None
+        # An unparseable start cannot be judged: the most urgent bucket keeps it
+        # in sight rather than letting it hide in "later".
+        due = crewlist_due_bucket(now, start_dt, holidays) if start_dt else "due24"
+        c_due[due] += 1
+        c_why[why] += 1
+        out.append({
+            "booking_id":   r.get("booking_id"),
+            "call_id":      r.get("call_id"),
+            "booking_name": r.get("booking_name"),
+            "venue":        r.get("venue"),
+            "call_name":    r.get("call_name"),
+            "start":        start_iso,
+            "date_iso":     r.get("date_iso"),
+            "time":         r.get("time"),
+            "confirmed":    confirmed,
+            "due_bucket":   due,
+            "why":          why,
+            "diff":         st.get("diff") if why == "changed" else None,
+            "sent_at":      st.get("sent_at") if why == "changed" else None,
+            "sent_by_name": st.get("sent_by_name") if why == "changed" else None,
+        })
+    counts = {
+        "total":    len(out),
+        "bookings": len({o["booking_id"] for o in out}),
+        "due":      c_due,
+        "why":      c_why,
+    }
+    return out, counts
+
+
+@app.route("/api/ops/crewlists", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_crewlists():
+    """Ops landing — the 'Crew lists to send' lane. Two SmartStaff requests, in
+    series (the per-session PHP lock): the calls in the window, then their
+    crew-list state. Soft-fails with HTTP 200 {"unavailable": true}.
+
+    A failed STATUS read is a lane failure too, unlike the Schedule's soft merge:
+    here "couldn't check" would otherwise read as "every list never sent".
+    A failed HOLIDAY load is not: working_hours falls back to weekends only, and
+    the meta tells the subhead to say so."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    now   = datetime.now()                       # one now for every row
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    last  = today + timedelta(days=OPS_CREWLIST_DAYS)
+    start = today.strftime("%Y-%m-%d")
+    # Same 15 days, two conventions: get-calls-bulk.php's end is EXCLUSIVE,
+    # get-crewlist-status.php's end is INCLUSIVE.
+    bulk_end   = (last + timedelta(days=1)).strftime("%Y-%m-%d")
+    status_end = last.strftime("%Y-%m-%d")
+
+    rows, err = fetch_calls_for_ops(ss, start, bulk_end)
+    if err is not None:
+        app.logger.warning(f"[ops-crewlists] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+
+    status, serr = fetch_crewlist_status(ss, {"start": start, "end": status_end})
+    if serr is not None:
+        app.logger.warning(f"[ops-crewlists] status unavailable: {serr}")
+        return jsonify({"unavailable": True, "error": f"crew list status: {serr}"})
+
+    holidays, hmeta = public_holidays.load_holidays()
+    out, counts = ops_crewlist_rows(rows, status.get("calls") or {}, now, holidays)
+    return jsonify({
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "window":       {"start": start, "end": status_end},
+        "calls":        out,
+        "counts":       counts,
+        "holidays": {
+            "stale":       bool(hmeta.get("stale")),
+            "unavailable": bool(hmeta.get("unavailable")),
+            "years":       sorted(public_holidays.covered_years(holidays)),
+        },
+    })
+
+
 def fetch_pending_acks_bulk(ss, start, end):
     """Ops landing — the 'Acknowledgements outstanding' lane source, via the
     DB-backed get-pending-acks-bulk.php endpoint (dual-gated). Returns the
