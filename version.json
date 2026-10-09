@@ -1,6 +1,6 @@
 {
-  "version": "5.69.0",
+  "version": "5.70.0",
   "release_date": "2026-10-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.69.0/TheGOAT.dmg",
-  "release_notes": "New Crew lists to send tile on Today › Operations: calls whose crew list is due, counted in working hours, grouped by booking, with Create crew lists and Mark as sent."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.70.0/TheGOAT.dmg",
+  "release_notes": "THE GOAT now warns you before adding crew to a load-in would put the load out it feeds over its number, and ✕ Remove offers to take someone off linked calls together."
 }
