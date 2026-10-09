@@ -5664,8 +5664,89 @@ function showOfferResults(title, results){
   return t;
 }
 
+// ── OVER WARNING (DESIGN-downstream-over-warning-v0_2) ──
+// A locked feed carries crew onto the call it feeds WITHOUT a capacity check,
+// so adding to a load-in can push its load out past its number. The server
+// works this out before writing anything and answers 409 {needs_confirm,
+// warnings}; these helpers show it and let ops Continue or Cancel (warn, never
+// block). Also used, with different buttons, by the ✕ Remove prompt.
+//
+// Its own overlay ABOVE the entity modal (99991) and below the toast (99996),
+// so asking from inside the call dialog doesn't replace what is on screen.
+function goatChoice(opts){
+  return new Promise(function(resolve){
+    var ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99995;'
+      + 'display:flex;align-items:center;justify-content:center;padding:16px';
+    var box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface);border:1px solid var(--warn);border-left:3px solid var(--warn);'
+      + 'border-radius:6px;max-width:520px;width:100%;max-height:85vh;overflow:auto;padding:16px 18px;'
+      + 'box-shadow:0 8px 30px rgba(0,0,0,.5)';
+    box.innerHTML =
+        '<div style="font-size:15px;font-weight:600;color:var(--warn);margin-bottom:10px">'+escapeHtml(opts.title||'')+'</div>'
+      + '<div style="font-size:12px;color:var(--text);line-height:1.5">'+(opts.html||'')+'</div>'
+      + '<div class="gc-btns" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px"></div>';
+    var row = box.querySelector('.gc-btns');
+    function done(v){
+      document.removeEventListener('keydown', onKey, true);
+      ov.remove();
+      resolve(v);
+    }
+    // Esc = Cancel. Captured and stopped so the global Esc handler doesn't
+    // also close the call dialog underneath.
+    function onKey(e){
+      if(e.key === 'Escape'){ e.preventDefault(); e.stopImmediatePropagation(); done(null); }
+    }
+    (opts.buttons||[]).forEach(function(b){
+      var el = document.createElement('button');
+      el.type = 'button';
+      el.textContent = b.label;
+      el.style.cssText = 'font-size:12px;padding:6px 12px;border-radius:4px;cursor:pointer;'
+        + 'background:var(--surface2);border:1px solid '+(b.primary?'var(--warn)':'var(--border)')+';'
+        + 'color:'+(b.primary?'var(--warn)':'var(--text)');
+      el.onclick = function(){ done(b.value); };
+      row.appendChild(el);
+    });
+    ov.appendChild(box);
+    ov.addEventListener('click', function(e){ if(e.target === ov) done(null); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(ov);
+  });
+}
+
+function overWarningsHtml(warnings){
+  return (warnings||[]).map(function(w){
+    var call = escapeHtml(decodeEntities(String(w.call_name||'')));
+    var via  = escapeHtml(decodeEntities(String(w.via||'')));
+    var when = w.when ? ' ('+escapeHtml(String(w.when))+')' : '';
+    var people = w.adding+' '+(w.adding === 1 ? 'person' : 'people');
+    var head = (w.now >= w.required)
+      ? '<b>'+call+'</b>'+when+' is already full: '+w.now+' of '+w.required+' places taken.'
+      : '<b>'+call+'</b>'+when+' has '+w.now+' of '+w.required+' places taken.';
+    var body = w.up_to
+      ? 'The call-out can put <b>up to '+people+'</b> from '+via+' onto it as well, which could make it <b style="color:var(--conflict)">'+w.after+' of '+w.required+'</b>.'
+      : 'This also puts '+people+' from '+via+' onto it, which will make it <b style="color:var(--conflict)">'+w.after+' of '+w.required+'</b>.';
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+head+' '+body+'</div>';
+  }).join('');
+}
+
+// Resolves true to carry on, false to stop.
+function goatOverConfirm(warnings){
+  var n = (warnings||[]).length;
+  return goatChoice({
+    title: n === 1 ? 'This will put a call over its number' : 'This will put '+n+' calls over their number',
+    html: overWarningsHtml(warnings)
+      + '<div style="margin-top:10px;color:var(--muted)">These calls are fed by the one you\'re adding to, so the crew are booked onto them too, even when they\'re full. '
+      + 'You can carry on and trim them afterwards, or cancel and fix the numbers first.</div>',
+    buttons: [
+      {label:'Cancel', value:false},
+      {label:'Continue anyway', value:true, primary:true}
+    ]
+  }).then(function(v){ return v === true; });
+}
+
 // ── SMARTSTAFF ACTIONS ──
-async function addSelected(confirm){
+async function addSelected(confirm, ackOver){
   const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
   const targets=currentResult?.targets||[];if(!targets.length)return;
   // Ops rule: a dedicated Crew Boss call carries ONE resource. The crew-facing
@@ -5677,6 +5758,7 @@ async function addSelected(confirm){
   }
   const btn=document.getElementById(confirm?'btn-confirm':'btn-add');
   const orig=btn.textContent;btn.disabled=true;btn.textContent=confirm?'Confirming…':'Adding…';
+  let overRetry=null;
   // Server-side via THE GOAT's own SmartStaff session (no browser popup, no
   // callsheet page). Mirrors the ASK THE GOAT add-crew path.
   try{
@@ -5685,10 +5767,17 @@ async function addSelected(confirm){
       body:JSON.stringify({
         crew:crew.map(c=>({name:c.name,crew_id:String(c.crewId)})),
         calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||'',venue:t.venue||'',start_dt:t.start_dt||'',end_dt:t.end_dt||''})),
-        confirm:!!confirm
+        confirm:!!confirm,
+        ack_over:!!ackOver
       })
     });
     const j=await r.json();
+    // Over-check: nothing was written. Ask, then resend with ack_over.
+    if(r.status===409 && j && j.needs_confirm){
+      btn.textContent=orig; btn.disabled=false;
+      overRetry = (await goatOverConfirm(j.warnings)) ? 'go' : 'stop';
+      return;
+    }
     if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
     const results=j.results||[];
     const t=showOfferResults(confirm?'Add & Confirm - results':'Add crew - results', results);
@@ -5700,15 +5789,17 @@ async function addSelected(confirm){
     btn.textContent='Failed';
     alert((confirm?'Add & Confirm':'Add')+' failed: '+(e.message||e));
   }finally{
-    setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},4000);
+    if(overRetry){ if(overRetry==='go') addSelected(confirm, true); }
+    else setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},4000);
   }
 }
 
-async function sendSMS(){
+async function sendSMS(ackOver){
   const crew=[...selected.values()].filter(c=>c.crewId);if(!crew.length)return;
   const targets=currentResult?.targets||[];if(!targets.length)return;
   const btn=document.getElementById('btn-sms');
   const orig=btn.textContent;btn.disabled=true;btn.textContent='Sending…';
+  let overRetry=null;
   // Server-side: the endpoint adds the crew then sends the SMS through THE
   // GOAT's SmartStaff session. No popup, no callsheet page.
   try{
@@ -5716,10 +5807,17 @@ async function sendSMS(){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         crew:crew.map(c=>({name:c.name,crew_id:String(c.crewId)})),
-        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||'',venue:t.venue||'',start_dt:t.start_dt||'',end_dt:t.end_dt||''}))
+        calls:targets.map(t=>({call_id:t.call_id,booking_id:t.booking_id,call_name:t.call_name||'',venue:t.venue||'',start_dt:t.start_dt||'',end_dt:t.end_dt||''})),
+        ack_over:!!ackOver
       })
     });
     const j=await r.json();
+    // Over-check: nothing was written or sent. Ask, then resend with ack_over.
+    if(r.status===409 && j && j.needs_confirm){
+      btn.textContent=orig; btn.disabled=false;
+      overRetry = (await goatOverConfirm(j.warnings)) ? 'go' : 'stop';
+      return;
+    }
     if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));
     const results=j.results||[];
     const t=showOfferResults('Send SMS - results', results);
@@ -5731,7 +5829,8 @@ async function sendSMS(){
     btn.textContent='Failed';
     alert('Send SMS failed: '+(e.message||e));
   }finally{
-    setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},3500);
+    if(overRetry){ if(overRetry==='go') sendSMS(true); }
+    else setTimeout(()=>{btn.textContent=orig;btn.disabled=selected.size===0},3500);
   }
 }
 
@@ -18876,7 +18975,7 @@ function crewStatusControl(c, bookingId, callId){
     + opts + '</select>';
 }
 
-async function changeCrewStatus(bookingId, callId, userId, sel){
+async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
   var next = parseInt(sel.value,10);
   var prev = parseInt(sel.getAttribute('data-prev'),10);
   if(next === prev) return;
@@ -18885,13 +18984,18 @@ async function changeCrewStatus(bookingId, callId, userId, sel){
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({status: next})
+      body: JSON.stringify({status: next, ack_over: !!ackOver})
     });
     var j = await r.json();
     if(r.status === 409 && j.error === 'downstream_not_held'){
       sel.value = String(prev);
       alert(promoteRefusalText(j));
       return;
+    }
+    // Over-check (a 7 -> 5 here is a Promote): nothing written yet.
+    if(r.status === 409 && j.needs_confirm){
+      if(!(await goatOverConfirm(j.warnings))){ sel.value = String(prev); return; }
+      return await changeCrewStatus(bookingId, callId, userId, sel, true);
     }
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
     // F1: this write filled the call and closed its call-out (members reverted
@@ -18949,17 +19053,91 @@ function crewRemoveControl(c, bookingId, callId){
 }
 async function removeCrewFromCall(bookingId, callId, userId, btn){
   var name = (btn && btn.dataset && btn.dataset.name) ? btn.dataset.name : 'this crew member';
-  if(!confirm('Remove '+name+' from this call?\n\nThis removes them from the call entirely (not a decline) and cannot be undone.')) return;
   if(btn) btn.disabled = true;
+
+  // DESIGN-downstream-over-warning §5.4 / D4: if they hold rows on calls
+  // locked-linked to this one, ask whether to take them off those too. A
+  // failed read falls back to the plain confirm: never block a remove.
+  var linked = null;
   try{
-    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId, {method:'DELETE'});
-    var j = await r.json();
-    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
-    openCallDialog(bookingId, callId);
-  }catch(e){
-    if(btn) btn.disabled = false;
-    alert('Could not remove: '+(e.message||e));
+    var lr = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/linked-rows');
+    if(lr.ok) linked = await lr.json();
+  }catch(e){ linked = null; }
+  var up   = (linked && linked.upstream)   || [];
+  var down = (linked && linked.downstream) || [];
+
+  if(!up.length && !down.length){
+    if(!confirm('Remove '+name+' from this call?\n\nThis removes them from the call entirely (not a decline) and cannot be undone.')){
+      if(btn) btn.disabled = false;
+      return;
+    }
+    try{
+      await removeCrewRow(bookingId, callId, userId);
+      openCallDialog(bookingId, callId);
+    }catch(e){
+      if(btn) btn.disabled = false;
+      alert('Could not remove: '+(e.message||e));
+    }
+    return;
   }
+
+  var who  = escapeHtml(name);
+  var here = escapeHtml(decodeEntities(String(linked.call_name || 'this call')));
+  function nm(r){ return escapeHtml(decodeEntities(String(r.call_name || ('call '+r.call_id)))); }
+  function line(r){ return '<b>'+nm(r)+'</b>'+(r.when ? ' ('+escapeHtml(r.when)+')' : '')+' \u2014 '+escapeHtml(String(r.status)); }
+  var html = '';
+  if(down.length){
+    html += '<div style="padding:6px 0">'+who+' is also on '+down.map(line).join(', ')+'.<br>'
+         +  'If you take them off '+here+' only, '+(down.length === 1 ? 'that call keeps' : 'those calls keep')
+         +  ' their place <b>and</b> keeps a place for whoever fills '+here+', so it can go over its number.</div>';
+  }
+  if(up.length){
+    html += '<div style="padding:6px 0">'+who+' is also on '+up.map(line).join(', ')+'.<br>'
+         +  'They can\'t work '+(up.length === 1 ? 'that call' : 'those calls')+' without '+here
+         +  ', so taking them off '+here+' only leaves them booked there.</div>';
+  }
+  html += '<div style="padding-top:8px;color:var(--muted)">Removing takes them off entirely (not a decline) and can\'t be undone.</div>';
+  var total = up.length + down.length + 1;
+  var choice = await goatChoice({
+    title: 'Remove '+name+' from linked calls?',
+    html: html,
+    buttons: [
+      {label:'Cancel', value:null},
+      {label:decodeEntities(String(linked.call_name || 'This call'))+' only', value:'only'},
+      {label: total === 2 ? 'Remove from both' : 'Remove from all '+total, value:'all', primary:true}
+    ]
+  });
+  if(!choice){ if(btn) btn.disabled = false; return; }
+
+  // Removal order: most upstream first, then this call, then downstream
+  // nearest-first (the server sends both lists already ordered). A failure
+  // partway then leaves them on a later call without an earlier one, which
+  // is allowed, and never on an earlier call without the call it feeds.
+  var order = (choice === 'all')
+    ? up.map(function(r){ return {id:r.call_id, name:r.call_name}; })
+        .concat([{id:String(callId), name:linked.call_name}])
+        .concat(down.map(function(r){ return {id:r.call_id, name:r.call_name}; }))
+    : [{id:String(callId), name:linked.call_name}];
+  var removed = [];
+  for(var i = 0; i < order.length; i++){
+    try{
+      await removeCrewRow(bookingId, order[i].id, userId);
+      removed.push(decodeEntities(String(order[i].name || order[i].id)));
+    }catch(e){
+      var left = order.slice(i).map(function(o){ return decodeEntities(String(o.name || o.id)); });
+      alert('Could not remove from '+left[0]+': '+(e.message||e)
+        + (removed.length ? '\n\nRemoved from: '+removed.join(', ') : '')
+        + '\nStill on: '+left.join(', '));
+      break;
+    }
+  }
+  openCallDialog(bookingId, callId);
+}
+async function removeCrewRow(bookingId, callId, userId){
+  var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId, {method:'DELETE'});
+  var j = await r.json();
+  if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+  return j;
 }
 // Admin-only "Promote" button. Shown ONLY next to a backup (status 7) crew
 // member. One click confirms them (status 5) via the same status endpoint the
@@ -19120,6 +19298,13 @@ async function openCalloutPreview(bookingId, callId){
     +   '<div style="font-size:11px;letter-spacing:.5px;color:#f59e0b;text-transform:uppercase;margin-bottom:4px">'+j.places+' place'+(j.places === 1 ? '' : 's')+' open</div>'
     +   '<div style="font-size:12px;color:var(--text)">Everyone below is turned back into an open offer and sent a push. The first to accept gets each place; anyone who accepts after it fills stays on standby. When the call fills, everyone who hasn\'t answered goes back on standby automatically.</div>'
     + '</div>'
+    + ((j.over_warnings && j.over_warnings.length)
+        ? '<div style="border:1px solid var(--conflict);border-left:3px solid var(--conflict);background:var(--conf-bg);border-radius:4px;padding:9px 11px;margin-bottom:14px">'
+          + '<div style="font-size:11px;letter-spacing:.5px;color:var(--conflict);text-transform:uppercase;margin-bottom:2px">May go over its number</div>'
+          + '<div style="font-size:12px;color:var(--text)">'+overWarningsHtml(j.over_warnings)+'</div>'
+          + '<div style="font-size:11px;color:var(--muted);margin-top:6px">You can still send. Trim those calls afterwards if they do go over.</div>'
+          + '</div>'
+        : '')
     + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Will be asked ('+(j.members||[]).length+')</div>'
     + members
     + ((j.skipped && j.skipped.length)
@@ -19196,7 +19381,7 @@ function promoteRefusalText(j){
   var names = (j.calls || []).map(function(c){ return decodeEntities(c.call_name || ('call '+c.call_id)); });
   return 'Can\'t promote \u2014 they don\'t hold '+(names.join(', ') || 'a linked call')+'. Fix those first.';
 }
-async function promoteBackup(bookingId, callId, userId, btn){
+async function promoteBackup(bookingId, callId, userId, btn, ackOver){
   // F3: the confirm no longer promises an outcome the server may refuse. When
   // this call feeds others over a LOCKED edge, it says the promotion carries
   // onto them and may be refused — read from the dialog's own call (feeds
@@ -19210,15 +19395,23 @@ async function promoteBackup(bookingId, callId, userId, btn){
     msg += '\n\nThis call feeds '+(nLocked === 1 ? 'another call' : nLocked+' other calls')
          + ': they\'ll be promoted there too wherever they\'re on standby. If they don\'t hold one of those calls, the promotion is refused and nothing changes.';
   }
-  if(!confirm(msg)) return;
+  // ackOver: the second pass after the over warning. They already said yes.
+  if(!ackOver && !confirm(msg)) return;
   if(btn) btn.disabled = true;
   try{
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({status: 5})
+      body: JSON.stringify({status: 5, ack_over: !!ackOver})
     });
     var j = await r.json();
+    // Over-check: a call this promotion carries onto would go over. Nothing
+    // written yet; ask, then resend.
+    if(r.status === 409 && j.needs_confirm){
+      if(btn) btn.disabled = false;
+      if(!(await goatOverConfirm(j.warnings))) return;
+      return await promoteBackup(bookingId, callId, userId, btn, true);
+    }
     // Link-safe Promote (brief E1): promoting here also promotes every call
     // this one feeds, so it is refused — with nothing written — when they do
     // not hold one of those calls. Say which, and do NOT reload as if it worked.
@@ -24263,12 +24456,33 @@ async function executeGoatAction(cardId){
       body = {crew, calls};
     }
 
-    const resp = await fetch(endpoint, {
+    let resp = await fetch(endpoint, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
     });
-    const data = await resp.json();
+    let data = await resp.json();
+
+    // Over-check: nothing written yet. This path never checked resp.ok, so
+    // without this a 409 would have read as "Done".
+    if(resp.status === 409 && data && data.needs_confirm){
+      if(!(await goatOverConfirm(data.warnings))){
+        delete _goatConfirmPayloads[cardId];
+        if(card){
+          card.querySelector('.gm-bubble').innerHTML =
+            `<span style="color:var(--muted);font-size:12px">✕ Action cancelled — a fed call would have gone over its number.</span>`;
+        }
+        return;
+      }
+      body.ack_over = true;
+      resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      data = await resp.json();
+    }
+    if(!resp.ok || data.error) throw new Error(data.error || ('HTTP '+resp.status));
 
     // Skipped rows report success:true (the row was deliberately left alone),
     // so only real failures make this partial.
