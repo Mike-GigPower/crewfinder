@@ -1,6 +1,6 @@
 {
-  "version": "5.72.0",
+  "version": "5.73.0",
   "release_date": "2026-10-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.72.0/TheGOAT.dmg",
-  "release_notes": "Admins can now load signed contracts from Google Drive onto crew records, in bulk from Manage Crew or one at a time from a crew member's Documents tab."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.73.0/TheGOAT.dmg",
+  "release_notes": "Crew Records now shows whether each crew member has a signed contract on file, with a No contract filter. Admins only."
 }
