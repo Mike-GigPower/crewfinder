@@ -59,6 +59,8 @@ import visa_extract
 import docs_render
 import docs_source
 import public_holidays
+import name_match
+import drive_contracts
 # When running inside a PyInstaller bundle, use the executable's directory
 # When running as a script, use the script's directory
 if getattr(_sys, 'frozen', False):
@@ -162,7 +164,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.71.0"
+APP_VERSION    = "5.72.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6938,17 +6940,10 @@ def _recruit_proposed_name(feed_row, detail):
     return (first or g_first), (last or g_last), "guessed"
 
 
-def _recruit_norm_name(s):
-    """Lowercase, drop punctuation, collapse whitespace — for tolerant name
-    comparison ("de Silva" == "De  Silva.")."""
-    s = re.sub(r"[^a-z0-9 ]+", " ", str(s or "").lower())
-    return re.sub(r"\s+", " ", s).strip()
-
-
-def _recruit_name_tokens(s):
-    """Set of normalised word-tokens in a name. Order-independent, so it matches
-    the roster's "Lastname, Firstname" against the candidate's "First Last"."""
-    return set(t for t in _recruit_norm_name(s).split() if t)
+# Moved to name_match.py so the Drive contract importer uses the same rule. The
+# old names stay importable here so recruitment code is unchanged.
+_recruit_norm_name   = name_match.norm_name
+_recruit_name_tokens = name_match.name_tokens
 
 
 def _recruit_crew_matches(crew, cand_first, cand_last, cand_email):
@@ -6964,7 +6959,6 @@ def _recruit_crew_matches(crew, cand_first, cand_last, cand_email):
     Inactive crew are included by the caller so returners are still caught."""
     email_l = str(cand_email or "").strip().lower()
     cand_tokens = _recruit_name_tokens(cand_first + " " + cand_last)
-    cand_join = " ".join(sorted(cand_tokens))
 
     email_matches, name_matches = [], []
     seen_name_ids = set()
@@ -6980,13 +6974,7 @@ def _recruit_crew_matches(crew, cand_first, cand_last, cand_email):
             email_matches.append(row)
 
         ctokens = _recruit_name_tokens(row["name"])
-        if not ctokens or not cand_tokens:
-            continue
-        cjoin = " ".join(sorted(ctokens))
-        similar = difflib.SequenceMatcher(None, cand_join, cjoin).ratio()
-        if (ctokens == cand_tokens
-                or len(ctokens & cand_tokens) >= 2
-                or similar >= 0.87):
+        if name_match.name_similarity(cand_tokens, ctokens)[0]:
             if row["id"] not in seen_name_ids:
                 seen_name_ids.add(row["id"])
                 name_matches.append(row)
@@ -18200,6 +18188,283 @@ def api_crew_document_file(user_id):
         "Content-Disposition": resp.headers.get("Content-Disposition", "inline"),
         "X-Content-Type-Options": "nosniff",
     })
+
+
+# ─── LOAD CONTRACTS FROM GOOGLE DRIVE ─────────────────────────────────────────
+# Backfills user_documents for crew who signed before onboarding existed. Their
+# agreements are PDFs in the Completed/Signed Drive folder. Reads Drive with the
+# timesheet Google login and saves through ss_push_contract, the same write path
+# convert-to-crew uses, so no PHP changed. Admin only (D3). Drive is read-only
+# from here. See claude/DESIGN-drive-contract-import-v0_2.md.
+
+_DRIVE_FOLDER_ACCESS_MSG = ("THE GOAT's Google login can't see the Completed/Signed "
+                            "folder — share it with that account.")
+
+# sid -> (fetched_at, {crew_id: {"name", "ein"}}). The import route checks every user_id
+# against the active roster, and the bulk screen posts one file per call; a
+# fresh fetch_crew_bulk for each of ~300 calls would be the slowest part of the
+# run. Two minutes is long enough to cover a run and short enough that a
+# deactivation in SmartStaff lands before the next one. The SCAN never uses it.
+_drive_roster_cache = {}
+_DRIVE_ROSTER_TTL = 120
+
+
+def _contract_drive_folder_id():
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    return (str(cfg.get("contract_drive_folder_id") or "").strip()
+            or drive_contracts.DEFAULT_FOLDER_ID)
+
+
+def _drive_creds():
+    from timesheet_gsheet import _user_creds
+    return _user_creds(_gsheet_token_path())
+
+
+def _drive_error_response(e):
+    """Map a Drive/Google failure to the screen's error shape. Auth and folder
+    access come back as 200 + ok:false so the UI can say what to do about them;
+    anything else is a plain 502."""
+    if isinstance(e, drive_contracts.FolderAccessError):
+        return jsonify({"ok": False, "error": "folder_access",
+                        "message": _DRIVE_FOLDER_ACCESS_MSG})
+    auth = isinstance(e, RuntimeError)
+    try:
+        from google.auth.exceptions import RefreshError
+        auth = auth or isinstance(e, RefreshError)
+    except Exception:
+        pass
+    if auth:
+        return jsonify({"ok": False, "error": "google_auth", "message": str(e)})
+    print(f"[drive-contracts] Drive call failed: {e}")
+    return jsonify({"ok": False, "error": f"Google Drive request failed: {e}"}), 502
+
+
+def _drive_active_roster(ss, fresh=False):
+    """({crew_id: {"name": "Lastname, Firstname", "ein"}}, err) for ACTIVE crew (D6)."""
+    sid = session.get("sid")
+    hit = _drive_roster_cache.get(sid)
+    if not fresh and hit and time.time() - hit[0] < _DRIVE_ROSTER_TTL:
+        return hit[1], None
+    crew, err = fetch_crew_bulk(ss)
+    if err:
+        return None, err
+    roster = {str(c["id"]): {"name": c.get("name") or "", "ein": str(c.get("ein") or c["id"])}
+              for c in crew}
+    _drive_roster_cache[sid] = (time.time(), roster)
+    return roster, None
+
+
+def _users_with_contract(ss, user_ids):
+    """(has_contract, failed) as sets of user-id strings. admin-get-documents.php
+    has no bulk form, so this is one call per id on a small pool, like the other
+    bulk fetches here. A failed lookup is reported, never read as 'no contract'
+    — though saving stays safe either way, because admin-add-contract.php
+    refuses to overwrite."""
+    from concurrent.futures import ThreadPoolExecutor
+    has, failed = set(), set()
+    ids = sorted(set(user_ids))
+    if not ids:
+        return has, failed
+
+    def one(uid):
+        docs, err = ss_list_documents(ss, uid)
+        return uid, docs, err
+
+    with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+        for uid, docs, err in ex.map(one, ids):
+            if err:
+                failed.add(uid)
+            elif any((d or {}).get("doc_type") == "contract" for d in docs):
+                has.add(uid)
+    return has, failed
+
+
+@app.route("/api/contracts/drive-scan")
+@require_cohort("admin")
+def api_contracts_drive_scan():
+    """Every agreement PDF in Completed/Signed with a suggested crew member.
+    Nothing is saved and nothing is cached: each call re-reads Drive.
+
+    counts are per FILE, so exact + likely + ambiguous + none + on_file ==
+    files. rows are per crew member: several files for one person collapse into
+    one row, latest signed first, the rest as other_copies."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    folder_id = _contract_drive_folder_id()
+    try:
+        creds = _drive_creds()
+        folder = drive_contracts.folder_name(creds, folder_id)
+        pdfs = drive_contracts.list_folder_pdfs(creds, folder_id)
+    except Exception as e:
+        return _drive_error_response(e)
+
+    roster_map, err = _drive_active_roster(ss, fresh=True)
+    if err:
+        return jsonify({"ok": False, "error": f"Couldn't load the crew roster: {err}"}), 502
+    roster = [{"id": cid, "name": c["name"], "ein": c["ein"]} for cid, c in roster_map.items()]
+
+    files, skipped = [], 0
+    for f in pdfs:
+        parsed = drive_contracts.parse_contract_title(f.get("name"))
+        if parsed is None:
+            skipped += 1
+            continue
+        m = drive_contracts.match_crew(parsed["name"], roster)
+        files.append({
+            "drive_file_id": f.get("id"),
+            "title":         f.get("name") or "",
+            "web_view_link": f.get("webViewLink") or "",
+            "parsed_name":   parsed["name"],
+            "signed_at":     parsed["signed_at"],
+            "year":          parsed["year"],
+            "bucket":        m["bucket"],
+            "suggestions":   m["suggestions"],
+        })
+
+    has, failed = _users_with_contract(
+        ss, [s["id"] for f in files for s in f["suggestions"]])
+
+    counts = {"files": len(files), "skipped_noise": skipped,
+              "exact": 0, "likely": 0, "ambiguous": 0, "none": 0, "on_file": 0}
+    for f in files:
+        for s in f["suggestions"]:
+            s["on_file"] = s["id"] in has
+        # Only a confident match is greyed out as on file. An ambiguous file's
+        # top suggestion is a guess, and greying it would hide the file from
+        # whoever it really belongs to; the picker marks on-file people instead.
+        top = f["suggestions"][0]["id"] if f["suggestions"] else None
+        f["on_file"] = bool(top and f["bucket"] in ("exact", "likely") and top in has)
+        counts["on_file" if f["on_file"] else f["bucket"]] += 1
+
+    order = {"exact": 0, "likely": 1, "ambiguous": 2, "none": 3}
+    rows = drive_contracts.group_files(files)
+    rows.sort(key=lambda r: (1 if r["on_file"] else 0, order.get(r["bucket"], 9),
+                             (r["title"] or "").lower()))
+
+    return jsonify({
+        "ok":      True,
+        "folder":  folder or "Completed/Signed",
+        "counts":  counts,
+        "rows":    rows,
+        "roster":  sorted(roster, key=lambda c: c["name"].lower()),
+        "on_file_check_failed": len(failed),
+    })
+
+
+@app.route("/api/contracts/drive-import", methods=["POST"])
+@require_cohort("admin")
+def api_contracts_drive_import():
+    """Save ONE Drive PDF as one crew member's contract. Body:
+    {drive_file_id, user_id}. signed_at and version are worked out here from the
+    file's own title; nothing the client sends about the file is trusted."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(silent=True) or {}
+    file_id = str(body.get("drive_file_id") or "").strip()
+    try:
+        user_id = int(body.get("user_id"))
+    except (TypeError, ValueError):
+        user_id = 0
+    if not file_id or user_id <= 0:
+        return jsonify({"ok": False, "error": "drive_file_id and user_id required"}), 400
+
+    roster, err = _drive_active_roster(ss)
+    if err:
+        return jsonify({"ok": False, "error": f"Couldn't load the crew roster: {err}"}), 502
+    if str(user_id) not in roster:
+        return jsonify({"ok": False, "error": "Not an active crew member"}), 400
+
+    folder_id = _contract_drive_folder_id()
+    try:
+        creds = _drive_creds()
+        meta = drive_contracts.file_meta(creds, file_id)
+    except Exception as e:
+        return _drive_error_response(e)
+
+    # Only a live PDF sitting directly in the contracts folder. Without this a
+    # crafted file id could attach any Drive file the Google login can read.
+    if (meta.get("trashed") or meta.get("mimeType") != "application/pdf"
+            or folder_id not in (meta.get("parents") or [])):
+        return jsonify({"ok": False, "error": "That file isn't a PDF in the contracts folder"}), 400
+
+    parsed = drive_contracts.parse_contract_title(meta.get("name"))
+    if parsed is None:
+        return jsonify({"ok": False, "error": "That file is a TFN or visa document, not a contract"}), 400
+
+    try:
+        pdf = drive_contracts.download_pdf(creds, file_id)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return _drive_error_response(e)
+
+    out, err = ss_push_contract(ss, user_id, pdf, parsed["signed_at"],
+                                drive_contracts.contract_version(parsed["year"]))
+    if err:
+        return jsonify({"ok": False, "error": err}), 502
+    if out.get("skipped"):
+        return jsonify({"ok": True, "saved": False, "reason": "on_file"})
+    return jsonify({"ok": True, "saved": True, "id": out.get("id")})
+
+
+@app.route("/api/crew/<int:user_id>/documents/drive-candidates")
+@require_cohort("admin")
+def api_crew_drive_candidates(user_id):
+    """Drive PDFs that could be this crew member's contract, for Manage Crew ->
+    Documents -> Load from Drive. Without ?q=, files whose parsed name shares
+    the surname, best match first; with ?q=, titles containing q. Max 30."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    q = (request.args.get("q") or "").strip().lower()
+    crew_name = ""
+    if not q:
+        roster, err = _drive_active_roster(ss)
+        if err:
+            return jsonify({"ok": False, "error": f"Couldn't load the crew roster: {err}"}), 502
+        if str(user_id) not in roster:
+            return jsonify({"ok": False,
+                            "error": "Only active crew can have a contract loaded from Drive"}), 400
+        crew_name = roster[str(user_id)]["name"]
+
+    try:
+        pdfs = drive_contracts.list_folder_pdfs(_drive_creds(), _contract_drive_folder_id())
+    except Exception as e:
+        return _drive_error_response(e)
+
+    surname = drive_contracts.surname_token(crew_name)
+    rows = []
+    for f in pdfs:
+        title = f.get("name") or ""
+        parsed = drive_contracts.parse_contract_title(title)
+        if parsed is None:
+            continue
+        if q:
+            if q not in title.lower():
+                continue
+            score = 0.0
+        else:
+            if not surname or surname not in name_match.name_tokens(parsed["name"]):
+                continue
+            score = drive_contracts.candidate_score(parsed["name"], crew_name)
+        rows.append({"drive_file_id": f.get("id"), "title": title,
+                     "signed_at": parsed["signed_at"],
+                     "web_view_link": f.get("webViewLink") or "", "_score": score})
+
+    # Latest signed first, then (stable) best match first.
+    rows.sort(key=lambda r: r["signed_at"] or "", reverse=True)
+    rows.sort(key=lambda r: -r["_score"])
+    for r in rows:
+        del r["_score"]
+    return jsonify({"ok": True, "rows": rows[:30]})
 
 
 def ss_licence_holder_counts(ss):
