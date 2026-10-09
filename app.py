@@ -162,7 +162,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.69.0"
+APP_VERSION    = "5.70.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2525,6 +2525,16 @@ def _ss_booking_graph(ss, booking_ids):
                 "feeds":      [str(t) for t in (bc.get("feeds") or [])],
                 "call_name":  bc.get("call_name", cid),
                 "booking_id": str(bid),
+                # Used only by the over-check (_downstream_over and friends).
+                # get-booking.php already sends them; keeping them here costs
+                # no extra request.
+                "feeds_recommended": [str(t) for t in (bc.get("feeds_recommended") or [])],
+                "required":     _int_or_none(bc.get("required")),
+                "committed":    _int_or_none(bc.get("committed")),
+                "confirmed":    _int_or_none(bc.get("confirmed")),
+                "cancelled_at": bc.get("cancelled_at"),
+                "start_date":   bc.get("start_date"),
+                "start_time":   bc.get("start_time") or "",
             }
             for row in (bc.get("crew") or []):
                 held[(str(row.get("id")), cid)] = row.get("status") or ""
@@ -2641,6 +2651,236 @@ def expand_downstream_calls(calls, graph):
 
     expanded.sort(key=lambda c: depths[str(c.get("call_id"))])
     return expanded
+
+
+# ── Over-check: warn before a fed call goes over its number ──────────────────
+# DESIGN-downstream-over-warning-v0_2.md. A LOCKED feed (load in -> load out)
+# carries crew onto the receiving call, and an accept does NOT capacity-check a
+# receiving call (respond-to-call.php peel, GUIDE-call-feeds §11E). So adding,
+# promoting or calling out crew on a load-in can push its load out past
+# `required` with nothing refusing it. These helpers find that BEFORE anything
+# is written, so the route can return 409 {needs_confirm, warnings} and the
+# browser can ask. Warn, never block (D2): `ack_over: true` skips the check.
+#
+# "Holding a place" is get-booking.php's `committed` — statuses 0/1/2/5 (D3).
+# Recommended feeds are never checked: a recommended call is answered on its
+# own card and IS capacity-checked on accept, so it cannot go over.
+
+def _int_or_none(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _locked_feeds(graph, cid):
+    """Targets of LOCKED edges out of cid (feeds minus feeds_recommended)."""
+    node = graph.get(str(cid)) or {}
+    rec = set(node.get("feeds_recommended") or [])
+    return [t for t in (node.get("feeds") or []) if t not in rec]
+
+
+def _locked_closure(graph, start_ids, limit=10):
+    """Every call reachable from start_ids over locked edges, with its depth
+    (1 = fed directly). The start calls themselves are only included if a
+    cycle leads back to them. Depth capped at 10, matching call-graph.php."""
+    out = {}
+    frontier = [str(c) for c in start_ids]
+    depth = 0
+    while frontier and depth < limit:
+        depth += 1
+        nxt = []
+        for cid in frontier:
+            for t in _locked_feeds(graph, cid):
+                if t in out:
+                    continue
+                out[t] = depth
+                nxt.append(t)
+        frontier = nxt
+    return out
+
+
+def _call_when(node):
+    """'Fri 10 Oct 23:00' from a graph node, or '' if the date is missing."""
+    try:
+        import datetime as _dt
+        d = _dt.datetime.fromtimestamp(int(node.get("start_date")))
+        t = str(node.get("start_time") or "")[:5]
+        return (d.strftime("%a %-d %b") + (" " + t if t else "")).strip()
+    except Exception:
+        return ""
+
+
+def _over_warning(graph, cid, adding, via):
+    """One warning dict if `adding` more people makes call cid go over its
+    number, else None. Unknown required/committed -> no warning (a failed read
+    must never invent a problem)."""
+    node = graph.get(str(cid)) or {}
+    if node.get("cancelled_at"):
+        return None
+    req, now = node.get("required"), node.get("committed")
+    if req is None or now is None or adding <= 0:
+        return None
+    after = now + adding
+    if after <= req:
+        return None
+    return {
+        "call_id":   str(cid),
+        "call_name": node.get("call_name", str(cid)),
+        "when":      _call_when(node),
+        "required":  req,
+        "now":       now,
+        "adding":    adding,
+        "after":     after,
+        "via":       via,
+    }
+
+
+def _offer_carried_calls(graph, selected_ids):
+    """The calls an offer on selected_ids would OVERFILL on accept.
+
+    Mirrors respond-to-call.php's peel (GUIDE §11E) using today's numbers:
+      package = selected + their locked downstream closure
+      repeat: roots = members no other member feeds (locked);
+              a root with confirmed >= required goes to standby and drops out
+      until no root is full.
+    Non-roots of what is left are confirmed WITHOUT a capacity check — those
+    are the calls that can go over. If the roots set is ever empty (a cycle:
+    every migrated symmetric link is one), the server answers all-or-nothing
+    and checks every member, so nothing can overfill: return none.
+    """
+    pkg = set(str(c) for c in selected_ids)
+    pkg |= set(_locked_closure(graph, pkg).keys())
+    pkg = set(c for c in pkg if c in graph)
+
+    while True:
+        fed = set()
+        for m in pkg:
+            for t in _locked_feeds(graph, m):
+                if t in pkg and t != m:
+                    fed.add(t)
+        roots = pkg - fed
+        if not roots:
+            return []
+        full = set()
+        for r in roots:
+            n = graph.get(r) or {}
+            req, conf = n.get("required"), n.get("confirmed")
+            if req is not None and conf is not None and conf >= req:
+                full.add(r)
+        if not full:
+            return sorted(fed)
+        pkg -= full
+
+
+def _offer_over_warnings(graph, held, selected_ids, crew_ids):
+    """Warnings for an add-crew / send-sms request. `adding` per call counts
+    only the crew who don't already hold a row there (a held row is skipped by
+    the add, and a declined row is re-offered, matching _held_blocking)."""
+    out = []
+    for cid in _offer_carried_calls(graph, selected_ids):
+        adding = sum(1 for u in crew_ids if not _held_blocking(held, u, cid))
+        # "from <via>": only the selected calls that actually carry crew onto
+        # this one. The Finder also selects the carried calls themselves, so
+        # naming every selected call read "from Load In, Load Out onto Load
+        # Out" (smoke test, 9 Oct).
+        via_ids = [str(s) for s in selected_ids
+                   if str(s) != cid and cid in _locked_closure(graph, [s])]
+        via = ", ".join(graph.get(s, {}).get("call_name", s) for s in via_ids)
+        w = _over_warning(graph, cid, adding, via)
+        if w:
+            out.append(w)
+    return out
+
+
+def _promote_over_warnings(graph, held, call_id, user_id):
+    """Warnings for a Promote (7 -> 5) on call_id. update-crew-status.php
+    carries the promotion onto every LOCKED downstream call where this person
+    is on standby, writing status 5 directly (no capacity check). The promoted
+    call itself is not checked (D6)."""
+    via = graph.get(str(call_id), {}).get("call_name", str(call_id))
+    out = []
+    for cid in sorted(_locked_closure(graph, [call_id]).keys()):
+        if cid == str(call_id):
+            continue
+        if held.get((str(user_id), cid)) != "backup":
+            continue
+        w = _over_warning(graph, cid, 1, via)
+        if w:
+            out.append(w)
+    return out
+
+
+def _callout_over_warnings(graph, call_id, preview):
+    """Warnings for a call-out preview. Each member's `calls` is the reset set
+    (this call + locked downstream calls where they're on standby). At most
+    `places` people can be confirmed through this call, so a downstream call D
+    can gain at most min(places, members carried onto D). Worst case, so the
+    wording says "up to"."""
+    places = _int_or_none(preview.get("places")) or 0
+    carried = {}
+    for m in (preview.get("members") or []):
+        for c in (m.get("calls") or []):
+            c = str(c)
+            if c != str(call_id):
+                carried[c] = carried.get(c, 0) + 1
+    via = graph.get(str(call_id), {}).get("call_name", str(call_id))
+    out = []
+    for cid in sorted(carried):
+        w = _over_warning(graph, cid, min(places, carried[cid]), via)
+        if w:
+            w["up_to"] = True
+            out.append(w)
+    return out
+
+
+def _linked_rows(graph, held, call_id, user_id):
+    """Rows this person holds on calls LOCKED-linked to call_id, for the ✕
+    Remove prompt (D4). Upstream = calls that feed call_id (removing call_id
+    alone would leave them holding a call without the one it feeds). Downstream
+    = calls call_id feeds (removing call_id alone leaves the place held there).
+
+    Returns (upstream, downstream), each a list of
+    {call_id, call_name, when, status, depth}. A call reached both ways (a
+    migrated symmetric pair) is listed once, as upstream — its row must go
+    first either way."""
+    cid0 = str(call_id)
+    down = _locked_closure(graph, [cid0])
+
+    # reverse edges for the upstream walk
+    rev = {}
+    for src in graph:
+        for t in _locked_feeds(graph, src):
+            rev.setdefault(t, []).append(src)
+    up, frontier, depth = {}, [cid0], 0
+    while frontier and depth < 10:
+        depth += 1
+        nxt = []
+        for c in frontier:
+            for s in rev.get(c, []):
+                if s in up or s == cid0:
+                    continue
+                up[s] = depth
+                nxt.append(s)
+        frontier = nxt
+
+    def row(cid, d):
+        st = held.get((str(user_id), cid))
+        if st is None or st in ("declined", "cancelled", "noshow"):
+            return None
+        node = graph.get(cid) or {}
+        if node.get("cancelled_at"):
+            return None
+        return {"call_id": cid, "call_name": node.get("call_name", cid),
+                "when": _call_when(node), "status": st, "depth": d}
+
+    upstream = [r for r in (row(c, d) for c, d in up.items()) if r]
+    downstream = [r for r in (row(c, d) for c, d in down.items())
+                  if r and r["call_id"] not in up and r["call_id"] != cid0]
+    # Most upstream first, then nearest-downstream first: the removal order.
+    upstream.sort(key=lambda r: -r["depth"])
+    downstream.sort(key=lambda r: r["depth"])
+    return upstream, downstream
 
 
 def _get_all_crew(ss):
@@ -12473,6 +12713,19 @@ def api_goat_add_crew():
 
     booking_ids = set(str(c["booking_id"]) for c in selected if c.get("booking_id"))
     graph, held = _ss_booking_graph(ss, booking_ids)
+
+    # Over-check (DESIGN-downstream-over-warning): before ANY write, warn if
+    # this offer carries crew onto a fed call that would go over its number.
+    # A 409 here is a result, not an error; the browser asks and resends with
+    # ack_over. An empty graph (failed read) yields no warnings, never a block.
+    if not body.get("ack_over"):
+        over = _offer_over_warnings(
+            graph, held,
+            [str(c.get("call_id")) for c in selected],
+            [str(c.get("crew_id")) for c in crew if c.get("crew_id")])
+        if over:
+            return jsonify({"needs_confirm": True, "warnings": over}), 409
+
     calls = expand_downstream_calls(selected, graph)
 
     call_by_id = {str(c["call_id"]): c for c in calls}
@@ -12587,6 +12840,19 @@ def api_goat_send_sms():
 
     booking_ids = set(str(c["booking_id"]) for c in selected if c.get("booking_id"))
     graph, held = _ss_booking_graph(ss, booking_ids)
+
+    # Over-check (DESIGN-downstream-over-warning): before ANY write, warn if
+    # this offer carries crew onto a fed call that would go over its number.
+    # A 409 here is a result, not an error; the browser asks and resends with
+    # ack_over. An empty graph (failed read) yields no warnings, never a block.
+    if not body.get("ack_over"):
+        over = _offer_over_warnings(
+            graph, held,
+            [str(c.get("call_id")) for c in selected],
+            [str(c.get("crew_id")) for c in crew if c.get("crew_id")])
+        if over:
+            return jsonify({"needs_confirm": True, "warnings": over}), 409
+
     calls = expand_downstream_calls(selected, graph)
 
     call_by_id  = {str(c["call_id"]): c for c in calls}
@@ -13956,6 +14222,20 @@ def api_call_crew_status(booking_id, call_id, user_id):
     if status is None or str(status).strip() == "":
         return jsonify({"error": "status is required"}), 400
 
+    # Over-check for a Promote (7 -> 5, from the button or the dropdown): the
+    # server carries it onto locked downstream calls where they're on standby,
+    # with no capacity check. Only runs when the row is currently a backup.
+    if str(status).strip() == "5" and not body.get("ack_over"):
+        try:
+            graph, held = _ss_booking_graph(ss, [str(booking_id)])
+            if held.get((str(user_id), str(call_id))) == "backup":
+                over = _promote_over_warnings(graph, held, call_id, user_id)
+                if over:
+                    return jsonify({"needs_confirm": True, "warnings": over}), 409
+        except Exception as e:
+            # Never let the check stop a promotion.
+            print(f"[over-check] promote check failed: {e}")
+
     result, err = ss_update_crew_status(ss, call_id, user_id, status)
     if err:
         return jsonify({"error": err}), 502
@@ -14075,6 +14355,15 @@ def api_call_callout_preview(booking_id, call_id):
     code, body, err = ss_callout(ss, call_id, "preview")
     if err:
         return jsonify({"error": err}), 502
+
+    # Over-check: shown in the preview, above "Will be asked". Advisory only;
+    # Send call-out stays one press.
+    if code == 200 and isinstance(body, dict) and body.get("ok"):
+        try:
+            graph, _ = _ss_booking_graph(ss, [str(booking_id)])
+            body["over_warnings"] = _callout_over_warnings(graph, call_id, body)
+        except Exception as e:
+            print(f"[over-check] callout check failed: {e}")
     return jsonify(body), code
 
 
@@ -14476,6 +14765,25 @@ def ss_remove_crew_from_call(ss, call_id, user_id):
     if resp.status_code != 200:
         return None, f"HTTP {resp.status_code}"
     return {"ok": True}, None
+
+@app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/linked-rows")
+@require_cohort("admin")
+def api_call_crew_linked_rows(booking_id, call_id, user_id):
+    """For the ✕ Remove prompt (DESIGN-downstream-over-warning §5.4): the rows
+    this person holds on calls locked-linked to this one, upstream and
+    downstream, each already in removal order, plus this call's name. Read
+    only. A failed read returns empty lists so the plain confirm still shows."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    try:
+        graph, held = _ss_booking_graph(ss, [str(booking_id)])
+        up, down = _linked_rows(graph, held, call_id, user_id)
+        name = (graph.get(str(call_id)) or {}).get("call_name", "")
+    except Exception as e:
+        print(f"[over-check] linked-rows failed: {e}")
+        up, down, name = [], [], ""
+    return jsonify({"call_name": name, "upstream": up, "downstream": down})
 
 @app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>", methods=["DELETE"])
 @require_cohort("admin")
