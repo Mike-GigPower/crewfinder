@@ -1,6 +1,6 @@
 {
-  "version": "5.67.0",
+  "version": "5.68.0",
   "release_date": "2026-10-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.67.0/TheGOAT.dmg",
-  "release_notes": "Administration now lists Victoria's public holidays, read from the Estimator, in a new Reference data section at the bottom. Nothing else changes in this release."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.68.0/TheGOAT.dmg",
+  "release_notes": "See which calls have had their crew list sent. Mark lists as sent after you create them, make a list for a single call, and see when a sent list is out of date."
 }
