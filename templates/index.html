@@ -616,6 +616,8 @@ body.cf-sb-collapsed #tab-crew-finder > .sidebar{width:0;min-width:0;border-righ
 .crew-rec-table th.rec-sort.on{color:var(--accent)}
 .crew-rec-table .rec-lic{cursor:pointer}
 .crew-rec-table .rec-lic:hover{text-decoration:underline}
+.crew-rec-table .rec-contract{cursor:pointer}
+.crew-rec-table .rec-contract:hover{text-decoration:underline}
 #crew-card .cc-hint{margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:10px;color:var(--muted);font-style:italic}
 /* Crew views share one filter layout (Mike, 24 Sep 2026): search first in the
    toolbar; a row beneath with Utilization-style group chips and MIN star at its right. */
@@ -2672,6 +2674,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
             </div>
           </div>
         </span>
+        <button type="button" class="group-chip" id="crew-nocontract-btn" style="font-size:11px;padding:5px 10px" onclick="crewNoContractToggle()">No contract</button>
         <div class="ind-actions">
           <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="adminAddUser()">+ Add Crew Member</button>
           <button class="btn" id="btn-drive-contracts" style="display:none" onclick="openDriveContractsModal()">Import contracts from Drive</button>
@@ -10949,7 +10952,7 @@ function crewPersistSave(){
     if(typeof d.group === 'string' && d.group) crewFilter.group = d.group;
     const m = parseInt(d.minStars, 10);
     if(m > 0 && m <= 10) crewFilter.minStars = m;
-    if(typeof d.sortKey === 'string' && /^(name|rating|ein|hours|lic|rel|push)$/.test(d.sortKey)){
+    if(typeof d.sortKey === 'string' && /^(name|rating|ein|hours|lic|rel|push|contract)$/.test(d.sortKey)){
       crewSort.key = d.sortKey; crewSort.dir = (d.sortDir === -1) ? -1 : 1;
     }
   }catch(e){}
@@ -12150,6 +12153,31 @@ function renderCrewGroupChips(){
 let _crewRecLicences = new Set();   // catalogue CODES ticked here
 let _crewListLicOk   = true;        // did the payload's licence query actually run
 
+// "No contract" chip — Records-only for the same reason as the licence filter:
+// Records is the only view carrying contract data.
+let _crewRecNoContract   = false;   // chip on: keep only c.contract === null
+let _crewListContractOk  = true;    // did the payload's contract lookup actually run
+
+function crewNoContractToggle(){
+  _crewRecNoContract = !_crewRecNoContract;
+  _renderCrewList();
+}
+
+// Lit while on. Disabled only while OFF with no data behind it: once on, it
+// must stay clickable so the loud refusal in _renderCrewList can be cleared.
+function crewNoContractSyncBtn(){
+  const b = document.getElementById('crew-nocontract-btn');
+  if(!b) return;
+  b.classList.toggle('active', _crewRecNoContract);
+  if(!_crewListContractOk && !_crewRecNoContract){
+    b.setAttribute('disabled', '');
+    b.title = 'Contract data is unavailable for this list.';
+  } else {
+    b.removeAttribute('disabled');
+    b.title = 'Show only crew with no employment agreement on file';
+  }
+}
+
 // Render the chip grid, grouped exactly as the Crew Finder's. Chips come from
 // the CATALOGUE, not from the loaded rows — which is why nothing here ever
 // un-ticks a code; see crewFilterApplyToUI.
@@ -12261,6 +12289,7 @@ async function _loadCrewList(){
     // Absent flag on an older build reads as "ran", matching the endpoint's own
     // default; only an explicit false disables the filter.
     _crewListLicOk = (d.licences_ok !== false);
+    _crewListContractOk = (d.contracts_ok !== false);   // same reading as licences
   }catch(e){
     const rows = document.getElementById('crew-list-rows');
     if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load crew: '+escapeHtml(e.message)+'</div>';
@@ -15705,7 +15734,7 @@ async function ceUnavailDelete(id, eventId){
 // Sorting is shared by the three Crew views (crewSort, beside crewFilter).
 // First click on a column: names and EINs A-Z; stars, hours, licences and
 // reliability worst-or-highest first; push "Off" first. A second click reverses.
-const CREW_REC_SORT_FIRST_DIR = { name: 1, ein: 1, rating: -1, hours: -1, lic: -1, rel: -1, push: 1 };
+const CREW_REC_SORT_FIRST_DIR = { name: 1, ein: 1, rating: -1, hours: -1, lic: -1, rel: -1, push: 1, contract: -1 };
 let _crewRecLastRows = [];   // what Records last drew, in order, for Export CSV
 function crewRecSortBy(key){ crewSortBy(key); }
 
@@ -15746,6 +15775,10 @@ function crewRecSortVal(c, key, ctx){
       return s ? (Number(s.noshow_12mo) || 0) * 1000 + (Number(s.late_12mo) || 0) : -1;
     }
     case 'push': return c.push_ok === false ? 0 : (c.push_ok === true ? 2 : 1);
+    // None 2, on file 1, unknown -1: first click (desc) puts None first.
+    case 'contract':
+      if(!_crewListContractOk || !('contract' in c)) return -1;
+      return c.contract === null ? 2 : 1;
     default:     return decodeEntities(c.name || '').toLowerCase();
   }
 }
@@ -15795,6 +15828,38 @@ function crewRecPushHtml(c){
   return '<span style="color:var(--muted)" title="Not known">\u2014</span>';
 }
 
+// Contract column: signed date, "On file (no date)", a muted None, or a dash
+// when the lookup failed — unknown never reads as None. Every state but the
+// dash opens the record on Documents (where Load from Drive lives).
+function crewRecContractHtml(c){
+  if(!_crewListContractOk || !('contract' in c))
+    return '<span style="color:var(--muted)" title="Contract data unavailable">\u2014</span>';
+  const open = ' onclick="crewContractOpen(event, '+Number(c.id)+')"';
+  const k = c.contract;
+  if(k === null)
+    return '<span class="rec-contract" style="color:var(--muted)" title="No contract on file \u2014 click to load one"'+open+'>None</span>';
+  let text, tip, col;
+  if(k.signed_at){
+    const d = _ceDocDate(k.signed_at);   // already escaped
+    text = d; col = 'var(--text)';
+    tip  = 'Signed ' + d + (k.version ? ' \u00b7 ' + _ceDocVersion(k.version) : '');
+  } else {
+    text = 'On file (no date)'; col = 'var(--muted)';
+    tip  = 'On file, no signed date recorded';
+  }
+  if(k.has_pdf === false){
+    text += ' <span style="color:var(--warn)">\u00b7 no PDF</span>';
+    tip  += ' \u2014 no PDF stored';
+  }
+  // _ceDocDate / _ceDocVersion return escaped HTML; tip goes into the attribute as-is.
+  return '<span class="rec-contract" style="color:'+col+'" title="'+tip+'"'+open+'>'+text+'</span>';
+}
+
+function crewContractOpen(ev, crewId){
+  if(ev) ev.stopPropagation();          // the row underneath opens Details
+  openCrewEdit(String(crewId), {tab: 'documents'});
+}
+
 function _renderCrewList(){
   // q comes from the shared crew filter (kept for the no-match message below).
   // Name/EIN/phone match is a deliberate superset of the other two views, which
@@ -15805,6 +15870,7 @@ function _renderCrewList(){
   const target = document.getElementById('crew-list-rows');
   const cnt = document.getElementById('crew-list-count');
   const today = _goatLocalISODate(new Date());
+  crewNoContractSyncBtn();
 
   // A licence filter with nothing behind it fails LOUDLY, the same posture as
   // api_availability's guard. Returning everyone (filter silently ignored) and
@@ -15817,6 +15883,16 @@ function _renderCrewList(){
       + 'Licence data is unavailable, so the licence filter can’t be applied. Clear it to filter without it.</div>';
     return;
   }
+  const noContract = _crewRecNoContract;
+  // Same loud refusal for the No contract chip: with no contract data behind it,
+  // everyone would read as "unknown" and the list would be an honest-looking empty.
+  if(noContract && !_crewListContractOk){
+    _crewRecLastRows = [];
+    if(cnt) cnt.textContent = '';
+    if(target) target.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:8px 0">'
+      + 'Contract data is unavailable, so the No contract filter can’t be applied. Clear it to filter without it.</div>';
+    return;
+  }
 
   const rows = _crewListData.filter(function(c){
     if(needle
@@ -15825,6 +15901,7 @@ function _renderCrewList(){
        && (c.phone||'').toLowerCase().indexOf(needle) < 0) return false;
     if(crewFilter.group && !((c.groups||[]).includes(crewFilter.group))) return false;
     if((crewFilter.minStars||0) && (Number(c.rating)||0) < crewFilter.minStars) return false;
+    if(noContract && c.contract !== null) return false;
     // AND across ticked codes, matching the group filter and the Crew Finder:
     // two codes means both. Driver classes match upward via expandLicCode.
     if(lic.length){
@@ -15871,25 +15948,29 @@ function _renderCrewList(){
   // Reads "No active crew hold Forklift truck (LF)." rather than a bare no-match
   // on an empty search box — an honest empty result must not read as a failure.
   function emptyMsg(){
+    const set = crewFilter.active ? 'active' : 'inactive';
+    if(noContract && !lic.length && !needle && !crewFilter.group && !crewFilter.minStars)
+      return 'Every ' + set + ' crew member has a contract on file.';
     const parts = [];
     if(lic.length){
       const names = lic.map(function(c){ return escapeHtml(licChipLabel(c)); }).join(' + ');
-      parts.push('No ' + (crewFilter.active ? 'active' : 'inactive') + ' crew hold ' + names);
+      parts.push('No ' + set + ' crew hold ' + names);
     }
+    if(noContract) parts.push(parts.length ? 'without a contract' : 'No ' + set + ' crew without a contract');
     if(needle) parts.push(parts.length ? 'and match “' + escapeHtml(q) + '”' : 'No crew match “' + escapeHtml(q) + '”');
     if(crewFilter.group) parts.push('in ' + escapeHtml(crewFilter.group));
     if(crewFilter.minStars) parts.push('with ' + crewFilter.minStars + '\u2605 or more');
     return (parts.length ? parts.join(' ') : 'No crew to show') + '.';
   }
 
-  crewCountLineRender('crew-list-count', rows.length, _crewListData.length, (crewFilter.active ? 'active' : 'inactive') + ' crew', lic.length);
+  crewCountLineRender('crew-list-count', rows.length, _crewListData.length, (crewFilter.active ? 'active' : 'inactive') + ' crew', lic.length, noContract);
 
   // Same identity columns as Utilization, then Licences (expired / expiring),
   // Reliability (12 mo), Push, the matched-licence chips while a licence filter
   // is ticked, and Status. Headers sort; see crewRecSortBy.
   const soon = _goatLocalISODate(new Date(Date.now() + 30*86400000));
   const ctx = { today: today, soon: soon };
-  const rs = crewSortFor(['name','rating','ein','lic','rel','push']);
+  const rs = crewSortFor(['name','rating','ein','lic','rel','push','contract']);
   const sk = rs.key, sd = rs.dir;
   const sorted = rows.slice().sort(function(a, b){
     const av = crewRecSortVal(a, sk, ctx), bv = crewRecSortVal(b, sk, ctx);
@@ -15913,6 +15994,7 @@ function _renderCrewList(){
       + th('Licence expiry', 'lic', '', 'width:150px')
       + th('Reliability 12 mo', 'rel', '', 'width:160px')
       + th('Push', 'push', '', 'width:70px')
+      + th('Contract', 'contract', '', 'width:110px')
       + th(lic.length ? 'Matched' : '', '', '')
       + th('Status', '', '', 'width:70px') + th('', '', '', 'width:36px')
       + '</tr></thead><tbody>'
@@ -15928,6 +16010,7 @@ function _renderCrewList(){
           + '<td>'+crewRecLicHtml(c, today, soon)+'</td>'
           + '<td>'+crewRecRelHtml(c)+'</td>'
           + '<td>'+crewRecPushHtml(c)+'</td>'
+          + '<td>'+crewRecContractHtml(c)+'</td>'
           + '<td>'+matchedLicHtml(c)+'</td>'
           + '<td>'+status+'</td>'
           + '<td style="color:var(--muted);font-size:14px;text-align:right;text-overflow:clip">\u203a</td>'
@@ -24581,7 +24664,7 @@ function crewRenderVisible(){
 // "12 of 494 crew shown · Filtered by Fork, 4* or more  [Clear filters]".
 // Filters carry across the three views and group / MIN star are remembered, so a
 // narrowed list must always say so, on every view, in the same place.
-function crewCountLineRender(id, shown, total, noun, licCount){
+function crewCountLineRender(id, shown, total, noun, licCount, noContract){
   const el = document.getElementById(id);
   crewPersistSave();
   if(!el) return;
@@ -24591,6 +24674,7 @@ function crewCountLineRender(id, shown, total, noun, licCount){
   if(crewFilter.group) f.push('<b>' + escapeHtml(crewFilter.group) + '</b>');
   if(crewFilter.minStars) f.push('<b>' + crewFilter.minStars + '\u2605 or more</b>');
   if(licCount) f.push('<b>' + licCount + (licCount === 1 ? ' licence' : ' licences') + '</b>');
+  if(noContract) f.push('<b>no contract</b>');   // Records only; the other views never pass it
   el.innerHTML = '<span>' + shown + ' of ' + total + ' ' + escapeHtml(noun) + ' shown</span>'
     + (f.length
         ? '<span>\u00b7 Filtered by ' + f.join(', ') + '</span>'
@@ -24605,6 +24689,10 @@ function crewClearFilters(){
     const grid = document.getElementById('crew-lic-grid');
     if(grid) grid.querySelectorAll('.group-chip.active').forEach(function(b){ b.classList.remove('active'); });
     crewLicRenderChips();
+  }
+  if(typeof _crewRecNoContract !== 'undefined' && _crewRecNoContract){
+    _crewRecNoContract = false;
+    crewNoContractSyncBtn();
   }
   ['fc-search', 'ind-name-search', 'crew-list-search'].forEach(function(id){
     const i = document.getElementById(id); if(i) i.value = '';
@@ -24623,6 +24711,14 @@ function crewClearFilters(){
 function exportCrewRecordsCSV(){
   const today = _goatLocalISODate(new Date());
   const soon  = _goatLocalISODate(new Date(Date.now() + 30*86400000));
+  // YYYY-MM-DD · On file (no date) · None · Unknown, plus " (no PDF)".
+  const contractCell = function(c){
+    if(!_crewListContractOk || !('contract' in c)) return 'Unknown';
+    const k = c.contract;
+    if(k === null) return 'None';
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(k.signed_at || ''));
+    return (m ? m[1] : 'On file (no date)') + (k.has_pdf === false ? ' (no PDF)' : '');
+  };
   const rows = (_crewRecLastRows || []).map(function(c){
     const ls = crewRecLicState(c, today, soon);
     const s  = c.stats;
@@ -24633,12 +24729,13 @@ function exportCrewRecordsCSV(){
       ls ? ls.expired.join(' ') : 'Unknown', ls ? ls.expiring.join(' ') : 'Unknown',
       n(s && s.late_12mo), n(s && s.noshow_12mo), n(s && s.late_all), n(s && s.noshow_all),
       c.push_ok === true ? 'On' : (c.push_ok === false ? 'Off' : 'Unknown'),
+      contractCell(c),
       (c.groups || []).join(' ')
     ];
   });
   goatExportCSV('crew-records-' + (crewFilter.active ? 'active' : 'inactive'),
     ['Name', 'EIN', 'Phone', 'Stars', 'Status', 'Licences expired', 'Licences expiring (30 days)',
-     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Crew Hub push', 'Groups'],
+     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Crew Hub push', 'Contract signed', 'Groups'],
     rows);
 }
 
