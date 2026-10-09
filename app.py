@@ -4259,6 +4259,62 @@ def ss_ack_clash(ss, payload):
     except Exception:
         return None, "bad JSON from ack-clash.php"
 
+# ── CREW LIST SENT (design DESIGN-crewlist-sent-v0_2, brief Slice B) ────────────
+# SmartStaff owns the state: call_crewlist_sent + three endpoints. Marking and
+# undoing are admin-only there (403 otherwise) and take a JSON body. The status
+# read compares each call's newest snapshot with the live call IN PHP, so every
+# screen gets the same answer; THE GOAT only renders it.
+
+def fetch_crewlist_status(ss, params):
+    """GET get-crewlist-status.php with exactly one scope: {"booking": id},
+    {"bookings": "id,id"} or {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}.
+
+    Returns (data, error). data is {"calls": {...}, "bookings": {...}}, both
+    keyed by STRING ids; calls{} holds only marked calls (absence = none).
+
+    On ANY failure returns (None, err). Callers soft-merge: a failed status read
+    leaves every call 'none' and every booking not-all-sent — the same posture as
+    fetch_clash_acks_bulk. "Couldn't check" must never read as an error page.
+    """
+    url = f"{BASE_URL}/ajax/crew/get-crewlist-status.php"
+    try:
+        resp = ss.get(url, params=params, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict) or "error" in data or not data.get("ok"):
+        return None, (data.get("error") if isinstance(data, dict) else None) or "bad response"
+    calls    = data.get("calls")
+    bookings = data.get("bookings")
+    return {"calls":    calls    if isinstance(calls, dict)    else {},
+            "bookings": bookings if isinstance(bookings, dict) else {}}, None
+
+
+def ss_crewlist_post(ss, php, payload):
+    """POST a JSON body to mark-crewlist-sent.php / undo-crewlist-sent.php.
+    Returns (result, http_status, error). The PHP's own status is passed back
+    (400 bad call, 403 not admin, 404 nothing to undo) so the UI can say why."""
+    url = f"{BASE_URL}/ajax/crew/{php}"
+    try:
+        resp = ss.post(url, json=payload, timeout=30)
+    except Exception as e:
+        return None, 502, f"request failed: {e}"
+    body = None
+    try:
+        body = resp.json()
+    except Exception:
+        pass
+    if resp.status_code != 200 or not isinstance(body, dict) or not body.get("ok"):
+        detail = body.get("error", "") if isinstance(body, dict) else ""
+        status = resp.status_code if resp.status_code >= 400 else 502
+        return None, status, (detail or f"HTTP {resp.status_code} from {php}")
+    return body, 200, None
+
 def _edit_num(v):
     """Coerce a JSON value to a number, or None if it isn't one. Booleans are
     rejected explicitly — bool is a subclass of int and True would sail through."""
@@ -10788,6 +10844,18 @@ def api_schedule():
                         "note": ack.get("note"),
                     }
 
+    # Crew list sent markers — one status read for the whole window. The
+    # endpoint's end is INCLUSIVE, matching get-calls-bulk.php's today+days.
+    # Soft-merged: on failure cl stays None, every call reads 'none' and no
+    # booking reads all-sent (counts None so the summary shows nothing rather
+    # than a false "0 of N").
+    cl, _cl_err = fetch_crewlist_status(ss, {
+        "start": start_dt.strftime("%Y-%m-%d"),
+        "end":   end_dt.strftime("%Y-%m-%d"),
+    })
+    cl_calls    = (cl or {}).get("calls", {})
+    cl_bookings = (cl or {}).get("bookings", {})
+
     # Attach crew + clashes to each call in the payload
     bookings_list = list(bookings.values())
     for b in bookings_list:
@@ -10795,6 +10863,16 @@ def api_schedule():
             cid_str = str(c.get("call_id", ""))
             c["crew"]    = crew_by_call.get(cid_str, [])
             c["clashes"] = clashes_by_call.get(cid_str, [])
+            detail = cl_calls.get(cid_str)
+            c["crewlist_state"] = (detail or {}).get("state") or "none"
+            c["crewlist"]       = detail
+        # Counts cover EVERY non-cancelled call of the booking (D5), not just
+        # those in the window — so they equal the booking dialog's header.
+        agg = cl_bookings.get(str(b["booking_id"]))
+        b["crewlist_all_sent"] = bool(agg and agg.get("all_sent"))
+        b["crewlist_counts"]   = ({"total": int(agg.get("calls_total") or 0),
+                                   "sent":  int(agg.get("calls_sent")  or 0)}
+                                  if agg else None)
 
     payload = {
         "days":        days,
@@ -14566,7 +14644,85 @@ def api_bookings_all():
     data, err = ss_get_bookings_bulk(ss, limit=limit, offset=offset, q=q)
     if err:
         return jsonify({"error": err}), 502
+    # Crew list ✉ per row — one ?bookings= read per page (pages are <= 100,
+    # the endpoint's cap is 200). Soft: a failed read leaves every row unmarked.
+    rows = data.get("bookings") if isinstance(data, dict) else None
+    if rows:
+        ids = [str(b.get("booking_id")) for b in rows if b.get("booking_id")]
+        cl = None
+        if ids:
+            cl, _cl_err = fetch_crewlist_status(ss, {"bookings": ",".join(ids)})
+        agg = (cl or {}).get("bookings", {})
+        for b in rows:
+            a = agg.get(str(b.get("booking_id")))
+            b["crewlist_all_sent"] = bool(a and a.get("all_sent"))
     return jsonify(data)
+
+
+# ── CREW LIST SENT routes ─────────────────────────────────────────────────────
+# Mark / undo are admin-only (D9: only people who can make crew lists can mark
+# one sent; SmartStaff enforces it too). The status read is READ_ALL — everyone
+# who can see the Schedule sees the marker. /api/booking/<id> is deliberately
+# NOT extended: Crew Finder, the call dialog and the list builder share it.
+
+@app.route("/api/crewlist/mark", methods=["POST"])
+@require_cohort("admin")
+def api_crewlist_mark():
+    """Body {"calls": [{call_id, crew_ids, start_date, start_time, est_length}]},
+    forwarded unchanged. The snapshot is built client-side from the data the list
+    was PRINTED from (design §4.1); SmartStaff validates it all-or-nothing."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("calls"), list) or not payload["calls"]:
+        return jsonify({"error": "calls must be a non-empty list"}), 400
+    result, status, err = ss_crewlist_post(ss, "mark-crewlist-sent.php",
+                                           {"calls": payload["calls"]})
+    if err:
+        return jsonify({"error": err}), status
+    _schedule_cache.clear()   # the blue edge should show now, not after 120 s
+    return jsonify(result)
+
+
+@app.route("/api/crewlist/undo", methods=["POST"])
+@require_cohort("admin")
+def api_crewlist_undo():
+    """Body {"call_id": N}. Soft-deletes the newest live mark (D10); returns the
+    call's state after the undo — an older send may now be current."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        call_id = int(payload.get("call_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "call_id required"}), 400
+    result, status, err = ss_crewlist_post(ss, "undo-crewlist-sent.php",
+                                           {"call_id": call_id})
+    if err:
+        return jsonify({"error": err}), status
+    _schedule_cache.clear()
+    return jsonify(result)
+
+
+@app.route("/api/booking/<booking_id>/crewlist-status", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_crewlist_status(booking_id):
+    """Crew list state for every call of one booking. {ok, calls, bookings} on
+    success; {"unavailable": true, error} with 502 when SmartStaff couldn't be
+    asked — the dialog then shows nothing rather than "0 of N sent"."""
+    try:
+        bid = int(str(booking_id).strip())
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad booking id"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = fetch_crewlist_status(ss, {"booking": bid})
+    if err:
+        return jsonify({"unavailable": True, "error": err}), 502
+    return jsonify({"ok": True, "calls": data["calls"], "bookings": data["bookings"]})
 
 # ── Timesheet sheet links (booking -> the Google Sheet THE GOAT generated) ──────
 # Machine-local, gitignored — same idea as config.json / google_token.json. Lets the

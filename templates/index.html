@@ -28,6 +28,7 @@
 --warn-bg:rgba(245,158,11,0.1);
   --shift-bar:#d4af37;
   --target-green:#d4af37;
+  --crewlist:#38bdf8;      /* crew list sent marker (DESIGN-crewlist-sent D7) */
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column}
@@ -997,6 +998,16 @@ th.crew-sort:hover,th.crew-sort.on{color:var(--accent)}
   border-left: 2px solid var(--muted);
   color: var(--muted);
 }
+/* Crew list sent (D7/D8). A RIGHT edge, never a fill: the fill colour is the
+   staffing state and must survive. border-right rather than an inset
+   box-shadow, because today's blocks set box-shadow inline and .clash/.warn
+   animate it — either would wipe the marker. The 3px border replaces the 3px
+   right padding the blocks carry inline (hence !important), so the content box,
+   the ellipsis point and the text position are identical with or without it. */
+.sched-call-block.cl-sent{border-right:3px solid var(--crewlist);padding-right:0!important}
+.sched-call-block.cl-changed{border-right:3px dashed var(--crewlist);padding-right:0!important}
+.cl-glyph{color:var(--crewlist);font-style:normal}
+.cl-glyph.cl-dim{opacity:.6}
 @keyframes clashPulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(249,115,22,0.5)}}
 @keyframes clashPulseRed{0%,100%{box-shadow:none}50%{box-shadow:0 0 6px rgba(227,30,36,0.55)}}
 .crew-clash{color:#ef4444!important;font-weight:700}
@@ -20778,6 +20789,9 @@ function abRow(b){
         + '<div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(meta||'—')+'</div>'
       + '</div>'
       + '<span style="font-size:10px;color:'+stColor+';white-space:nowrap">'+status+'</span>'
+      // ✉ when every call's crew list is sent and unchanged (D5). Always
+      // rendered (empty otherwise) so crewlistRefreshAfterChange can toggle it.
+      + '<span id="ab-cl-'+id+'" style="font-size:11px;white-space:nowrap">'+(b.crewlist_all_sent ? '<i class="cl-glyph" title="Crew lists sent for every call">✉</i>' : '')+'</span>'
       + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">'+ncalls+'</span>'
     + '</div>'
     + '<div id="ab-calls-'+id+'" data-loaded="0" style="display:none;border-top:1px solid var(--border);padding:6px 12px 10px 34px"></div>'
@@ -20883,7 +20897,7 @@ function _abCallWhen(startUnix, startTime){
 // (print, or Save as PDF). Data comes straight from /api/booking/<id>
 // (get-booking.php), which now carries ein + email on each crew member.
 
-function openCrewLists(bookingId){
+function openCrewLists(bookingId, callIds){
   entityModalWidth(ENTITY_MODAL_W);
   entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
   // Remembered per-person choices. The object below is the FIRST-RUN default —
@@ -20895,12 +20909,21 @@ function openCrewLists(bookingId){
                           (typeof saved === 'object' ? saved : {}));
   if(d.who !== 'confirmed' && d.who !== 'rostered') d.who = 'confirmed';
 
+  // Which calls start ticked (D6): all of them, or just callIds when a caller
+  // passes them (the per-call 📋 button, later the Ops tile). Kept for the
+  // checklist loader below and for crewListGenerate if the checklist never
+  // arrives.
+  window._clPick = {bookingId: String(bookingId),
+                    callIds: Array.isArray(callIds) && callIds.length ? callIds.map(String) : null};
+
   document.getElementById('entity-modal-title').textContent = 'Create Crew Lists';
   document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="padding:6px 0">'
     + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Break / Off write-in columns are always shown. The list opens in a new tab, ready to print or save as PDF.</div>'
-    + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding-bottom:6px">Optional columns</div>'
+    + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding-bottom:6px">Calls to include</div>'
+    + '<div id="cl-calls" data-loaded="0" style="padding-bottom:6px"><div style="font-size:12px;color:var(--muted);padding:4px 0">Loading calls…</div></div>'
+    + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 0 6px">Optional columns</div>'
     + _clCheckbox('cl-col-ein','EIN',!!d.ein)
     + _clCheckbox('cl-col-phone','Phone',!!d.phone)
     + _clCheckbox('cl-col-email','Email',!!d.email)
@@ -20913,6 +20936,67 @@ function openCrewLists(bookingId){
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Create Crew Lists', "crewListGenerate('"+bookingId+"')", {primary:true})
     + entityBtn('Close','closeEntityModal()');
+  _clLoadChecklist(bookingId);   // async, never awaited
+}
+
+// A call that SmartStaff has cancelled. cancelled_at is the truth; the name
+// prefix cancel-call.php writes is the backstop abToggle already relies on.
+// mark-crewlist-sent.php rejects the WHOLE request if any call in it has
+// cancelled_at set, so erring towards "cancelled" here is the safe direction.
+function _clIsCancelled(c){
+  return !!(c && (c.cancelled_at || c.cancelled === true || /^\s*cancelled\s*-/i.test(c.call_name||'')));
+}
+
+// "Calls to include": one row per call, with its crew-list state. Cancelled
+// calls are listed UNTICKED with a muted "Cancelled" label — they still print
+// if ticked (the printed list is unchanged by this feature), but they never
+// go into a mark. If the booking can't be read the area says so and
+// crewListGenerate falls back to every call, as before this feature.
+async function _clLoadChecklist(bookingId){
+  let data = null, st = null;
+  try{
+    const [rb, rs] = await Promise.all([
+      fetch('/api/booking/'+encodeURIComponent(bookingId)),
+      fetch('/api/booking/'+encodeURIComponent(bookingId)+'/crewlist-status').catch(function(){ return null; })
+    ]);
+    const j = await rb.json();
+    if(!j.error) data = j;
+    if(rs && rs.ok){ const k = await rs.json(); if(k && k.ok) st = k; }
+  }catch(e){ data = null; }
+
+  const box = document.getElementById('cl-calls');
+  if(!box || !box.isConnected) return;
+  if(!window._clPick || window._clPick.bookingId !== String(bookingId)) return;   // another booking's form now
+  if(!data){
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:4px 0">Couldn\'t load the calls — every call will be included.</div>';
+    return;
+  }
+  const calls = data.calls || [];
+  if(!calls.length){
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:4px 0">This booking has no calls.</div>';
+    return;
+  }
+  const pick  = window._clPick.callIds;
+  const clMap = (st && st.calls) || {};
+  box.innerHTML = calls.map(function(c){
+    const id   = String(c.call_id);
+    const cx   = _clIsCancelled(c);
+    const on   = !cx && (!pick || pick.indexOf(id) !== -1);
+    const when = _abCallWhen(c.start_date, c.start_time);
+    let tag = '';
+    if(cx){
+      tag = '<span style="font-size:10px;color:var(--muted);margin-left:8px">Cancelled</span>';
+    } else if(clMap[id] && clMap[id].state === 'sent'){
+      tag = '<span style="font-size:10px;color:var(--muted);margin-left:8px">✉ Sent '+escapeHtml(_clSentDay(clMap[id].sent_at))+'</span>';
+    } else if(clMap[id] && clMap[id].state === 'changed'){
+      tag = '<span style="font-size:10px;color:var(--warn);margin-left:8px">Changed since sent</span>';
+    }
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:'+(cx?'var(--muted)':'var(--text)')+';padding:3px 0;cursor:pointer">'
+      + '<input type="checkbox" class="cl-call-pick" value="'+escapeHtml(id)+'"'+(on?' checked':'')+'> '
+      + '<span>'+escapeHtml(decodeEntities(c.call_name||'Call'))+(when?' · '+escapeHtml(when):'')+'</span>'
+      + tag + '</label>';
+  }).join('');
+  box.setAttribute('data-loaded', '1');
 }
 
 function _clCheckbox(id,label,checked){
@@ -20930,11 +21014,29 @@ async function crewListGenerate(bookingId){
   };
   const status = document.getElementById('cl-status');
 
+  // Which calls (D6). Checklist loaded -> exactly the ticked ones. Not loaded
+  // (still loading, or failed) -> the ids a caller passed, else every call.
+  // Read BEFORE window.open so an empty selection never leaves a blank tab.
+  const box = document.getElementById('cl-calls');
+  let callIds = null;
+  if(box && box.getAttribute('data-loaded') === '1'){
+    callIds = Array.prototype.map.call(box.querySelectorAll('input.cl-call-pick:checked'), function(el){ return String(el.value); });
+    if(!callIds.length){
+      if(status){ status.style.color='var(--conflict)'; status.textContent='Tick at least one call.'; }
+      return;
+    }
+  } else if(window._clPick && window._clPick.bookingId === String(bookingId) && window._clPick.callIds){
+    callIds = window._clPick.callIds.slice();
+  }
+  // Only the column/who choices are remembered — not which calls.
+  const prefs = {ein:opts.ein, phone:opts.phone, email:opts.email, who:opts.who};
+
   // Remember these choices for next time. Saved BEFORE the fetch, so the
   // preference sticks even if the build then fails — the operator's intent
   // doesn't depend on whether SmartStaff answered. A storage failure is
   // ignored on purpose: not saving a preference must never block the list.
-  goatPrefs.set('crewList', 'lastUsed', opts);
+  goatPrefs.set('crewList', 'lastUsed', prefs);
+  opts.callIds = callIds;
 
   if(status){ status.style.color='var(--muted)'; status.textContent='Building crew lists…'; }
 
@@ -20959,11 +21061,250 @@ async function crewListGenerate(bookingId){
     win.document.open();
     win.document.write(html);
     win.document.close();
-    if(status){ status.style.color='var(--muted)'; status.textContent='Crew lists opened in a new tab.'; }
-    closeEntityModal();
+    // D1: ask, don't assume — lists made just to check something are not
+    // recorded. Admin only (D9); everyone else gets the old auto-close.
+    const snap = (window._cohort === 'admin') ? crewlistSnapshot(data, callIds) : [];
+    if(snap.length){
+      _clAskMarkSent(bookingId, snap);
+    } else {
+      if(status){ status.style.color='var(--muted)'; status.textContent='Crew lists opened in a new tab.'; }
+      closeEntityModal();
+    }
   }catch(e){
     win.document.body.innerHTML = 'Couldn\'t build crew lists: '+escapeHtml(e.message);
     if(status){ status.style.color='var(--conflict)'; status.textContent='Couldn\'t build crew lists: '+e.message; }
+  }
+}
+
+// The mark payload, built from THE SAME `data` the list was just printed from
+// (design §4.1) — not a fresh read, which could already differ. Per selected
+// call: CONFIRMED crew ids only (status 5), even when the list was printed with
+// "All rostered" (D3). Cancelled calls are left out even if ticked and printed:
+// mark-crewlist-sent.php would reject the whole request for one of them.
+function crewlistSnapshot(data, callIds){
+  const want = callIds ? callIds.map(String) : null;
+  return ((data && data.calls) || []).filter(function(c){
+    return (!want || want.indexOf(String(c.call_id)) !== -1) && !_clIsCancelled(c);
+  }).map(function(c){
+    return {
+      call_id:    Number(c.call_id),
+      crew_ids:   (c.crew || []).filter(function(m){ return (m.status||'').toLowerCase() === 'confirmed'; })
+                                .map(function(m){ return Number(m.id); })
+                                .filter(function(n){ return n > 0; }),
+      start_date: Number(c.start_date),
+      start_time: String(c.start_time || ''),
+      est_length: Number(c.est_length) || 0
+    };
+  });
+}
+
+function _clAskMarkSent(bookingId, snap){
+  window._clPendingMark = {bookingId: String(bookingId), calls: snap};
+  const n = snap.length;
+  document.getElementById('entity-modal-title').textContent = 'Crew lists opened in a new tab.';
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="padding:6px 0">'
+    + '<div style="font-size:13px;color:var(--text);padding-bottom:8px">Did you send these to the client?</div>'
+    + '<div style="font-size:11px;color:var(--muted)">Marking records who is confirmed and when each call starts right now. If either changes, the call shows as changed since sent.</div>'
+    + '<div id="cl-mark-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
+    + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('✉ Mark '+n+' call'+(n===1?'':'s')+' as sent', 'crewlistMarkSent()', {primary:true, id:'cl-mark-go'})
+    + entityBtn('Not now', 'closeEntityModal()');
+}
+
+async function crewlistMarkSent(){
+  const p = window._clPendingMark;
+  if(!p || !p.calls || !p.calls.length){ closeEntityModal(); return; }
+  const st = document.getElementById('cl-mark-status');
+  const go = document.getElementById('cl-mark-go');
+  if(go) go.style.pointerEvents = 'none';
+  if(st){ st.style.color = 'var(--muted)'; st.textContent = 'Marking…'; }
+  try{
+    const r = await fetch('/api/crewlist/mark', {method:'POST', headers:{'Content-Type':'application/json'},
+                                                 body: JSON.stringify({calls: p.calls})});
+    const j = await r.json().catch(function(){ return {}; });
+    if(!r.ok || !j.ok){
+      if(st){ st.style.color = 'var(--conflict)'; st.textContent = 'Couldn\'t mark as sent: '+(j.error || ('HTTP '+r.status)); }
+      if(go) go.style.pointerEvents = '';
+      return;
+    }
+    window._clPendingMark = null;
+    const n = (j.marked || p.calls).length;
+    if(st){ st.style.color = 'var(--crewlist)'; st.textContent = 'Marked '+n+' call'+(n===1?'':'s')+' as sent.'; }
+    crewlistRefreshAfterChange(p.bookingId);   // async, never awaited
+    setTimeout(closeEntityModal, 900);
+  }catch(e){
+    if(st){ st.style.color = 'var(--conflict)'; st.textContent = 'Couldn\'t mark as sent: '+e.message; }
+    if(go) go.style.pointerEvents = '';
+  }
+}
+
+// ── CREW LIST SENT — display helpers ─────────────────────────────────────────
+// The state itself is worked out in SmartStaff (get-crewlist-status.php): per
+// call 'sent' | 'changed', absent = none. These only turn it into words.
+
+// Surname from SmartStaff's "Lastname, Firstname".
+function _clSurname(n){ n = String(n||''); var i = n.indexOf(','); return (i > 0 ? n.slice(0, i) : n).trim(); }
+// First name from "Lastname, Firstname" — for "sent … by Rich".
+function _clFirst(n){ n = String(n||''); var i = n.indexOf(','); return (i > 0 ? n.slice(i+1) : n).trim(); }
+function _clHM(t){ var m = String(t||'').match(/^(\d{1,2}):(\d{2})/); return m ? (m[1].padStart(2,'0')+':'+m[2]) : String(t||''); }
+function _clDay(unix){
+  var d = new Date(Number(unix)*1000);
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-AU', {weekday:'short', day:'numeric', month:'short'}).replace(/,/g,'');
+}
+function _clLen(v){ var n = Number(v); return isFinite(n) ? (Math.round(n*100)/100)+'h' : String(v); }
+// "8 Oct" — the short form on call rows and the checklist.
+function _clSentDay(unix){
+  var d = new Date(Number(unix)*1000);
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-AU', {day:'numeric', month:'short'});
+}
+// "Crew list sent Thu 8 Oct 14:20 by Rich"
+function _clSentLine(detail){
+  if(!detail) return '';
+  var d = new Date(Number(detail.sent_at)*1000);
+  var when = isNaN(d.getTime()) ? '' : (_clDay(detail.sent_at)+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'));
+  var by = _clFirst(detail.sent_by_name);
+  return 'Crew list sent'+(when ? ' '+when : '')+(by ? ' by '+by : '');
+}
+
+// PURE: diff -> "Changed since sent: +Smith, −Jones, start 07:00→08:00".
+// '' when there is nothing to say (diff null, or every field null/empty).
+// Plain text: callers decodeEntities() then escapeHtml() it for display.
+function crewlistDiffText(diff){
+  if(!diff) return '';
+  var parts = [];
+  (diff.added   || []).forEach(function(p){ parts.push('+'+_clSurname(p && p.name)); });
+  (diff.removed || []).forEach(function(p){ parts.push('−'+_clSurname(p && p.name)); });
+  if(diff.start_date) parts.push('date '+_clDay(diff.start_date.was)+'→'+_clDay(diff.start_date.now));
+  if(diff.start_time) parts.push('start '+_clHM(diff.start_time.was)+'→'+_clHM(diff.start_time.now));
+  if(diff.est_length) parts.push('length '+_clLen(diff.est_length.was)+'→'+_clLen(diff.est_length.now));
+  return parts.length ? 'Changed since sent: '+parts.join(', ') : '';
+}
+
+// Schedule block: class + glyph + tooltip text for a call from /api/schedule.
+function crewlistBlockClass(c){
+  var s = c && c.crewlist_state;
+  return s === 'sent' ? ' cl-sent' : (s === 'changed' ? ' cl-changed' : '');
+}
+function crewlistBlockGlyph(c){
+  var s = c && c.crewlist_state;
+  return s === 'sent' ? ' <i class="cl-glyph">✉</i>' : (s === 'changed' ? ' <i class="cl-glyph cl-dim">✉</i>' : '');
+}
+function crewlistBlockTitle(c){
+  var s = c && c.crewlist_state;
+  if(s === 'sent')    return ' · '+_clSentLine(c.crewlist);
+  if(s === 'changed') return ' · '+(crewlistDiffText(c.crewlist && c.crewlist.diff) || 'Crew list changed since sent');
+  return '';
+}
+
+// ── CREW LIST SENT — booking dialog status (modelled on gsheetLoadStatus) ────
+// Rows render without it; this fills #bk-cl-summary and each call's
+// #bk-cl-<id> line afterwards. The last good answer is cached per booking so a
+// re-render of the calls section (feeds / crew-boss mode toggles) redraws the
+// markers synchronously. A failed read changes nothing on screen: "couldn't
+// check" must never read as "not sent".
+window._bkClStatus = null;   // {bookingId, calls, bookings}
+
+async function bkLoadCrewlistStatus(bookingId){
+  var j = null;
+  try{
+    var r = await fetch('/api/booking/'+encodeURIComponent(bookingId)+'/crewlist-status',
+                        { headers: { 'Accept': 'application/json' } });
+    if(r.ok) j = await r.json();
+  }catch(e){ /* silent — see above */ }
+  if(!j || !j.ok) return null;
+  window._bkClStatus = {bookingId: String(bookingId), calls: j.calls || {}, bookings: j.bookings || {}};
+  bkApplyCrewlistStatus(bookingId);
+  return window._bkClStatus;
+}
+
+function _bkClFor(bookingId){
+  var c = window._bkClStatus;
+  return (c && c.bookingId === String(bookingId)) ? c : null;
+}
+
+// "Crew lists: 3 of 5 sent" for the CALLS heading. '' when unknown or no calls.
+function bkCrewlistSummaryHtml(bookingId){
+  var c = _bkClFor(bookingId);
+  var b = c && c.bookings[String(bookingId)];
+  if(!b || !b.calls_total) return '';
+  return '<span style="font-size:10px;color:'+(b.all_sent?'var(--crewlist)':'var(--muted)')+';margin-left:10px;text-transform:none;letter-spacing:0">'
+    + (b.all_sent ? '✉ ' : '')+'Crew lists: '+b.calls_sent+' of '+b.calls_total+' sent</span>';
+}
+
+// The line under a call row's date. Sent: muted "✉ Sent 8 Oct" (+ Undo for
+// admin, D10). Changed: amber "Changed since sent: …" (+ Undo).
+function bkCrewlistLineHtml(bookingId, callId){
+  var c = _bkClFor(bookingId);
+  var x = c && c.calls[String(callId)];
+  if(!x) return '';
+  var undo = (window._cohort === 'admin')
+    ? ' <span onclick="event.stopPropagation();crewlistUndo(\''+bookingId+'\',\''+callId+'\')" title="Take back this mark — the previous send, if any, becomes current again" style="color:var(--accent);cursor:pointer;margin-left:6px">Undo</span>'
+    : '';
+  if(x.state === 'sent'){
+    return '<div style="font-size:10px;color:var(--muted);margin-top:3px" title="'+escapeHtml(decodeEntities(_clSentLine(x)))+'">'
+      + '<i class="cl-glyph">✉</i> Sent '+escapeHtml(_clSentDay(x.sent_at))+undo+'</div>';
+  }
+  if(x.state === 'changed'){
+    var t = crewlistDiffText(x.diff) || 'Changed since sent';
+    return '<div style="font-size:10px;color:var(--warn);margin-top:3px;overflow-wrap:anywhere" title="'+escapeHtml(decodeEntities(_clSentLine(x)))+'">'
+      + escapeHtml(decodeEntities(t))+undo+'</div>';
+  }
+  return '';
+}
+
+function bkApplyCrewlistStatus(bookingId){
+  var cur = window._curBookingEdit;
+  if(!cur || String(cur.booking_id) !== String(bookingId)) return;   // dialog moved on
+  var sum = document.getElementById('bk-cl-summary');
+  if(sum && sum.isConnected) sum.innerHTML = bkCrewlistSummaryHtml(bookingId);
+  var wrap = document.getElementById('bk-calls-wrap');
+  if(!wrap) return;
+  Array.prototype.forEach.call(wrap.querySelectorAll('[data-cl-call]'), function(el){
+    el.innerHTML = bkCrewlistLineHtml(bookingId, el.getAttribute('data-cl-call'));
+  });
+}
+
+async function crewlistUndo(bookingId, callId){
+  try{
+    var r = await fetch('/api/crewlist/undo', {method:'POST', headers:{'Content-Type':'application/json'},
+                                               body: JSON.stringify({call_id: Number(callId)})});
+    var j = await r.json().catch(function(){ return {}; });
+    if(!r.ok || !j.ok){ alert('Couldn\'t undo: '+(j.error || ('HTTP '+r.status))); return; }
+  }catch(e){ alert('Couldn\'t undo: '+e.message); return; }
+  crewlistRefreshAfterChange(bookingId);
+}
+
+// After a mark or undo: ONE status read for the booking, applied everywhere it
+// is showing — the booking dialog, the Schedule (patched in place and
+// re-rendered, no overlay; the server cache was cleared by the route) and the
+// All Bookings row's ✉.
+async function crewlistRefreshAfterChange(bookingId){
+  var st = await bkLoadCrewlistStatus(bookingId);
+  if(!st) return;
+  var agg = st.bookings[String(bookingId)] || null;
+
+  if(typeof _schedData !== 'undefined' && _schedData && _schedData.bookings){
+    var touched = false;
+    _schedData.bookings.forEach(function(b){
+      if(String(b.booking_id) !== String(bookingId)) return;
+      touched = true;
+      (b.calls || []).forEach(function(c){
+        var d = st.calls[String(c.call_id)] || null;
+        c.crewlist_state = d ? d.state : 'none';
+        c.crewlist = d;
+      });
+      b.crewlist_all_sent = !!(agg && agg.all_sent);
+      b.crewlist_counts = agg ? {total: agg.calls_total || 0, sent: agg.calls_sent || 0} : null;
+    });
+    if(touched) renderSchedule();
+  }
+
+  var ab = document.getElementById('ab-cl-'+bookingId);
+  if(ab) ab.innerHTML = (agg && agg.all_sent) ? '<i class="cl-glyph" title="Crew lists sent for every call">✉</i>' : '';
+  if(typeof _abState !== 'undefined' && _abState && _abState.all){
+    _abState.all.forEach(function(b){ if(String(b.booking_id) === String(bookingId)) b.crewlist_all_sent = !!(agg && agg.all_sent); });
   }
 }
 
@@ -21040,7 +21381,10 @@ function _clBuildHtml(data, opts){
     + escapeHtml(bookingName) + ' — Crew Lists</title><style>' + css + '</style></head><body>');
   parts.push('<div class="toolbar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div>');
 
-  const calls = data.calls || [];
+  // opts.callIds (D6): only the chosen calls. null/absent = every call, which is
+  // exactly the list as it printed before the checklist existed.
+  const pickIds = opts.callIds ? opts.callIds.map(String) : null;
+  const calls = (data.calls || []).filter(function(c){ return !pickIds || pickIds.indexOf(String(c.call_id)) !== -1; });
   if(!calls.length){
     parts.push('<p style="font-size:13px">This booking has no calls.</p>');
   }
@@ -21938,6 +22282,16 @@ function bkCallRow(bookingId, c, maps, smaps){
   }
 
   // Normal mode.
+  // Crew list sent (D2/D6/D10): a per-call 📋 that opens Create Crew Lists with
+  // just this call ticked, and the status line under the date — filled now from
+  // the cached status if it is this booking's, and again by bkLoadCrewlistStatus.
+  // Neither on a cancelled call: it can't be marked, so it carries no marker.
+  var clCx   = _clIsCancelled(c);
+  var clLine = clCx ? '' : '<div data-cl-call="'+escapeHtml(String(c.call_id))+'">'+bkCrewlistLineHtml(bookingId, c.call_id)+'</div>';
+  var clBtn  = clCx ? '' : '<span onclick="event.stopPropagation();openCrewLists(\''+bookingId+'\',[\''+c.call_id+'\'])" '
+    + 'title="Create a crew list for this call" '
+    + 'style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px;margin-right:10px;cursor:pointer;white-space:nowrap" '
+    + 'onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--muted)\'">📋 Crew list</span>';
   return '<div onclick="entityOpenCall(\''+bookingId+'\',\''+c.call_id+'\')" '
     + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
     + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
@@ -21947,9 +22301,10 @@ function bkCallRow(bookingId, c, maps, smaps){
     + '<div style="flex:1;min-width:0">'
     +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
     +   whenLine
+    +   clLine
     +   notesLine
     + '</div>'
-    + '<span style="display:flex;align-items:center;flex-shrink:0;margin-left:10px">'+bkFeedCount(c)
+    + '<span style="display:flex;align-items:center;flex-shrink:0;margin-left:10px">'+clBtn+bkFeedCount(c)
     + '<span style="font-size:10px;color:var(--accent)">view \u2192</span></span></div>';
 }
 function bkCallsSection(bookingId, d){
@@ -21975,7 +22330,8 @@ function bkCallsSection(bookingId, d){
     }
   }
   var header = '<div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
-    + '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Calls</span>'
+    + '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Calls'
+    +   '<span id="bk-cl-summary">'+bkCrewlistSummaryHtml(bookingId)+'</span></span>'
     + (toggle ? '<span style="display:flex;align-items:center;gap:12px">'+toggle+'</span>' : '')
     + '</div>';
 
@@ -22423,6 +22779,7 @@ function renderBookingDialog(bookingId, d, cached){
     + '<div id="bk-checkin-wrap"></div>';
   bkLoadCheckinMode(bookingId, 'bk-checkin-wrap');   // async, never awaited
   gsheetLoadStatus(bookingId);                        // async, never awaited
+  if(d) bkLoadCrewlistStatus(bookingId);              // async, never awaited
   entityRestoreScroll();   // stepped back into this view -- put it where it was
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
@@ -30012,12 +30369,14 @@ function renderSchedule(){
           clashLabel  = ` · ${sev === 'clash' ? '⚡ Clash' : '⚠ Warning'}: ${shown}${more}`;
         }
         const awaitLabel = _schedAwaitTitle(c) + _schedCalloutTitle(c);
-        const safeTitle = (`${c.call_name} ${c.time} · ${_schedFilled(c)}/${c.required} · ${c.length}h${clashLabel}${awaitLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-        return `<div class="sched-call-block ${cls}" title="${safeTitle}"
+        const safeTitle = (`${c.call_name} ${c.time} · ${_schedFilled(c)}/${c.required} · ${c.length}h${clashLabel}${awaitLabel}` + (c.notes ? ' · ' + c.notes : '')).replace(/"/g,'&quot;').replace(/'/g,'&#39;')
+                        + escapeHtml(decodeEntities(crewlistBlockTitle(c)));
+        // Crew list marker (D7/D8): right edge + ✉, kept on past blocks (D11).
+        return `<div class="sched-call-block ${cls}${crewlistBlockClass(c)}" title="${safeTitle}"
                      data-call-id-block="${c.call_id}"
                      onclick="schedJumpToCrewFinder('${c.booking_id}','${c.call_id}')"
                      style="font-size:8px;padding:2px 3px;${isToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}">
-          <div style="font-size:7px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.time}</div>
+          <div style="font-size:7px;opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.time}${crewlistBlockGlyph(c)}</div>
           <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${label}</div>
           ${c.notes ? `<div style="font-size:7px;opacity:.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px;font-style:italic">${c.notes}</div>` : ''}
         </div>`;
@@ -30066,6 +30425,7 @@ function renderSchedule(){
             <div style="font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;
                         color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px"
                  title="${booking.booking_name}"><span onclick="event.stopPropagation();openBookingDialog('${booking.calls[0].booking_id}')" style="cursor:pointer" title="View booking">${booking.booking_name}</span>
+              ${booking.crewlist_all_sent ? `<span class="cl-glyph" title="Crew lists sent for every call" style="font-size:10px">✉</span>` : ''}
               ${hasNotes ? `<span title="Some calls have notes" style="font-size:9px;color:var(--muted);opacity:.7">📝</span>` : ''}
             </div>
             <div style="font-size:9px;color:var(--muted);font-family:'Share Tech Mono',monospace;margin-top:1px">
@@ -30077,6 +30437,7 @@ function renderSchedule(){
               ${partialCalls ? `<span style="color:var(--warn)"> · ${partialCalls} partial</span>` : ''}
               ${emptyCalls ? `<span style="color:var(--accent2)"> · ${emptyCalls} empty</span>` : ''}
               ${overCalls ? `<span style="color:var(--accent2)"> · ${overCalls} over-booked</span>` : ''}
+              ${(booking.crewlist_counts && booking.crewlist_counts.sent > 0) ? `<span style="color:var(--crewlist)" title="Counts every call of the booking, not just this window — the same figure as the booking dialog"> · ${booking.crewlist_counts.sent} of ${booking.crewlist_counts.total} lists sent</span>` : ''}
             </div>
           </div>
         </div>
@@ -30110,12 +30471,12 @@ function renderSchedule(){
         if(d === call.date_iso){
           return `<div style="flex:0 0 ${colIsToday?'70px':'52px'};border-right:1px solid var(--border);padding:2px;${colIsPast?'opacity:.6;':''}
                               background:${colIsToday?'rgba(212,175,55,0.06)':colIsPast?'rgba(255,255,255,0.02)':isWeekend?'rgba(255,255,255,0.015)':'transparent'}">
-            <div class="sched-call-block ${cls}" style="font-size:8px;padding:2px 3px;cursor:pointer;
+            <div class="sched-call-block ${cls}${crewlistBlockClass(call)}" style="font-size:8px;padding:2px 3px;cursor:pointer;
                  ${colIsToday?'box-shadow:0 0 6px rgba(212,175,55,0.3)':''}"
                  data-call-id-block="${call.call_id}"
                  onclick="event.stopPropagation();schedJumpToCrewFinder('${call.booking_id}','${call.call_id}')"
-                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?(()=>{const nm=[...new Set(call.clashes.map(x=>x.name))];return ' · '+(sev==='clash'?'⚡ ':'⚠ ')+nm.length+(sev==='clash'?' clash'+(nm.length>1?'es':''):' warning'+(nm.length>1?'s':''))+': '+nm.slice(0,3).join(', ')+(nm.length>3?' +'+(nm.length-3)+' more':'');})():''}${_schedAwaitTitle(call)}${_schedCalloutTitle(call)}">
-              <div style="font-size:7px;opacity:.7">${call.time}</div>
+                 title="${call.call_name} · ${call.time} · ${call.length}h${call.notes?' · '+call.notes:''}${hasClash?(()=>{const nm=[...new Set(call.clashes.map(x=>x.name))];return ' · '+(sev==='clash'?'⚡ ':'⚠ ')+nm.length+(sev==='clash'?' clash'+(nm.length>1?'es':''):' warning'+(nm.length>1?'s':''))+': '+nm.slice(0,3).join(', ')+(nm.length>3?' +'+(nm.length-3)+' more':'');})():''}${_schedAwaitTitle(call)}${_schedCalloutTitle(call)}${escapeHtml(decodeEntities(crewlistBlockTitle(call)))}">
+              <div style="font-size:7px;opacity:.7">${call.time}${crewlistBlockGlyph(call)}</div>
               ${_schedFilled(call)}/${call.required}${_schedPromoTag(call)}
             </div>
           </div>`;
