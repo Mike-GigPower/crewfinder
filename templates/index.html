@@ -144,6 +144,41 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .ab-fchip{background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--muted);font-size:11px;padding:5px 9px;cursor:pointer;font-family:inherit;white-space:nowrap;line-height:1}
 .ab-fchip:hover{color:var(--text);border-color:var(--accent)}
 .ab-fchip.ab-on{color:var(--accent);border-color:var(--accent);background:rgba(245,158,11,0.08)}
+/* All Bookings — Calendar view (DESIGN-all-bookings-calendar-v0_1). Each week is
+   a 7-column grid with EXPLICIT rows (set inline per week) so the day cells can
+   span grid-row 1/-1 behind the bars — -1 only reaches explicit rows. */
+.abc-wrap{flex:1;display:none;flex-direction:column;min-height:0;gap:8px}
+.abc-nav{display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap}
+.abc-title{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:15px;letter-spacing:.03em;color:var(--text);min-width:200px;text-align:center}
+.abc-dow{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));flex-shrink:0}
+.abc-dow div{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:0 6px}
+.abc-body{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px}
+.abc-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));row-gap:3px;border-bottom:1px solid var(--border);flex:1 0 auto;min-height:118px}
+.abc-week:last-child{border-bottom:none}
+.abc-cell{grid-row:1 / -1;border-right:1px solid var(--border);min-width:0}
+.abc-cell.abc-last{border-right:none}
+.abc-cell.abc-wkend{background:rgba(255,255,255,0.025)}
+.abc-cell.abc-today{box-shadow:inset 0 0 0 2px var(--accent)}
+.abc-dnum{grid-row:1;font-size:11px;color:var(--muted);padding:4px 7px 0;z-index:1;pointer-events:none}
+.abc-dnum.abc-out{opacity:.4}
+.abc-dnum.abc-today{color:var(--accent);font-weight:700}
+.abc-bar{position:relative;z-index:1;margin:0 3px;height:20px;line-height:18px;padding:0 7px;border-radius:4px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;min-width:0}
+.abc-bar.abc-active{background:rgba(212,175,55,0.16);border:1px solid rgba(212,175,55,0.55);color:var(--text)}
+.abc-bar.abc-closed{background:var(--surface2);border:1px solid var(--border);color:var(--muted)}
+.abc-bar.abc-cx{text-decoration:line-through;opacity:.6}
+.abc-bar.abc-cl{border-top-left-radius:0;border-bottom-left-radius:0;margin-left:0;border-left-style:dashed}
+.abc-bar.abc-cr{border-top-right-radius:0;border-bottom-right-radius:0;margin-right:0;border-right-style:dashed}
+.abc-bar:hover{border-color:var(--accent)}
+.abc-more{position:relative;z-index:1;font-size:10px;color:var(--accent);cursor:pointer;padding:0 7px;white-space:nowrap;align-self:center}
+.abc-more:hover{text-decoration:underline}
+.abc-calls{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));flex:1 0 auto;border-top:1px solid var(--border)}
+.abc-calls > div{border-right:1px solid var(--border);padding:6px 4px;min-width:0;display:flex;flex-direction:column;gap:4px}
+.abc-calls > div:nth-child(7){border-right:none}
+.abc-call{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:4px 6px;cursor:pointer;min-width:0}
+.abc-call:hover{border-color:var(--border-gold,var(--accent))}
+.abc-call .abc-ct{font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.abc-call .abc-cb{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.abc-call .abc-short{color:var(--conflict)}
 tr.partial .name-cell{border-left-color:var(--warn)}
 .call-breakdown{display:flex;gap:3px;flex-wrap:wrap}
 .cb-pill{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600}
@@ -2210,23 +2245,44 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 
   <!-- ── ALL BOOKINGS TAB ── -->
   <div class="tab-panel" id="tab-all-bookings">
-    <div style="display:flex;flex-direction:column;height:100%;padding:16px 20px;gap:12px;overflow:hidden">
+    <div style="display:flex;flex-direction:column;height:100%;flex:1;min-width:0;padding:16px 20px;gap:12px;overflow:hidden">
       <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;flex-wrap:wrap">
         <span style="font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:.05em;color:var(--text);font-size:15px">All Bookings</span>
+        <span id="ab-view-pills" style="display:flex;gap:4px;align-items:center">
+          <button class="ab-fchip ab-on" data-view="list" onclick="abSetView('list')" title="List view">&#9776; List</button>
+          <button class="ab-fchip" data-view="calendar" onclick="abSetView('calendar')" title="Calendar view">&#128197; Calendar</button>
+        </span>
         <input id="ab-search" type="text" placeholder="Search booking name…" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="abSearchDebounced()" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;padding:6px 10px;min-width:220px">
         <span id="ab-filters" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
           <button class="ab-fchip" id="ab-active-chip" onclick="abToggleActive()" title="Show only Active bookings">● Active</button>
+          <span id="ab-win-chips" style="display:flex;gap:4px;align-items:center">
           <span style="width:1px;height:16px;background:var(--border);margin:0 3px"></span>
           <button class="ab-fchip ab-on" data-win="0" onclick="abSetWindow(0)">All time</button>
           <button class="ab-fchip" data-win="30" onclick="abSetWindow(30)">30d</button>
           <button class="ab-fchip" data-win="60" onclick="abSetWindow(60)">60d</button>
           <button class="ab-fchip" data-win="90" onclick="abSetWindow(90)">90d</button>
+          </span>
         </span>
         <span id="ab-count" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
-        <button class="btn" onclick="loadAllBookings(true)">&#8635; Refresh</button>
+        <button class="btn" onclick="abRefresh()">&#8635; Refresh</button>
       </div>
       <div id="ab-list" style="flex:1;overflow-y:auto"><div class="empty-state"><div class="empty-sub">Loading bookings…</div></div></div>
       <div id="ab-more" style="flex-shrink:0;text-align:center"></div>
+      <div id="ab-cal-wrap" class="abc-wrap">
+        <div class="abc-nav">
+          <button class="btn" onclick="abCalNav(-1)" title="Previous">&#8249;</button>
+          <span id="ab-cal-title" class="abc-title"></span>
+          <button class="btn" onclick="abCalNav(1)" title="Next">&#8250;</button>
+          <button class="btn" onclick="abCalToday()">Today</button>
+          <span style="display:flex;gap:4px;margin-left:10px">
+            <button class="ab-fchip" data-cal="month" onclick="abCalSetLayout('month')">Month</button>
+            <button class="ab-fchip" data-cal="week"  onclick="abCalSetLayout('week')">Week</button>
+          </span>
+          <span id="ab-cal-note" style="color:var(--muted);font-size:11px;margin-left:8px"></span>
+        </div>
+        <div class="abc-dow"><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div></div>
+        <div id="ab-cal" class="abc-body"></div>
+      </div>
     </div>
   </div><!-- end tab-all-bookings -->
 
@@ -20849,6 +20905,10 @@ let _abSearchTimer = null;
 function _abCutoff(){ return _abState.windowDays ? (Date.now()/1000 - _abState.windowDays*86400) : null; }
 
 function loadAllBookings(force){
+  abInitView();
+  // Calendar view reads its own date-window endpoint; the list loads lazily
+  // the first time somebody switches to it (abSetView).
+  if(_abView === 'calendar' && !force){ abCalLoad(); return; }
   if(_abState.loaded && !force) return;
   _abState = {loaded:true, q:(document.getElementById('ab-search')||{}).value || '',
               activeOnly:false, windowDays:0, all:[], offset:0, limit:100,
@@ -20865,6 +20925,11 @@ function abSearchDebounced(){
   clearTimeout(_abSearchTimer);
   _abSearchTimer = setTimeout(function(){
     _abState.q = (document.getElementById('ab-search')||{}).value || '';
+    // Calendar view: re-read the calendar only, and mark the list stale so it
+    // re-fetches with the new search when somebody switches back (one request,
+    // not two — the per-session PHP lock serialises them).
+    if(_abView === 'calendar'){ _abState.stale = true; abCalLoad(); return; }
+    _abState.stale = false;
     _abState.all = []; _abState.offset = 0; _abState.total = 0; _abState.done = false;
     const list = document.getElementById('ab-list');
     if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Searching...</div></div>';
@@ -20878,7 +20943,12 @@ function abSearchDebounced(){
 // client-side, and for a date window keep auto-loading until the oldest loaded
 // booking predates the cutoff (window fully covered). Active bookings are
 // inherently recent, so they surface in the first pages.
-function abToggleActive(){ _abState.activeOnly = !_abState.activeOnly; abUpdateFilterChips(); abRender(); abAutoContinue(); }
+function abToggleActive(){
+  _abState.activeOnly = !_abState.activeOnly;
+  abUpdateFilterChips();
+  if(_abView === 'calendar'){ abCalRender(); return; }   // list re-renders on switch back
+  abRender(); abAutoContinue();
+}
 function abSetWindow(days){ _abState.windowDays = Number(days)||0; abUpdateFilterChips(); abRender(); abAutoContinue(); }
 
 function abUpdateFilterChips(){
@@ -21074,6 +21144,319 @@ async function abToggle(bookingId){
   }catch(e){
     body.innerHTML = '<div style="color:var(--conflict);font-size:11px;padding:4px">Couldn\'t load calls: '+escapeHtml(e.message)+'</div>';
   }
+}
+
+// ── ALL BOOKINGS: CALENDAR VIEW ─────────────────────────────────────────────
+// DESIGN-all-bookings-calendar-v0_1. One bar per booking from its first live
+// call's day to its last (D1); Month and Week layouts (D2); clicking a bar opens
+// the booking dialog, a call (Week) opens the call dialog (D3, D12). Search and
+// ● Active apply; the 30/60/90d chips are hidden (D4). Weeks start Monday (D13).
+// Data: /api/bookings/calendar?start&end&q (get-bookings-calendar.php), cached
+// per range+search for the session; Refresh clears it (D14).
+
+let _abView = 'list';
+let _abViewInit = false;
+const _abCal = {layout:'month', anchor:null, cache:{}, seq:0, cur:null, error:null, loading:false};
+const AB_CAL_MAX_LANES = 4;   // D10
+
+function abInitView(){
+  if(_abViewInit) return;
+  _abViewInit = true;
+  _abView = (goatPrefs.get('allBookings', 'view', 'list') === 'calendar') ? 'calendar' : 'list';
+  _abCal.layout = (goatPrefs.get('allBookings', 'calLayout', 'month') === 'week') ? 'week' : 'month';
+  const t = new Date();
+  _abCal.anchor = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  abApplyView();
+}
+
+function abApplyView(){
+  const cal = _abView === 'calendar';
+  const show = function(id, on, disp){ const el = document.getElementById(id); if(el) el.style.display = on ? (disp||'') : 'none'; };
+  show('ab-list', !cal);
+  show('ab-more', !cal);
+  show('ab-win-chips', !cal, 'flex');
+  show('ab-cal-wrap', cal, 'flex');
+  document.querySelectorAll('#ab-view-pills [data-view]').forEach(function(el){
+    el.classList.toggle('ab-on', el.getAttribute('data-view') === _abView);
+  });
+  document.querySelectorAll('#ab-cal-wrap [data-cal]').forEach(function(el){
+    el.classList.toggle('ab-on', el.getAttribute('data-cal') === _abCal.layout);
+  });
+}
+
+function abSetView(v){
+  abInitView();
+  _abView = (v === 'calendar') ? 'calendar' : 'list';
+  goatPrefs.set('allBookings', 'view', _abView);
+  abApplyView();
+  if(_abView === 'calendar'){ abCalLoad(); return; }
+  if(!_abState.loaded){ loadAllBookings(); return; }
+  if(_abState.stale){ abSearchDebounced(); return; }   // search changed while in Calendar
+  abRender(); abAutoContinue();
+}
+
+function abRefresh(){
+  abInitView();
+  if(_abView === 'calendar'){
+    _abCal.cache = {};
+    _abState.loaded = false;   // the list re-reads too, next time it is shown
+    abCalLoad();
+    return;
+  }
+  loadAllBookings(true);
+}
+
+function abCalSetLayout(l){
+  _abCal.layout = (l === 'week') ? 'week' : 'month';
+  goatPrefs.set('allBookings', 'calLayout', _abCal.layout);
+  abApplyView();
+  abCalLoad();
+}
+
+function abCalNav(dir){
+  const a = _abCal.anchor;
+  _abCal.anchor = (_abCal.layout === 'week')
+    ? _abAddDays(a, 7*dir)
+    : new Date(a.getFullYear(), a.getMonth()+dir, 1);
+  abCalLoad();
+}
+
+function abCalToday(){
+  const t = new Date();
+  _abCal.anchor = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  abCalLoad();
+}
+
+// "+N more" in Month view drills into that week (D10) — not saved as the
+// person's preferred layout; the Month/Week pills are the deliberate choice.
+function abCalOpenWeek(ymd){
+  _abCal.layout = 'week';
+  _abCal.anchor = _abParseYmd(ymd);
+  abApplyView();
+  abCalLoad();
+}
+
+// Local-calendar date helpers. new Date(y, m, d+n) rather than adding ms, so a
+// DST change inside the range never shifts a day.
+function _abYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function _abParseYmd(s){ const p = String(s).split('-'); return new Date(Number(p[0]), Number(p[1])-1, Number(p[2])); }
+function _abAddDays(d, n){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()+n); }
+function _abMonday(d){ return _abAddDays(d, -((d.getDay()+6)%7)); }
+
+// The visible days: a whole week, or the Monday-start weeks covering the month.
+function abCalDays(){
+  const a = _abCal.anchor;
+  let s, e;
+  if(_abCal.layout === 'week'){
+    s = _abMonday(a); e = _abAddDays(s, 6);
+  } else {
+    s = _abMonday(new Date(a.getFullYear(), a.getMonth(), 1));
+    e = _abAddDays(_abMonday(new Date(a.getFullYear(), a.getMonth()+1, 0)), 6);
+  }
+  const days = [];
+  for(let d = s; d <= e; d = _abAddDays(d, 1)) days.push(_abYmd(d));
+  return days;
+}
+
+function abCalTitle(days){
+  const a = _abCal.anchor;
+  if(_abCal.layout === 'month') return a.toLocaleDateString('en-AU', {month:'long', year:'numeric'});
+  const s = _abParseYmd(days[0]), e = _abParseYmd(days[days.length-1]);
+  const f = function(d, yr){ return d.toLocaleDateString('en-AU', yr ? {day:'numeric', month:'short', year:'numeric'} : {day:'numeric', month:'short'}); };
+  return f(s, s.getFullYear() !== e.getFullYear()) + ' – ' + f(e, true);
+}
+
+async function abCalLoad(){
+  const days = abCalDays();
+  const q    = _abState.q || '';
+  const key  = days[0]+'|'+days[days.length-1]+'|'+q;
+  const t = document.getElementById('ab-cal-title');
+  if(t) t.textContent = abCalTitle(days);
+  _abCal.cur = key;
+  _abCal.error = null;
+  if(_abCal.cache[key]){ _abCal.loading = false; abCalRender(); return; }
+  _abCal.loading = true;
+  abCalRender();
+  const seq = ++_abCal.seq;
+  const params = new URLSearchParams({start:days[0], end:days[days.length-1]});
+  if(q) params.set('q', q);
+  try{
+    const res  = await fetch('/api/bookings/calendar?'+params.toString());
+    const data = await res.json();
+    if(seq !== _abCal.seq) return;            // a newer range was asked for meanwhile
+    _abCal.loading = false;
+    if(data.error){ _abCal.error = data.error; abCalRender(); return; }
+    _abCal.cache[key] = data;
+    abCalRender();
+  }catch(e){
+    if(seq !== _abCal.seq) return;
+    _abCal.loading = false;
+    _abCal.error = 'Couldn\'t load the calendar: '+e.message;
+    abCalRender();
+  }
+}
+
+// Bar extent: first..last live call day; a booking with no live calls sits on
+// its booking date as a one-day bar (D7).
+function _abCalSpan(b){
+  const s = b.first_day || b.creation_day;
+  const e = b.last_day  || b.creation_day;
+  return (s && e) ? {s:s, e:(e < s ? s : e)} : null;
+}
+
+// Segments of every bar crossing one week, packed into lanes (D11): longest
+// first, then name, each into the first lane it fits. Day strings compare
+// correctly as text (YYYY-MM-DD).
+function _abCalWeekSegs(bookings, week){
+  const ws = week[0], we = week[6];
+  const segs = [];
+  bookings.forEach(function(b){
+    const sp = _abCalSpan(b);
+    if(!sp || sp.e < ws || sp.s > we) return;
+    const a = sp.s < ws ? ws : sp.s;
+    const z = sp.e > we ? we : sp.e;
+    segs.push({b:b, c0:week.indexOf(a), c1:week.indexOf(z), contL:sp.s < ws, contR:sp.e > we});
+  });
+  segs.sort(function(x, y){
+    return ((y.c1-y.c0) - (x.c1-x.c0))
+        || decodeEntities(x.b.name||'').localeCompare(decodeEntities(y.b.name||''));
+  });
+  const lanes = [];   // lanes[i] = array of [c0,c1] already placed
+  segs.forEach(function(sg){
+    let li = 0;
+    for(;; li++){
+      if(!lanes[li]){ lanes[li] = []; break; }
+      if(!lanes[li].some(function(r){ return !(sg.c1 < r[0] || sg.c0 > r[1]); })) break;
+    }
+    lanes[li].push([sg.c0, sg.c1]);
+    sg.lane = li;
+  });
+  return {segs:segs, laneCount:lanes.length};
+}
+
+function _abCalBar(sg, row){
+  const b = sg.b;
+  const name = decodeEntities(b.name || '(unnamed booking)');
+  const cls = 'abc-bar ' + (Number(b.status_id) === 0 ? 'abc-active' : 'abc-closed')
+            + (b.cancelled_only ? ' abc-cx' : '')
+            + (sg.contL ? ' abc-cl' : '') + (sg.contR ? ' abc-cr' : '');
+  const sp = _abCalSpan(b);
+  const fmt = function(ymd){ return _abParseYmd(ymd).toLocaleDateString('en-AU', {weekday:'short', day:'numeric', month:'short'}); };
+  const when = sp ? (sp.s === sp.e ? fmt(sp.s) : fmt(sp.s)+' – '+fmt(sp.e)) : '';
+  const calls = b.cancelled_only ? 'all calls cancelled'
+              : ((b.call_count||0)+' call'+(b.call_count === 1 ? '' : 's'));
+  const tip = [name, [b.venue, b.customer].filter(Boolean).map(decodeEntities).join(' · '),
+               when, (b.status||'')+' · '+calls].filter(Boolean).join('\n');
+  return '<div class="'+cls+'" style="grid-column:'+(sg.c0+1)+' / span '+(sg.c1-sg.c0+1)+';grid-row:'+row+'"'
+       + ' onclick="openBookingDialog(\''+Number(b.booking_id)+'\')" title="'+escapeHtml(tip)+'">'
+       + (sg.contL ? '◂ ' : '') + escapeHtml(name) + (sg.contR ? ' ▸' : '')
+       + '</div>';
+}
+
+function _abCalTime(t){
+  const m = String(t||'').match(/^(\d{1,2}):(\d{2})/);
+  return m ? m[1].padStart(2,'0')+':'+m[2] : '';
+}
+
+// One week row. maxLanes: lanes shown before "+N more" (null = all, Week view).
+function _abCalWeekHtml(bookings, week, monthIdx, maxLanes){
+  const today = _abYmd(new Date());
+  const pk = _abCalWeekSegs(bookings, week);
+  const shown = (maxLanes === null) ? pk.laneCount : Math.min(pk.laneCount, maxLanes);
+  const hiddenPerDay = [0,0,0,0,0,0,0];
+  if(maxLanes !== null){
+    pk.segs.forEach(function(sg){
+      if(sg.lane >= maxLanes) for(let c = sg.c0; c <= sg.c1; c++) hiddenPerDay[c]++;
+    });
+  }
+  const anyHidden = hiddenPerDay.some(function(n){ return n > 0; });
+  // Explicit rows: day number, one per lane shown, "+N more", then a filler.
+  const rows = '22px' + (shown ? ' repeat('+shown+', 20px)' : '') + (anyHidden ? ' 16px' : '') + ' 1fr';
+  // Week view: the bar strip sizes to its lanes; the calls area below takes the room.
+  const grow = (monthIdx === null) ? ';flex:0 0 auto;min-height:60px' : '';
+  let h = '<div class="abc-week" style="grid-template-rows:'+rows+grow+'">';
+  week.forEach(function(ymd, i){
+    const d = _abParseYmd(ymd);
+    const wkend = (i >= 5);
+    const out = (monthIdx !== null && d.getMonth() !== monthIdx);
+    h += '<div class="abc-cell'+(i===6?' abc-last':'')+(wkend?' abc-wkend':'')+(ymd===today?' abc-today':'')+'" style="grid-column:'+(i+1)+'"></div>';
+    const label = (d.getDate() === 1 || (monthIdx === null && i === 0))
+      ? d.toLocaleDateString('en-AU', {day:'numeric', month:'short'}) : String(d.getDate());
+    h += '<div class="abc-dnum'+(out?' abc-out':'')+(ymd===today?' abc-today':'')+'" style="grid-column:'+(i+1)+'">'+escapeHtml(label)+'</div>';
+  });
+  pk.segs.forEach(function(sg){
+    if(sg.lane < shown) h += _abCalBar(sg, sg.lane + 2);
+  });
+  if(anyHidden){
+    hiddenPerDay.forEach(function(n, i){
+      if(n > 0) h += '<div class="abc-more" style="grid-column:'+(i+1)+';grid-row:'+(shown+2)+'"'
+                   + ' onclick="abCalOpenWeek(\''+week[i]+'\')">+'+n+' more</div>';
+    });
+  }
+  return h + '</div>';
+}
+
+// Week view: the calls under each day (D12), oldest first.
+function _abCalCallsHtml(bookings, week){
+  let h = '<div class="abc-calls">';
+  week.forEach(function(ymd){
+    const items = [];
+    bookings.forEach(function(b){
+      (b.calls||[]).forEach(function(c){ if(c.day === ymd) items.push({b:b, c:c}); });
+    });
+    items.sort(function(x, y){ return _abCalTime(x.c.start_time).localeCompare(_abCalTime(y.c.start_time)); });
+    h += '<div>';
+    if(!items.length) h += '<span style="color:var(--muted);font-size:10px;padding:2px">—</span>';
+    items.forEach(function(it){
+      const c = it.c, b = it.b;
+      const req = Number(c.required)||0, conf = Number(c.confirmed)||0;
+      const short = req > 0 && conf < req;
+      const bname = decodeEntities(b.name || '');
+      h += '<div class="abc-call" onclick="openCallDialog(\''+Number(b.booking_id)+'\',\''+Number(c.call_id)+'\')"'
+         + ' title="'+escapeHtml(bname+'\n'+decodeEntities(c.call_name||'Call'))+'">'
+         + '<div class="abc-ct">'+escapeHtml(_abCalTime(c.start_time))+' '+escapeHtml(decodeEntities(c.call_name||'Call'))+'</div>'
+         + '<div class="abc-cb"><span'+(short?' class="abc-short"':'')+'>'+conf+'/'+req+'</span> · '+escapeHtml(bname)+'</div>'
+         + '</div>';
+    });
+    h += '</div>';
+  });
+  return h + '</div>';
+}
+
+function abCalRender(){
+  const body = document.getElementById('ab-cal');
+  const note = document.getElementById('ab-cal-note');
+  const count = document.getElementById('ab-count');
+  if(!body) return;
+  const data = _abCal.cache[_abCal.cur];
+  if(_abCal.error){
+    body.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:10px">'+escapeHtml(_abCal.error)+'</div>';
+    if(note) note.textContent = '';
+    if(count) count.textContent = '';
+    return;
+  }
+  if(!data){
+    body.innerHTML = '<div class="empty-state"><div class="empty-sub">Loading calendar…</div></div>';
+    if(note) note.textContent = '';
+    if(count) count.textContent = 'loading...';
+    return;
+  }
+  const bookings = (data.bookings || []).filter(function(b){
+    return !(_abState.activeOnly && Number(b.status_id) !== 0);
+  });
+  const days = abCalDays();
+  const weeks = [];
+  for(let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i+7));
+  let h = '';
+  if(_abCal.layout === 'week'){
+    h = _abCalWeekHtml(bookings, weeks[0], null, null) + _abCalCallsHtml(bookings, weeks[0]);
+  } else {
+    const m = _abCal.anchor.getMonth();
+    weeks.forEach(function(w){ h += _abCalWeekHtml(bookings, w, m, AB_CAL_MAX_LANES); });
+  }
+  body.innerHTML = h;
+  if(note) note.textContent = data.truncated ? 'Too many bookings in this range — some are not shown. Narrow with search.' : '';
+  if(count) count.textContent = bookings.length+' booking'+(bookings.length === 1 ? '' : 's')+' in view';
 }
 
 function _abCallWhen(startUnix, startTime){
