@@ -162,7 +162,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.70.0"
+APP_VERSION    = "5.71.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -15106,6 +15106,56 @@ def api_bookings_all():
         for b in rows:
             a = agg.get(str(b.get("booking_id")))
             b["crewlist_all_sent"] = bool(a and a.get("all_sent"))
+    return jsonify(data)
+
+
+def ss_get_bookings_calendar(ss, start, end, q=""):
+    """Bookings with a live call in a date window, each carrying the span of
+    its call days and its in-window calls, via get-bookings-calendar.php
+    (admin-only), for the All Bookings Calendar view
+    (DESIGN-all-bookings-calendar-v0_1 D6). Returns (data, error)."""
+    url = f"{BASE_URL}/ajax/crew/get-bookings-calendar.php"
+    params = {"start": start, "end": end}
+    if q:
+        params["q"] = q
+    try:
+        resp = ss.get(url, params=params, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+@app.route("/api/bookings/calendar")
+@require_cohort("admin")
+def api_bookings_calendar():
+    """Calendar view of the All Bookings tab. Query params: start, end
+    (YYYY-MM-DD, inclusive, max 62 days — the PHP enforces it), q (optional
+    booking-name search). No server-side cache: the page caches per range
+    for the session and Refresh clears it (D14)."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    start = (request.args.get("start") or "").strip()
+    end   = (request.args.get("end") or "").strip()
+    if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", end)):
+        return jsonify({"error": "start and end must both be YYYY-MM-DD"}), 400
+    q = (request.args.get("q") or "").strip()[:100]
+    data, err = ss_get_bookings_calendar(ss, start, end, q=q)
+    if err:
+        return jsonify({"error": err}), 502
     return jsonify(data)
 
 
