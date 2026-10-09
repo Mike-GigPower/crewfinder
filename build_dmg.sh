@@ -55,6 +55,8 @@ pyinstaller \
   --hidden-import pypdf \
   --hidden-import docs_render \
   --hidden-import docs_source \
+  --hidden-import name_match \
+  --hidden-import drive_contracts \
   dock_launcher.py
 
 if [ ! -d "$BUNDLE" ]; then
