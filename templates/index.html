@@ -2674,6 +2674,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         </span>
         <div class="ind-actions">
           <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="adminAddUser()">+ Add Crew Member</button>
+          <button class="btn" id="btn-drive-contracts" style="display:none" onclick="openDriveContractsModal()">Import contracts from Drive</button>
           <button class="btn" onclick="exportCrewRecordsCSV()">&#8659; Export CSV</button>
           <button class="btn" onclick="_loadCrewList()">&#8635; Refresh</button>
         </div>
@@ -3068,6 +3069,10 @@ function applyCohort(d){
   // My Status hello line — shown to anyone who can open the panel (crew + leadership)
   const sub = document.getElementById('ms-hello-sub');
   if(sub) sub.textContent = [d.name||'', d.ein?('EIN '+d.ein):''].filter(Boolean).join('  ·  ');
+  // Import contracts from Drive: hidden in the markup, revealed for admin only
+  // (D3) — absent for other cohorts, not disabled.
+  const _dciBtn = document.getElementById('btn-drive-contracts');
+  if(_dciBtn) _dciBtn.style.display = (cohort === 'admin') ? '' : 'none';
   if(cohort === 'admin'){ hide('tab-btn-my-status'); return; }  // shared admin login — no personal view
   if(window.isReadOnlyCohort(cohort)){
     hide('tab-btn-crew-finder');                 // Crew Finder is admin-only
@@ -13627,10 +13632,10 @@ function ceShowTab(id, tab){
   if(tab==='unavail'    && !window._ceLoaded.unavail){    window._ceLoaded.unavail = true;    ceLoadUnavail(id); }
 }
 
-// Manage Crew -> Documents. READ ONLY: the only writer is convert-to-crew, which
-// is idempotent per (user, doc_type). An upload control here would invite a
-// second contract of unknown provenance sitting beside the signed one, so there
-// isn't one.
+// Manage Crew -> Documents. No upload control: the writers are convert-to-crew
+// and Load from Drive (a signed PDF from Completed/Signed), both idempotent per
+// (user, doc_type). A free upload would invite a contract of unknown provenance,
+// so there isn't one.
 async function ceLoadDocuments(id){
   var panel = document.getElementById('ce-panel-documents');
   if(!panel) return;
@@ -13650,10 +13655,15 @@ async function ceLoadDocuments(id){
   // Empty is the COMMON case, not a failure: only crew who came through
   // onboarding have a contract, and nobody who predates it ever will. Say so
   // plainly rather than leaving an empty box that reads as a broken panel.
+  // No contract yet: offer Load from Drive for crew whose signed agreement
+  // predates onboarding and sits in Drive.
+  var hasContract = docs.some(function(d){ return d.doc_type === 'contract'; });
+  var driveHtml = hasContract ? '' : _ceDriveButtonHtml(id);
+
   if(!docs.length){
     panel.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">'
       + 'No documents on file. A signed employment agreement is stored here when a '
-      + 'candidate is converted to crew.</div>';
+      + 'candidate is converted to crew.</div>' + driveHtml;
     return;
   }
 
@@ -13664,7 +13674,7 @@ async function ceLoadDocuments(id){
     // signed_at is optional at the write end, so a missing one shows a dash
     // rather than the push timestamp dressed up as a signing date.
     var signed = d.signed_at ? _ceDocDate(d.signed_at) : '\u2014';
-    var ver    = d.version ? (' \u00b7 ' + escapeHtml(String(d.version))) : '';
+    var ver    = d.version ? (' \u00b7 ' + _ceDocVersion(d.version)) : '';
     var view   = d.has_pdf
       ? '<a href="/api/crew/'+encodeURIComponent(id)+'/documents/file?doc_type='
         + encodeURIComponent(d.doc_type) + '" target="_blank" rel="noopener" '
@@ -13675,7 +13685,7 @@ async function ceLoadDocuments(id){
       + '<div><div style="font-size:13px;color:var(--text);font-weight:600">'+label+'</div>'
       + '<div style="font-size:11px;color:var(--muted);padding-top:2px">Signed '+signed+ver+'</div></div>'
       + '<div>'+view+'</div></div>';
-  }).join('');
+  }).join('') + driveHtml;
 }
 
 // "2026-08-14 09:31:00" or an ISO string -> "14 Aug 2026". Built from the parts
@@ -13686,6 +13696,433 @@ function _ceDocDate(s){
   if(!m) return escapeHtml(String(s||'\u2014'));
   var d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
   return d.toLocaleDateString('en-AU', {day:'2-digit', month:'short', year:'numeric'});
+}
+
+// "drive-import 2025" -> "Imported from Drive (2025)". Onboarding versions are
+// shown exactly as stored.
+function _ceDocVersion(v){
+  var s = String(v||'');
+  var m = /^drive-import(?:\s+(\S+))?$/.exec(s);
+  if(m) return 'Imported from Drive' + (m[1] ? ' (' + escapeHtml(m[1]) + ')' : '');
+  return escapeHtml(s);
+}
+
+// ── Manage Crew -> Documents -> Load from Drive ─────────────────────────────
+// Per-crew fallback for the bulk import: shown only while there is no contract
+// on file. Saves through /api/contracts/drive-import, the same path as the bulk
+// screen. See DESIGN-drive-contract-import-v0_2.md §5b.
+function _ceDriveButtonHtml(id){
+  return '<div style="padding:4px 0 8px">'
+    + '<button type="button" class="btn" onclick="ceDriveOpen(\''+escapeHtml(String(id))+'\')">Load from Drive</button>'
+    + '</div><div id="ce-drive-box"></div>';
+}
+
+async function ceDriveOpen(id, q){
+  var box = document.getElementById('ce-drive-box');
+  if(!box) return;
+  if(q === undefined){
+    box.innerHTML = '<div style="display:flex;gap:6px;padding-bottom:6px">'
+      + '<input id="ce-drive-q" type="text" placeholder="Search Drive titles…" autocomplete="off" '
+      +   'style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:6px 8px;font-size:12px" '
+      +   'onkeydown="if(event.key===\'Enter\'){ceDriveOpen(\''+escapeHtml(String(id))+'\', this.value)}">'
+      + '<button type="button" class="btn" onclick="ceDriveOpen(\''+escapeHtml(String(id))+'\', document.getElementById(\'ce-drive-q\').value)">Search</button>'
+      + '</div><div id="ce-drive-rows"></div>';
+  }
+  var rowsEl = document.getElementById('ce-drive-rows');
+  if(!rowsEl) return;
+  rowsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0">Reading Drive…</div>';
+  var d;
+  try{
+    var url = '/api/crew/'+encodeURIComponent(id)+'/documents/drive-candidates'
+      + (q && q.trim() ? ('?q=' + encodeURIComponent(q.trim())) : '');
+    var r = await fetch(url);
+    d = await r.json();
+    if(!d.ok) throw new Error(d.message || d.error || ('HTTP '+r.status));
+  }catch(e){
+    rowsEl.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:6px 0">'+escapeHtml(e.message)+'</div>';
+    return;
+  }
+  window._ceDriveRows = d.rows || [];
+  if(!window._ceDriveRows.length){
+    rowsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0">'
+      + (q ? 'No Drive PDFs match that search.' : 'No Drive PDFs carry this surname. Try a search.') + '</div>';
+    return;
+  }
+  rowsEl.innerHTML = window._ceDriveRows.map(function(row, i){
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">'
+      + '<div style="min-width:0"><div style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis">'+escapeHtml(row.title)+'</div>'
+      + '<div style="font-size:11px;color:var(--muted)">'+(row.signed_at ? ('Signed '+_ceDocDate(row.signed_at)) : 'no signed date')+'</div></div>'
+      + '<div style="display:flex;gap:10px;flex-shrink:0;align-items:center">'
+      +   (row.web_view_link ? '<a href="'+escapeHtml(row.web_view_link)+'" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-size:12px">Preview ↗</a>' : '')
+      +   '<button type="button" class="btn" onclick="ceDriveUse(\''+escapeHtml(String(id))+'\', '+i+', this)">Use</button>'
+      + '</div></div>';
+  }).join('');
+}
+
+async function ceDriveUse(id, i, btn){
+  var row = (window._ceDriveRows || [])[i];
+  if(!row) return;
+  var who = decodeEntities(window._crewEditName || 'this crew member');
+  if(!confirm('Attach "' + row.title + '" as ' + who + '’s contract? It will also show in their Crew Hub.')) return;
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  try{
+    var r = await fetch('/api/contracts/drive-import', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({drive_file_id: row.drive_file_id, user_id: Number(id)})
+    });
+    var d = await r.json();
+    if(!d.ok) throw new Error(d.message || d.error || ('HTTP '+r.status));
+    if(!d.saved) alert('A contract is already on file for ' + who + '.');
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = 'Use'; }
+    alert('Couldn’t save the contract: ' + (e.message || e));
+    return;
+  }
+  ceLoadDocuments(id);
+}
+
+// ── Manage Crew -> Import contracts from Drive (admin only) ─────────────────
+// One-off backfill of user_documents from the Completed/Signed folder. THE GOAT
+// suggests a crew member per file; nothing is saved until a row is ticked and
+// Save is pressed (D2). Every open re-scans Drive; nothing is cached.
+var _dci = null;
+
+var _DCI_BUCKET = {
+  exact:     ['Exact',     '#1f8f4e'],
+  likely:    ['Likely',    '#b8860b'],
+  ambiguous: ['Ambiguous', '#a0522d'],
+  none:      ['No match',  '#555']
+};
+var _DCI_FILTERS = [
+  ['all', 'All'], ['exact', 'Exact'], ['likely', 'Likely'], ['ambiguous', 'Ambiguous'],
+  ['none', 'No match'], ['onfile', 'On file'], ['nodate', 'No signed date']
+];
+
+function _dciCrewLabel(c){
+  return decodeEntities(c.name || '') + ' · ' + String(c.ein || c.id || '');
+}
+
+function openDriveContractsModal(){
+  if(window._cohort !== 'admin') return;
+  openEntityModal();
+  entityModalWidth(980);
+  document.getElementById('entity-modal-title').textContent = 'Import contracts from Drive';
+  document.getElementById('entity-modal-sub').textContent   = 'Signed agreements in Completed/Signed → Manage Crew → Documents';
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div id="dci-count" style="font-size:11px;color:var(--muted);min-height:14px;padding-bottom:8px">'
+    +   'Scan reads the Completed/Signed folder and suggests a crew member for each PDF. Nothing is saved until you tick a row and press Save.</div>'
+    + '<div id="dci-chips" style="display:flex;gap:6px;flex-wrap:wrap;padding-bottom:8px"></div>'
+    + '<div id="dci-progress" style="font-size:12px;color:var(--text);min-height:16px;padding-bottom:6px"></div>'
+    + '<div id="dci-rows" style="max-height:56vh;overflow-y:auto"></div>'
+    + '<datalist id="dci-roster"></datalist>';
+  _dci = null;
+  _dciRenderActions();
+}
+
+function _dciRenderActions(){
+  var el = document.getElementById('entity-modal-actions');
+  if(!el) return;
+  var saving = !!(_dci && _dci.saving);
+  var n = _dci ? _dciTickedIdx().length : 0;
+  el.innerHTML = entityBtn((_dci && _dci.done) ? 'Scan again' : 'Scan Drive', 'dciScan()', {disabled: saving})
+    + entityBtn('Save ' + n + ' ticked contract' + (n === 1 ? '' : 's'), 'dciSave()',
+                {primary: true, disabled: saving || !n})
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+async function dciScan(){
+  if(_dci && _dci.saving) return;
+  var rowsEl = document.getElementById('dci-rows');
+  var countEl = document.getElementById('dci-count');
+  if(!rowsEl) return;
+  document.getElementById('dci-chips').innerHTML = '';
+  document.getElementById('dci-progress').textContent = '';
+  rowsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Scanning Drive and checking who already has a contract…</div>';
+  var d;
+  try{
+    var r = await fetch('/api/contracts/drive-scan');
+    d = await r.json();
+    if(!d.ok){
+      var msg = d.message || d.error || ('HTTP '+r.status);
+      throw new Error(msg);
+    }
+  }catch(e){
+    rowsEl.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:8px 0">'+escapeHtml(e.message)+'</div>';
+    return;
+  }
+
+  var byLabel = {}, byId = {};
+  (d.roster || []).forEach(function(c){ byLabel[_dciCrewLabel(c)] = String(c.id); byId[String(c.id)] = c; });
+  _dci = {rows: d.rows || [], counts: d.counts || {}, folder: d.folder || '', byLabel: byLabel, byId: byId,
+          filter: 'all', pick: {}, ticked: {}, status: {}, note: {}, open: {}, saving: false,
+          checkFailed: d.on_file_check_failed || 0};
+
+  _dci.rows.forEach(function(row, i){
+    var top = (row.suggestions || [])[0];
+    _dci.pick[i] = top ? String(top.id) : '';
+    _dci.ticked[i] = (row.bucket === 'exact' && !row.on_file && !!_dci.pick[i]);
+  });
+  // Grouping already gives one row per person, but never let two ticks reach
+  // the same crew member — the second save would only bounce off "on file".
+  var seen = {};
+  _dci.rows.forEach(function(row, i){
+    if(!_dci.ticked[i]) return;
+    if(seen[_dci.pick[i]]) _dci.ticked[i] = false; else seen[_dci.pick[i]] = true;
+  });
+
+  document.getElementById('dci-roster').innerHTML = (d.roster || []).map(function(c){
+    return '<option value="'+escapeHtml(_dciCrewLabel(c))+'"></option>';
+  }).join('');
+
+  var c = _dci.counts;
+  countEl.textContent = c.files + ' PDFs · ' + c.skipped_noise + ' skipped (TFN/visa) · '
+    + c.exact + ' exact · ' + c.likely + ' likely · ' + c.ambiguous + ' ambiguous · '
+    + c.none + ' no match · ' + c.on_file + ' on file'
+    + (_dci.checkFailed ? ' · couldn’t check ' + _dci.checkFailed + ' crew for an existing contract' : '');
+  _dciRender();
+}
+
+function _dciMatches(row, i, f){
+  if(f === 'all')    return true;
+  if(f === 'onfile') return !!row.on_file;
+  if(f === 'nodate') return !row.signed_at;
+  return !row.on_file && row.bucket === f;
+}
+
+function dciFilter(f){
+  if(!_dci) return;
+  _dci.filter = (_dci.filter === f) ? 'all' : f;
+  _dciRender();
+}
+
+function _dciTickedIdx(){
+  if(!_dci) return [];
+  return _dci.rows.map(function(r, i){ return i; }).filter(function(i){
+    return _dci.ticked[i] && _dci.pick[i] && !_dci.status[i];
+  });
+}
+
+function _dciRender(){
+  if(!_dci) return;
+  var chipsEl = document.getElementById('dci-chips');
+  var rowsEl  = document.getElementById('dci-rows');
+  if(!rowsEl) return;
+  if(chipsEl){
+    chipsEl.innerHTML = _DCI_FILTERS.map(function(fd){
+      var n = _dci.rows.filter(function(r, i){ return _dciMatches(r, i, fd[0]); }).length;
+      var on = (_dci.filter === fd[0]);
+      return '<button type="button" class="group-chip'+(on?' active':'')+'" onclick="dciFilter(\''+fd[0]+'\')">'
+           + escapeHtml(fd[1]) + ' · ' + n + '</button>';
+    }).join('')
+    // Bulk tick controls sit after a divider: they change ticks, not which
+    // rows are shown, and they act on every row whatever the filter.
+      + '<span style="width:1px;background:var(--border);margin:0 3px"></span>'
+      + '<button type="button" class="group-chip" onclick="dciTickAllExact()"'+(_dci.saving ? ' disabled' : '')+'>Tick all exact</button>'
+      + '<button type="button" class="group-chip" onclick="dciUntickAll()"'+(_dci.saving ? ' disabled' : '')+'>Untick all</button>';
+  }
+  var html = [];
+  _dci.rows.forEach(function(row, i){
+    if(_dciMatches(row, i, _dci.filter)) html.push(_dciRowHtml(row, i));
+  });
+  rowsEl.innerHTML = html.length ? html.join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">'
+      + (_dci.rows.length ? 'Nothing matches that filter.' : 'No agreement PDFs in the folder.') + '</div>';
+  _dciRenderActions();
+}
+
+function _dciRowHtml(row, i){
+  var st = _dci.status[i];
+  var b = _DCI_BUCKET[row.bucket] || ['?', '#555'];
+  var chip = '<span style="display:inline-block;font-size:10px;font-weight:600;color:#fff;background:'+b[1]
+           + ';border-radius:10px;padding:2px 8px;white-space:nowrap">'+b[0]+'</span>';
+  var signed = row.signed_at ? ('signed ' + _ceDocDate(row.signed_at))
+             : '<span style="color:var(--muted)">no signed date</span>';
+  var preview = row.web_view_link
+    ? '<a href="'+escapeHtml(row.web_view_link)+'" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-size:12px;white-space:nowrap">Preview ↗</a>' : '';
+
+  var lead, crew;
+  var picked = _dci.byId[_dci.pick[i]];
+  if(row.on_file){
+    var top = (row.suggestions || [])[0];
+    lead = '<span style="width:16px;display:inline-block"></span>';
+    crew = '→ ' + (top ? escapeHtml(_dciCrewLabel(top)) : '') + ' · <span style="color:var(--muted)">Already on file</span>';
+  }else{
+    var dis = (st || !_dci.pick[i] || _dci.saving) ? ' disabled' : '';
+    lead = '<input type="checkbox"'+(_dci.ticked[i] && !st ? ' checked' : '')+dis
+         + ' onchange="dciTick('+i+', this.checked)" style="width:16px;height:16px;cursor:pointer;flex-shrink:0">';
+    if(row.bucket === 'exact'){
+      crew = '→ ' + (picked ? escapeHtml(_dciCrewLabel(picked)) : '');
+    }else{
+      var val = picked ? _dciCrewLabel(picked) : '';
+      // Ambiguous: show who the candidates are (and which already have a
+      // contract) above the picker, since the picker itself is the whole roster.
+      var hint = '';
+      if(row.bucket === 'ambiguous'){
+        hint = '<div style="font-size:10px;color:var(--muted);padding-top:2px">Candidates: '
+          + (row.suggestions || []).map(function(s){
+              return escapeHtml(_dciCrewLabel(s)) + (s.on_file ? ' (on file)' : '');
+            }).join('; ') + '</div>';
+      }
+      crew = '→ <input list="dci-roster" value="'+escapeHtml(val)+'" placeholder="choose crew…"'
+           + (st || _dci.saving ? ' disabled' : '')
+           + ' onchange="dciPick('+i+', this.value)" style="width:240px;background:var(--surface2);border:1px solid var(--border);'
+           + 'border-radius:5px;color:var(--text);padding:3px 6px;font-size:12px">' + hint;
+    }
+  }
+
+  var status = '';
+  if(st){
+    status = st.state === 'saved'  ? '<span style="color:var(--available);font-size:12px">✓ Saved</span>'
+           : st.state === 'onfile' ? '<span style="color:var(--muted);font-size:12px">Already on file</span>'
+           : '<span style="color:var(--conflict);font-size:12px">✗ '+escapeHtml(st.msg || 'failed')+'</span>';
+  }
+  var note = _dci.note[i] ? '<div style="font-size:11px;color:var(--conflict);padding-top:3px">'+escapeHtml(_dci.note[i])+'</div>' : '';
+
+  var copies = '';
+  var oc = row.other_copies || [];
+  if(oc.length){
+    var open = !!_dci.open[i];
+    copies = '<div style="padding-top:4px"><button type="button" onclick="dciToggleCopies('+i+')" '
+      + 'style="background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;padding:0">'
+      + oc.length + ' other cop' + (oc.length === 1 ? 'y' : 'ies') + ' ' + (open ? '▴' : '▾') + '</button>';
+    if(open){
+      copies += oc.map(function(cp, j){
+        return '<div style="display:flex;gap:10px;align-items:center;font-size:11px;color:var(--muted);padding:3px 0 0 12px">'
+          + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:460px">'+escapeHtml(cp.title || '')+'</span>'
+          + '<span>'+(cp.signed_at ? _ceDocDate(cp.signed_at) : 'no signed date')+'</span>'
+          + (cp.web_view_link ? '<a href="'+escapeHtml(cp.web_view_link)+'" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Preview ↗</a>' : '')
+          + ((st || row.on_file || _dci.saving) ? '' : '<button type="button" onclick="dciUseCopy('+i+','+j+')" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--accent);font-size:11px;cursor:pointer;padding:1px 6px">Use this one</button>')
+          + '</div>';
+      }).join('');
+    }
+    copies += '</div>';
+  }
+
+  return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border)'
+    + (row.on_file ? ';opacity:.5' : '') + '">'
+    + '<div style="padding-top:2px">' + lead + '</div>'
+    + '<div style="flex:1;min-width:0">'
+    +   '<div style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(row.title || '')+'</div>'
+    +   '<div style="font-size:12px;color:var(--text);padding-top:3px">'+crew+'</div>'
+    +   '<div style="font-size:11px;color:var(--muted);padding-top:3px;display:flex;gap:8px;align-items:center">'+chip+' '+signed+' '+status+'</div>'
+    +   note + copies
+    + '</div>'
+    + '<div style="flex-shrink:0;padding-top:2px">'+preview+'</div>'
+    + '</div>';
+}
+
+// Ticking (or picking) never lets one crew member be ticked on two rows: the
+// row being changed is the later one, so it is the one that loses the tick.
+function _dciClaim(i){
+  var mine = _dci.pick[i];
+  for(var k = 0; k < _dci.rows.length; k++){
+    if(k !== i && _dci.ticked[k] && !_dci.status[k] && _dci.pick[k] === mine){
+      _dci.ticked[i] = false;
+      var c = _dci.byId[mine];
+      _dci.note[i] = (c ? decodeEntities(c.name) : 'That crew member') + ' is already ticked on another row';
+      return false;
+    }
+  }
+  return true;
+}
+
+function dciTick(i, on){
+  if(!_dci || _dci.saving) return;
+  _dci.note[i] = '';
+  _dci.ticked[i] = !!(on && _dci.pick[i]);
+  if(_dci.ticked[i]) _dciClaim(i);
+  _dciRender();
+}
+
+// Every Exact row with a crew member chosen, not on file and not yet saved.
+// Goes through _dciClaim like a manual tick, so a person already ticked on
+// another row keeps that tick and this row gets the note instead. Likely,
+// Ambiguous and No match rows are left exactly as they are.
+function dciTickAllExact(){
+  if(!_dci || _dci.saving) return;
+  _dci.rows.forEach(function(row, i){
+    if(row.bucket !== 'exact' || row.on_file || !_dci.pick[i] || _dci.status[i] || _dci.ticked[i]) return;
+    _dci.note[i] = '';
+    _dci.ticked[i] = true;
+    _dciClaim(i);
+  });
+  _dciRender();
+}
+
+// Every row, including those hidden by the current filter.
+function dciUntickAll(){
+  if(!_dci || _dci.saving) return;
+  _dci.rows.forEach(function(row, i){ _dci.ticked[i] = false; _dci.note[i] = ''; });
+  _dciRender();
+}
+
+function dciPick(i, label){
+  if(!_dci || _dci.saving) return;
+  _dci.note[i] = '';
+  var id = _dci.byLabel[String(label || '').trim()] || '';
+  _dci.pick[i] = id;
+  if(!id){
+    _dci.ticked[i] = false;
+    if(String(label || '').trim()) _dci.note[i] = 'Pick a name from the list';
+  }else if(_dci.ticked[i]){
+    _dciClaim(i);
+  }
+  _dciRender();
+}
+
+function dciToggleCopies(i){
+  if(!_dci) return;
+  _dci.open[i] = !_dci.open[i];
+  _dciRender();
+}
+
+// Swap a copy into the primary slot. The crew suggestion stays: copies were
+// grouped because they point at the same person.
+function dciUseCopy(i, j){
+  if(!_dci || _dci.saving) return;
+  var row = _dci.rows[i], cp = (row.other_copies || [])[j];
+  if(!cp) return;
+  var prev = {drive_file_id: row.drive_file_id, title: row.title,
+              signed_at: row.signed_at, web_view_link: row.web_view_link};
+  row.drive_file_id = cp.drive_file_id; row.title = cp.title;
+  row.signed_at = cp.signed_at;         row.web_view_link = cp.web_view_link;
+  row.other_copies[j] = prev;
+  _dciRender();
+}
+
+async function dciSave(){
+  if(!_dci || _dci.saving) return;
+  var todo = _dciTickedIdx();
+  if(!todo.length) return;
+  _dci.saving = true;
+  _dciRender();
+  var prog = function(t){ var el = document.getElementById('dci-progress'); if(el) el.textContent = t; };
+  var saved = 0, onfile = 0, failed = 0;
+  for(var n = 0; n < todo.length; n++){
+    var i = todo[n], row = _dci.rows[i];
+    prog('Saving ' + (n + 1) + ' of ' + todo.length + '…');
+    try{
+      var r = await fetch('/api/contracts/drive-import', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({drive_file_id: row.drive_file_id, user_id: Number(_dci.pick[i])})
+      });
+      var d = await r.json().catch(function(){ return {ok: false, error: 'HTTP ' + r.status}; });
+      if(!d.ok) throw new Error(d.message || d.error || ('HTTP ' + r.status));
+      if(d.saved){ _dci.status[i] = {state: 'saved'}; saved++; }
+      else       { _dci.status[i] = {state: 'onfile'}; onfile++; }
+    }catch(e){
+      // A failure never stops the run.
+      _dci.status[i] = {state: 'error', msg: e.message || String(e)};
+      failed++;
+    }
+    _dci.ticked[i] = false;
+    _dciRender();
+  }
+  _dci.saving = false;
+  _dci.done = true;
+  prog('Saved ' + saved + ' · already on file ' + onfile + ' · failed ' + failed
+       + '. Scan again to see what’s left.');
+  _dciRender();
 }
 
 async function ceLoadInductions(id){
