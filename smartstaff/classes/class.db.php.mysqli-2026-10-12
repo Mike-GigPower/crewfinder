@@ -1,0 +1,536 @@
+<?php
+
+	/**
+	 * abstraction layer for mysql
+	 *
+	 * @package 	GigPower
+	 * @version		1.5.0
+	 * 
+	 */
+	
+	class db
+	{
+		
+		/**
+		 * instance of this class
+		 * @var object
+		 */
+
+		private static $instance;
+
+		/**
+		 * mysql server name
+		 * @var string
+		 */
+		
+		var $server;
+		
+		/**
+		 * mysql username
+		 * @var string
+		 */
+		
+		var $username;
+		
+		/**
+		 * mysql password
+		 * @var string
+		 */
+		
+		var $password;
+		
+		/**
+		 * mysql database name
+		 * @var string
+		 */
+		
+		var $database;
+		
+		/**
+		 * mysql connection resource
+		 * @var resource
+		 */
+		
+		var $connection;
+		
+		/**
+		 * mysql error text
+		 * @var array
+		 */
+		
+		var $errors;
+		
+		/**
+		 * mysql debug variable
+		 * @var int
+		 */
+
+		var $debug = 0;
+		
+		/**
+		 * keeps track of how many queries have been run
+		 * @var int
+		 */
+
+		var $queryCount = 0;
+	
+		/**
+    	* load database connection
+    	*
+    	* @param string server 			server name
+    	* @param string username 		database user
+    	* @param string password 		database password
+    	* @param string database 		database name
+    	* @return null
+    	*/
+		
+		private function __construct()
+		{
+			
+			/*
+			/* errors class */
+			
+			$this->errors = errors::getInstance();
+			
+			/*
+			/* grab database vars - for staging server or live server */
+			
+			//if($_SERVER['SERVER_ADDR'] == DB_STAGING_SERVER)
+			//{
+			
+				//$this->server 	= DB_HOST_STAGING;
+				//$this->username = DB_USERNAME_STAGING;
+				//$this->password = DB_PASSWORD_STAGING;
+				//$this->database = DB_DATABASE_STAGING;
+			
+			//}
+			
+			//else
+			//{
+				
+				$this->server 	= DB_HOST;
+				$this->username = DB_USERNAME;
+				$this->password = DB_PASSWORD;
+				$this->database = DB_DATABASE;
+				
+			//}
+
+			/*
+			/* connect and select */
+			
+			$this->connect();
+			$this->selectDB();
+			
+		}
+		
+		/**
+    	* get this classes instance
+    	*
+    	* @return object
+    	*/
+    
+   		public static function getInstance()
+		{
+			
+    		if(!self::$instance)
+    		{
+    		
+    			$className = __CLASS__;
+        		self::$instance = new $className();
+        
+      		}
+
+    		return self::$instance;
+    	
+		} 
+		
+		/**
+    	* load database connection
+    	*
+    	* @return null
+    	*/
+    
+						function connect()
+		{
+			
+			mysqli_report(MYSQLI_REPORT_OFF);
+			
+			if($connect = mysqli_connect($this->server, $this->username, $this->password, $this->database))
+				$this->connection = $connect;
+			else
+				$this->errors->addError('CONNECT: '. mysqli_connect_error());
+			
+		}
+		
+		/**
+    	* select database
+   	 	*
+    	* No-op since the mysqli conversion — mysqli_connect() selects the database
+    	* via its fourth argument. Kept because __construct() calls it at line 122.
+    	*
+    	* @return null
+    	*/
+    
+		function selectDB()
+		{
+			
+		}
+		
+		/**
+    	* insert data into a table
+    	*
+    	* IMPORTANT: data sanitisation is not performed here
+    	*	@see sc()
+    	*
+    	* @param table				name of the table to work with
+    	* @param username 		array of data to insert (field => value)
+    	* @return null
+    	*/
+    
+		function insert($table, $data)
+		{
+			
+			/*
+			/* iterate through data */
+
+			if(count($data) > 0)
+			{
+				
+				/*
+				/* format and run query */
+				
+				$query = "INSERT INTO `". $table ."` (". '`'. implode('`,`', array_keys($data)) . '`' .") VALUES (". implode(',', array_values($data)) .")";
+
+				mysqli_query($this->connection, $query);
+				
+				/*
+				/* register query */
+				
+				$this->queryCount++;
+				
+				/*
+				/* debug data */
+				
+				if($this->debug == 1)
+				{
+					
+					$this->errors->addError(mysqli_error($this->connection));
+					$this->debug($query);
+					
+				}
+				
+			}
+			
+		}
+		
+		/**
+    	* update table data
+    	*
+    	* @param table				name of the table to work with
+    	* @param username 		array of data to insert
+    	* @param where		 		where conditions
+    	* @return null
+    	*/
+    
+		function update($table, $data, $where = NULL)
+		{
+
+			/*
+			/* handle multiple tables - joins don't work */
+
+			$tables = explode(',', $table);
+			foreach ($tables as &$t)
+				$t = '`' . trim($t) . '`';
+			$tables = implode(', ', $tables);
+			
+			if(count($data) > 0)
+			{
+			
+				/*
+				/* iterate through data */
+				
+				$fields = array();
+				foreach($data as $field => $value)
+				{
+					/*
+					/* handle fully qualified field names */
+
+					$field = explode('.', $field);
+					foreach ($field as &$f)
+						$f = '`' . trim($f) . '`';
+					$field = implode('.', $field);
+
+					$fields[] = $field .'='. $value;
+				}
+	
+				/*
+				/* build query */
+				
+				$query = 'UPDATE '. $tables .' SET '. implode(', ', $fields);
+				
+				/*
+				/* add where condition if needed */
+				
+				if($where != NULL)
+					$query .= ' WHERE '. $where;
+					
+				/*
+				/* execute query */
+					
+				mysqli_query($this->connection, $query);
+				
+				/*
+				/* register query */
+				
+				$this->queryCount++;
+				
+				/*
+				/* debug data */
+				
+				if($this->debug == 1)
+				{
+					
+					$this->errors->addError(mysqli_error($this->connection));
+					$this->debug($query);
+					
+				}
+			
+			}
+
+		}
+		
+		/**
+    	* select data from a table
+   		*
+    	* @param fields				fields to select
+    	* @param table	 			table to use
+    	* @param conditions		where conditions
+    	* @param order				which fields to order by
+    	* @param limit				how many rows to return
+    	* @access public
+    	* @return array of mock objects
+    	*/
+		
+		function select($fields='*', $table = NULL, $conditions = NULL, $order = NULL, $limit = NULL)
+		{
+			
+			/*
+			/* build query */
+			
+			$query = 'SELECT '. $fields;
+			
+			/*
+			/* table (allows for mysql server vars to be called) */
+			
+			if($table != NULL)
+				$query .= ' FROM '. $table;
+			
+			/*
+			/* where conditions, if needed */
+			
+			if($conditions != NULL)
+				$query .= ' WHERE '. $conditions;
+				
+			/*
+			/* order, if needed */
+				
+			if($order != NULL)
+				$query .= ' ORDER BY '. $order;
+			
+			/*
+			/* limit result set, if needed */
+				
+			if($limit != NULL)
+				$query .= ' LIMIT '. $limit;
+				
+			/*
+			/* execute query */
+				
+			$result = mysqli_query($this->connection, $query);
+			
+			/*
+			/* register query */
+			
+			$this->queryCount++;
+			$this->affected_rows = mysqli_affected_rows($this->connection);
+			
+			/*
+			/* debug data */
+			
+			if($this->debug == 1)
+			{
+				
+				$this->errors->addError(mysqli_error($this->connection), __FILE__, __LINE__);
+				$this->debug($query);
+				
+			}
+			
+			/*
+			/* if a result was returned */
+			
+			$result_set = null;
+			
+			if($this->affected_rows > 0)
+							while($row = mysqli_fetch_object($result))
+					$result_set[] = $row;
+
+			return $result_set;
+			
+		}
+		
+		/**
+    	* select first row from a table
+    	*
+    	* @param fields				fields to select
+    	* @param table	 			table to use
+    	* @param conditions		where conditions
+    	* @param order				which fields to order by
+    	* @param limit				how many rows to return
+    	* @access public
+    	* @return mock object
+    	*/
+		
+		function selectFirst($fields='*', $table = NULL, $conditions = NULL, $order = NULL)
+		{
+			
+			/*
+			/* select using select function */
+			
+			$result = $this->select($fields, $table, $conditions, $order, 1);
+			
+			/*
+			/* if we have a result */
+			
+			if($result)
+				return $result[0];
+			else
+				return false;
+				
+		}
+		
+		/**
+    	* delete from a table
+    	*
+    	* @param table	 			table to use
+    	* @param conditions		where conditions
+    	* @access public
+    	* @return null
+    	*/
+		
+		function delete($table, $where)
+		{
+			
+			/*
+			/* execute query */
+			
+			mysqli_query($this->connection, "DELETE FROM `". $table ."` WHERE ". $where);
+			
+			/*
+			/* register query */
+
+			$this->queryCount++;
+
+			if($this->debug == 1)
+			{
+				$this->error = mysqli_error($this->connection);
+				$this->debug("DELETE FROM `". $table ."` WHERE ". $where);
+			}
+
+		}
+		
+		/**
+	    * run a raw query
+	    *
+	    * @access public
+	    * @return bool
+	    */
+	    
+	    function rawSql($query)
+	    {
+		    mysqli_query($this->connection, $query);
+
+		    $this->queryCount++;
+
+		    if($this->debug == 1)
+		    {
+			    $this->error = mysqli_error($this->connection);
+			    $this->debug($query);
+		    }
+	    }
+		
+		/**
+    	* get last inserted IDs
+    	*
+    	* @access public
+    	* @return int
+    	*/
+		
+		function insert_id()
+		{
+			
+			return mysqli_insert_id($this->connection);
+			
+		}
+		
+		/**
+    	* debugging information
+    	*
+    	* @param query	 			query used
+    	* @access public
+    	* @return null
+    	*/
+    
+    	function debug($query='')
+    	{
+	    
+	   		echo('
+	    
+	   		<div style="width: 500px; padding: 10px; margin: 10px; font-size: 10px; font-family: tahoma; border: 1px solid #ccc;">
+	    		<p><b>Query:</b> '. $query .'</p>
+	    		<p><b>Error:</b> '. mysqli_error($this->connection) .'</p>
+	   		</div>
+	    
+	    	');
+	    
+    	}
+    
+    	/**
+    	* cleans form data
+    	*
+    	* @param  string  			input
+    	* @param  int			 			autoquote values
+    	* @access public
+    	*/
+    
+    	function sc($string, $dbprepare=1)
+    	{
+	    
+	    	/*
+			/* remove gay magic quotes */
+	    
+	    			/* magic_quotes was removed in PHP 8 and has been off since 5.4,
+		   so there is nothing to strip */
+	    	
+	    	/*
+			/* escape data ready for mysql */
+			
+			$string = mysqli_real_escape_string($this->connection, $string);
+			
+			/*
+			/* if autoquoting is needed */
+			
+			if($dbprepare == 1)
+			{
+				
+				if(!is_numeric($string))
+					$string = "'". $string ."'";
+					
+			}
+			
+	    	return $string;
+	    
+    	}
+
+	}
+	
+?>
