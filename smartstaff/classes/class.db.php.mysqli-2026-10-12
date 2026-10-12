@@ -73,6 +73,28 @@
 		 */
 
 		var $queryCount = 0;
+
+		/**
+		 * rows affected by the last query run through this class
+		 *
+		 * Set by insert(), update(), delete() and select(). Previously assigned
+		 * dynamically by select() alone; PHP 8.2 deprecated dynamic properties
+		 * and PHP 9 will reject them, so it is declared here.
+		 *
+		 * TRAP: select() overwrites this. A selectFirst() between a write and
+		 * the read will clobber it, so read it IMMEDIATELY after the write.
+		 *
+		 * @var int
+		 */
+
+		var $affected_rows = 0;
+
+		/**
+		 * last error text, set only when debug is on
+		 * @var string
+		 */
+
+		var $error;
 	
 		/**
     	* load database connection
@@ -207,6 +229,7 @@
 				/* register query */
 				
 				$this->queryCount++;
+				$this->affected_rows = mysqli_affected_rows($this->connection);
 				
 				/*
 				/* debug data */
@@ -283,6 +306,7 @@
 				/* register query */
 				
 				$this->queryCount++;
+				$this->affected_rows = mysqli_affected_rows($this->connection);
 				
 				/*
 				/* debug data */
@@ -429,6 +453,7 @@
 			/* register query */
 
 			$this->queryCount++;
+			$this->affected_rows = mysqli_affected_rows($this->connection);
 
 			if($this->debug == 1)
 			{
