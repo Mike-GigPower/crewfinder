@@ -38,11 +38,11 @@
     "  `public_holidays` table would be a second list to drift."
   ],
 
-  "captured_at": "2026-08-24",
+  "captured_at": "2026-10-13",
 
   "source": {
     "supabase_project": "Estimator (jtsxnqfudaqxuqinhkut)",
-    "rate_cards_last_change": "2026-08-21T02:31:55Z",
+    "rate_cards_last_change": "2026-10-13T04:37:43Z",
     "app_settings_last_change": "2026-04-24T02:09:53Z",
     "rows_total": 12,
     "rows_active": 10
@@ -57,7 +57,7 @@
 
   "rates": [
     { "role": "Standard Crew",        "day": 63.00,  "night": 79.90,  "sunday": 99.95,  "publicHoliday": 99.95,  "over8": 79.90,  "over10": 99.95,  "effectiveFrom": "2000-01-01", "sortOrder": 10,  "isActive": true },
-    { "role": "Show Crew",            "day": 84.50,  "night": 84.50,  "sunday": 98.10,  "publicHoliday": 98.10,  "over8": 84.50,  "over10": 84.50,  "effectiveFrom": "2000-01-01", "sortOrder": 20,  "isActive": true },
+    { "role": "Show Crew",            "day": 84.50,  "night": 84.50,  "sunday": 99.95,  "publicHoliday": 99.95,  "over8": 84.50,  "over10": 84.50,  "effectiveFrom": "2000-01-01", "sortOrder": 20,  "isActive": true },
     { "role": "Crew Boss",            "day": 89.95,  "night": 105.30, "sunday": 109.40, "publicHoliday": 109.40, "over8": 105.30, "over10": 109.40, "effectiveFrom": "2000-01-01", "sortOrder": 30,  "isActive": true },
     { "role": "Fork/Truck/EWP",       "day": 69.50,  "night": 89.60,  "sunday": 106.80, "publicHoliday": 106.80, "over8": 89.60,  "over10": 106.80, "effectiveFrom": "2000-01-01", "sortOrder": 40,  "isActive": true },
     { "role": "Steel Hand",           "day": 69.50,  "night": 89.60,  "sunday": 106.80, "publicHoliday": 106.80, "over8": 89.60,  "over10": 106.80, "effectiveFrom": "2000-01-01", "sortOrder": 50,  "isActive": true },
