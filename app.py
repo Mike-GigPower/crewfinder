@@ -164,7 +164,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.73.0"
+APP_VERSION    = "5.74.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -6476,11 +6476,16 @@ def ss_push_licence(ss, user_id, licence_type, date_certified, date_expiry, pdf_
     return out, None
 
 
-def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version):
+def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version, replace=False):
     """POST the signed employment contract to admin-add-contract.php on the shared
     admin session `ss` (admin-gated, explicit target user). The PDF is required.
     Mirrors ss_push_licence. Returns (result_dict, error_str); a result with
-    skipped=True means a contract row already existed (a normal retry outcome)."""
+    skipped=True means a contract row already existed (a normal retry outcome).
+
+    replace=True (convert's "update the existing record" path ONLY) asks the
+    endpoint to overwrite an existing contract row in place instead of skipping;
+    the result then carries replaced=True. The key is sent only when true, so the
+    Drive importer and normal convert post exactly what they always have."""
     if not pdf_bytes:
         return None, "no contract PDF"
     data = {
@@ -6488,10 +6493,36 @@ def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version):
         "signed_at": signed_at or "",
         "version":   version or "",
     }
+    if replace:
+        data["replace"] = "1"
     files = {"contract_pdf": ("contract.pdf", pdf_bytes, "application/pdf")}
     try:
         resp = ss.post(f"{BASE_URL}/ajax/crew/admin-add-contract.php",
                        data=data, files=files, allow_redirects=True)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    return out, None
+
+
+def ss_set_crew_photo(ss, user_id, photo):
+    """Replace an EXISTING crew member's profile photo via admin-set-crew-photo.php
+    (admin-gated, explicit target user, crew records only). `photo` is the same
+    SimpleNamespace(filename, stream, mimetype) ss_create_crew takes, sent as the
+    same `profilepic` multipart part. The endpoint backs up the current photo
+    before overwriting it. Returns (result_dict, error_str); never raises."""
+    if photo is None or not getattr(photo, "filename", ""):
+        return None, "no photo"
+    files = {"profilepic": (photo.filename, photo.stream,
+                            photo.mimetype or "application/octet-stream")}
+    try:
+        resp = ss.post(f"{BASE_URL}/ajax/crew/admin-set-crew-photo.php",
+                       data={"user": str(user_id)}, files=files, allow_redirects=True)
     except Exception as e:
         return None, f"request failed: {e}"
     try:
@@ -6824,11 +6855,12 @@ def _push_candidate_inductions(ss, user_id, inductions):
 # pushes: nothing here raises, so a contract/visa problem never aborts the
 # conversion; both SmartStaff endpoints are idempotent per user, so a partial/
 # failed push is simply retried by re-running convert.
-def _push_candidate_contract(ss, user_id, contract):
+def _push_candidate_contract(ss, user_id, contract, replace=False):
     """Push the candidate's signed contract PDF into SmartStaff user_documents
     (admin-add-contract.php). `contract` is the candidate-detail 'contract' block
-    {url(signed PDF), signed_at, version}. Returns a single {ok, skipped?, error?}
-    dict; never raises."""
+    {url(signed PDF), signed_at, version}. Returns a single {ok, skipped?,
+    replaced?, error?} dict; never raises. replace=True is the returning-crew
+    update path — see ss_push_contract."""
     if not isinstance(contract, dict) or not contract.get("url"):
         return {"ok": False, "error": "no signed contract on file"}
     try:
@@ -6840,12 +6872,14 @@ def _push_candidate_contract(ss, user_id, contract):
         return {"ok": False, "error": f"PDF fetch failed: {e}"}
 
     out, err = ss_push_contract(ss, user_id, pdf_bytes,
-                                contract.get("signed_at"), contract.get("version"))
+                                contract.get("signed_at"), contract.get("version"),
+                                replace=replace)
     if err:
         return {"ok": False, "error": err}
     if out.get("skipped"):
         return {"ok": True, "skipped": True}
-    return {"ok": True, "skipped": False, "id": out.get("id"), "pdf_file": out.get("pdf_file")}
+    return {"ok": True, "skipped": False, "replaced": bool(out.get("replaced")),
+            "id": out.get("id"), "pdf_file": out.get("pdf_file")}
 
 
 def _push_candidate_visa(ss, user_id, cand_id):
@@ -7236,6 +7270,157 @@ def _recruit_convert_context(cand_id):
     return feed_row, (detail or {}), None
 
 
+def _recruit_fetch_headshot(detail):
+    """The candidate's onboarding headshot as the SimpleNamespace(filename, stream,
+    mimetype) that ss_create_crew / ss_set_crew_photo send as `profilepic`, or None.
+    Shared by both convert paths. Never raises — a missing or unusable photo is
+    never a reason to stop a conversion."""
+    headshot_url = (detail or {}).get("headshot_url")
+    if not headshot_url:
+        return None
+    try:
+        img = http.get(headshot_url, timeout=20)
+        ctype = (img.headers.get("Content-Type") or "").split(";")[0].strip()
+        if img.status_code == 200 and img.content and ctype.startswith("image/"):
+            ext = "png" if ctype == "image/png" else "jpg"
+            return types.SimpleNamespace(
+                filename=f"headshot.{ext}",
+                stream=io.BytesIO(img.content),
+                mimetype=ctype or "image/jpeg")
+        print(f"[recruitment] convert: headshot not usable "
+              f"(HTTP {img.status_code}, type {ctype!r})")
+    except Exception as e:
+        print(f"[recruitment] convert: headshot fetch failed: {e}")
+    return None
+
+
+# ─── CONVERT: UPDATE AN EXISTING CREW RECORD (returning crew) ────────────────
+# BRIEF-convert-update-existing.md. When the duplicate guard matches an existing
+# SmartStaff record, ops can update THAT record instead of creating a second one.
+#
+# The fields the update path may write, in modal order, keyed by the
+# update-crew.php field name. Names are deliberately absent (Q1: shown read-only,
+# never written — stored entity-encoded and the raw write is unverified).
+RECRUIT_UPDATE_FIELDS = (
+    ("mobile",            "Mobile"),
+    ("email",             "Email"),
+    ("dob",               "Date of birth"),
+    ("address",           "Street address"),
+    ("suburb",            "Suburb"),
+    ("state",             "State"),
+    ("postcode",          "Postcode"),
+    ("emergency_contact", "Emergency contact"),
+    ("emergency_phone",   "Emergency phone"),
+)
+_RECRUIT_UPDATE_PHONES = ("mobile", "emergency_phone")
+
+
+def _recruit_onboarding_fields(feed_row, detail):
+    """The onboarding values for RECRUIT_UPDATE_FIELDS, keyed by update-crew.php
+    field name — the same sources the create path's `data` dict reads, so a
+    returner and a new starter are filled from identical data."""
+    detail = detail or {}
+    feed_row = feed_row or {}
+    return {
+        "mobile":            detail.get("phone") or feed_row.get("phone") or "",
+        "email":             detail.get("email") or feed_row.get("email") or "",
+        "dob":               detail.get("dob") or "",
+        "address":           detail.get("street_address") or "",
+        "suburb":            detail.get("suburb") or "",
+        "state":             detail.get("state") or "",
+        "postcode":          detail.get("postcode") or "",
+        "emergency_contact": detail.get("emergency_name") or "",
+        "emergency_phone":   detail.get("emergency_phone") or "",
+    }
+
+
+def _recruit_norm_dob(v):
+    """'YYYY-MM-DD' from a date string, or '' if it can't be read. get-crew.php
+    already returns YYYY-MM-DD; onboarding may carry a time or a slash format."""
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    for fmt, n in (("%Y-%m-%d", 10), ("%d/%m/%Y", 10)):
+        try:
+            return datetime.strptime(s[:n], fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return ""
+
+
+def _recruit_update_diff(current, onboarding, first="", last=""):
+    """Current SmartStaff record vs onboarding data, for the update path.
+
+    Returns (diff, name_diff):
+      diff      — [{field, label, current, new}] for each updatable field where the
+                  NEW value is non-blank and differs from the current one. Blank new
+                  values never overwrite, so they never appear.
+      name_diff — {smartstaff, onboarding} when the names differ, else None.
+                  Read-only (Q1): shown, never written.
+
+    Comparison ignores what isn't a real difference: phones digits-only
+    ("0400 111 222" == "0400111222"), dob as YYYY-MM-DD, everything else trimmed,
+    whitespace-collapsed and case-insensitive ("vic" == "VIC"). SmartStaff values
+    are html-unescaped first — they are stored entity-encoded."""
+    from html import unescape
+    current = current or {}
+
+    def cur(k):
+        return unescape(str(current.get(k) or "")).strip()
+
+    def same_text(a, b):
+        return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+    diff = []
+    for field, label in RECRUIT_UPDATE_FIELDS:
+        old = cur(field)
+        new = str(onboarding.get(field) or "").strip()
+        if field == "dob":
+            new = _recruit_norm_dob(new)          # unreadable -> blank -> not offered
+            if not new or new == _recruit_norm_dob(old):
+                continue
+        elif field in _RECRUIT_UPDATE_PHONES:
+            if not new or re.sub(r"\D", "", new) == re.sub(r"\D", "", old):
+                continue
+        elif not new or same_text(new, old):
+            continue
+        diff.append({"field": field, "label": label, "current": old, "new": new})
+
+    name_diff = None
+    ss_name = " ".join(p for p in (cur("firstname"), cur("lastname")) if p)
+    ob_name = " ".join(p for p in (str(first or "").strip(), str(last or "").strip()) if p)
+    if ss_name and ob_name and not same_text(ss_name, ob_name):
+        name_diff = {"smartstaff": ss_name, "onboarding": ob_name}
+    return diff, name_diff
+
+
+def _recruit_reonboard_block(composed):
+    """The block appended BELOW a returning crew member's existing notes: a dated
+    separator, then the same composed provenance + carried ops notes a new crew
+    member gets. ASCII only — users.notes is latin1 (see _crew_notes_safe), so the
+    separator uses '-' rather than an em dash."""
+    try:
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("Australia/Melbourne"))
+    except Exception:
+        today = datetime.now()
+    return f"-- Re-onboarded {today.strftime('%d/%m/%Y')} --\n{composed}"
+
+
+def _recruit_append_notes(current_notes, block):
+    """Existing notes kept verbatim (history), the re-onboarding block added after
+    a blank line. No existing notes -> just the block."""
+    old = str(current_notes or "").rstrip()
+    return f"{old}\n\n{block}" if old else block
+
+
+def _recruit_match_ids(email_matches, name_matches):
+    """Every matched crew id (as str) from the duplicate guard — the ONLY ids the
+    update path may read or write."""
+    return {str(m.get("id") or "") for m in (email_matches or []) + (name_matches or [])
+            if m.get("id")}
+
+
 @app.route("/api/recruitment/candidate/<cand_id>/convert-preview", methods=["GET"])
 @require_cohort("admin", "operations")
 def api_recruitment_convert_preview(cand_id):
@@ -7334,6 +7519,254 @@ def api_recruitment_convert_preview(cand_id):
     })
 
 
+@app.route("/api/recruitment/candidate/<cand_id>/existing/<crew_id>", methods=["GET"])
+@require_cohort("admin", "operations")
+def api_recruitment_convert_existing(cand_id, crew_id):
+    """The "Update the existing record" side of the Convert modal: one matched crew
+    member's current record, and what updating it from onboarding would change.
+
+    ONLY A MATCHED RECORD IS READABLE. The duplicate guard is re-run here and the
+    route 404s unless crew_id is one of this candidate's matches — otherwise it
+    would be a way to read any crew member's details by id.
+
+    Returns {id, ein, name, active, notes_tail, notes_append, diff, name_diff,
+    has_contract, headshot_present}. has_contract is None when the documents read
+    fails — the modal then says "replace contract (if one is on file)"."""
+    from html import unescape
+    cand_id = str(cand_id or "").strip()
+    crew_id = str(crew_id or "").strip()
+    if not cand_id or not crew_id.isdigit():
+        return jsonify({"error": "Missing applicant or crew id"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    feed_row, detail, err = _recruit_convert_context(cand_id)
+    if err == "not_found":
+        return jsonify({"error": "Applicant not found"}), 404
+    if err:
+        return jsonify({"error": err}), 502
+
+    first, last, _src = _recruit_proposed_name(feed_row, detail)
+    email = detail.get("email") or feed_row.get("email") or ""
+    crew, cerr = fetch_crew_bulk(ss, include_inactive=True)
+    if cerr:
+        return jsonify({"error": f"Couldn't load the crew roster: {cerr}"}), 502
+    email_matches, name_matches = _recruit_crew_matches(crew, first, last, email)
+    if crew_id not in _recruit_match_ids(email_matches, name_matches):
+        return jsonify({"error": "That crew member isn't one of the matches for "
+                                 "this applicant."}), 404
+
+    current, gerr = ss_get_crew(ss, crew_id)
+    if gerr:
+        return jsonify({"error": f"Couldn't read the existing crew record: {gerr}"}), 502
+
+    diff, name_diff = _recruit_update_diff(
+        current, _recruit_onboarding_fields(feed_row, detail), first, last)
+
+    # The block that will be appended, composed exactly as the update will compose
+    # it (best-effort notes, same as preview) so the modal shows the real text.
+    ref = feed_row.get("reference") or cand_id
+    notes_list, nerr = _recruit_fetch_notes(cand_id)
+    if nerr:
+        notes_list = []
+    notes_append = _recruit_reonboard_block(_recruit_compose_notes(ref, notes_list))
+
+    # Same read the Manage Crew documents panel uses; one small call.
+    docs, derr = ss_list_documents(ss, crew_id)
+    has_contract = None if derr else any(
+        (d or {}).get("doc_type") == "contract" for d in (docs or []))
+
+    notes = unescape(str(current.get("notes") or ""))
+    return jsonify({
+        "id":               crew_id,
+        "ein":              str(current.get("ein") or ""),
+        "name":             " ".join(p for p in (unescape(str(current.get("firstname") or "")),
+                                                 unescape(str(current.get("lastname") or ""))) if p),
+        "active":           str(current.get("active") or "") == "1",
+        "notes_tail":       notes[-300:],
+        "notes_append":     notes_append,
+        "diff":             diff,
+        "name_diff":        name_diff,
+        "has_contract":     has_contract,
+        "headshot_present": bool(detail.get("headshot_url")),
+    })
+
+
+def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
+    """convert's mode:"update" path — update a returning crew member's EXISTING
+    SmartStaff record instead of creating a second one. Called from
+    api_recruitment_convert after its status re-check and name fallback; returns
+    the Flask response.
+
+    Same ordering rule as create: everything that can fail cleanly happens BEFORE
+    the SmartStaff write (step 5), so a refusal changes nothing and can be retried.
+
+    THE CLIENT SENDS FIELD NAMES, NEVER VALUES. Every value written is rebuilt
+    here from onboarding data, and only for names that are both allowed and in
+    the diff computed now — so a tampered request can at most skip a field."""
+    target_id = str(body.get("target_id") or "").strip()
+    requested = body.get("fields") if isinstance(body.get("fields"), list) else []
+    requested = {str(f) for f in requested}
+    email = detail.get("email") or feed_row.get("email") or ""
+
+    # 1. The target must be one of THIS candidate's matches. Choosing it is the
+    #    acknowledgement, so `acknowledged` is not needed on this path.
+    crew, cerr = fetch_crew_bulk(ss, include_inactive=True)
+    if cerr:
+        return jsonify({"error": f"Couldn't load the crew roster to check for "
+                                 f"duplicates: {cerr}"}), 502
+    email_matches, name_matches = _recruit_crew_matches(crew, first, last, email)
+    if not target_id or target_id not in _recruit_match_ids(email_matches, name_matches):
+        return jsonify({"error": "That crew member isn't one of the matches for "
+                                 "this applicant."}), 409
+
+    # 2. Current record — the EIN, notes and active flag come from here.
+    current, gerr = ss_get_crew(ss, target_id)
+    if gerr:
+        return jsonify({"error": f"Couldn't read the existing crew record: {gerr}"}), 502
+    try:
+        ein = int(current.get("ein") or 0)
+    except (TypeError, ValueError):
+        ein = 0
+    if ein <= 0:
+        return jsonify({"error": "That crew record has no EIN, so they couldn't log "
+                                 "in with it. Fix it in Manage Crew first."}), 409
+    was_inactive = str(current.get("active") or "") != "1"
+
+    # 3. Fields: requested AND allowed AND still different right now.
+    onboarding = _recruit_onboarding_fields(feed_row, detail)
+    diff, _name_diff = _recruit_update_diff(current, onboarding, first, last)
+    fields_out = {}
+    for d in diff:
+        if d["field"] in requested:
+            fields_out[d["field"]] = d["new"]
+    updated_fields = list(fields_out.keys())
+
+    # 4. Always: reactivate (D3), temp password (D7), username back to the EIN so
+    #    the welcome email's "log in with your EIN" is true (update-crew.php reads
+    #    the EIN from the row itself), and the re-onboarding notes APPENDED below
+    #    the existing ones. Notes fetch is best-effort, as on the create path.
+    ref = feed_row.get("reference") or cand_id
+    notes_list, nerr = _recruit_fetch_notes(cand_id)
+    if nerr:
+        print(f"[recruitment] convert-update notes fetch failed ({nerr}) — "
+              "appending the provenance line only")
+        notes_list = []
+    block = _recruit_reonboard_block(_recruit_compose_notes(ref, notes_list))
+    fields_out["active"] = "1"
+    fields_out["password"] = NEW_CREW_TEMP_PASSWORD
+    fields_out["username_to_ein"] = "1"
+    fields_out["notes"] = _recruit_append_notes(current.get("notes"), block)
+
+    # 5. COMMIT POINT. One UPDATE statement in update-crew.php; on error nothing
+    #    has been written anywhere, so it is safe to retry.
+    _res, uerr = ss_update_crew(ss, target_id, fields_out)
+    if uerr:
+        return jsonify({"error": f"Couldn't update the crew record — nothing was "
+                                 f"changed: {uerr}"}), 502
+
+    # 6. Stamp the candidate active_crew with the EXISTING id + EIN — the same call
+    #    as the create path.
+    stamp_warning = None
+    if not GOAT_RECRUITMENT_KEY:
+        stamp_warning = "Recruitment key not configured — candidate not updated."
+    else:
+        try:
+            sr = http.post(RECRUITMENT_SET_STATUS_URL,
+                           headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                           json={"id": cand_id,
+                                 "status": RECRUITMENT_CONVERTED_STATUS,
+                                 "smartstaff_user_id": target_id,
+                                 "ein": ein},
+                           timeout=15)
+            if sr.status_code != 200:
+                print(f"[recruitment] convert-update stamp returned {sr.status_code}")
+                stamp_warning = (f"Crew member was updated (EIN {ein}) but the "
+                                 f"candidate's status couldn't be updated "
+                                 f"(HTTP {sr.status_code}). Update it by hand — "
+                                 f"do NOT run convert again.")
+        except Exception as e:
+            print(f"[recruitment] convert-update stamp failed: {e}")
+            stamp_warning = (f"Crew member was updated (EIN {ein}) but the "
+                             f"candidate's status update failed to send. Update it "
+                             f"by hand — do NOT run convert again.")
+
+    # 7. Licences / inductions / visa — the create path's functions, unchanged
+    #    (each already skips what is on file).
+    try:
+        licence_results = _push_candidate_licences(ss, target_id, detail.get("licences"))
+    except Exception as e:
+        print(f"[recruitment] convert-update licence push crashed: {e}")
+        licence_results = []
+    try:
+        induction_results = _push_candidate_inductions(ss, target_id, detail.get("inductions"))
+    except Exception as e:
+        print(f"[recruitment] convert-update induction push crashed: {e}")
+        induction_results = []
+    visa_result = None
+    if (detail.get("work_eligibility") or {}).get("status") == "working_visa":
+        try:
+            visa_result = _push_candidate_visa(ss, target_id, cand_id)
+        except Exception as e:
+            print(f"[recruitment] convert-update visa push crashed: {e}")
+            visa_result = {"ok": False, "error": "visa push crashed"}
+
+    # 8. Contract — REPLACE the stored one (D5).
+    try:
+        contract_result = _push_candidate_contract(ss, target_id, detail.get("contract"),
+                                                   replace=True)
+    except Exception as e:
+        print(f"[recruitment] convert-update contract push crashed: {e}")
+        contract_result = {"ok": False, "error": "contract push crashed"}
+
+    # 9. Headshot — replace (D6). Best-effort; no headshot on file is not an error.
+    photo = _recruit_fetch_headshot(detail)
+    if photo is None:
+        photo_result = {"ok": False, "skipped": True,
+                        "error": "no usable headshot on the application"}
+    else:
+        pout, perr = ss_set_crew_photo(ss, target_id, photo)
+        photo_result = ({"ok": False, "error": perr} if perr
+                        else {"ok": True, "backup": (pout or {}).get("backup")})
+
+    # 10. Welcome email with the EXISTING EIN — last, as on the create path.
+    try:
+        welcome_result = _send_welcome_email(cand_id, ein)
+    except Exception as e:
+        print(f"[recruitment] convert-update welcome email crashed: {e}")
+        welcome_result = {"ok": False, "outcome": "failed",
+                          "error": "welcome email crashed"}
+
+    # 11. Audit — field NAMES only, never values (PII).
+    _write_audit("recruit_convert_update", "candidate", cand_id,
+                 {"crew_id": target_id, "ein": ein, "fields": updated_fields,
+                  "reactivated": was_inactive})
+
+    from html import unescape
+    name = " ".join(p for p in (unescape(str(current.get("firstname") or "")),
+                                unescape(str(current.get("lastname") or ""))) if p)
+    return jsonify({
+        "ok":       True,
+        "mode":     "update",
+        "id":       target_id,
+        "ein":      ein,
+        "username": str(ein),
+        "name":     name or f"{first} {last}".strip(),
+        "status":   RECRUITMENT_CONVERTED_STATUS,
+        "temp_password": NEW_CREW_TEMP_PASSWORD,
+        "warning":  stamp_warning,
+        "updated_fields": updated_fields,
+        "reactivated": was_inactive,
+        "licences": licence_results,
+        "inductions": induction_results,
+        "contract": contract_result,
+        "visa":     visa_result,
+        "photo":    photo_result,
+        "welcome":  welcome_result,
+    })
+
+
 # ─── WELCOME EMAIL (Crew Hub credentials) ─────────────────────────────────────
 # Sent at the end of convert, and again on demand from the active_crew panel.
 # Everything about the send itself — the branded template, the EMAIL_LIVE guard,
@@ -7414,7 +7847,8 @@ def api_recruitment_convert(cand_id):
     """Create the SmartStaff crew record for a 'Sent to EH' candidate, then stamp
     the candidate active_crew with its new SmartStaff id.
 
-    Body: { firstname, lastname, acknowledged? }.
+    Body: { firstname, lastname, acknowledged? } — or, for a returning crew member,
+    { mode: "update", target_id, fields: [names] } (see _recruit_convert_update).
       - firstname/lastname: the (possibly ops-edited) name split; required.
       - acknowledged: the operator ticked "I've checked — create anyway". Required
         when the duplicate guard finds an email/name match OR the candidate said
@@ -7460,6 +7894,12 @@ def api_recruitment_convert(cand_id):
         last  = last  or d_last
     if not first or not last:
         return jsonify({"error": "First and last name are required."}), 400
+
+    # Returning crew: update the matched record instead (BRIEF-convert-update-
+    # existing.md). mode absent or "create" falls through to the code below,
+    # which is unchanged.
+    if str(body.get("mode") or "create") == "update":
+        return _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body)
 
     email = detail.get("email") or feed_row.get("email") or ""
 
@@ -7513,23 +7953,7 @@ def api_recruitment_convert(cand_id):
     # 5. Optional headshot: fetch the bytes from the fresh signed URL and hand them
     #    to ss_create_crew as a file-like part. A photo failure is never fatal —
     #    the crew member is still created without a picture.
-    photo = None
-    headshot_url = detail.get("headshot_url")
-    if headshot_url:
-        try:
-            img = http.get(headshot_url, timeout=20)
-            ctype = (img.headers.get("Content-Type") or "").split(";")[0].strip()
-            if img.status_code == 200 and img.content and ctype.startswith("image/"):
-                ext = "png" if ctype == "image/png" else "jpg"
-                photo = types.SimpleNamespace(
-                    filename=f"headshot.{ext}",
-                    stream=io.BytesIO(img.content),
-                    mimetype=ctype or "image/jpeg")
-            else:
-                print(f"[recruitment] convert: headshot not usable "
-                      f"(HTTP {img.status_code}, type {ctype!r})")
-        except Exception as e:
-            print(f"[recruitment] convert: headshot fetch failed: {e}")
+    photo = _recruit_fetch_headshot(detail)
 
     # 6. Assign the next EIN and create the crew record (points at BASE_URL).
     look, lerr = ss_crew_lookups(ss)
