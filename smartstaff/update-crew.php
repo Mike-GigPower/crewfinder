@@ -18,7 +18,8 @@
 	/* non-blank value is supplied, is hashed in PHP with SmartStaff's
 	/* sha1($pw . $salt) scheme using a freshly generated salt, so it matches
 	/* login byte-for-byte and sidesteps the latin1/utf8mb4 collation error.
-	/* Blank password leaves salt/password untouched.
+	/* Blank password leaves salt/password untouched. username_to_ein=1 resets
+	/* the login name to the person's own EIN (see that block below).
 	*/
 
 	if (goat_user_cohort() !== 'admin')
@@ -43,7 +44,7 @@
 
 	/* Confirm the target is a crew record (usergroupID 3). This tool must not
 	/* be used to edit admin / operator login accounts. */
-	$chk = mysql_query("SELECT usergroupID FROM users WHERE id = " . $id . " LIMIT 1");
+	$chk = mysql_query("SELECT usergroupID, ein FROM users WHERE id = " . $id . " LIMIT 1");
 
 	if ($chk === false)
 	{
@@ -119,6 +120,43 @@
 		$hash = sha1($pw . $salt);
 		$set[] = "salt = '" . mysql_real_escape_string($salt) . "'";
 		$set[] = "password = '" . mysql_real_escape_string($hash) . "'";
+	}
+
+	/* username_to_ein=1: set the login name back to this person's OWN EIN, read
+	/* from their row here — the caller can never name a username. Used by THE
+	/* GOAT's convert "update the existing record" path, whose welcome email tells
+	/* a returning crew member to log in with their EIN; a returner whose username
+	/* was ever changed would otherwise be handed a login that does not work.
+	/* Same write as set-username-to-ein.php (Crew Hub's forgot-login flow), but
+	/* admin-gated with an explicit target instead of service-key self-scoped.
+	/* Refused BEFORE anything is written if there is no EIN, or if a DIFFERENT
+	/* user already has that username (two logins with one name). */
+	if (isset($_POST['username_to_ein']) && $_POST['username_to_ein'] === '1')
+	{
+		$ein = (int) $chkrow->ein;
+
+		if ($ein <= 0)
+		{
+			http_response_code(409);
+			die('{"error":"no EIN on record"}');
+		}
+
+		$clash = mysql_query("SELECT id FROM users WHERE username = '" . mysql_real_escape_string((string) $ein)
+		                     . "' AND id <> " . $id . " LIMIT 1");
+
+		if ($clash === false)
+		{
+			http_response_code(500);
+			die('{"error":"username check failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		if (mysql_num_rows($clash) > 0)
+		{
+			http_response_code(409);
+			die('{"error":"another user already has username ' . $ein . '"}');
+		}
+
+		$set[] = "username = '" . mysql_real_escape_string((string) $ein) . "'";
 	}
 
 	if (empty($set) && !isset($_POST['groups']))
