@@ -8376,6 +8376,13 @@ async function recruitConvertOpen(id){
 }
 
 // Build the preview/confirm modal body from the server's payload.
+//
+// RETURNING CREW (BRIEF-convert-update-existing.md). When the duplicate guard
+// matched at least one existing crew record, the old single "create NEW anyway"
+// checkbox becomes a choice: pick which matched record it is, then either
+// UPDATE that record (default) or CREATE a new one anyway (today's flow,
+// unchanged). "Worked with Gig Power before" with NO matched record keeps
+// today's modal exactly (Q2 — nothing to update).
 function recruitConvertRender(p){
   const id = p.id;
   const ws = p.will_send || {};
@@ -8385,6 +8392,13 @@ function recruitConvertRender(p){
   const worked   = !!p.worked_with_gigpower;
   const ackRequired = hasEmail || hasName || worked;
 
+  // Email + name matches as one list, de-duplicated by SmartStaff id, each
+  // remembering why it matched. Empty = no Update option.
+  const matches = recruitConvertMatchList(p);
+  window._rcMode     = matches.length ? 'update' : 'create';
+  window._rcTarget   = matches.length === 1 ? matches[0].id : null;
+  window._rcExisting = null;
+
   // Working-visa work-rights signal. It's an offence to employ a non-citizen
   // without work rights. VEVO can only be run by an admin (visa data is admin-only),
   // so an ops user can't attest to it — we DON'T ask them to. Instead: if an admin
@@ -8393,16 +8407,26 @@ function recruitConvertRender(p){
   const vevoVerified = !!(p.vevo_check && p.vevo_check.verified_at);
   const vevoUnverified = !!p.working_visa && !vevoVerified;
 
+  // SmartStaff stores names HTML-encoded — decode THEN escape.
+  const ssEsc = s => escapeHtml(decodeEntities(s));
+
   // Warning blocks (only rendered when relevant).
-  const matchLine = m => escapeHtml((m.name || '(no name)') + ' — ' + (m.email || 'no email')
-                    + (m.ein ? ' · EIN ' + m.ein : '') + (m.active === 0 ? ' · inactive' : ''));
   let warn = '';
-  if(hasEmail)
-    warn += '<div class="rc-conv-warn"><b>Possible existing crew (same email):</b><br>'
-          + p.email_matches.map(matchLine).join('<br>') + '</div>';
-  if(hasName)
-    warn += '<div class="rc-conv-warn"><b>Possible existing crew (similar name):</b><br>'
-          + p.name_matches.map(matchLine).join('<br>') + '</div>';
+  if(matches.length){
+    const radios = matches.map(function(m){
+      const why = m.why.join(' + ');
+      return '<label class="rc-conv-ack" style="padding:3px 0">'
+        + '<input type="radio" name="rc-conv-target" value="' + escapeHtml(m.id) + '"'
+        + (window._rcTarget === m.id ? ' checked' : '')
+        + ' onchange="recruitConvertPickTarget(this.value)">'
+        + '<span>' + ssEsc(m.name || '(no name)') + ' — ' + ssEsc(m.email || 'no email')
+        + (m.ein ? ' · EIN ' + escapeHtml(m.ein) : '')
+        + (m.active === 0 ? ' · <b>inactive</b>' : '')
+        + ' <span style="color:var(--muted)">(' + escapeHtml(why) + ')</span></span></label>';
+    }).join('');
+    warn += '<div class="rc-conv-warn"><b>Possible existing crew'
+          + (matches.length > 1 ? ' — pick the one this is' : '') + ':</b>' + radios + '</div>';
+  }
   if(worked)
     warn += '<div class="rc-conv-warn"><b>They indicated they’ve worked with Gig Power before.</b><br>'
           + 'People often return under a new name or email — double-check they’re not already on the roster.</div>';
@@ -8416,6 +8440,15 @@ function recruitConvertRender(p){
           + 'Their work rights haven’t been VEVO-verified by an admin yet — it’s an offence to employ a '
           + 'non-citizen without work rights. An admin can record the VEVO check on the applicant’s panel; '
           + 'you’ll be asked to confirm before converting.</div>';
+
+  // Update vs Create choice — only when there is something to update.
+  const modeHtml = matches.length
+    ? '<div style="display:flex;gap:18px;flex-wrap:wrap;padding:4px 0 6px">'
+      + '<label class="rc-conv-ack" style="padding:0"><input type="radio" name="rc-conv-mode" value="update" checked onchange="recruitConvertSetMode(this.value)">'
+      + '<span><b>Update the existing record</b></span></label>'
+      + '<label class="rc-conv-ack" style="padding:0"><input type="radio" name="rc-conv-mode" value="create" onchange="recruitConvertSetMode(this.value)">'
+      + '<span>Create a NEW crew record anyway</span></label></div>'
+    : '';
 
   const ackHtml = ackRequired
     ? '<label class="rc-conv-ack"><input type="checkbox" id="rc-conv-ack" onchange="recruitConvertRecheck()">'
@@ -8441,12 +8474,21 @@ function recruitConvertRender(p){
     + '<div style="padding-top:4px;color:var(--muted)">EIN, username, active, rating and paygrade are set automatically. No pay/tax fields are sent.</div>'
     + '</div>';
 
-  document.getElementById('entity-modal-body').innerHTML =
+  // Create section = today's modal body. Update section is filled by
+  // recruitConvertLoadExisting once a target is chosen.
+  const createHtml =
       efRow('First name *', efInput('rc-conv-first', p.proposed_firstname || ''))
     + efRow('Last name *',  efInput('rc-conv-last',  p.proposed_lastname  || ''))
     + nameSourceHint(p.name_source)
-    + warn + ackHtml
-    + '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">What will be sent to SmartStaff</div>' + sendSummary + '</div>'
+    + (matches.length ? '' : warn) + ackHtml
+    + '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">What will be sent to SmartStaff</div>' + sendSummary + '</div>';
+
+  document.getElementById('entity-modal-body').innerHTML =
+      (matches.length ? warn + modeHtml : '')
+    + '<div id="rc-conv-create"' + (window._rcMode === 'create' ? '' : ' style="display:none"') + '>'
+    +   createHtml + '</div>'
+    + '<div id="rc-conv-update"' + (window._rcMode === 'update' ? '' : ' style="display:none"') + '>'
+    +   '<div id="rc-conv-update-body" style="font-size:12px;color:var(--muted);padding:6px 0">Pick the matching crew member above.</div></div>'
     + '<div id="rc-conv-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0;min-height:14px"></div>';
 
   // Wire the name inputs so the Create button re-checks as ops types.
@@ -8457,10 +8499,132 @@ function recruitConvertRender(p){
 
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Cancel','closeEntityModal()')
-    + entityBtn('Create crew member', "recruitConvertSubmit('" + id + "'," + (ackRequired ? 'true' : 'false') + ")",
+    + entityBtn(window._rcMode === 'update' ? 'Update crew member' : 'Create crew member',
+                "recruitConvertSubmit('" + id + "'," + (ackRequired ? 'true' : 'false') + ")",
                 {primary:true, id:'rc-conv-submit'});
   recruitConvertRecheck();
-  setTimeout(function(){ var f=document.getElementById('rc-conv-first'); if(f) f.focus(); }, 50);
+  if(window._rcMode === 'update' && window._rcTarget){
+    recruitConvertLoadExisting(window._rcTarget);
+  } else if(window._rcMode === 'create'){
+    setTimeout(function(){ var f=document.getElementById('rc-conv-first'); if(f) f.focus(); }, 50);
+  }
+}
+
+// Email + name matches merged into one list, de-duplicated by id. Each entry keeps
+// why it matched ("same email", "similar name") for the radio label.
+function recruitConvertMatchList(p){
+  const out = [], byId = {};
+  const add = function(list, why){
+    (Array.isArray(list) ? list : []).forEach(function(m){
+      m = m || {};
+      const mid = String(m.id || '');
+      if(!mid) return;
+      if(byId[mid]){ if(byId[mid].why.indexOf(why) < 0) byId[mid].why.push(why); return; }
+      byId[mid] = { id: mid, name: m.name, email: m.email, ein: m.ein, active: m.active, why: [why] };
+      out.push(byId[mid]);
+    });
+  };
+  add(p.email_matches, 'same email');
+  add(p.name_matches,  'similar name');
+  return out;
+}
+
+// Update <-> Create toggle. Create shows today's modal untouched; Update shows the
+// Current-vs-New table for the chosen record.
+function recruitConvertSetMode(mode){
+  window._rcMode = (mode === 'create') ? 'create' : 'update';
+  const c = document.getElementById('rc-conv-create');
+  const u = document.getElementById('rc-conv-update');
+  if(c) c.style.display = window._rcMode === 'create' ? '' : 'none';
+  if(u) u.style.display = window._rcMode === 'update' ? '' : 'none';
+  const btn = document.getElementById('rc-conv-submit');
+  if(btn) btn.textContent = window._rcMode === 'update' ? 'Update crew member' : 'Create crew member';
+  const err = document.getElementById('rc-conv-error');
+  if(err) err.textContent = '';
+  recruitConvertRecheck();
+  if(window._rcMode === 'update' && window._rcTarget && !window._rcExisting)
+    recruitConvertLoadExisting(window._rcTarget);
+}
+
+// A matched record was picked — load it for the Update table.
+function recruitConvertPickTarget(crewId){
+  window._rcTarget = String(crewId || '') || null;
+  window._rcExisting = null;
+  recruitConvertRecheck();
+  if(window._rcTarget) recruitConvertLoadExisting(window._rcTarget);
+}
+
+// Fetch the chosen record + its diff and render the Update section. The server
+// only answers for a record that is one of this applicant's matches.
+async function recruitConvertLoadExisting(crewId){
+  const p = window._recruitConvert || {};
+  const box = document.getElementById('rc-conv-update-body');
+  if(!box) return;
+  box.innerHTML = '<div style="color:var(--muted);padding:6px 0">Loading the existing record…</div>';
+  let x;
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(p.id)
+                          + '/existing/' + encodeURIComponent(crewId),
+                          { headers: { 'Accept': 'application/json' } });
+    x = await r.json().catch(() => ({}));
+    if(!r.ok || x.error) throw new Error(x.error || ('HTTP ' + r.status));
+  }catch(e){
+    if(window._rcTarget !== String(crewId)) return;   // a newer pick is loading
+    box.innerHTML = '<div style="color:var(--conflict)">Couldn&#39;t load the existing record: ' + escapeHtml(e.message) + '</div>';
+    return;
+  }
+  if(window._rcTarget !== String(crewId)) return;     // a newer pick is loading
+  window._rcExisting = x;
+
+  const ssEsc = s => escapeHtml(decodeEntities(s));
+  const ein = escapeHtml(String(x.ein || ''));
+  let html = '';
+
+  const diff = Array.isArray(x.diff) ? x.diff : [];
+  if(diff.length){
+    const th = 'text-align:left;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding:4px 6px;font-weight:normal';
+    const td = 'padding:4px 6px;vertical-align:top;border-top:1px solid var(--border)';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px;color:var(--text);margin:4px 0 8px">'
+      + '<tr><th style="' + th + '"></th><th style="' + th + '"></th>'
+      + '<th style="' + th + '">Current (EIN ' + ein + ')</th><th style="' + th + '">New (onboarding)</th></tr>'
+      + diff.map(function(d){
+          return '<tr><td style="' + td + '"><input type="checkbox" class="rc-upd-field" value="' + escapeHtml(d.field) + '" checked style="accent-color:var(--accent)"></td>'
+            + '<td style="' + td + ';color:var(--muted)">' + escapeHtml(d.label) + '</td>'
+            + '<td style="' + td + '">' + (d.current ? ssEsc(d.current) : '<span style="color:var(--muted)">—</span>') + '</td>'
+            + '<td style="' + td + '">' + escapeHtml(d.new) + '</td></tr>';
+        }).join('')
+      + '</table>'
+      + '<div style="font-size:11px;color:var(--muted);padding-bottom:6px">Untick a row to keep the current value.</div>';
+  } else {
+    html += '<div style="color:var(--text);padding:4px 0 8px">Contact details already match.</div>';
+  }
+
+  const lines = [];
+  if(x.name_diff)
+    lines.push('Name differs — SmartStaff: <b>' + ssEsc(x.name_diff.smartstaff) + '</b>, onboarding: <b>'
+               + escapeHtml(x.name_diff.onboarding) + '</b>. Not changed here; fix in Manage Crew if needed.');
+  if(!x.active)
+    lines.push('Also: <b>reactivate</b> (currently inactive)');
+  const contract = (x.has_contract === true) ? 'Replace contract'
+                 : (x.has_contract === false) ? 'Add contract'
+                 : 'Replace contract (if one is on file)';
+  const photo = x.headshot_present ? 'Replace photo (the current one is kept as a backup)'
+                                   : 'No onboarding photo — current photo kept';
+  lines.push(contract + ' · ' + photo + ' · Licences, inductions, visa');
+  lines.push('Reset password + welcome email — login username set to their EIN <b style="color:var(--accent)">' + ein + '</b>');
+  html += '<div class="rc-conv-send">' + lines.map(l => '<div>' + l + '</div>').join('') + '</div>';
+
+  html += '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">'
+    + '<b>Notes will be added below the existing notes:</b>'
+    + (x.notes_tail
+        ? '<div style="white-space:pre-wrap;font-size:11px;line-height:1.45;margin-top:4px;color:var(--muted)">'
+          + (String(x.notes_tail).length >= 300 ? '…' : '') + ssEsc(x.notes_tail) + '</div>'
+        : '<div style="font-size:11px;margin-top:4px">(no existing notes)</div>')
+    + '<div style="white-space:pre-wrap;font-size:11px;line-height:1.45;margin-top:4px;color:var(--text)">'
+    + escapeHtml(x.notes_append || '') + '</div></div>';
+
+  box.innerHTML = html;
+  recruitConvertRecheck();
 }
 
 // Tell ops where the pre-filled split came from, because the two cases deserve
@@ -8484,33 +8648,52 @@ function nameSourceHint(source){
        + 'Check it (e.g. \u201cMary Jane Watson\u201d, \u201cde Silva\u201d).</div>';
 }
 
-// Enable "Create" only when both names are filled AND (if any warning) the
+// Create mode: enable only when both names are filled AND (if any warning) the
 // acknowledge box is ticked. Mirrors the server-side guard.
+// Update mode: enable once a target is chosen and its record has loaded.
 function recruitConvertRecheck(){
   const btn = document.getElementById('rc-conv-submit');
   if(!btn) return;
-  const first = (document.getElementById('rc-conv-first') || {}).value;
-  const last  = (document.getElementById('rc-conv-last')  || {}).value;
-  const ackEl = document.getElementById('rc-conv-ack');
-  const namesOk = !!(first && first.trim() && last && last.trim());
-  const ackOk   = !ackEl || ackEl.checked;
-  const ok = namesOk && ackOk;
+  let ok;
+  if(window._rcMode === 'update'){
+    ok = !!(window._rcTarget && window._rcExisting && String(window._rcExisting.id) === String(window._rcTarget));
+  } else {
+    const first = (document.getElementById('rc-conv-first') || {}).value;
+    const last  = (document.getElementById('rc-conv-last')  || {}).value;
+    const ackEl = document.getElementById('rc-conv-ack');
+    const namesOk = !!(first && first.trim() && last && last.trim());
+    const ackOk   = !ackEl || ackEl.checked;
+    ok = namesOk && ackOk;
+  }
   btn.disabled = !ok;
   btn.style.opacity = ok ? '1' : '0.45';
   btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
 }
 
-// Do the conversion: write the crew record + stamp the candidate active_crew.
+// Do the conversion: either write a NEW crew record, or update the chosen
+// existing one — then stamp the candidate active_crew.
 async function recruitConvertSubmit(id, ackRequired){
   const err = document.getElementById('rc-conv-error');
   const btn = document.getElementById('rc-conv-submit');
   if(err) err.textContent = '';
+  const isUpdate = window._rcMode === 'update';
   const val = function(fid){ var el=document.getElementById(fid); return el ? el.value.trim() : ''; };
   const first = val('rc-conv-first'), last = val('rc-conv-last');
-  if(!first || !last){ if(err) err.textContent = 'First and last name are required.'; return; }
-  const ackEl = document.getElementById('rc-conv-ack');
-  const acknowledged = ackEl ? !!ackEl.checked : false;
-  if(ackRequired && !acknowledged){ if(err) err.textContent = 'Please tick the confirm box first.'; return; }
+  let payload;
+  if(isUpdate){
+    if(!window._rcTarget || !window._rcExisting){ if(err) err.textContent = 'Pick the matching crew member first.'; return; }
+    // Field NAMES only — the server rebuilds every value from onboarding data.
+    const fields = Array.prototype.slice.call(document.querySelectorAll('.rc-upd-field'))
+                     .filter(function(cb){ return cb.checked; })
+                     .map(function(cb){ return cb.value; });
+    payload = { mode: 'update', target_id: window._rcTarget, fields: fields };
+  } else {
+    if(!first || !last){ if(err) err.textContent = 'First and last name are required.'; return; }
+    const ackEl = document.getElementById('rc-conv-ack');
+    const acknowledged = ackEl ? !!ackEl.checked : false;
+    if(ackRequired && !acknowledged){ if(err) err.textContent = 'Please tick the confirm box first.'; return; }
+    payload = { firstname:first, lastname:last, acknowledged: acknowledged };
+  }
   // Working-visa work-rights reminder (soft, non-blocking). VEVO is admin-only, so we
   // don't ask ops to attest to it — we just make them pause. If an admin hasn't
   // recorded the check (vevo_check), a "proceed anyway?" confirm gates the click;
@@ -8522,113 +8705,130 @@ async function recruitConvertSubmit(id, ackRequired){
     return;
   }
 
-  if(btn){ btn.disabled = true; btn.textContent = 'Creating…'; }
+  const idleLabel = isUpdate ? 'Update crew member' : 'Create crew member';
+  if(btn){ btn.disabled = true; btn.textContent = isUpdate ? 'Updating…' : 'Creating…'; }
   try{
     const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/convert', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ firstname:first, lastname:last, acknowledged: acknowledged })
+      body: JSON.stringify(payload)
     });
     const d = await r.json().catch(() => ({}));
     if(!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
 
-    // Success. The crew record exists; a `warning` means the crew was created but
-    // the Supabase status stamp didn't land (fix by hand — don't re-convert).
-    const warnHtml = d.warning
-      ? '<div class="rc-conv-warn" style="margin-top:10px">' + escapeHtml(d.warning) + '</div>' : '';
-    // Licence-push (convert-B) summary. Each item is {type, ok, skipped, error}.
-    // A failed licence is not fatal — the endpoint is idempotent, so re-running the
-    // convert retries only the missing ones. Nothing shown if there were none.
-    let licHtml = '';
-    if(Array.isArray(d.licences) && d.licences.length){
-      const rows = d.licences.map(function(l){
-        l = l || {};
-        const t = escapeHtml(l.type || 'Licence');
-        if(!l.ok)        return '<div>✗ ' + t + ' — <span style="color:var(--conflict)">failed: ' + escapeHtml(l.error || 'error') + '</span></div>';
-        if(l.skipped)    return '<div>• ' + t + ' — already on file</div>';
-        return '<div>✓ ' + t + ' — added</div>';
-      }).join('');
-      licHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
-        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Licences</div>'
-        + rows + '</div>';
+    const blocks = recruitConvertResultBlocks(d);
+    let head;
+    if(d.mode === 'update'){
+      const n = Array.isArray(d.updated_fields) ? d.updated_fields.length : 0;
+      document.getElementById('entity-modal-title').textContent = 'Crew member updated';
+      head = 'Updated EIN <b style="color:var(--accent)">' + escapeHtml(String(d.ein)) + '</b> &mdash; '
+           + n + (n === 1 ? ' detail' : ' details') + ' changed'
+           + (d.reactivated ? ', reactivated' : '') + '.<br>'
+           + escapeHtml(decodeEntities(d.name || '')) + '<br>'
+           + 'Username: <b style="color:var(--accent)">' + escapeHtml(String(d.username || d.ein)) + '</b><br>'
+           + 'Temp password: <b>' + escapeHtml(String(d.temp_password || '')) + '</b> &mdash; they should change it on first login.';
+    } else {
+      document.getElementById('entity-modal-title').textContent = 'Crew member created';
+      head = escapeHtml(d.name || (first + ' ' + last)) + ' was added to SmartStaff.<br>'
+           + 'EIN / username: <b style="color:var(--accent)">' + escapeHtml(String(d.ein)) + '</b><br>'
+           + 'Temp password: <b>' + escapeHtml(String(d.temp_password || '')) + '</b> &mdash; they should change it on first login.';
     }
-    // Induction-push (convert-B) summary. Each item is {venue_code, label, ok,
-    // skipped, error}. Same best-effort semantics as licences — a MELB_PARK entry
-    // shows as one "Melbourne Park" line. Nothing shown if there were none.
-    let indHtml = '';
-    if(Array.isArray(d.inductions) && d.inductions.length){
-      const irows = d.inductions.map(function(x){
-        x = x || {};
-        const t = escapeHtml(x.label || x.venue_code || 'Induction');
-        if(!x.ok)        return '<div>✗ ' + t + ' — <span style="color:var(--conflict)">failed: ' + escapeHtml(x.error || 'error') + '</span></div>';
-        if(x.skipped)    return '<div>• ' + t + ' — already on file</div>';
-        return '<div>✓ ' + t + ' — added</div>';
-      }).join('');
-      indHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
-        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Inductions</div>'
-        + irows + '</div>';
-    }
-    // Contract-push (convert-B) summary. d.contract is a single {ok, skipped, error}
-    // object (every convertible candidate has a signed contract). Best-effort:
-    // idempotent per user, so a failure is retried by re-running convert.
-    let conHtml = '';
-    if(d.contract){
-      const c = d.contract;
-      const cl = (!c.ok) ? '<div>✗ Contract — <span style="color:var(--conflict)">failed: ' + escapeHtml(c.error || 'error') + '</span></div>'
-               : (c.skipped) ? '<div>• Contract — already on file</div>'
-               : '<div>✓ Contract — added</div>';
-      conHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
-        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Contract</div>'
-        + cl + '</div>';
-    }
-    // Visa-push (convert-B) summary. d.visa is {ok, updated, error} for a working-visa
-    // candidate, or null for citizen/PR crew (no visa write) — nothing shown then.
-    let visaHtml = '';
-    if(d.visa){
-      const v = d.visa;
-      const vl = (!v.ok) ? '<div>✗ Visa — <span style="color:var(--conflict)">failed: ' + escapeHtml(v.error || 'error') + '</span></div>'
-               : (v.updated) ? '<div>✓ Visa — updated</div>'
-               : '<div>✓ Visa — added</div>';
-      visaHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
-        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Visa</div>'
-        + vl + '</div>';
-    }
-    // Welcome-email outcome. d.welcome is {ok, outcome, error} — the credentials
-    // email carrying their EIN and temp password. Reported honestly and always:
-    // an operator who is not told a send was blocked will assume the crew member
-    // has their login, and will find out otherwise on the day of a shift.
-    // 'blocked' means EMAIL_LIVE is off — nothing reached an inbox — so it reads
-    // as a warning, not a tick, and points at the button that fixes it.
-    let welHtml = '';
-    if(d.welcome){
-      const w = d.welcome;
-      const wl = (w.outcome === 'sent')
-          ? '<div>\u2713 Welcome email \u2014 sent</div>'
-        : (w.outcome === 'deduped')
-          ? '<div>\u2022 Welcome email \u2014 already sent to them earlier</div>'
-        : (w.outcome === 'blocked')
-          ? '<div style="color:var(--warn)">\u26a0 Welcome email \u2014 blocked: email sending is switched off (EMAIL_LIVE). '
-            + 'They do NOT have their login \u2014 use \u201cResend welcome email\u201d once it is on.</div>'
-          : '<div>\u2717 Welcome email \u2014 <span style="color:var(--conflict)">failed: '
-            + escapeHtml(w.error || 'error') + '</span> \u2014 use \u201cResend welcome email\u201d on their row.</div>';
-      welHtml = '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
-        + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Welcome email</div>'
-        + wl + '</div>';
-    }
-    document.getElementById('entity-modal-title').textContent = 'Crew member created';
     document.getElementById('entity-modal-sub').textContent   = '';
     document.getElementById('entity-modal-body').innerHTML =
-        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.7">'
-      + escapeHtml(d.name || (first + ' ' + last)) + ' was added to SmartStaff.<br>'
-      + 'EIN / username: <b style="color:var(--accent)">' + escapeHtml(String(d.ein)) + '</b><br>'
-      + 'Temp password: <b>' + escapeHtml(String(d.temp_password || '')) + '</b> &mdash; they should change it on first login.'
-      + '</div>' + warnHtml + licHtml + indHtml + conHtml + visaHtml + welHtml;
+        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.7">' + head + '</div>' + blocks;
     document.getElementById('entity-modal-actions').innerHTML = entityBtn('Done','closeEntityModal()',{primary:true});
     await loadRecruitment();   // candidate moves to the Active crew pile
   }catch(e){
     if(err) err.textContent = e.message;
-    if(btn){ btn.disabled = false; btn.textContent = 'Create crew member'; }
+    if(btn){ btn.disabled = false; btn.textContent = idleLabel; }
   }
+}
+
+// The per-step outcome blocks under the convert result — shared by the create
+// and update paths, so both report licences/inductions/contract/visa/welcome the
+// same way. Update adds a Photo block and says "replaced" for the contract.
+function recruitConvertResultBlocks(d){
+  const section = function(title, inner){
+    return '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
+      + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">' + title + '</div>'
+      + inner + '</div>';
+  };
+  const failed = function(t, e){ return '<div>✗ ' + t + ' — <span style="color:var(--conflict)">failed: ' + escapeHtml(e || 'error') + '</span></div>'; };
+
+  // A `warning` means the crew record was written but the Supabase status stamp
+  // didn't land (fix by hand — don't re-convert).
+  let html = d.warning
+    ? '<div class="rc-conv-warn" style="margin-top:10px">' + escapeHtml(d.warning) + '</div>' : '';
+  // Licence-push (convert-B) summary. Each item is {type, ok, skipped, error}.
+  // A failed licence is not fatal — the endpoint is idempotent, so re-running the
+  // convert retries only the missing ones. Nothing shown if there were none.
+  if(Array.isArray(d.licences) && d.licences.length){
+    html += section('Licences', d.licences.map(function(l){
+      l = l || {};
+      const t = escapeHtml(l.type || 'Licence');
+      if(!l.ok)     return failed(t, l.error);
+      if(l.skipped) return '<div>• ' + t + ' — already on file</div>';
+      return '<div>✓ ' + t + ' — added</div>';
+    }).join(''));
+  }
+  // Induction-push (convert-B) summary. Each item is {venue_code, label, ok,
+  // skipped, error}. Same best-effort semantics as licences — a MELB_PARK entry
+  // shows as one "Melbourne Park" line. Nothing shown if there were none.
+  if(Array.isArray(d.inductions) && d.inductions.length){
+    html += section('Inductions', d.inductions.map(function(x){
+      x = x || {};
+      const t = escapeHtml(x.label || x.venue_code || 'Induction');
+      if(!x.ok)     return failed(t, x.error);
+      if(x.skipped) return '<div>• ' + t + ' — already on file</div>';
+      return '<div>✓ ' + t + ' — added</div>';
+    }).join(''));
+  }
+  // Contract-push (convert-B) summary. d.contract is a single {ok, skipped,
+  // replaced, error} object (every convertible candidate has a signed contract).
+  if(d.contract){
+    const c = d.contract;
+    html += section('Contract',
+        (!c.ok)      ? failed('Contract', c.error)
+      : (c.skipped)  ? '<div>• Contract — already on file</div>'
+      : (c.replaced) ? '<div>✓ Contract — replaced</div>'
+      :                '<div>✓ Contract — added</div>');
+  }
+  // Visa-push (convert-B) summary. d.visa is {ok, updated, error} for a working-visa
+  // candidate, or null for citizen/PR crew (no visa write) — nothing shown then.
+  if(d.visa){
+    const v = d.visa;
+    html += section('Visa',
+        (!v.ok)      ? failed('Visa', v.error)
+      : (v.updated)  ? '<div>✓ Visa — updated</div>'
+      :                '<div>✓ Visa — added</div>');
+  }
+  // Photo (update path only): {ok, backup?} or {ok:false, skipped, error}.
+  if(d.photo){
+    const ph = d.photo;
+    html += section('Photo',
+        (ph.ok)      ? '<div>✓ Photo — replaced' + (ph.backup ? ' (old one kept as a backup)' : '') + '</div>'
+      : (ph.skipped) ? '<div>• Photo — no headshot on the application; current photo kept</div>'
+      :                failed('Photo', ph.error));
+  }
+  // Welcome-email outcome. d.welcome is {ok, outcome, error} — the credentials
+  // email carrying their EIN and temp password. Reported honestly and always:
+  // an operator who is not told a send was blocked will assume the crew member
+  // has their login, and will find out otherwise on the day of a shift.
+  // 'blocked' means EMAIL_LIVE is off — nothing reached an inbox — so it reads
+  // as a warning, not a tick, and points at the button that fixes it.
+  if(d.welcome){
+    const w = d.welcome;
+    html += section('Welcome email', (w.outcome === 'sent')
+        ? '<div>✓ Welcome email — sent</div>'
+      : (w.outcome === 'deduped')
+        ? '<div>• Welcome email — already sent to them earlier</div>'
+      : (w.outcome === 'blocked')
+        ? '<div style="color:var(--warn)">⚠ Welcome email — blocked: email sending is switched off (EMAIL_LIVE). '
+          + 'They do NOT have their login — use “Resend welcome email” once it is on.</div>'
+        : '<div>✗ Welcome email — <span style="color:var(--conflict)">failed: '
+          + escapeHtml(w.error || 'error') + '</span> — use “Resend welcome email” on their row.</div>');
+  }
+  return html;
 }
 
 // ── COMPLETE KEYPAY SETUP ─────────────────────────────────────────────────────
