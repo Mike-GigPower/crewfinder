@@ -60,7 +60,7 @@ Around 88 endpoints under `/ajax/crew/`, plus three under `/ajax/calendar/`. Gro
 
 **Bookings and calls** — `create-booking.php`, `update-booking.php`, `get-booking.php`, `update-call.php`, `cancel-call.php`, `uncancel-call.php`, `get-call-responses.php`, `get-call-times.php`, `update-call-times.php`, `accept-call-times.php`, `call-feeds.php`, `call-supervision.php`, `ops-times-outstanding.php`.
 
-**Crew records** — `get-crew.php`, `update-crew.php`, `update-crew-status.php`, `list-groups.php`, `get-crew-shifts.php`, `get-crew-offer-stats.php`.
+**Crew records** — `get-crew.php`, `update-crew.php`, `update-crew-status.php`, `list-groups.php`, `get-crew-shifts.php`, `get-crew-offer-stats.php`, `admin-set-crew-photo.php` (replace an existing crew member's photo, keeping a backup).
 
 **Inductions** — `get-induction-catalogue.php`, `save-induction-catalogue.php`, `delete-induction-catalogue.php`, `get-induction-cert.php`, plus the self endpoints `my-inductions.php`, `my-induction-venues.php`, `add-my-induction.php`.
 
