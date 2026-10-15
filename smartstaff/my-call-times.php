@@ -159,12 +159,24 @@
 	/* which is a visible absence that states nothing untrue.
 	*/
 
+	/*
+	/* cpa.id is NOT NULL for an UNANSWERED PROMOTION: a backup promoted to 5
+	/* who has not accepted. They stay on the roster so the boss can see them,
+	/* but the form locks the row and submit-call-times.php refuses it -- nobody
+	/* knows they are working until they accept or Ops confirm they did.
+	*/
+
 	$crewRes = mysql_query("SELECT
 	                          ccm.userID  AS user_id,
 	                          u.firstname AS firstname,
-	                          u.lastname  AS lastname
+	                          u.lastname  AS lastname,
+	                          cpa.id      AS promo_ack_id
 	                        FROM call_crew_map ccm
 	                        INNER JOIN users u ON u.id = ccm.userID
+	                        LEFT JOIN call_promo_ack cpa
+	                               ON cpa.callID = ccm.callID
+	                              AND cpa.userID = ccm.userID
+	                              AND cpa.acked_at IS NULL
 	                        WHERE ccm.callID = " . $callID . "
 	                          AND ccm.status = 5
 	                        ORDER BY u.lastname ASC, u.firstname ASC");
@@ -176,6 +188,7 @@
 
 	$crewOrder = array();
 	$crewName  = array();
+	$crewPromo = array();
 
 	while ($row = mysql_fetch_object($crewRes))
 	{
@@ -198,6 +211,7 @@
 
 		$crewOrder[] = $uid;
 		$crewName[$uid] = trim(trim($first) . ' ' . trim($last));
+		$crewPromo[$uid] = ($row->promo_ack_id !== null) ? true : false;
 	}
 
 	/*
@@ -294,7 +308,10 @@
 			*/
 
 			'covering_for' => 0,
-			'submission'   => null
+			'submission'   => null,
+
+			/* Locked on the form; never counted as outstanding below. */
+			'promo_pending' => $crewPromo[$uid]
 		);
 
 		if (isset($subByUser[$uid]))
@@ -306,9 +323,10 @@
 
 			$matched[$uid] = true;
 		}
-		else
+		else if (!$crewPromo[$uid])
 		{
-			/* submission: null is the signal the form renders as an empty row */
+			/* submission: null is the signal the form renders as an empty row.
+			/* An unanswered promotion is not outstanding: it cannot be entered. */
 
 			$outstanding++;
 		}

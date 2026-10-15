@@ -435,12 +435,23 @@
 			$crew  = array();
 			$keyed = array();
 
+			/* An UNANSWERED PROMOTION is not owed: a backup promoted to 5 who
+			      has not accepted can have no times entered at all (15 Oct 2026,
+			      submit-call-times.php and update-call-times.php both refuse), so
+			      counting them would leave the badge and the push chasing the
+			      boss for a row the form will not let them fill. */
+
 			$cres = mysql_query("SELECT ccm.callID AS callID, ccm.userID AS userID,
 			                            ccm.`on`   AS on_time, ccm.`off` AS off_time
 			                     FROM call_crew_map ccm
 			                     INNER JOIN calls c ON c.id = ccm.callID
+			                     LEFT JOIN call_promo_ack cpa
+			                            ON cpa.callID = ccm.callID
+			                           AND cpa.userID = ccm.userID
+			                           AND cpa.acked_at IS NULL
 			                     WHERE ccm.callID IN (" . $idList . ")
-			                       AND ccm.status = 5");
+			                       AND ccm.status = 5
+			                       AND cpa.id IS NULL");
 
 			if ($cres === false)
 			{

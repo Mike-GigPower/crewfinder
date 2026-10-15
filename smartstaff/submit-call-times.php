@@ -245,6 +245,32 @@
 		$confirmed[(int) $crow->userID] = true;
 	}
 
+	/*
+	/* UNANSWERED PROMOTIONS (15 Oct 2026). A backup promoted to 5 has a
+	/* call_promo_ack row with acked_at NULL until they accept in Crew Hub or
+	/* Ops dismiss the flag. Until then nobody knows they are working, so no
+	/* row may carry their time -- booked, or added by EIN, which would
+	/* otherwise be a way round the lock. Same rule as update-call-times.php.
+	/* A FAILED LOOKUP IS A 500: it feeds a refusal, so it must not degrade to
+	/* "nobody is pending".
+	*/
+
+	$promoPending = array();
+
+	$pres = mysql_query("SELECT userID FROM call_promo_ack
+	                     WHERE callID = " . $callID . "
+	                       AND acked_at IS NULL");
+
+	if ($pres === false)
+	{
+		sct_fail(500, 'Internal Server Error', 'promotion lookup failed: ' . mysql_error(), array());
+	}
+
+	while ($prow = mysql_fetch_object($pres))
+	{
+		$promoPending[(int) $prow->userID] = true;
+	}
+
 	/* ---- validate every row before writing any of them ---- */
 
 	$errors = array();
@@ -341,6 +367,11 @@
 			{
 				$errors[] = $label . ': unbooked_name is no longer accepted — supply ein instead';
 			}
+		}
+
+		if ($userID > 0 && isset($confirmed[$userID]) && isset($promoPending[$userID]))
+		{
+			$errors[] = $label . ': has not accepted their promotion to this call yet, so times cannot be entered for them. If they worked, contact Gig Power Operations';
 		}
 
 		if (strlen($note) > 255)
