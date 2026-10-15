@@ -15837,8 +15837,12 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
                     cpg = cm.get("callpaygradeID") or 0
                     upg = cm.get("user_paygradeID") or 0
                     pg = cpg if (cpg and cpg > 0) else upg
+                    # promo_pending: promoted off backup, not yet accepted.
+                    # update-call-times.php refuses these rows, so the review
+                    # shows them locked rather than letting the write drop them.
                     ein_map[e] = {"user_id": cm.get("user_id"), "name": nm, "pg": pg,
-                                   "status": cm.get("status")}
+                                   "status": cm.get("status"),
+                                   "promo_pending": bool(cm.get("promo_pending"))}
         rosters[cid] = ein_map
         call_index.append({
             "call_id":   cid,
@@ -16018,6 +16022,7 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
                     "late":        r.get("late"),
                     "note":        r.get("note"),
                     "status":      m.get("status"),
+                    "promo_pending": m.get("promo_pending", False),
                 }
                 if m.get("pg"):
                     mrow["callpaygradeID"] = m["pg"]

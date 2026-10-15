@@ -59,12 +59,18 @@
 
 	/* crew booked on the call, with current times / paygrade / late / note.
 	   Reserved-word columns (on, break, off) are written exactly as the native
-	   call-times.php SELECT, which the live host accepts unbackticked. */
+	   call-times.php SELECT, which the live host accepts unbackticked.
+
+	   call_promo_ack is joined so the grid can LOCK an unanswered promotion: a
+	   backup promoted to 5 who has not accepted is not known to be working, and
+	   must not have times entered (and so be paid) until they accept in Crew Hub
+	   or ops dismiss the flag. The WHERE is qualified call_crew_map.callID because
+	   call_promo_ack has a callID column too -- unqualified it is ambiguous. */
 
 	$callCrew = $db->select(
-		'users.firstname, users.lastname, users.id AS userID, users.ein, users.paygradeID AS user_paygradeID, call_crew_map.status, call_crew_map.on, call_crew_map.break, call_crew_map.break_night, call_crew_map.off, call_crew_map.callpaygradeID, call_crew_map.late, call_crew_map.goat_note',
-		'call_crew_map LEFT JOIN users ON call_crew_map.userID=users.id',
-		'callID=' . intval($callID),
+		'users.firstname, users.lastname, users.id AS userID, users.ein, users.paygradeID AS user_paygradeID, call_crew_map.status, call_crew_map.on, call_crew_map.break, call_crew_map.break_night, call_crew_map.off, call_crew_map.callpaygradeID, call_crew_map.late, call_crew_map.goat_note, cpa.promoted_at AS promo_at, cpa.acked_at AS promo_acked_at',
+		'call_crew_map LEFT JOIN users ON call_crew_map.userID=users.id LEFT JOIN call_promo_ack cpa ON cpa.callID=call_crew_map.callID AND cpa.userID=call_crew_map.userID',
+		'call_crew_map.callID=' . intval($callID),
 		'users.lastname ASC'
 	);
 
@@ -76,6 +82,10 @@
 		{
 			$noteVal = ($c->goat_note === null) ? '' : $c->goat_note;
 			$lateVal = ($c->late === '1') ? 1 : 0;
+
+			/* Same test as get-booking.php's promo_pending: guarded to status 5,
+			   so a stale row on someone since declined never locks anything. */
+			$promoPending = (intval($c->status) === 5 && $c->promo_at !== null && $c->promo_acked_at === null) ? 1 : 0;
 
 			$crew[] = array(
 				'user_id'          => intval($c->userID),
@@ -90,7 +100,8 @@
 				'callpaygradeID'   => intval($c->callpaygradeID),
 				'user_paygradeID'  => intval($c->user_paygradeID),
 				'late'             => $lateVal,
-				'note'             => $noteVal
+				'note'             => $noteVal,
+				'promo_pending'    => $promoPending
 			);
 		}
 	}

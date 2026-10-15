@@ -21327,7 +21327,43 @@ async function openCallTimes(bookingId, callId){
   }
 }
 
-function _ctIsConfirmed(c){ return Number(c && c.status) === 5; }
+// Confirmed AND not an unanswered promotion. A backup promoted to 5 who has not
+// accepted (get-call-times.php promo_pending) is not known to be working, so
+// their row is locked: no inputs, never in the fill-down arrow, never in a save.
+// update-call-times.php refuses the row anyway -- this is so nobody keys it.
+function _ctIsConfirmed(c){ return Number(c && c.status) === 5 && !_ctPromoPending(c); }
+function _ctPromoPending(c){ return Number(c && c.status) === 5 && !!(c && c.promo_pending); }
+
+// The lock and the way out of it, on the row itself. The amber pill in the
+// call dialog is hidden while a time change is also pending, so the grid
+// carries its own unlock rather than leaving ops with no route at all.
+function _ctPromoChip(c){
+  if(!_ctPromoPending(c)) return '';
+  return ' <span title="Promoted off backup and has not accepted in Crew Hub. No times can be entered until they accept, or you confirm you have spoken to them."'
+    + ' style="font-size:9px;letter-spacing:.5px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:1px 4px">PROMOTED · NOT ACCEPTED</span>'
+    + (_ctState && !_ctState.locked
+        ? ' <span onclick="ctUnlockPromo('+Number(c.user_id)+')" title="Only if you have SPOKEN to them and they worked this call"'
+          + ' style="font-size:9px;color:var(--accent);cursor:pointer;text-decoration:underline">they worked — unlock</span>'
+        : '');
+}
+
+// Same assertion, same endpoint and same wording as dismissPromoAck in the call
+// dialog: acked_src='ops' means ops spoke to them. Then the grid is reloaded
+// from the server, so the row unlocks only if the flag really cleared.
+async function ctUnlockPromo(userId){
+  const s = _ctState;
+  if(!s) return;
+  if(!confirm('Unlock this crew member for times?\n\nOnly do this if you have SPOKEN to them and they actually worked this call.\n\nThis is recorded as an ops confirmation of the promotion.\n\nAnything typed in this grid and not yet saved will be reloaded — Save first if you need to.')) return;
+  const result = document.getElementById('ct-result');
+  try{
+    const r = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/crew/'+userId+'/promo-ack', {method:'DELETE'});
+    const j = await r.json();
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    openCallTimes(s.bookingId, s.callId);
+  }catch(e){
+    if(result){ result.style.color = 'var(--conflict)'; result.textContent = 'Could not unlock: '+(e.message||e); }
+  }
+}
 
 function renderCallTimesGrid(){
   const s   = _ctState;
@@ -21359,7 +21395,9 @@ function renderCallTimesGrid(){
     const ok    = _ctIsConfirmed(c);
     const dis   = (s.locked || !ok) ? ' disabled' : '';
     const rowSt = ok ? '' : 'opacity:.45;';
-    const rowTt = ok ? '' : ' title="Only confirmed crew can have times entered."';
+    const rowTt = ok ? '' : (_ctPromoPending(c)
+      ? ' title="Promoted off backup and has not accepted — times are locked."'
+      : ' title="Only confirmed crew can have times entered."');
     const name  = escapeHtml(decodeEntities((c.lastname||'')+', '+(c.firstname||'')));
     const pgSel = (c.callpaygradeID && c.callpaygradeID > 0) ? c.callpaygradeID : c.user_paygradeID;
     // A pre-filled row is the boss's claim, not a saved value, and it has to
@@ -21373,7 +21411,7 @@ function renderCallTimesGrid(){
       ? ' <span title="Submitted by the crew boss — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">BOSS</span>'
       : '';
     return '<tr style="border-bottom:1px solid var(--border);'+mark+rowSt+'"'+rowTt+'>'
-      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+chip+_ctSubHint(c)+'</td>'
+      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+_ctPromoChip(c)+chip+_ctSubHint(c)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock', dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00', 'dur',   dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00', 'dur',   dis)+'</td>'
@@ -21390,14 +21428,27 @@ function renderCallTimesGrid(){
   // same times. Shown only when editable and there are >1 confirmed rows to fill.
   const thFill = function(t, col){
     const arrow = (!s.locked && confirmed.length > 1)
-      ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top confirmed row down to all confirmed crew" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
+      ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top confirmed row down to all confirmed crew (skips anyone whose promotion is not accepted)" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
       : '';
     return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;white-space:nowrap">'+t+arrow+'</th>';
   };
 
-  const skipped = s.crew.length - confirmed.length;
+  const promoRows = s.crew.filter(_ctPromoPending);
+  const skipped = s.crew.length - confirmed.length - promoRows.length;
   const skipNote = (!s.locked && skipped > 0)
     ? '<div style="font-size:10px;color:var(--muted);padding:6px 0 0">'+skipped+' crew '+(skipped===1?'is':'are')+' not confirmed — those rows are read-only and are left untouched when you save. Change their status on the call first if they worked.</div>'
+    : '';
+  // Times ALREADY stored against a locked promotion (keyed before this fix, or
+  // by SmartStaff's own screen) are payroll-live and nothing here can clear
+  // them, so they are called out rather than sitting quietly greyed.
+  const promoKeyed = promoRows.filter(function(c){ return !_ctUnkeyed(c) && !c._prefilled; });
+  const promoNote = (!s.locked && promoRows.length)
+    ? '<div style="font-size:11px;color:#f59e0b;padding:6px 0 0">'+promoRows.length+' crew '+(promoRows.length===1?'was':'were')
+      + ' promoted off backup and '+(promoRows.length===1?'has':'have')+' not accepted — their times are locked. Use “they worked — unlock” only if you have spoken to them.'
+      + (promoKeyed.length
+          ? ' <b>Already has times saved:</b> '+escapeHtml(promoKeyed.map(function(c){ return decodeEntities((c.lastname||'')+', '+(c.firstname||'')); }).join('; '))+' — check these before the pay run.'
+          : '')
+      + '</div>'
     : '';
 
   document.getElementById('entity-modal-body').innerHTML =
@@ -21409,6 +21460,7 @@ function renderCallTimesGrid(){
     + th('Crew')+thFill('On','on')+thFill('Day Break','break')+thFill('Night Break','break_night')+thFill('Off','off')+thFill('Rate','rate')+th('Late')+th('Note')
     + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
     + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). <b>Save</b> writes times, rate, late and note and leaves the call outstanding. <b>Accept</b> saves and then ticks “Times filled”, which is what clears the call from the Times outstanding lane. Neither ever locks the call — that stays a SmartStaff action.</div>'
+    + promoNote
     + skipNote;
 
   // Two buttons, two states — a call is outstanding or it is done (§B.4).
@@ -22864,7 +22916,12 @@ async function tiLoadFile(bookingId, file, manual, keep){
 // status the Enter Times grid will write to; the import surfaces the others and
 // lets the operator decide, because the Crew Boss's sheet is evidence of who
 // actually worked and SmartStaff's status can be stale by showtime.
-function _tiIsConfirmed(m){ return Number(m && m.status) === 5; }
+function _tiIsConfirmed(m){ return Number(m && m.status) === 5 && !_tiPromoPending(m); }
+// Promoted off backup and not accepted: never written, and no tick to force it.
+// update-call-times.php refuses the row; locking it here means the review says
+// so up front instead of the write quietly coming back one short. Unlock from
+// the call (the amber pill, or Enter Times), then re-import.
+function _tiPromoPending(m){ return Number(m && m.status) === 5 && !!(m && m.promo_pending); }
 
 function _tiStatusChip(st){
   const map = {0:['—','var(--muted)'], 1:['SMS Sent','var(--muted)'], 5:['Confirmed','var(--ok,#10b981)'],
@@ -22876,6 +22933,7 @@ function _tiStatusChip(st){
 // A flagged (non-confirmed) row is written unless the operator unticks it.
 // Confirmed rows have no per-row control and are always in.
 function _tiRowOn(s, callId, m){
+  if(_tiPromoPending(m)) return false;
   if(_tiIsConfirmed(m)) return true;
   return !s.rowOff[callId + ':' + m.user_id];
 }
@@ -22951,7 +23009,7 @@ function renderTimesheetImportPreview(){
   const s = _tiState, d = s.data;
   const calls = d.calls || [];
   const totalWrite = calls.reduce(function(n,c){ return n + (s.include[c.call_id] ? _tiCallRows(s,c).length : 0); }, 0);
-  let totalFlagged = 0;
+  let totalFlagged = 0, totalPromo = 0;
 
   const cards = calls.map(function(c){
     const inc  = !!s.include[c.call_id];
@@ -22959,25 +23017,30 @@ function renderTimesheetImportPreview(){
       ? 'matched by Call ID'
       : ('EIN overlap '+c.overlap+'/'+c.tab_ein_count+(c.delta_min?(' · '+c.delta_min+'min off'):''));
 
-    const flagged = (c.matched||[]).filter(function(m){ return !_tiIsConfirmed(m); });
+    const flagged = (c.matched||[]).filter(function(m){ return !_tiIsConfirmed(m) && !_tiPromoPending(m); });
     totalFlagged += flagged.length;
+    const promoLocked = (c.matched||[]).filter(_tiPromoPending);
+    totalPromo += promoLocked.length;
 
     const matchedList = c.matched.map(function(m){
       const brk = (m.break !== '00:00' || m.break_night !== '00:00') ? (' brk '+m.break+'/'+m.break_night) : '';
       const ok  = _tiIsConfirmed(m);
       const on  = _tiRowOn(s, c.call_id, m);
+      const pp  = _tiPromoPending(m);
       const box = ok ? ''
+        : pp ? '<input type="checkbox" disabled title="Promoted off backup and has not accepted — cannot be written" style="margin:0 6px 0 0;vertical-align:middle">'
         : '<input type="checkbox" '+(on?'checked':'')+' onchange="tiToggleRow('+c.call_id+','+m.user_id+',this)" style="margin:0 6px 0 0;vertical-align:middle">';
       const dim = (ok || on) ? '' : 'opacity:.45;';
       return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;color:var(--text);'+dim+'">'
         + '<span>'+box+escapeHtml(m.name)+(m.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')
-        +   (ok?'':' '+_tiStatusChip(m.status))+'</span>'
+        +   (ok?'':(pp ? ' <span style="font-size:9px;letter-spacing:.5px;color:#f59e0b">PROMOTED · NOT ACCEPTED</span>' : ' '+_tiStatusChip(m.status)))+'</span>'
         + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml((m.on||'—')+'–'+(m.off||'—')+brk)+'</span>'
         + '</div>';
     }).join('');
 
     const extras = [];
     if(flagged.length)       extras.push(flagged.length+' not confirmed in SmartStaff');
+    if(promoLocked.length)   extras.push(promoLocked.length+' promoted, not accepted — locked');
     if(c.unmatched.length)   extras.push(c.unmatched.length+' on sheet, not booked on this call');
     if(c.skipped.length)     extras.push(c.skipped.length+' with no times (no-show / blank)');
     if(c.roster_only.length) extras.push(c.roster_only.length+' booked but absent from sheet');
@@ -22994,9 +23057,12 @@ function renderTimesheetImportPreview(){
       + '</div>';
   }).join('');
 
-  const flagNote = totalFlagged
+  const flagNote = (totalFlagged
     ? '<div style="font-size:11px;color:var(--accent);padding:0 0 8px">'+totalFlagged+' crew on this sheet '+(totalFlagged===1?'is':'are')+' not Confirmed in SmartStaff. They\'re ticked to write — untick anyone who shouldn\'t be, or fix their status on the call first.</div>'
-    : '';
+    : '')
+    + (totalPromo
+    ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">'+totalPromo+' crew on this sheet '+(totalPromo===1?'was':'were')+' promoted off backup and '+(totalPromo===1?'has':'have')+' not accepted. Their times will NOT be written. If they did work, confirm it from the call (the amber pill, or “they worked — unlock” in Enter Times), then import again.</div>'
+    : '');
 
   document.getElementById('entity-modal-title').textContent = 'Import Times — review';
   document.getElementById('entity-modal-body').innerHTML =
@@ -23073,6 +23139,7 @@ async function writeTimesImport(){
   result.style.color = 'var(--muted)';
 
   let done = 0, wrote = 0, failed = 0;
+  const refused = [];
   for(const c of targets){
     result.textContent = 'Writing '+(done+1)+'/'+targets.length+' — '+(c.call_name||('call '+c.call_id))+'…';
     const rows = _tiCallRows(s, c).map(function(m){
@@ -23086,14 +23153,23 @@ async function writeTimesImport(){
       });
       const j = await res.json();
       if(j.error){ failed++; }
-      else { wrote += (j.rows||[]).filter(function(r){ return r.ok; }).length; }
+      else {
+        wrote += (j.rows||[]).filter(function(r){ return r.ok; }).length;
+        // Per-row refusals (e.g. an unanswered promotion that changed since the
+        // preview) used to vanish from this count. Name them.
+        (j.rows||[]).filter(function(r){ return !r.ok; }).forEach(function(r){
+          const m = (c.matched||[]).find(function(x){ return Number(x.user_id) === Number(r.user_id); });
+          refused.push((m ? m.name : ('user '+r.user_id)) + ': ' + (r.error || 'refused'));
+        });
+      }
     }catch(e){ failed++; }
     done++;
   }
 
-  result.style.color = failed ? 'var(--conflict)' : 'var(--ok,#10b981)';
+  result.style.color = (failed || refused.length) ? 'var(--conflict)' : 'var(--ok,#10b981)';
   result.innerHTML = '✓ Wrote times for '+wrote+' crew across '+(targets.length-failed)+' call'+((targets.length-failed)===1?'':'s')
-                   + (failed?(' · '+failed+' call(s) failed'):'') + '.';
+                   + (failed?(' · '+failed+' call(s) failed'):'') + '.'
+                   + (refused.length ? ('<br>Not written ('+refused.length+'): '+escapeHtml(refused.join('; '))) : '');
   if(btn) btn.disabled = false;
 }
 

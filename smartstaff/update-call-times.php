@@ -49,6 +49,9 @@
 	/* and we run NO addToCalendar loop -- actual worked times don't change the
 	/* scheduled calendar entry.
 	/*
+	/* Refuses a row for a crew member whose promotion off backup is unanswered
+	/* (call_promo_ack.acked_at IS NULL) -- see the check in the row loop.
+	/*
 	/* Refuses to write when the call is locked (closed/invoiced) to protect accounting.
 	/* Each crew member must already be booked on the call; a row for a crew member not
 	/* on the call is reported and skipped, never inserted. Re-running is safe
@@ -132,13 +135,46 @@
 
 		/* crew member must already be booked on this call */
 
-		$existing = $db->selectFirst('crewmapID', 'call_crew_map',
+		$existing = $db->selectFirst('crewmapID, status', 'call_crew_map',
 			'callID=' . intval($callID) . ' AND userID=' . intval($userID));
 
 		if (!$existing)
 		{
 			$results[] = array('user_id' => $userID, 'ok' => false, 'error' => 'Not booked on call');
 			continue;
+		}
+
+		/* UNANSWERED PROMOTION -> NO TIMES. A backup promoted to Confirmed (5)
+		/* by ops has a call_promo_ack row with acked_at NULL until they accept in
+		/* Crew Hub or ops dismiss the flag (dismiss-promo-ack.php, acked_src
+		/* 'ops'). Until then nobody knows they are working, and a times write
+		/* here is what gets them paid -- the Enter Times fill-down arrow copied
+		/* a whole column onto someone who never turned up. Refused per row, so
+		/* the rest of the save still lands.
+		/*
+		/* Guarded to status 5, the same as get-booking.php: a stale row on
+		/* someone since declined is not a pending promotion. FAILS CLOSED: a
+		/* lookup that errors refuses the row rather than letting it through. */
+
+		if (intval($existing->status) === 5)
+		{
+			$promo    = $db->selectFirst('id', 'call_promo_ack',
+				'callID=' . intval($callID) . ' AND userID=' . intval($userID) . ' AND acked_at IS NULL');
+			$promoErr = mysql_error();
+
+			if ($promoErr !== '')
+			{
+				$results[] = array('user_id' => $userID, 'ok' => false,
+					'error' => 'Promotion check failed: ' . $promoErr);
+				continue;
+			}
+
+			if ($promo)
+			{
+				$results[] = array('user_id' => $userID, 'ok' => false, 'code' => 'promo_pending',
+					'error' => 'Promoted from backup and has not accepted -- no times until they accept in Crew Hub or ops dismiss the promotion flag');
+				continue;
+			}
 		}
 
 		/* build the write set from ONLY the keys this row actually sends */
