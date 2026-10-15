@@ -1,6 +1,6 @@
 {
-  "version": "5.74.0",
-  "release_date": "2026-10-14",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.74.0/TheGOAT.dmg",
-  "release_notes": "Convert to crew can now update a returning crew member's existing record instead of creating a duplicate. Admins only."
+  "version": "5.74.1",
+  "release_date": "2026-10-15",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.74.1/TheGOAT.dmg",
+  "release_notes": "Promoted backups who haven't accepted can no longer have times entered. Their row in Enter Times is locked until they accept, or until you confirm they worked."
 }
