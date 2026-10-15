@@ -21411,7 +21411,7 @@ function renderCallTimesGrid(){
       ? ' <span title="Submitted by the crew boss — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">BOSS</span>'
       : '';
     return '<tr style="border-bottom:1px solid var(--border);'+mark+rowSt+'"'+rowTt+'>'
-      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+_ctStatusBadge(c.status)+_ctPromoChip(c)+chip+_ctSubHint(c)+'</td>'
+      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+(_ctPromoPending(c) ? '' : _ctStatusBadge(c.status))+_ctPromoChip(c)+chip+_ctSubHint(c)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock', dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00', 'dur',   dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00', 'dur',   dis)+'</td>'
