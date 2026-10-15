@@ -23352,6 +23352,13 @@ async function generateGoogleSheet(bookingId, force){
     document.getElementById('entity-modal-body').innerHTML =
       '<div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:10px">'
       + 'Your timesheet Google Sheet is ready.</div>'
+      // Promoted off backup and not accepted: left off the sheet on purpose.
+      + ((j.left_off || []).length
+          ? '<div style="font-size:12px;color:#f59e0b;line-height:1.5;margin-bottom:10px">'
+            + 'Left off because they haven&#39;t accepted their promotion yet: '
+            + escapeHtml((j.left_off || []).map(function(x){ return decodeEntities(x.name || '') + ' (' + decodeEntities(x.call_name || '') + ')'; }).join('; '))
+            + '. If they accept and work, the boss can add them to the sheet by EIN.</div>'
+          : '')
       + (url
           ? '<div style="font-size:13px;word-break:break-all">'
             + '<a href="'+escapeHtml(url)+'" target="_blank" style="color:var(--accent);text-decoration:none">'

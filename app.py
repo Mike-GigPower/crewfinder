@@ -16204,6 +16204,7 @@ def _gather_timesheet_calls(ss, booking_id):
         for cr in c.get("crew", []):
             phone_by_uid[cr.get("id")] = (cr.get("mobile") or cr.get("phone") or "")
         crew_out = []
+        left_off = []
         ct, cterr = ss_get_call_times(ss, cid)
         if cterr is None and isinstance(ct, dict):
             for m in ct.get("crew", []):
@@ -16213,6 +16214,15 @@ def _gather_timesheet_calls(ss, booking_id):
                     st = 0
                 if st != 5:
                     continue  # confirmed only
+                # Promoted off backup and not accepted (get-call-times.php
+                # promo_pending, 15 Oct 2026): LEFT OFF the sheet, so the boss
+                # can't time someone nobody knows is working. If they accept
+                # later the boss adds them by EIN and the import writes them as
+                # normal. Named in left_off so Ops are told, not surprised.
+                if m.get("promo_pending"):
+                    left_off.append((unescape(m.get("firstname") or "") + " " +
+                                     unescape(m.get("lastname") or "")).strip())
+                    continue
                 uid = m.get("user_id")
                 crew_out.append({
                     "lastname":  unescape(m.get("lastname") or ""),
@@ -16225,6 +16235,7 @@ def _gather_timesheet_calls(ss, booking_id):
             "call_name": unescape(c.get("call_name") or ("Call " + str(cid))),
             "call_time": _call_sched_dt(c),
             "crew":      crew_out,
+            "left_off":  left_off,
         })
     return booking_name, gen_calls, None
 
@@ -16313,6 +16324,13 @@ def api_generate_gsheet(booking_id):
 
     if isinstance(result, dict) and result.get("spreadsheet_id"):
         _save_timesheet_link(booking_id, result["spreadsheet_id"], result.get("url"))
+
+    if isinstance(result, dict):
+        result = dict(result)
+        result["left_off"] = [
+            {"call_name": gc.get("call_name"), "name": n}
+            for gc in gen_calls for n in (gc.get("left_off") or [])
+        ]
 
     return jsonify(result)
 
