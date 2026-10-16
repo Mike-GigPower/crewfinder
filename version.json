@@ -1,6 +1,6 @@
 {
-  "version": "5.74.3",
+  "version": "5.75.0",
   "release_date": "2026-10-16",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.74.3/TheGOAT.dmg",
-  "release_notes": "Estimator exports made on or after 14 October import again."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.75.0/TheGOAT.dmg",
+  "release_notes": "Ask the GOAT can now answer licence questions: who on a call is missing a white card, forklift ticket or any other licence, and what licences a crew member holds."
 }
