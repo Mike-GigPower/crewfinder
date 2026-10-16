@@ -11,7 +11,13 @@
 	header('Content-Type: application/json');
 
 	/*
-	/* ADMIN ONLY — the Calendar view of the All Bookings tab
+	/* READ-ALL since 5.75.0 (was admin only) — the Calendar view of the All Bookings tab
+	/* AND Ask the GOAT's find_calls tool (DESIGN-ask-goat-licences D5). The
+	/* GOAT's own /api/bookings/calendar route STAYS admin-only, so the All
+	/* Bookings tab is unchanged; leadership and operations reach this only via
+	/* the tool. Same gate as get-booking.php, which already gives them more.
+	/*
+	/* Originally: the Calendar view of the All Bookings tab
 	/* (DESIGN-all-bookings-calendar-v0_1 D6, Q4). Same gate as
 	/* get-bookings-bulk.php, which feeds the List view of the same tab.
 	/*
@@ -52,9 +58,9 @@
 	/* Integers come back from this driver as strings: cast on the way out.
 	*/
 
-	if (goat_user_cohort() !== 'admin')
+	if (!goat_can_read_all())
 	{
-		goat_json_error(403, 'Admin only');
+		goat_json_error(403, 'Not permitted');
 		exit;
 	}
 
