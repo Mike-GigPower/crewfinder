@@ -164,7 +164,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.74.3"
+APP_VERSION    = "5.75.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -12351,6 +12351,45 @@ GOAT_TOOLS = [
             },
             "required": []
         }
+    },
+    {
+        "name": "find_calls",
+        "description": "Turn a booking/event name, a date, or a bare call number into booking_id + call_id. Use it whenever the operator names a call or booking in words ('Saturday's Coldplay load in', 'the Marvel bump in tomorrow') or gives a call number without its booking number. Returns matching bookings with their calls (call_id, call_name, day, start_time). If more than one booking or call could be meant, ASK the operator which one - never pick.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query":     {"type": "string",  "description": "Words from the booking or call name, e.g. 'Coldplay load in'. Optional when call_id is given."},
+                "date_from": {"type": "string",  "description": "YYYY-MM-DD, inclusive. Default: 7 days ago."},
+                "date_to":   {"type": "string",  "description": "YYYY-MM-DD, inclusive. Default: 30 days ahead. The window is capped at 62 days."},
+                "call_id":   {"type": "integer", "description": "A call number to locate, when the operator gave no booking number."}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "check_call_licences",
+        "description": "The ONLY tool that links call rosters to LICENCES (not venue inductions). Answers 'who on this call/booking does not have <licence>'. Give call_id (a call number is enough on its own - the booking is looked up for you) and/or booking_id (omit call_id to check every call on the booking). If you only have a name or a date, use find_calls first. licence is a catalogue code: CI = construction induction / white card, LF = forklift, WP = boom EWP over 11m, EWPSOA = EWP under 11m / scissor lift ticket, WAH = working at heights, WWCC = working with children check, FA = first aid, TC = traffic control, LR/MR/HR/HC/MC = driver licence classes (a heavier class counts for a lighter one), DG = dogging, RB/RI/RA = basic/intermediate/advanced rigging, RSA, POLICE = police check. Per call it returns the count who hold it and NAMES those missing it, those to 'check' (an uncoded licence that looks like it), and those whose licence is expired or expiring on the call's date.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "booking_id": {"type": "integer", "description": "Booking number (shown as 'Booking #...' in the call dialog). Optional when call_id is given."},
+                "call_id":    {"type": "integer", "description": "Call number. Omit (and give booking_id) to check every call on the booking."},
+                "licence":    {"type": "string",  "description": "Catalogue code, e.g. CI, LF, WP, WWCC, MR"}
+            },
+            "required": ["licence"]
+        }
+    },
+    {
+        "name": "get_crew_licences",
+        "description": "List a crew member's licences (white card/CI, forklift, EWP, WWCC, first aid, driver classes...) with expiry dates and status. Give their name (even just a first name) or EIN. If 2-5 people match, every match is returned with their licences; if more, ask the operator to narrow it. Venue inductions are NOT licences - use get_inductions for those.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",  "description": "Full or partial name"},
+                "ein":  {"type": "integer", "description": "Employee number, e.g. 6070"}
+            },
+            "required": []
+        }
     }
 ]
 
@@ -12359,6 +12398,8 @@ GOAT_SYSTEM = """You are THE GOAT — the Gig Power Operations and Administratio
 Your personality: confident, sharp, occasionally cocky (you are, after all, The GOAT). You have deep knowledge of the live events industry — bump ins, load outs, stagehands, crew bosses, venues, SmartStaff, rosters, inductions. You speak like a seasoned ops person who also happens to be an AI. You're direct, occasionally funny, never waste words. Australian English.
 
 You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data. For "who is assigned to calls at <venue> without a valid induction" or "anyone with expired inductions on upcoming calls", use check_assignment_inductions -- get_inductions alone does NOT know call rosters. When someone asks for crew near a place — "riggers within 20km of the Forum", "who's available near Geelong" — call search_availability with radius_km and near (a 4-digit postcode or a venue name). Crew too far away come back in skipped with their distance, and anyone with no known postcode lands in location_unknown — mention them, don't pretend they're not there.
+
+LICENCES (find_calls, check_call_licences, get_crew_licences): licences — white card/CI, forklift, EWP, WWCC, first aid, driver classes — are NOT inductions; never answer a licence question with get_inductions or check_assignment_inductions. A call number on its own is enough for check_call_licences — never ask the operator for a booking number before trying it. If they give a name or a date, call find_calls first, and if more than one booking or call matches, ask which. You do NOT remember tool results between messages, only what you wrote, so always state the call number (and booking number) in your answer — that is how a follow-up like "and forklifts on that call?" can be answered. When the operator names a whole booking (not one call), check every call on it by giving booking_id and no call_id — do not ask which call. Only ask which call when they named a particular call and more than one matches. Each call carries a summary sentence written by the tool: base your answer on it and never move a person from one list to another — someone in no_expiry_recorded HOLDS the licence and must not be described as missing it. A person is missing a licence ONLY if they are in the missing list. Name everyone in missing, check, expired, expiring_soon and no_expiry_recorded exactly as returned, with their EIN — do not shorten the list or summarise it as "a few". Always relay the note. For get_crew_licences, ALWAYS call the tool with whatever name you were given before saying a name is ambiguous — it returns everyone when up to 5 people match, so "what licences do the Nathans hold" is answerable. Report only the licences returned; do not list licences the person does not hold unless the operator asked about one.
 
 CRITICAL — WRITE ACTION RULES:
 - ALWAYS call lookup_crew_id for each crew member before calling add_crew_to_call, send_sms_to_crew, add_unavailability, delete_unavailability, or get_unavailabilities. Never use an ID from a previous search result without verifying it first — name formats differ between SmartStaff and what the operator types.
@@ -12406,6 +12447,347 @@ def _melbourne_ts(iso):
         return local.strftime("%Y-%m-%d %H:%M %Z") + " (Melbourne)"
     except Exception:
         return ""
+
+
+# ─── ASK THE GOAT · LICENCE TOOLS ──────────────────────────────────────────────
+# DESIGN-ask-goat-licences-v0_1. Read-only. Rosters from get-booking.php (read-all,
+# D3), licences from the register (read-all, D2), call lookup from
+# get-bookings-calendar.php (read-all since 5.75.0, D5). Strings returned to the
+# model are ASCII, as in check_assignment_inductions.
+
+# Lowercase substrings that make an UNCODED licence row worth a human look for a
+# code (design §4). Codes not listed have no 'check' bucket.
+_LICENCE_CHECK_KEYWORDS = {
+    "CI":     ["white", "construction", "cpcc", "whs1001"],
+    "LF":     ["fork"],
+    "WP":     ["ewp", "boom", "scissor", "elevating"],
+    "EWPSOA": ["ewp", "boom", "scissor", "elevating"],
+    "WWCC":   ["wwcc", "working with children"],
+    "FA":     ["first aid", "1st aid", "hltaid"],
+    "TC":     ["traffic"],
+}
+
+# D6: who counts as on the call. get-booking.php status labels.
+_ON_CALL_LABELS = ("confirmed", "backup", "sent", "unconfirmed")
+
+_FIND_CALLS_STOPWORDS = {"the", "a", "an", "at", "on", "for", "of", "and",
+                         "call", "calls", "booking", "load", "in", "out", "bump",
+                         "show", "today", "tomorrow", "tonight"}
+
+
+def _goat_find_calls(ss, ti):
+    import re as _re
+    today = datetime.now().date()
+    def _d(v, dflt):
+        try:
+            return datetime.strptime(str(v)[:10], "%Y-%m-%d").date() if v else dflt
+        except Exception:
+            return dflt
+    d_from = _d(ti.get("date_from"), today - timedelta(days=7))
+    d_to   = _d(ti.get("date_to"),   today + timedelta(days=30))
+    if d_to < d_from:
+        d_from, d_to = d_to, d_from
+    clamped = False
+    if (d_to - d_from).days > 61:
+        d_to, clamped = d_from + timedelta(days=61), True
+
+    call_id = ti.get("call_id")
+    query   = (ti.get("query") or "").strip()
+    words   = [w for w in _re.findall(r"[a-z0-9']+", query.lower())]
+    keys    = [w for w in words if len(w) >= 3 and w not in _FIND_CALLS_STOPWORDS]
+
+    def _fetch(q):
+        data, err = ss_get_bookings_calendar(ss, d_from.isoformat(), d_to.isoformat(), q=q)
+        if err:
+            raise RuntimeError(err)
+        return data.get("bookings") or [], bool(data.get("truncated"))
+
+    bookings, truncated = {}, False
+    if call_id or not keys:
+        got, truncated = _fetch("")
+        for b in got:
+            bookings[b.get("booking_id")] = b
+    else:
+        # get-bookings-calendar.php's q matches the BOOKING name only. Try the
+        # whole phrase, then each key word, and rank afterwards.
+        for q in [" ".join(keys)] + keys:
+            got, tr = _fetch(q)
+            truncated = truncated or tr
+            for b in got:
+                bookings[b.get("booking_id")] = b
+            if got and q == " ".join(keys):
+                break
+
+    out = []
+    for b in bookings.values():
+        calls = b.get("calls") or []
+        if call_id:
+            calls = [c for c in calls if str(c.get("call_id")) == str(call_id)]
+            if not calls:
+                continue
+        hay_b = str(b.get("name") or "").lower()
+        def _score(c):
+            # Whole words, so "in" does not match "Final" or "Marvel In-Round".
+            hay = set(_re.findall(r"[a-z0-9']+", hay_b + " " + str(c.get("call_name") or "").lower()))
+            return sum(1 for w in words if w in hay)
+        calls = sorted(calls, key=lambda c: (-_score(c), c.get("day") or "", c.get("start_time") or ""))
+        best = max([_score(c) for c in calls] or [0])
+        out.append((best, {
+            "booking_id": b.get("booking_id"),
+            "name":       str(b.get("name") or ""),
+            "venue":      b.get("venue"),
+            "calls": [{"call_id": c.get("call_id"), "call_name": c.get("call_name"),
+                       "day": c.get("day"), "start_time": c.get("start_time")}
+                      for c in calls[:8]],
+            "more_calls": max(0, len(calls) - 8),
+        }))
+    out.sort(key=lambda t: -t[0])
+    res = {"window": d_from.isoformat() + " to " + d_to.isoformat(),
+           "found": bool(out), "bookings": [o for _, o in out[:10]]}
+    if len(out) > 10 or truncated:
+        res["truncated"] = True
+    if clamped:
+        res["note"] = "Window clamped to 62 days."
+    if call_id and not out:
+        res["hint"] = ("Call not found in this window. Ask for the booking number - "
+                       "it is on the same line as the call number in the call dialog.")
+    return res
+
+
+def _goat_licence_rows_for(by_uid, uid):
+    return by_uid.get(str(uid), [])
+
+
+def _goat_booking_for_call(ss, call_id):
+    """booking_id for a call number, or None. Three 62-day calendar windows:
+    around today first (where nearly every question lands), then before, then
+    after."""
+    today = datetime.now().date()
+    for a, b in ((-7, 54), (-69, -8), (55, 116)):
+        r = _goat_find_calls(ss, {"call_id": call_id,
+                                  "date_from": (today + timedelta(days=a)).isoformat(),
+                                  "date_to":   (today + timedelta(days=b)).isoformat()})
+        if r.get("bookings"):
+            try:
+                return int(r["bookings"][0]["booking_id"])
+            except Exception:
+                return None
+    return None
+
+
+def _goat_check_call_licences(ss, ti):
+    from html import unescape as _html_unescape   # NB: `http` at module level is requests
+    code = str(ti.get("licence") or "").strip().upper()
+    load_licence_catalogue(ss)            # warm with this session's ss (no request ctx here)
+    cat = licence_catalogue()
+    codes = [r["code"] for r in cat]
+    if code not in codes:
+        return {"error": "Unknown licence code '" + code + "'. Valid codes: "
+                + ", ".join(r["code"] + " - " + r["name"] for r in cat)}
+    booking_id = None
+    try:
+        booking_id = int(ti.get("booking_id")) if ti.get("booking_id") else None
+    except Exception:
+        booking_id = None
+    if booking_id is None:
+        # Ask the GOAT only keeps its final TEXT between turns, never tool
+        # results, so a follow-up ("and forklifts on that call?") often arrives
+        # with a call number and no booking. Resolve it here rather than making
+        # the model ask the operator (smoke test 16 Oct 2026).
+        if not ti.get("call_id"):
+            return {"error": "Give booking_id or call_id (use find_calls to look them up)"}
+        booking_id = _goat_booking_for_call(ss, ti.get("call_id"))
+        if booking_id is None:
+            return {"error": "Could not find call " + str(ti.get("call_id")) + " in the 10 weeks "
+                    "either side of today. Ask the operator for the booking number - it is on "
+                    "the same line as the call number in the call dialog."}
+
+    bk, err = fetch_booking_bulk(ss, str(booking_id))
+    if err or not isinstance(bk, dict):
+        return {"error": "Could not load booking " + str(booking_id) + ": " + str(err)}
+    calls = bk.get("calls") or []
+    want = ti.get("call_id")
+    if want:
+        sel = [c for c in calls if str(c.get("call_id")) == str(want)]
+        if not sel:
+            return {"error": "Call " + str(want) + " is not on booking " + str(booking_id)
+                    + ". Calls on it: " + ", ".join(str(c.get("call_id")) for c in calls)}
+        calls = sel
+    capped = len(calls) > 12
+    calls = calls[:12]
+
+    rows, err = _licence_register_rows(ss)
+    if err:
+        return {"error": "Licence register unavailable: " + str(err)}
+    by_uid = _licences_by_uid(rows)
+
+    sat = set(expand_driver_codes([code]))
+    kws = _LICENCE_CHECK_KEYWORDS.get(code)
+    out_calls = []
+    for c in calls:
+        try:
+            on_date = datetime.fromtimestamp(int(c.get("start_date") or 0)).date()
+        except Exception:
+            on_date = datetime.now().date()
+        rec = {"call_id": c.get("call_id"), "call_name": c.get("call_name"),
+               "date": on_date.isoformat(), "on_call": 0, "has": 0,
+               "missing": [], "check": [], "expired": [], "expiring_soon": [],
+               "no_expiry_recorded": []}
+        for m in (c.get("crew") or []):
+            stl = str(m.get("status") or "").lower()
+            if stl not in _ON_CALL_LABELS:
+                continue
+            rec["on_call"] += 1
+            person = {"ein": m.get("ein"), "name": _html_unescape(str(m.get("name") or "")).strip(),
+                      "status": stl}
+            lic = _goat_licence_rows_for(by_uid, m.get("id"))
+            coded = [l for l in lic if l.get("code")]
+            st, exp = _licence_best_for(coded, sat, on_date)
+            if st in ("expired", "expiring_soon"):
+                person["expiry"] = exp.isoformat() if exp else None
+                rec[st].append(person)
+            elif st == "unknown":
+                # Holds it, but no expiry on file for a licence that should
+                # have one -- not "all good" (smoke test 16 Oct 2026: a forklift
+                # with no expiry read as fine on the call but was flagged on
+                # get_crew_licences).
+                rec["no_expiry_recorded"].append(person)
+            elif st is not None:
+                rec["has"] += 1
+            else:
+                hit = None
+                if kws:
+                    for l in lic:
+                        if l.get("code"):
+                            continue
+                        t = str(l.get("type") or "").lower()
+                        if any(k in t for k in kws):
+                            hit = l.get("type")
+                            break
+                if hit:
+                    person["type"] = hit
+                    rec["check"].append(person)
+                else:
+                    rec["missing"].append(person)
+        # A plain-English line built HERE, not by the model. Smoke test 16 Oct 2026:
+        # the tool put a forklift holder under no_expiry_recorded and Haiku
+        # reported him as "no forklift licence on file". The summary states each
+        # person's outcome in words so the lists cannot be swapped in the retelling.
+        def _who(lst):
+            return ", ".join("%s (EIN %s)" % (p["name"], p["ein"]) for p in lst)
+        # Every category counted, zeros included. Fix 4's first clause read "0 hold
+        # LF and it is current" on a one-person call whose only crew member held LF
+        # with no expiry, and Haiku took the 0 as "nobody holds it" (smoke test
+        # 16 Oct 2026, call 37887). Say who HOLDS it before anything else.
+        holders = (rec["has"] + len(rec["expired"]) + len(rec["expiring_soon"])
+                   + len(rec["no_expiry_recorded"]))
+        parts = ["%d on the call. %d HOLD %s (%d current, %d with no expiry date recorded, "
+                 "%d expired, %d expiring soon). %d have NO %s licence on file. %d to check"
+                 % (rec["on_call"], holders, code, rec["has"], len(rec["no_expiry_recorded"]),
+                    len(rec["expired"]), len(rec["expiring_soon"]), len(rec["missing"]), code,
+                    len(rec["check"]))]
+        if rec["missing"]:
+            parts.append("NO %s licence on file: %s" % (code, _who(rec["missing"])))
+        if rec["check"]:
+            parts.append("uncoded licence that may be %s - check the card: %s" % (code, _who(rec["check"])))
+        if rec["expired"]:
+            parts.append("HOLD %s but it is EXPIRED for this call: %s" % (code, _who(rec["expired"])))
+        if rec["expiring_soon"]:
+            parts.append("HOLD %s, expiring soon: %s" % (code, _who(rec["expiring_soon"])))
+        if rec["no_expiry_recorded"]:
+            parts.append("HOLD %s but NO EXPIRY DATE is recorded (do not call these missing): %s"
+                         % (code, _who(rec["no_expiry_recorded"])))
+        # Key order matters to the reader: summary first, then the lists.
+        for lst, words in (("missing", "NO " + code + " LICENCE ON FILE"),
+                           ("check", "uncoded licence that may be " + code + " - check the card"),
+                           ("expired", "HOLDS " + code + " - EXPIRED for this call"),
+                           ("expiring_soon", "HOLDS " + code + " - expiring soon"),
+                           ("no_expiry_recorded", "HOLDS " + code + " - no expiry date recorded")):
+            for p in rec[lst]:
+                p["result"] = words
+        summary = ". ".join(parts) + "."
+        rec = dict([("summary", summary)] + [(k, v) for k, v in rec.items()])
+        out_calls.append(rec)
+
+    note = ("Has = holds a licence row coded " + code + "; not proof the card itself "
+            "is correct. Check = an uncoded licence whose text looks like one - look at "
+            "the card. No expiry recorded = holds it, but no expiry date is on file for a "
+            "licence that should have one - not confirmed current. Declined, stood-down "
+            "and no-show crew are not counted. Expiry is judged on each call's date.")
+    if code in DRIVER_TIERS:
+        note += " A heavier driver class counts as holding this one."
+    if not kws:
+        note += " There is no Check bucket for this licence."
+    res = {"licence": code + " - " + _licence_name(code),
+           "booking_id": booking_id,
+           "booking_name": _html_unescape(str(bk.get("name") or "")),
+           "calls": out_calls, "note": note}
+    if capped:
+        res["capped"] = "Only the first 12 calls were checked - ask about a specific call for the rest."
+    return res
+
+
+def _goat_get_crew_licences(ss, ti):
+    name = str(ti.get("name") or "").strip().lower()
+    ein  = str(ti.get("ein") or "").strip()
+    if not name and not ein:
+        return {"error": "Give a name or an EIN"}
+    crew_data, _ = load_cache()
+    matches = []
+    for cid, info in crew_data.items():
+        if ein:
+            if str(info.get("ein", "")) == ein:
+                matches.append(info)
+            continue
+        parts = [p.strip().lower() for p in str(info.get("name", "")).replace(",", " ").split()]
+        q = name.replace(",", " ").split()
+        if all(any(qp in np for np in parts) for qp in q):
+            matches.append(info)
+    if not matches:
+        return {"found": False, "message": "No crew found matching that name/EIN"}
+    if len(matches) > 5:
+        return {"found": True, "too_many": True, "match_count": len(matches),
+                "first_matches": [{"ein": m.get("ein"), "name": m.get("name")} for m in matches[:10]],
+                "message": ("%d crew match - too many to list licences for. Ask the operator "
+                            "for a surname or EIN." % len(matches))}
+
+    load_licence_catalogue(ss)
+    rows, err = _licence_register_rows(ss)
+    if err:
+        return {"error": "Licence register unavailable: " + str(err)}
+
+    def _lic_for(uid):
+        out = []
+        for r in rows:                                   # already register-sorted
+            if str(r.get("user_id")) != uid:
+                continue
+            code = r.get("type_canonical") or None
+            exp = r.get("date_expiry")
+            if not exp or str(exp).startswith("0000"):
+                exp = None
+            out.append({"code": code,
+                        "licence": _licence_name(code) if code else None,
+                        "recorded_as": r.get("type"),
+                        "expiry": exp,
+                        "status": r.get("status")})
+        return out
+
+    people = [{"ein": m.get("ein"), "name": m.get("name"),
+               "licences": _lic_for(str(m.get("user_id", "")))} for m in matches]
+    res = {"found": True}
+    if len(people) == 1:
+        res.update(people[0])
+    else:
+        # 2-5 matches: give everyone (smoke test 16 Oct 2026 - "the Nathans").
+        res["match_count"] = len(people)
+        res["people"] = people
+        res["message"] = ("%d crew match this name. Report each person's licences "
+                          "separately, by name and EIN." % len(people))
+    res["note"] = ("code null = an uncoded licence (never triaged). status: valid / "
+                     "expiring_soon / expired / unknown (should have an expiry, none "
+                     "recorded) / na (this licence does not expire). Venue inductions are "
+                     "not listed here - use get_inductions.")
+    return res
 
 
 def execute_goat_tool(tool_name, tool_input, ss, cohort):
@@ -12782,6 +13164,24 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
         except Exception as e:
             return f"Error checking assignment inductions: {e}"
 
+    elif tool_name == "find_calls":
+        try:
+            return _json.dumps(_goat_find_calls(ss, tool_input))
+        except Exception as e:
+            return f"Error finding calls: {e}"
+
+    elif tool_name == "check_call_licences":
+        try:
+            return _json.dumps(_goat_check_call_licences(ss, tool_input))
+        except Exception as e:
+            return f"Error checking call licences: {e}"
+
+    elif tool_name == "get_crew_licences":
+        try:
+            return _json.dumps(_goat_get_crew_licences(ss, tool_input))
+        except Exception as e:
+            return f"Error getting crew licences: {e}"
+
     elif tool_name == "get_forecast":
         try:
             start_str = tool_input.get("start_date", datetime.now().strftime("%Y-%m-%d"))
@@ -13047,6 +13447,11 @@ def api_goat():
                 for tc in tool_calls:
                     yield f"data: {_json.dumps({'type':'tool_start','tool':tc.name})}\n\n"
                     result = execute_goat_tool(tc.name, tc.input, ss, cohort)
+                    # Licence tools only: log what the model was actually handed, so
+                    # a wrong retelling can be told apart from a wrong result by
+                    # reading the terminal (smoke test 16 Oct 2026).
+                    if tc.name in ("find_calls", "check_call_licences", "get_crew_licences"):
+                        print(f"[goat-tool] {tc.name} {_json.dumps(tc.input)} -> {str(result)[:1500]}", flush=True)
 
                     try:
                         parsed = _json.loads(result)
@@ -18321,34 +18726,27 @@ def _type_says_induction(type_str):
     return "induction" in words and not any(h in t for h in _WHITE_CARD_HINTS)
 
 
-@app.route("/api/licence-holders")
-@require_cohort(*READ_ALL_COHORTS)
-def api_licence_holders():
-    """The licence register — every non-induction licence row with its crew member,
-    attention-first.
+# ─── LICENCE REGISTER ROWS (shared) ────────────────────────────────────────────
+# One enrichment for every reader of the register, so the register screen and
+# Ask the GOAT's licence tools (check_call_licences, get_crew_licences) compute
+# the same answer by construction (DESIGN-ask-goat-licences D2). The cache is
+# process-wide, not per session: the data is not per-user and both readers are
+# READ_ALL gated. Two minutes matches get_calls' cache (D10).
+_LICENCE_REGISTER_TTL_SEC = 120
+_licence_register_cache = {"at": None, "rows": None}
 
-    READ_ALL rather than admin, and that is the one place this differs from the
-    visa register: immigration data is different in kind, a licence is a
-    capability record, and Operations has a working reason to check whether
-    somebody holds a ticket. The gate list matches goat_can_read_all() in
-    list-licence-holders.php, so Python and PHP agree by construction.
 
-    Not filtered to active crew, deliberately — see the PHP. roster_flag is
-    returned and the client badges it.
-
-    Adds two things the PHP deliberately does not compute:
-      status                  compliance_status per row, the same helper the
-                              Licences tab pills use
-      says_induction          the recorded type contains the word "induction",
-                              codeless rows only
-    """
-    ss = get_ss_session()
-    if not ss:
-        return jsonify({"error": "Not logged in"}), 401
+def _licence_register_rows(ss, use_cache=True):
+    """Every non-induction licence row, enriched and sorted exactly as the
+    register shows it. Returns (rows, err)."""
+    c = _licence_register_cache
+    if (use_cache and c["rows"] is not None and c["at"] is not None
+            and (datetime.now() - c["at"]).total_seconds() < _LICENCE_REGISTER_TTL_SEC):
+        return c["rows"], None
 
     out, err = ss_list_licence_holders(ss)
     if err:
-        return jsonify({"error": err}), 502
+        return None, err
 
     rows = out.get("rows") or []
 
@@ -18390,6 +18788,63 @@ def api_licence_holders():
         r.get("date_expiry") or "",
         str(r.get("name") or "").lower(),
     ))
+
+    c["rows"], c["at"] = rows, datetime.now()
+    return rows, None
+
+
+def _licences_by_uid(rows):
+    """{user_id(str): [{code, expiry, type, licence_id}]} from register rows.
+    code is type_canonical and may be None (an untriaged row). A
+    '0000-00-00' or blank expiry becomes None."""
+    by = {}
+    for r in (rows or []):
+        uid = str(r.get("user_id") or "")
+        if not uid:
+            continue
+        exp = r.get("date_expiry")
+        if not exp or str(exp).startswith("0000"):
+            exp = None
+        by.setdefault(uid, []).append({
+            "code":       r.get("type_canonical") or None,
+            "expiry":     exp,
+            "type":       r.get("type") or "",
+            "status":     r.get("status"),
+            "licence_id": r.get("licence_id"),
+        })
+    return by
+
+
+@app.route("/api/licence-holders")
+@require_cohort(*READ_ALL_COHORTS)
+def api_licence_holders():
+    """The licence register — every non-induction licence row with its crew member,
+    attention-first.
+
+    READ_ALL rather than admin, and that is the one place this differs from the
+    visa register: immigration data is different in kind, a licence is a
+    capability record, and Operations has a working reason to check whether
+    somebody holds a ticket. The gate list matches goat_can_read_all() in
+    list-licence-holders.php, so Python and PHP agree by construction.
+
+    Not filtered to active crew, deliberately — see the PHP. roster_flag is
+    returned and the client badges it.
+
+    Adds two things the PHP deliberately does not compute:
+      status                  compliance_status per row, the same helper the
+                              Licences tab pills use
+      says_induction          the recorded type contains the word "induction",
+                              codeless rows only
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # use_cache=False: the register screen's Refresh must always be live. The
+    # 2-minute cache exists for Ask the GOAT's licence tools only.
+    rows, err = _licence_register_rows(ss, use_cache=False)
+    if err:
+        return jsonify({"error": err}), 502
 
     return jsonify({
         "ok": True,
