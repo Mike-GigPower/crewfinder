@@ -25386,7 +25386,12 @@ async function goatSend(){
     _goatBusy=false; document.getElementById('goat-send').disabled=false;
     document.getElementById('goat-input').focus(); return;
   }
-  if(isSillyGoatQuestion(text)){
+  // A reply to a question the GOAT just asked ("which call?" -> "all of them")
+  // is a real answer even with no business words in it (smoke test 16 Oct 2026).
+  var _lastGoat = null;
+  for(var _i=_goatHistory.length-1; _i>=0; _i--){ if(_goatHistory[_i].role==='assistant'){ _lastGoat=_goatHistory[_i]; break; } }
+  var _answeringGoat = !!(_lastGoat && typeof _lastGoat.content==='string' && _lastGoat.content.indexOf('?')>=0 && _lastGoat.content!=='REALLY?');
+  if(!_answeringGoat && isSillyGoatQuestion(text)){
     _goatBusy=true; document.getElementById('goat-send').disabled=true;
     appendGoatMessage('user',text); _goatHistory.push({role:'user',content:text});
     appendGoatSillyResponse(); _goatHistory.push({role:'assistant',content:'REALLY?'});
