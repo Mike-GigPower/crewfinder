@@ -164,7 +164,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.74.2"
+APP_VERSION    = "5.74.3"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4879,8 +4879,11 @@ def validate_payload(payload):
     if not isinstance(payload, dict):
         return ["Payload must be a JSON object"]
 
-    if payload.get("schema_version") not in ("1.0", "1.1"):
-        errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0' or '1.1')")
+    # 1.2 (Estimator, 14 Oct 2026) adds a top-level rate_card block and the
+    # MOPT call names "Training" / "Field of Play". rate_card is ignored here;
+    # the call names pass through like any other name sourced from the file.
+    if payload.get("schema_version") not in ("1.0", "1.1", "1.2"):
+        errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0', '1.1' or '1.2')")
 
     est = payload.get("estimate", {})
     if not est.get("estimate_id"):
