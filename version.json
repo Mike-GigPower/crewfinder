@@ -1,6 +1,6 @@
 {
-  "version": "5.74.2",
-  "release_date": "2026-10-15",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.74.2/TheGOAT.dmg",
-  "release_notes": "Google Sheet timesheets now leave off promoted backups who haven't accepted yet, and tell you who was left off."
+  "version": "5.74.3",
+  "release_date": "2026-10-16",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.74.3/TheGOAT.dmg",
+  "release_notes": "Estimator exports made on or after 14 October import again."
 }
