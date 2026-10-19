@@ -544,56 +544,65 @@ class RateVersionTests(unittest.TestCase):
         self.assertEqual(ec.calc_line(line(), c, ec.MODE_DURATION)["costExGst"], 971.40)
 
 
-class CallNameTests(unittest.TestCase):
-    """Decision 4 — an unmapped call name is unpriced, never Standard Crew."""
+# Call names as the Estimator's rate_cards carries them (BRIEF E-2), read
+# 19 Oct 2026. Rates are irrelevant to resolve_role, so only names are here.
+STANDARD_CARD = {"rates": [
+    {"role": "Standard Crew", "callNames": ["Load In", "Load Out", "LX", "SX", "VX",
+                                            "Backline", "Site", "Utility", "General", "Other"]},
+    {"role": "Show Crew", "callNames": ["Show Call", "FOH Spot", "Truss Spot", "Wardrobe",
+                                        "Robo Spot", "Tech Rehearsal", "Dress Rehearsal"]},
+    {"role": "Crew Boss", "callNames": ["Crew Boss"]},
+    {"role": "Fork/Truck/EWP", "callNames": ["Fork", "Truck", "EWP"]},
+    {"role": "Steel Hand", "callNames": ["Steel"]},
+    {"role": "Crown Hand", "callNames": ["Crown Hand"]},
+    {"role": "Truck with Driver", "callNames": []},
+    {"role": "Seamstress", "callNames": ["Seamstress"]},
+]}
+MOPT_CARD = {"rates": [
+    {"role": "Event Operations", "callNames": ["Event Operations"]},
+    {"role": "Forklift Driver", "callNames": ["Forklift Driver"]},
+    {"role": "Online or Onsite Training", "callNames": ["Online or Onsite Training"]},
+]}
+MOPT_AO_CARD = {"rates": [
+    {"role": "Australian Open Event Operations", "callNames": ["Australian Open Event Operations"]},
+    {"role": "Field of Play Operations", "callNames": ["Field of Play Operations"]},
+]}
 
-    def test_mapped_names(self):
-        self.assertEqual(ec.role_for_call_name("Load In"), "Standard Crew")
-        self.assertEqual(ec.role_for_call_name("Show Call"), "Show Crew")
-        self.assertEqual(ec.role_for_call_name("Wardrobe"), "Show Crew")
-        self.assertEqual(ec.role_for_call_name("Seamstress"), "Seamstress")
 
-    def test_the_two_names_production_actually_carries(self):
-        self.assertIsNone(ec.role_for_call_name("GC Spot"))
-        self.assertIsNone(ec.role_for_call_name("Traffic"))
-
-    def test_blank(self):
-        self.assertIsNone(ec.role_for_call_name(""))
-        self.assertIsNone(ec.role_for_call_name(None))
-
-    def test_the_map_is_still_the_twenty_one_from_types_ts(self):
-        self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 21)
-
-
-class SmartStaffCallNameTests(unittest.TestCase):
+class ResolveRoleTests(unittest.TestCase):
     """
-    The four-rule resolver for SmartStaff's FREE-TEXT call names. No calc.ts
-    equivalent — the Estimator constrains its Call Name to a dropdown and
-    SmartStaff does not.
+    resolve_role — SmartStaff's FREE-TEXT call names against ONE card's
+    call_names. No calc.ts equivalent: the Estimator's Call Name is a dropdown.
+    Decision 4 and NOTES §4a: unmapped is unpriced, never Standard Crew.
     """
 
-    def r(self, name):
-        return ec.resolve_smartstaff_call_name(name)
+    def r(self, name, card=STANDARD_CARD):
+        return ec.resolve_role(name, card)
 
-    def test_rule_1_exact_still_wins_and_is_labelled(self):
-        got = self.r("Load In")
-        self.assertEqual(got["role"], "Standard Crew")
-        self.assertEqual(got["rule"], "exact")
-        self.assertFalse(got["ambiguous"])
+    def test_exact_matches_and_is_labelled(self):
+        for name, role in (("Load In", "Standard Crew"), ("Show Call", "Show Crew"),
+                           ("Wardrobe", "Show Crew"), ("Seamstress", "Seamstress"),
+                           ("Steel", "Steel Hand"), ("EWP", "Fork/Truck/EWP")):
+            got = self.r(name)
+            self.assertEqual(got["role"], role, name)
+            self.assertEqual(got["rule"], "exact", name)
+            self.assertFalse(got["ambiguous"], name)
 
-    def test_rule_2_the_smartstaff_only_names(self):
+    def test_the_former_smartstaff_extras_are_now_on_the_card(self):
+        """Robo Spot, Tech Rehearsal and Dress Rehearsal moved into Show Crew's
+        call_names (E-2), so they are exact matches now, not a rule of their own."""
         for name in ("Robo Spot", "Tech Rehearsal", "Dress Rehearsal"):
             got = self.r(name)
             self.assertEqual(got["role"], "Show Crew", name)
-            self.assertEqual(got["rule"], "extra", name)
+            self.assertEqual(got["rule"], "exact", name)
 
-    def test_rule_3_prefix_before_a_dash(self):
+    def test_prefix_before_a_dash(self):
         got = self.r("Load In - Loaders/Pushers")
         self.assertEqual(got["role"], "Standard Crew")
         self.assertEqual(got["rule"], "prefix")
         self.assertFalse(got["ambiguous"])
 
-    def test_rule_3_prefix_before_a_slash_spaced_and_unspaced(self):
+    def test_prefix_before_a_slash_spaced_and_unspaced(self):
         """Both forms occur live; the separator's whitespace is trimmed."""
         for name in ("Show Call / Load Out", "Show Call/Load Out"):
             got = self.r(name)
@@ -601,19 +610,11 @@ class SmartStaffCallNameTests(unittest.TestCase):
             self.assertEqual(got["rule"], "prefix", name)
 
     def test_ambiguous_only_when_both_halves_resolve_differently(self):
-        """
-        "Show Call/Load Out" is Show Crew at 84.50 by the head and Standard Crew
-        at 63.00 by the tail. The resolver takes the head — the HIGHER — so the
-        case is flagged rather than blended into the exact matches.
-        """
         self.assertTrue(self.r("Show Call/Load Out")["ambiguous"])
-
-    def test_an_unresolvable_tail_is_not_ambiguous(self):
-        """One candidate is not a conflict — "Loaders/Pushers" is not a role."""
         self.assertFalse(self.r("Load In - Loaders/Pushers")["ambiguous"])
         self.assertFalse(self.r("Load In - VX/Auto")["ambiguous"])
 
-    def test_rule_4_never_falls_back(self):
+    def test_never_falls_back(self):
         for name in ("GC Spot", "Traffic", "Broadcast Allowance"):
             got = self.r(name)
             self.assertIsNone(got["role"], name)
@@ -624,22 +625,137 @@ class SmartStaffCallNameTests(unittest.TestCase):
             self.assertIsNone(self.r(name)["role"])
 
     def test_a_leading_separator_is_not_a_prefix(self):
-        """find() > 0, so "- Load In" has no head to resolve and stays unmapped."""
         self.assertIsNone(self.r("- Load In")["role"])
 
-    def test_the_extras_are_kept_out_of_the_types_ts_map(self):
-        """
-        The whole point of §1.1: CALL_NAME_TO_ROLE stays a verbatim copy of
-        types.ts so the two implementations can still be diffed.
-        """
-        self.assertEqual(len(ec.CALL_NAME_TO_ROLE), 21)
-        for name in ec.SMARTSTAFF_EXTRA_CALL_NAMES:
-            self.assertNotIn(name, ec.CALL_NAME_TO_ROLE)
+    def test_notes_4a_event_operations_gate_2(self):
+        got = self.r("Event Operations - Gate 2", MOPT_CARD)
+        self.assertEqual(got["role"], "Event Operations")
+        self.assertEqual(got["rule"], "prefix")
 
-    def test_role_for_call_name_is_unchanged_by_any_of_this(self):
-        """The verbatim port must not learn the SmartStaff names."""
-        self.assertIsNone(ec.role_for_call_name("Robo Spot"))
-        self.assertIsNone(ec.role_for_call_name("Load In - Loaders/Pushers"))
+    def test_notes_4a_ao_event_operations_stays_whole(self):
+        """No separator: matched whole on the AO card, and not on MOPT, where
+        "Event Operations" is a suffix of it, not a prefix."""
+        got = self.r("Australian Open Event Operations", MOPT_AO_CARD)
+        self.assertEqual(got["role"], "Australian Open Event Operations")
+        self.assertEqual(got["rule"], "exact")
+        self.assertIsNone(self.r("Australian Open Event Operations", MOPT_CARD)["role"])
+
+    def test_notes_4a_load_in_on_mopt_is_unpriced(self):
+        """Only the card's own roles exist on a customer card (NOTES §2)."""
+        self.assertIsNone(self.r("Load In", MOPT_CARD)["role"])
+        self.assertIsNone(self.r("Load In - Dock", MOPT_CARD)["role"])
+
+    def test_a_mopt_name_on_standard_is_unpriced(self):
+        self.assertIsNone(self.r("Australian Open Event Operations")["role"])
+
+    def test_a_name_under_two_roles_is_refused_not_picked(self):
+        card = {"rates": [{"role": "A", "callNames": ["Dup"]},
+                          {"role": "B", "callNames": ["Dup"]}]}
+        got = ec.resolve_role("Dup", card)
+        self.assertIsNone(got["role"])
+        self.assertTrue(got["conflict"])
+        self.assertIsNone(ec.resolve_role("Dup - x", card)["role"])
+
+    def test_effective_from_versions_of_one_role_are_not_a_conflict(self):
+        card = {"rates": [{"role": "A", "callNames": ["N"], "effectiveFrom": "2000-01-01"},
+                          {"role": "A", "callNames": ["N"], "effectiveFrom": "2027-07-01"}]}
+        self.assertEqual(ec.resolve_role("N", card)["role"], "A")
+
+    def test_no_rules_loaded_means_no_roles(self):
+        self.assertIsNone(ec.resolve_role("Load In", {})["role"])
+
+    def test_the_old_map_is_gone(self):
+        # Spelled in pieces so the release grep for the old names stays empty.
+        for name in ("CALL_NAME" "_TO_ROLE", "SMARTSTAFF" "_EXTRA_CALL_NAMES",
+                     "role_for_call_name", "resolve_smartstaff_call_name"):
+            self.assertFalse(hasattr(ec, name), name)
+
+
+# The live D31 windows, 19 Oct 2026.
+WINDOWS = [
+    {"name": "Christmas", "startMd": "12-24", "startTime": "20:00",
+     "endMd": "12-25", "endTime": "12:00", "multiplier": 2},
+    {"name": "New Year", "startMd": "12-31", "startTime": "20:00",
+     "endMd": "01-01", "endTime": "12:00", "multiplier": 2},
+]
+
+
+class DoublePenaltyWindowTests(unittest.TestCase):
+    """D31, ported from calc.ts 6ed6a57. The shared cases (test_pricing_cases.py)
+    cover duration mode; these add wallclock mode and the midnight cut."""
+
+    def c(self, **kw):
+        return cfg(doublePenaltyWindows=WINDOWS, **kw)
+
+    def test_x01_segments_in_both_modes(self):
+        """18:00 on 24 Dec for 8 h: 2 h day, 4 h night in the window on the
+        24th, 2 h night in the window on the 25th. No DST anywhere near."""
+        want = [
+            ("base", "day",   "2026-12-24", 2.0, 63.00,  126.00, False),
+            ("base", "night", "2026-12-24", 4.0, 199.90, 799.60, True),
+            ("base", "night", "2026-12-25", 2.0, 199.90, 399.80, True),
+        ]
+        for mode in (ec.MODE_DURATION, ec.MODE_WALLCLOCK):
+            r = ec.calc_line(line(shiftDate="2026-12-24", startTime="18:00", durationHours=8),
+                             self.c(), mode)
+            got = [(s["tier"], s["period"], s["dateISO"], s["hours"], s["rate"],
+                    s["costExGst"], bool(s.get("doublePenalty"))) for s in r["segments"]]
+            self.assertEqual(got, want, mode)
+            self.assertEqual(r["costExGst"], 1325.40, mode)
+
+    def test_a_window_cut_across_midnight_into_new_year(self):
+        """22:00 on 31 Dec for 4 h: the NYE window began in the previous year
+        for the 1 Jan slice, which is the year-before build."""
+        for mode in (ec.MODE_DURATION, ec.MODE_WALLCLOCK):
+            r = ec.calc_line(line(shiftDate="2026-12-31", startTime="22:00", durationHours=4),
+                             self.c(), mode)
+            dates = [(s["dateISO"], s["hours"], s["rate"], s.get("windowName")) for s in r["segments"]]
+            self.assertEqual(dates, [("2026-12-31", 2.0, 199.90, "New Year"),
+                                     ("2027-01-01", 2.0, 199.90, "New Year")], mode)
+            self.assertEqual(r["costExGst"], 799.60, mode)
+
+    def test_the_window_end_at_noon_cuts_a_day_part(self):
+        """10:00 on 25 Dec for 4 h: 2 h in the window (2 x PH), 2 h ordinary PH."""
+        r = ec.calc_line(line(shiftDate="2026-12-25", startTime="10:00", durationHours=4),
+                         self.c(), ec.MODE_WALLCLOCK)
+        self.assertEqual([(s["hours"], s["rate"]) for s in r["segments"]],
+                         [(2.0, 199.90), (2.0, 99.95)])
+        self.assertEqual(r["costExGst"], 599.70)
+
+    def test_outside_a_window_segments_carry_no_window_fields(self):
+        r = ec.calc_line(line(), self.c(), ec.MODE_DURATION)
+        for s in r["segments"]:
+            self.assertNotIn("doublePenalty", s)
+            self.assertNotIn("windowName", s)
+
+    def test_a_role_with_no_ph_rate_doubles_its_sunday_rate(self):
+        rates = [dict(LIVE_RATES[0], publicHoliday=0, sunday=90.0)]
+        r = ec.calc_line(line(shiftDate="2026-12-24", startTime="20:00", durationHours=4),
+                         self.c(rates=rates, publicHolidays=[]), ec.MODE_DURATION)
+        self.assertEqual(r["segments"][0]["rate"], 180.0)
+
+    def test_a_multiplier_of_one_or_less_is_ignored(self):
+        w = [dict(WINDOWS[0], multiplier=1)]
+        r = ec.calc_line(line(shiftDate="2026-12-24", startTime="20:00", durationHours=4),
+                         cfg(doublePenaltyWindows=w), ec.MODE_DURATION)
+        self.assertEqual(r["segments"][0]["rate"], 79.90)
+
+
+class PerRoleMinimumTests(unittest.TestCase):
+    """S-3, ported from calc.ts 40050cb."""
+
+    def test_the_rows_own_minimum_wins_and_the_advisory_quotes_it(self):
+        rates = [dict(LIVE_RATES[0], minBillableHours=0.5)]
+        r = ec.calc_line(line(durationHours=0.25), cfg(rates=rates), ec.MODE_DURATION)
+        self.assertEqual(r["billableHours"], 0.5)
+        self.assertEqual(r["costExGst"], 31.50)
+        self.assertIn("below minimum (0.5h)", r["advisories"][0])
+
+    def test_a_null_minimum_means_the_global_one(self):
+        rates = [dict(LIVE_RATES[0], minBillableHours=None)]
+        r = ec.calc_line(line(durationHours=1), cfg(rates=rates), ec.MODE_DURATION)
+        self.assertEqual(r["billableHours"], 4)
+        self.assertIn("below minimum (4h)", r["advisories"][0])
 
 
 class QuoteTotalTests(unittest.TestCase):

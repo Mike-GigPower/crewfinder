@@ -2,25 +2,28 @@
 estimator_calc.py — the Estimator's labour pricing engine, ported to Python.
 
 Ported from gigpower-estimatorv2 `src/lib/estimator/calc.ts` (read from the live
-repo, 24 Aug 2026), with `src/lib/types.ts` for the call-name map and
-`src/lib/config.ts` / `src/lib/useAppConfig.ts` for the config contract.
+repo, 24 Aug 2026; the D31 windows and the S-3 per-role minimum re-ported from
+commits 6ed6a57 and 40050cb on 19 Oct 2026), with `src/lib/config.ts` /
+`src/lib/useAppConfig.ts` for the config contract.
 
 This module has NO Flask import and NO network access. It is pure arithmetic
 over dicts, so it can be exercised directly:
 
     python3 test_estimator_calc.py
+    python3 test_pricing_cases.py      — the Estimator's shared cases (D33)
+
+The config comes from pricing_rules.cfg_for_set(), which reads the Estimator's
+rate-cards edge function. Nothing here carries a rate, a holiday or a call name.
 
 PUBLIC SURFACE
     split_day_night(start, end, cfg, mode)   — the 08:00/20:00 splitter
     get_rate_row(role, shift_date, cfg)      — effective-dated rate lookup
     calc_line(line, cfg, mode, rate_row)     — one labour line
     calc_quote_totals(quote, cfg, mode)      — every line plus non-labour
-    role_for_call_name(call_name)            — call name -> rate-card role
-    resolve_smartstaff_call_name(name)       — the same, for SmartStaff's FREE-TEXT
-                                               call names: exact, then the
-                                               SmartStaff-only extras, then the
-                                               prefix before the first "-" or "/".
-                                               NO calc.ts equivalent.
+    resolve_role(call_name, cfg)             — a SmartStaff FREE-TEXT call name
+                                               -> a role on the cfg's card: exact,
+                                               then the prefix before the first
+                                               "-" or "/". NO calc.ts equivalent.
 
 TWO CLOCKS, ONE ALGORITHM  (BRIEF Decision 1)
 
@@ -58,9 +61,10 @@ DIVERGENCES FROM calc.ts — deliberate, and each one is marked in place:
 
   1. The 96-iteration guard RAISES (EstimatorError) instead of breaking
      silently. A silent break under-prices, and nothing downstream would notice.
-  2. role_for_call_name() returns None for an unmapped call name instead of
-     falling back to "Standard Crew" (BRIEF Decision 4). The TS fallback quotes
-     GC Spot — a Show Rate call, live at 84.50 — at 63.00, silently.
+  2. resolve_role() returns None for an unmapped call name instead of falling
+     back to "Standard Crew" as types.ts roleForCallName does (BRIEF Decision 4,
+     NOTES §4a). The TS fallback quotes GC Spot — a Show Rate call, live at
+     84.50 — at 63.00, silently.
   3. calc_line() carries the below-minimum notice in a separate `advisories`
      key. calc.ts drops it: it is filtered out of `fatalErrors`, but the ok:true
      return path hardcodes `errors: []`, so the caller never sees it. `errors`
@@ -68,7 +72,8 @@ DIVERGENCES FROM calc.ts — deliberate, and each one is marked in place:
 
 CONFIG IS RUNTIME DATA, NEVER A CONSTANT
   dayStart, nightStart, minBillableHours and gstRate come from Supabase
-  `app_settings`; rates come from `rate_cards`; holidays from `public_holidays`.
+  `app_settings`; rates and their call names come from `rate_cards`; holidays
+  from `public_holidays`; D31 windows from `double_penalty_windows`.
   Nothing here hardcodes 08:00/20:00/4 as anything but a last-resort fallback,
   and NOTHING here carries a rate. config.ts's `defaultConfig` rates are a
   pre-load placeholder (Standard Crew at 60.10/76.20/93.60) that Supabase
@@ -360,21 +365,66 @@ def _rate(rate_row, key):
 # The splitter
 # ──────────────────────────────────────────────────────────────────────────────
 
+_MD_RE = re.compile(r"^(\d{2})-(\d{2})$")
+
+
+def _windows_around(y, cfg, clock):
+    """
+    calc.ts windowsAround — the D31 windows that can touch a date in year y:
+    those starting in y and in y - 1, so 1 Jan picks up the New Year window
+    that began on 31 Dec. An endMd before startMd ends in the following year.
+    Built wall-clock with clock.at(), like the day/night boundaries, so the
+    edges are the right instants in both modes.
+
+    A window with a malformed date or time, or a multiplier that is not above 1,
+    is skipped, as calc.ts skips it.
+
+    DIVERGENCE: JS's Date constructor rolls an impossible date over (02-30 is
+    2 March); Python's raises. Such a window is skipped here rather than placed
+    on a date nobody meant. The Estimator's table forbids it either way.
+    """
+    out = []
+    for w in (cfg.get("doublePenaltyWindows") or []):
+        s_md = _MD_RE.match(str(w.get("startMd") or ""))
+        e_md = _MD_RE.match(str(w.get("endMd") or ""))
+        s_t = parse_time_hhmm(w.get("startTime"))
+        e_t = parse_time_hhmm(w.get("endTime"))
+        multiplier = _to_number(w.get("multiplier"), 0.0)
+        if not (s_md and e_md and s_t and e_t) or not multiplier > 1:
+            continue
+        end_year_offset = 1 if str(w.get("endMd")) < str(w.get("startMd")) else 0
+        for year in (y - 1, y):
+            try:
+                start_ts = clock.at(year, int(s_md.group(1)), int(s_md.group(2)), s_t[0], s_t[1])
+                end_ts = clock.at(year + end_year_offset, int(e_md.group(1)),
+                                  int(e_md.group(2)), e_t[0], e_t[1])
+            except ValueError:
+                continue
+            if end_ts > start_ts:
+                out.append({"start": start_ts, "end": end_ts,
+                            "name": w.get("name"), "multiplier": multiplier})
+    return out
+
+
 def _split_epoch(s, e, cfg, clock):
     """
     calc.ts splitIntoDayNightByDate, over instants.
 
-    Cuts [s, e) at every dayStart, nightStart and midnight, and labels each
-    slice from ITS OWN START:
+    Cuts [s, e) at every dayStart, nightStart and midnight, and at every D31
+    window edge, and labels each slice from ITS OWN START:
 
         isDay = cursor >= dayStart && cursor < nightStart
 
     Because the loop cuts at every boundary a slice never straddles one, so
     deciding at the start is unambiguous — but it does have to be the start.
+    The same holds for windows: a slice lies wholly inside or outside each.
 
     Boundary candidates are STRICTLY GREATER than the cursor. A shift starting
     exactly at 08:00 does not treat 08:00 as its next boundary; the next cut is
     20:00. Using >= would spin on a zero-length slice until the guard fired.
+
+    Each part carries `multiplier` (1.0 outside every window) and, inside one,
+    `windowName`. Overlapping windows: the highest multiplier wins.
     """
     if not (math.isfinite(s) and math.isfinite(e)) or e <= s:
         return []
@@ -408,8 +458,13 @@ def _split_epoch(s, e, cfg, clock):
         nxt = date.fromordinal(tomorrow)
         next_midnight_ts = clock.at(nxt.year, nxt.month, nxt.day, 0, 0)
 
-        candidates = [t for t in (day_start_ts, night_start_ts, next_midnight_ts)
-                      if t > cursor]
+        windows = _windows_around(cur.year, cfg, clock)
+
+        edges = [day_start_ts, night_start_ts, next_midnight_ts]
+        for w in windows:
+            edges.append(w["start"])
+            edges.append(w["end"])
+        candidates = [t for t in edges if t > cursor]
         next_boundary = min(candidates) if candidates else next_midnight_ts
         seg_end = min(e, next_boundary)
 
@@ -426,11 +481,21 @@ def _split_epoch(s, e, cfg, clock):
         seg_hours = (seg_end - cursor) / 3600.0
         is_day = (day_start_ts <= cursor < night_start_ts)
 
-        out.append({
+        in_window = None
+        for w in windows:
+            if w["start"] <= cursor < w["end"] and \
+                    w["multiplier"] > (in_window["multiplier"] if in_window else 1):
+                in_window = w
+
+        part = {
             "dateISO": _iso_date(cur),
             "dayHrs": seg_hours if is_day else 0.0,
             "nightHrs": 0.0 if is_day else seg_hours,
-        })
+            "multiplier": in_window["multiplier"] if in_window else 1.0,
+        }
+        if in_window:
+            part["windowName"] = in_window["name"]
+        out.append(part)
 
         cursor = seg_end
 
@@ -457,88 +522,18 @@ def split_day_night(start, end, cfg, mode):
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Call names
-# ──────────────────────────────────────────────────────────────────────────────
-
-# types.ts CALL_NAME_TO_ROLE, verbatim. "Other" is an explicit entry, not a
-# fallback: it is hidden in both UIs and only reaches here from legacy data.
-CALL_NAME_TO_ROLE = {
-    "Load In":    "Standard Crew",
-    "Load Out":   "Standard Crew",
-    "LX":         "Standard Crew",
-    "SX":         "Standard Crew",
-    "VX":         "Standard Crew",
-    "Backline":   "Standard Crew",
-    "Show Call":  "Show Crew",
-    "FOH Spot":   "Show Crew",
-    "Truss Spot": "Show Crew",
-    "Wardrobe":   "Show Crew",
-    "Seamstress": "Seamstress",
-    "Steel":      "Steel Hand",
-    "Fork":       "Fork/Truck/EWP",
-    "Truck":      "Fork/Truck/EWP",
-    "EWP":        "Fork/Truck/EWP",
-    "Crown Hand": "Crown Hand",
-    "Crew Boss":  "Crew Boss",
-    "Site":       "Standard Crew",
-    "Utility":    "Standard Crew",
-    "General":    "Standard Crew",
-    "Other":      "Standard Crew",
-}
-
-
-def role_for_call_name(call_name):
-    """
-    Resolve a Call Name to its rate-card role, or None.
-
-    DIVERGES FROM types.ts roleForCallName, which returns "Standard Crew" for
-    anything unmapped — silently. Production invoice descriptions carry at
-    least two names the twenty-entry map does not have: "GC Spot", which bills
-    at 84.50 (the live Show Crew day rate), and "Traffic". Quoting either at
-    Standard Crew's 63.00 is a 25% under-quote with no error raised.
-
-    An unmapped name is therefore UNPRICED here, and the caller reports it,
-    consistent with v5.14.0 Decision 4. Do not add a fallback; add the mapping
-    upstream once the §4 probe says what the missing names should map to.
-    """
-    if not call_name:
-        return None
-    return CALL_NAME_TO_ROLE.get(call_name)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# SmartStaff-side call names
 #
-# EVERYTHING BELOW THIS LINE HAS NO EQUIVALENT IN calc.ts OR types.ts.
+# The call names live on the cards, in the Estimator (rate_cards.call_names,
+# BRIEF E-2). Nothing here holds a copy.
 #
-# CALL_NAME_TO_ROLE above is a VERBATIM copy of types.ts and must stay one: that
-# fidelity is the only thing that lets the two implementations be diffed. So the
-# SmartStaff-only names live in their own dict and the resolver below layers them
-# on rather than merging them in.
-#
-# The Estimator constrains its Call Name to a dropdown. SmartStaff does not — the
-# field is free text, and operations uses it to say what the call actually is
-# ("Load In - Loaders/Pushers", "Show Call / Load Out"). Exact matching alone
-# prices 61% of the live forward book's hours. The four rules below reach 100%.
+# EVERYTHING BELOW HAS NO EQUIVALENT IN calc.ts. The Estimator constrains its
+# Call Name to a dropdown. SmartStaff does not — the field is free text, and
+# operations uses it to say what the call actually is ("Load In -
+# Loaders/Pushers", "Show Call / Load Out"), so a prefix rule is needed too.
 # ──────────────────────────────────────────────────────────────────────────────
-
-# SmartStaff free-text call names that no Estimator dropdown entry produces.
-# Confirmed with Mike, 24 Aug 2026. Kept OUT of CALL_NAME_TO_ROLE so that map
-# stays a verbatim copy of types.ts and the two can still be diffed.
-SMARTSTAFF_EXTRA_CALL_NAMES = {
-    "Robo Spot":       "Show Crew",
-    "Tech Rehearsal":  "Show Crew",
-    "Dress Rehearsal": "Show Crew",
-}
 
 # The separators operations uses to qualify a call name. Split on the FIRST one.
 _SMARTSTAFF_SEPARATORS = ("-", "/")
-
-
-def _resolve_exact(name):
-    """Rules 1 and 2, in order: the types.ts map, then the SmartStaff extras."""
-    if not name:
-        return None
-    return CALL_NAME_TO_ROLE.get(name) or SMARTSTAFF_EXTRA_CALL_NAMES.get(name)
 
 
 def _split_on_first_separator(name):
@@ -559,59 +554,90 @@ def _split_on_first_separator(name):
     return (name[:at].strip(), name[at + 1:].strip())
 
 
-def resolve_smartstaff_call_name(call_name):
+def call_name_index(cfg):
+    """{call name: set of roles} over every rate row in the cfg. A role's
+    effective_from versions all list the same names, so they merge into one."""
+    idx = {}
+    for r in (cfg.get("rates") or []):
+        role = r.get("role")
+        if not role:
+            continue
+        for n in (r.get("callNames") or []):
+            n = str(n or "").strip()
+            if n:
+                idx.setdefault(n, set()).add(role)
+    return idx
+
+
+def resolve_role(call_name, cfg, index=None):
     """
-    Resolve a SmartStaff free-text call name to a rate-card role.
+    Resolve a SmartStaff free-text call name to a role ON THE CFG'S CARD.
 
-    Returns {"role": str|None, "rule": "exact"|"extra"|"prefix"|None,
-             "ambiguous": bool}.
+    Returns {"role": str|None, "rule": "exact"|"prefix"|None,
+             "ambiguous": bool, "conflict": bool}.
 
-    FOUR RULES, IN ORDER
-      1. exact match against CALL_NAME_TO_ROLE          49 of 70 live calls
-      2. exact match against SMARTSTAFF_EXTRA_CALL_NAMES
-      3. the PREFIX — everything before the first "-" or "/" — re-resolved
-         through 1 then 2                                17 calls, 38% of hours
-      4. never fall back. Unmapped is reported, not defaulted (Decision 4).
+    THREE RULES, IN ORDER (NOTES §2, §4a)
+      1. an exact match against any rate row's callNames
+      2. the PREFIX — everything before the first "-" or "/", stripped —
+         matched exactly
+      3. otherwise None: unpriced and reported. NEVER Standard Crew. That
+         deliberately differs from types.ts roleForCallName.
 
-    RULE 3 IS A HEURISTIC AND SAYS SO. Taking the head of "Show Call/Load Out"
+    On a customer card only that card's roles exist, so "Load In" on MOPT is
+    None, and "Australian Open Event Operations" on Standard is None.
+
+    A NAME LISTED UNDER TWO ROLES returns None with conflict=True. The
+    Estimator's build forbids it; if it ever happens, picking one would be a
+    guess that moves money.
+
+    RULE 2 IS A HEURISTIC AND SAYS SO. Taking the head of "Show Call/Load Out"
     resolves to Show Crew at 84.50 where the tail would give Load Out at 63.00.
-    It picks the higher of the two. Four seats on the live book, so the exposure
-    is trivial today — but it is a guess wearing a rule's clothes, so it is
-    counted separately (`rule == "prefix"`) rather than blending into the exact
-    matches.
+    It is counted separately (`rule == "prefix"`), and `ambiguous` is True only
+    when the head and the tail BOTH resolve and resolve to DIFFERENT roles — the
+    case where the guess is actually load-bearing. A tail that resolves to
+    nothing ("Loaders/Pushers") is not ambiguous.
 
-    `ambiguous` is True only when the head and the tail BOTH resolve and resolve
-    to DIFFERENT roles — the case where the guess is actually load-bearing. A
-    tail that resolves to nothing ("Loaders/Pushers") is not ambiguous: there was
-    only ever one candidate. If the ambiguous count grows, a combined-call naming
-    convention is spreading and the higher-rate head is quietly inflating the
-    forward figure.
+    `index` is call_name_index(cfg), passed by a caller resolving many names
+    against one cfg.
     """
+    none = {"role": None, "rule": None, "ambiguous": False, "conflict": False}
     if not call_name:
-        return {"role": None, "rule": None, "ambiguous": False}
-
+        return none
     name = str(call_name).strip()
+    if not name:
+        return none
+    idx = index if index is not None else call_name_index(cfg)
 
-    role = CALL_NAME_TO_ROLE.get(name)
-    if role:
-        return {"role": role, "rule": "exact", "ambiguous": False}
+    def one(n):
+        """(role, conflict) for an exact name."""
+        roles = idx.get(n) if n else None
+        if not roles:
+            return (None, False)
+        if len(roles) > 1:
+            return (None, True)
+        return (next(iter(roles)), False)
 
-    role = SMARTSTAFF_EXTRA_CALL_NAMES.get(name)
+    role, conflict = one(name)
     if role:
-        return {"role": role, "rule": "extra", "ambiguous": False}
+        return {"role": role, "rule": "exact", "ambiguous": False, "conflict": False}
+    if conflict:
+        return dict(none, conflict=True)
 
     head, tail = _split_on_first_separator(name)
     if head:
-        head_role = _resolve_exact(head)
+        head_role, head_conflict = one(head)
         if head_role:
-            tail_role = _resolve_exact(tail)
+            tail_role, _ = one(tail)
             return {
                 "role": head_role,
                 "rule": "prefix",
                 "ambiguous": bool(tail_role) and tail_role != head_role,
+                "conflict": False,
             }
+        if head_conflict:
+            return dict(none, conflict=True)
 
-    return {"role": None, "rule": None, "ambiguous": False}
+    return none
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -658,6 +684,7 @@ def calc_line(line, cfg, mode, rate_row=None):
     qty = line.get("qty")
     duration = line.get("durationHours")
 
+    # Resolved FIRST: the minimum below is the rate row's own (S-3).
     rr = rate_row if rate_row is not None else get_rate_row(role, shift_date, cfg)
 
     if not role or rr is None:
@@ -671,10 +698,17 @@ def calc_line(line, cfg, mode, rate_row=None):
     if t is None:
         errors.append("Start time must be HH:MM for line %s." % line_id)
 
-    min_billable = _to_number(cfg.get("minBillableHours"), 0.0)
-
     if not _is_finite_number(duration) or duration <= 0:
         errors.append("Duration must be > 0 for line %s." % line_id)
+
+    # S-3: the role's own minimum, else the global one. calc.ts:
+    #   Number(rateRow?.minBillableHours ?? config.minBillableHours ?? 0)
+    # A null per-role minimum means "use the global", never 0.
+    own_min = rr.get("minBillableHours") if rr is not None else None
+    if own_min is not None:
+        min_billable = _to_number(own_min, 0.0)
+    else:
+        min_billable = _to_number(cfg.get("minBillableHours"), 0.0)
 
     if _is_finite_number(duration) and duration < min_billable:
         errors.append(
@@ -712,29 +746,43 @@ def calc_line(line, cfg, mode, rate_row=None):
     r_night = _rate(rr, "night")
     r_sunday = _rate(rr, "sunday")
     r_ph = _rate(rr, "publicHoliday")
+    # A null over8/over10 means the card has no such tier: _rate gives 0, which
+    # contributes nothing to the max, so the base (or Sunday/PH) rate applies.
     r_over8 = _rate(rr, "over8")
     r_over10 = _rate(rr, "over10")
 
-    def penalties(date_iso):
-        """Sunday and public-holiday rates, or 0 where the day is neither."""
+    # D31: inside a window every tier, day and night, is at least multiplier x
+    # the role's public holiday rate (Sunday if it has none), holiday or not.
+    # Outside a window this is 0, so the max below is unchanged. calc.ts tests
+    # publicHoliday > 0, not null, so a 0 PH rate also falls back to Sunday.
+    window_base_rate = r_ph if r_ph > 0 else r_sunday
+
+    def window_rate(p):
+        m = p.get("multiplier", 1.0)
+        return m * window_base_rate if m > 1 else 0.0
+
+    def penalties(p):
+        """Sunday, public-holiday and window rates, or 0 where none applies."""
+        d = p["dateISO"]
         return (
-            r_sunday if _is_sunday(date_iso) else 0.0,
-            r_ph if _is_public_holiday(date_iso, cfg) else 0.0,
+            r_sunday if _is_sunday(d) else 0.0,
+            r_ph if _is_public_holiday(d, cfg) else 0.0,
+            window_rate(p),
         )
 
     # Every rate is a MAX-OF, never a sum: a Sunday night at overtime is the
     # single highest applicable rate, not night plus penalty plus overtime.
-    def max_day(d):     s, p = penalties(d); return max(r_day, s, p)
-    def max_night(d):   s, p = penalties(d); return max(r_night, s, p)
-    def max_ot8_day(d): s, p = penalties(d); return max(r_over8, r_day, s, p)
-    def max_ot8_night(d): s, p = penalties(d); return max(r_over8, r_night, s, p)
-    def max_ot10_day(d): s, p = penalties(d); return max(r_over10, r_day, s, p)
-    def max_ot10_night(d): s, p = penalties(d); return max(r_over10, r_night, s, p)
+    def max_day(p):       s, h, w = penalties(p); return max(r_day, s, h, w)
+    def max_night(p):     s, h, w = penalties(p); return max(r_night, s, h, w)
+    def max_ot8_day(p):   s, h, w = penalties(p); return max(r_over8, r_day, s, h, w)
+    def max_ot8_night(p): s, h, w = penalties(p); return max(r_over8, r_night, s, h, w)
+    def max_ot10_day(p):  s, h, w = penalties(p); return max(r_over10, r_day, s, h, w)
+    def max_ot10_night(p): s, h, w = penalties(p); return max(r_over10, r_night, s, h, w)
 
     def cost_parts(parts_, day_fn, night_fn):
         acc = 0.0
         for p in parts_:
-            acc += p["dayHrs"] * day_fn(p["dateISO"]) + p["nightHrs"] * night_fn(p["dateISO"])
+            acc += p["dayHrs"] * day_fn(p) + p["nightHrs"] * night_fn(p)
         return acc
 
     cost_base = cost_parts(base_parts, max_day, max_night)
@@ -744,6 +792,15 @@ def calc_line(line, cfg, mode, rate_row=None):
     # Rounding happens ONCE, at the line, with qty already applied.
     cost_ex_gst = round2(_to_number(qty, 0.0) * (cost_base + cost_ot8 + cost_ot10))
 
+    def window_fields(p):
+        """calc.ts windowFields: set ONLY inside a window, so a segment outside
+        one is unchanged from before D31. A reader treats a missing
+        doublePenalty as False (pricingCases.ts compares Boolean(...))."""
+        if "windowName" not in p:
+            return {}
+        return {"doublePenalty": True, "windowName": p["windowName"],
+                "multiplier": p["multiplier"]}
+
     def build_segments(tier, parts_, day_fn, night_fn):
         """
         The per-crew breakdown behind the Cost column's tooltip. Segment costs
@@ -752,23 +809,29 @@ def calc_line(line, cfg, mode, rate_row=None):
         calc.ts's behaviour and it is reproduced rather than fixed: the display
         and the line total are allowed to round differently, and "fixing" it
         here would put the port a cent away from the quote the customer holds.
+
+        A part a window cuts in two is two parts, so two segments.
         """
         out = []
         for p in parts_:
             if p["dayHrs"] > 0:
-                rate = day_fn(p["dateISO"])
-                out.append({
+                rate = day_fn(p)
+                seg = {
                     "tier": tier, "period": "day", "dateISO": p["dateISO"],
                     "hours": round2(p["dayHrs"]), "rate": rate,
                     "costExGst": round2(p["dayHrs"] * rate),
-                })
+                }
+                seg.update(window_fields(p))
+                out.append(seg)
             if p["nightHrs"] > 0:
-                rate = night_fn(p["dateISO"])
-                out.append({
+                rate = night_fn(p)
+                seg = {
                     "tier": tier, "period": "night", "dateISO": p["dateISO"],
                     "hours": round2(p["nightHrs"]), "rate": rate,
                     "costExGst": round2(p["nightHrs"] * rate),
-                })
+                }
+                seg.update(window_fields(p))
+                out.append(seg)
         return out
 
     segments = (
