@@ -2349,6 +2349,14 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
               <div class="import-field"><label>&nbsp;</label><div style="font-size:10px;color:var(--muted);align-self:center;padding:6px 0">Created as <b>Active</b>.</div></div>
             </div>
             <div class="import-field"><label>Notes</label><textarea id="mb-notes" rows="3" placeholder="optional"></textarea></div>
+            <div class="import-field"><label>Rate card</label><div id="mb-rc-host" style="padding:4px 0">
+              <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text);cursor:pointer"><input type="checkbox" id="mb-rc-mopt" onchange="rcPickerChanged('mb-rc')"> MOPT booking</label>
+              <div id="mb-rc-ao-row" style="margin-top:6px;display:none">
+                <span style="font-size:11px;color:var(--muted);margin-right:10px">Australian Open?</span>
+                <label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);cursor:pointer;margin-right:14px"><input type="radio" name="mb-rc-ao" value="yes" onchange="rcPickerChanged('mb-rc')"> Yes</label>
+                <label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);cursor:pointer;margin-right:14px"><input type="radio" name="mb-rc-ao" value="no" onchange="rcPickerChanged('mb-rc')"> No</label>
+              </div>
+            </div></div>
           </div>
         </div>
 
@@ -2387,6 +2395,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
           <div class="import-progress-body" style="padding:12px 16px">
             <div class="import-progress-step" id="mb-result-step"></div>
             <div class="import-call-log" id="mb-result-log"></div>
+            <div id="mb-result-rc"></div>
             <div id="mb-result-link" style="display:none;margin-top:10px">
               <a id="mb-booking-link" href="#" target="_blank" style="font-size:11px;color:var(--accent);text-decoration:none"></a>
             </div>
@@ -2465,6 +2474,11 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
                     <label>Calls to Create</label>
                     <div class="import-field-val" id="prev-call-count"></div>
                   </div>
+                </div>
+                <div class="import-field" id="prev-ratecard-row">
+                  <label>Rate card</label>
+                  <div class="import-field-val" id="prev-ratecard"></div>
+                  <div id="prev-ratecard-note"></div>
                 </div>
                 <div class="import-field" id="prev-notes-row" style="display:none">
                   <label>Booking Notes</label>
@@ -2582,6 +2596,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
               <div class="import-progress-body">
                 <div class="import-progress-step" id="import-progress-step"></div>
                 <div class="import-call-log" id="import-call-log"></div>
+                <div id="import-rc-result"></div>
                 <div id="import-done-link" style="display:none;margin-top:10px">
                   <a id="import-booking-link" href="#" target="_blank"
                      style="font-size:11px;color:var(--accent);text-decoration:none">
@@ -2911,6 +2926,20 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         </div>
         <div id="ph-warn"></div>
         <div class="ph-years" id="ph-list"></div>
+      </div>
+      <div class="ph-block" id="pr-block" style="margin-top:10px">
+        <div class="ph-head">
+          <div class="ph-title">Pricing rules</div>
+          <div class="ph-meta" id="pr-meta">Not loaded yet.</div>
+          <button class="ph-refresh" id="pr-refresh" onclick="loadPricingRules(true)">Refresh</button>
+        </div>
+        <div id="pr-warn"></div>
+        <div class="ph-meta" id="pr-counts" style="margin-top:6px"></div>
+        <div id="pr-cases-wrap" style="margin-top:8px;display:none">
+          <button class="ph-refresh" id="pr-run" style="margin-left:0" onclick="runPricingCases()">Run shared test cases</button>
+          <span class="ph-meta" id="pr-cases" style="margin-left:10px"></span>
+          <div id="pr-cases-detail"></div>
+        </div>
       </div>
     </div>
   </div><!-- end tab-administration -->
@@ -5976,7 +6005,7 @@ function switchTab(tab){
   if(tab==='my-status') loadMyStatus();
   if(tab==='docs') initDocs();
   if(tab==='recruitment') loadRecruitment();
-  if(tab==='administration') loadPublicHolidays(false);
+  if(tab==='administration'){ loadPublicHolidays(false); loadPricingRules(false); }
   if(tab==='recruitment-dashboard') loadRecruitMetrics();
   // Unconditional, not `if(!_recruitRows.length)`: book-on-behalf filters
   // _recruitRows and Sessions is now reachable directly (deep link, or the group's
@@ -11572,6 +11601,16 @@ function renderImportPreview(data){
   document.getElementById('prev-invoice-ref').textContent  = p.invoice_ref;
   document.getElementById('prev-call-count').textContent   = p.call_count + ' calls';
 
+  // The rate card the estimate was priced on (C9). A 1.0 / 1.1 file has no
+  // block and imports as Standard; say so rather than imply the file chose it.
+  const rc = p.rate_card || {};
+  document.getElementById('prev-ratecard').textContent =
+    (rc.label || 'Standard') + (rc.from_file ? '' : ' (no rate card in this file)');
+  const rcNotes = [rc.warning, rc.customer_note].filter(Boolean);
+  document.getElementById('prev-ratecard-note').innerHTML = rcNotes.map(function(n){
+    return '<div style="font-size:11px;color:var(--warn);margin-top:4px">' + escapeHtml(n) + '</div>';
+  }).join('');
+
   if(p.booking_notes){
     document.getElementById('prev-notes-row').style.display = '';
     document.getElementById('prev-notes').textContent = p.booking_notes;
@@ -11929,6 +11968,18 @@ function updateImportProgressUI(data){
       document.getElementById('import-done-link').style.display = '';
       if(!data.errors?.length){const a=document.getElementById('cha-ching');if(a){a.currentTime=0;a.play().catch(()=>{})}}
     }
+    // A rate card that didn't save is LOUD: the import completed, the card didn't.
+    const rcHost = document.getElementById('import-rc-result');
+    if(rcHost){
+      rcHost.innerHTML = data.rate_card_error
+        ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg);margin-top:8px">'
+          + escapeHtml(data.rate_card_error) + '</div>'
+        : (data.rate_card ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">Rate card: '
+          + escapeHtml(data.rate_card.label || '') + '</div>' : '');
+    }
+  } else {
+    const rcHost = document.getElementById('import-rc-result');
+    if(rcHost) rcHost.innerHTML = '';
   }
 
   // Call log
@@ -12115,6 +12166,93 @@ async function loadPublicHolidays(force){
     meta.textContent = 'Could not load public holidays: ' + (e && e.message ? e.message : e);
   }finally{
     _phLoading = false;
+    if(btn) btn.disabled = false;
+  }
+}
+// Pricing rules — read-only, from the Estimator's rate-cards edge function
+// (D32). Only the provenance and counts come to the browser; the rules, and the
+// customer cards in them, stay server-side. The shared test cases (D33) run
+// in THIS install, which is how you check a user's copy agrees with the
+// Estimator, not just the build machine's.
+let _prLoading = false;
+function prWhen(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso)
+    : d.toLocaleString('en-AU', {weekday:'short', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+}
+function prRender(d){
+  const meta = document.getElementById('pr-meta');
+  const warn = document.getElementById('pr-warn');
+  const counts = document.getElementById('pr-counts');
+  if(!meta || !warn || !counts) return;
+  meta.textContent = 'Source: ' + (d.source || 'Estimator') + ' · rates as of ' + prWhen(d.last_changed)
+    + ' · last fetched ' + prWhen(d.fetched_at);
+  const warns = [];
+  if(d.unavailable){
+    warns.push('Pricing rules unavailable — the Estimator could not be reached and there is no saved copy. The GM forward view prices nothing.'
+      + (d.error ? ' (' + d.error + ')' : ''));
+  } else if(d.stale){
+    warns.push('Showing the saved copy from ' + prWhen(d.fetched_at) + ' — the Estimator could not be reached just now.'
+      + (d.error ? ' (' + d.error + ')' : ''));
+  }
+  warn.innerHTML = warns.map(function(w){ return '<div class="ph-warn">' + escapeHtml(w) + '</div>'; }).join('');
+  const c = d.counts;
+  counts.textContent = c
+    ? (c.sets + ' card' + (c.sets === 1 ? '' : 's') + ' · ' + c.rates + ' rates · ' + c.items + ' items · '
+       + c.windows + ' double-penalty window' + (c.windows === 1 ? '' : 's') + ' · ' + c.holidays + ' holidays · '
+       + c.test_cases + ' shared test case' + (c.test_cases === 1 ? '' : 's'))
+    : '';
+  const wrap = document.getElementById('pr-cases-wrap');
+  if(wrap) wrap.style.display = (window._cohort === 'admin') ? '' : 'none';
+}
+async function loadPricingRules(force){
+  if(_prLoading) return;
+  const meta = document.getElementById('pr-meta');
+  const btn  = document.getElementById('pr-refresh');
+  if(!meta) return;
+  _prLoading = true;
+  if(btn) btn.disabled = true;
+  if(force) meta.textContent = 'Refreshing…';
+  try{
+    const resp = await fetch('/api/pricing-rules' + (force ? '?force=1' : ''));
+    const d = await resp.json().catch(function(){ return {}; });
+    if(!resp.ok) throw new Error(d.error || ('HTTP ' + resp.status));
+    prRender(d);
+  }catch(e){
+    meta.textContent = 'Could not load pricing rules: ' + (e && e.message ? e.message : e);
+  }finally{
+    _prLoading = false;
+    if(btn) btn.disabled = false;
+  }
+}
+async function runPricingCases(){
+  const btn = document.getElementById('pr-run');
+  const out = document.getElementById('pr-cases');
+  const detail = document.getElementById('pr-cases-detail');
+  if(!out || !detail) return;
+  if(btn) btn.disabled = true;
+  out.textContent = 'Running…';
+  detail.innerHTML = '';
+  try{
+    const resp = await fetch('/api/pricing-rules/run-cases', {method: 'POST'});
+    const d = await resp.json().catch(function(){ return {}; });
+    if(!resp.ok) throw new Error(d.error || ('HTTP ' + resp.status));
+    prRender(d);
+    if(d.unavailable){
+      out.innerHTML = '<span style="color:var(--conflict)">Not run — pricing rules unavailable.</span>';
+      return;
+    }
+    const verdict = d.ok ? '<span style="color:var(--ok,#10b981)">' : '<span style="color:var(--conflict)">';
+    out.innerHTML = verdict + escapeHtml(d.passed + ' of ' + d.ran + ' passed') + '</span>'
+      + (d.stale ? ' <span style="color:var(--conflict)">(on the saved copy, not a fresh read)</span>' : '');
+    const failed = (d.results || []).filter(function(r){ return r.status === 'fail'; });
+    detail.innerHTML = failed.map(function(r){
+      return '<div class="ph-warn">' + escapeHtml(r.code + ' ' + (r.rule || '') + ': ' + (r.problems || []).join('; ')) + '</div>';
+    }).join('');
+  }catch(e){
+    out.textContent = 'Could not run: ' + (e && e.message ? e.message : e);
+  }finally{
     if(btn) btn.disabled = false;
   }
 }
@@ -18868,10 +19006,12 @@ function updateManualReadiness(){
   const btn  = document.getElementById('mb-create-btn');
   const note = document.getElementById('mb-action-note');
   if(!btn) return;
-  btn.disabled = !(name && cust && ctc && venue && callsOk);
+  const rcOk  = rcPickerValue('mb-rc').complete;
+  btn.disabled = !(name && cust && ctc && venue && callsOk && rcOk);
   if(!name)                    note.textContent = 'Enter a booking name';
   else if(!cust||!ctc||!venue) note.textContent = 'Select customer, contact and venue';
   else if(!callsOk)            note.textContent = 'Each call needs a name, date and valid time';
+  else if(!rcOk)               note.textContent = 'MOPT booking: answer Australian Open, Yes or No';
   else note.textContent = rows.length ? `${rows.length} call${rows.length!==1?'s':''} ready` : 'No calls — booking only';
 }
 
@@ -18900,6 +19040,10 @@ function buildManualPayload(){
       reference:         document.getElementById('mb-reference').value || '',
     },
     calls,
+    // C7, C8. Sent only when complete; the Create button is disabled otherwise,
+    // and the server refuses an incomplete one either way.
+    rate_card: (function(){ const v = rcPickerValue('mb-rc');
+      return { mopt: v.mopt, australian_open: v.australian_open }; })(),
   };
 }
 
@@ -18949,6 +19093,15 @@ function renderManualResult(data, payload){
     const err  = failed ? ` — ${errIdx[i]}` : '';
     return `<div class="icl-item ${cls}">${icon} ${escapeHtml(c.call_name)} · ${formatDisplayDate(c.start_date)}${err}</div>`;
   }).join('');
+  // A rate card that didn't save is LOUD: the booking exists, its card doesn't.
+  const rcHost = document.getElementById('mb-result-rc');
+  if(rcHost){
+    rcHost.innerHTML = data.rate_card_error
+      ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg)">'
+        + escapeHtml(data.rate_card_error) + '</div>'
+      : (data.rate_card ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Rate card: '
+        + escapeHtml(data.rate_card.label || '') + '</div>' : '');
+  }
   const link = document.getElementById('mb-booking-link');
   link.href = ssUrl('/bookings/' + data.booking_id);
   link.textContent = '→ View Booking #' + data.booking_id + ' in SmartStaff';
@@ -18962,6 +19115,9 @@ function resetManualBooking(){
   });
   document.getElementById('mb-calls').innerHTML = '';
   addManualCall();
+  const rcBox = document.getElementById('mb-rc-mopt'); if(rcBox) rcBox.checked = false;
+  document.querySelectorAll('input[name="mb-rc-ao"]').forEach(r => { r.checked = false; });
+  rcPickerChanged('mb-rc');
   document.getElementById('mb-result-panel').style.display = 'none';
   updateManualReadiness();
 }
@@ -21187,7 +21343,8 @@ function _ctTimeOk(s){
 
 function _ctStatusBadge(st){
   const map = {5:['Confirmed','var(--ok,#10b981)'], 6:['Declined','var(--conflict,#ef4444)'],
-               8:['No-show','var(--conflict,#ef4444)'], 1:['Sent','var(--muted)'], 0:['—','var(--muted)']};
+               8:['No-show','var(--conflict,#ef4444)'], 1:['Sent','var(--muted)'], 0:['—','var(--muted)'],
+               9:['Cancelled','#64748b']};
   const e = map[st] || ['—','var(--muted)'];
   return '<span style="font-size:9px;letter-spacing:.5px;color:'+e[1]+'">'+e[0]+'</span>';
 }
@@ -22925,7 +23082,8 @@ function _tiPromoPending(m){ return Number(m && m.status) === 5 && !!(m && m.pro
 
 function _tiStatusChip(st){
   const map = {0:['—','var(--muted)'], 1:['SMS Sent','var(--muted)'], 5:['Confirmed','var(--ok,#10b981)'],
-               6:['Declined','var(--conflict)'], 7:['Backup','var(--muted)'], 8:['No-show','var(--conflict)']};
+               6:['Declined','var(--conflict)'], 7:['Backup','var(--muted)'], 8:['No-show','var(--conflict)'],
+               9:['Cancelled','#64748b']};
   const e = map[Number(st)] || ['Status '+st,'var(--muted)'];
   return '<span style="font-size:9px;letter-spacing:.5px;color:'+e[1]+'">'+escapeHtml(e[0])+'</span>';
 }
@@ -24170,7 +24328,9 @@ function renderBookingDialog(bookingId, d, cached){
       rows
     + '<div id="bk-calls-wrap">' + callsSection + '</div>'
     + '<div id="bk-gsheet-wrap"></div>'
+    + '<div id="bk-ratecard-wrap"></div>'
     + '<div id="bk-checkin-wrap"></div>';
+  bkLoadRateCard(bookingId, 'bk-ratecard-wrap', d && d.customer ? d.customer.id : null);   // async, never awaited
   bkLoadCheckinMode(bookingId, 'bk-checkin-wrap');   // async, never awaited
   gsheetLoadStatus(bookingId);                        // async, never awaited
   if(d) bkLoadCrewlistStatus(bookingId);              // async, never awaited
@@ -24214,6 +24374,159 @@ function renderBookingDialog(bookingId, d, cached){
 //
 // The two views do not stay in sync, by design: each reads the mode fresh when
 // it opens, which is also what makes a collapse-and-re-expand truthful.
+// ── Booking rate card (C7, C8) ──────────────────────────────────────────────
+// Which card this booking's calls price on: Standard, MOPT — Year Round or
+// MOPT — Australian Open. Loaded async, never awaited, like the check-in
+// switch below it. A booking with no row reads "Standard (not set)".
+//
+// Changing an existing booking's card is Admin only (Q-S1-1): the POST route
+// enforces it; can_change here is presentation. The Australian Open question
+// is mandatory once MOPT is ticked and has NO default.
+var _bkRateCardBusy = {};
+var _bkRateCardState = {};
+
+function bkRateCardHead(){
+  return '<div style="margin-top:14px;font-size:10px;color:var(--muted);'
+    + 'text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Rate card</div>';
+}
+
+function bkRateCardMarkup(state, bookingId, hostId, msg){
+  var body;
+  if(state === 'unknown'){
+    if(window._cohort !== 'admin') return '';
+    body = '<div style="font-size:11px;color:var(--muted)">Unknown — rate card service unreachable'
+      + '<span onclick="bkLoadRateCard(\'' + bookingId + '\',\'' + hostId + '\')" '
+      + 'style="color:var(--accent);cursor:pointer;margin-left:8px">Retry</span></div>';
+  } else {
+    var src = '';
+    if(state.is_set){
+      src = state.source === 'estimate_import'
+        ? 'From estimate' + (state.quote_number ? ' ' + escapeHtml(state.quote_number) : '')
+        : 'Set by hand';
+    }
+    body = '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">'
+      + '<span style="font-size:12px;color:var(--text)">' + escapeHtml(state.label || '') + '</span>'
+      + (src ? '<span style="font-size:10px;color:var(--muted)">' + src + '</span>' : '')
+      + (state.can_change
+          ? '<span onclick="bkEditRateCard(\'' + bookingId + '\',\'' + hostId + '\')" '
+            + 'style="font-size:11px;color:var(--accent);cursor:pointer;margin-left:auto">Change…</span>'
+          : '')
+      + '</div>'
+      + (state.customer_note
+          ? '<div style="font-size:11px;color:var(--warn);margin-top:6px">' + escapeHtml(state.customer_note) + '</div>'
+          : '');
+  }
+  return bkRateCardHead() + body + (msg
+    ? '<div style="font-size:11px;color:var(--conflict);margin-top:6px">' + escapeHtml(msg) + '</div>'
+    : '');
+}
+
+async function bkLoadRateCard(bookingId, hostId, customerId, msg){
+  var host = document.getElementById(hostId);
+  if(!host) return;
+  if(customerId !== undefined && customerId !== null) host.__customerId = customerId;
+  var token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  var state = 'unknown';
+  try{
+    var q = host.__customerId ? ('?customer_id=' + encodeURIComponent(host.__customerId)) : '';
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/rate-card' + q,
+                        { headers: { 'Accept': 'application/json' } });
+    if(r.ok){
+      var j = await r.json();
+      if(j && !j.error) state = j;
+    }
+  }catch(e){ /* stays 'unknown' */ }
+  if(host.__loadToken !== token || !host.isConnected) return;   // superseded
+  _bkRateCardState[hostId] = state;
+  host.innerHTML = bkRateCardMarkup(state, bookingId, hostId, msg);
+}
+
+// The editor: MOPT checkbox, then a mandatory Australian Open Yes / No with no
+// default. Shared with the manual Booking form via rcPickerHtml / rcPickerValue.
+function rcPickerHtml(prefix, mopt, ao){
+  var radio = function(val, label){
+    var on = (mopt && ao === val);
+    return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);cursor:pointer;margin-right:14px">'
+      + '<input type="radio" name="' + prefix + '-ao" value="' + (val ? 'yes' : 'no') + '"' + (on ? ' checked' : '')
+      + ' onchange="rcPickerChanged(\'' + prefix + '\')"> ' + label + '</label>';
+  };
+  return '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text);cursor:pointer">'
+    + '<input type="checkbox" id="' + prefix + '-mopt"' + (mopt ? ' checked' : '')
+    + ' onchange="rcPickerChanged(\'' + prefix + '\')"> MOPT booking</label>'
+    + '<div id="' + prefix + '-ao-row" style="margin-top:6px;' + (mopt ? '' : 'display:none') + '">'
+    + '<span style="font-size:11px;color:var(--muted);margin-right:10px">Australian Open?</span>'
+    + radio(true, 'Yes') + radio(false, 'No') + '</div>';
+}
+
+function rcPickerChanged(prefix){
+  var box = document.getElementById(prefix + '-mopt');
+  var row = document.getElementById(prefix + '-ao-row');
+  if(row && box) row.style.display = box.checked ? '' : 'none';
+  if(prefix === 'mb-rc' && typeof updateManualReadiness === 'function') updateManualReadiness();
+}
+
+// {mopt, australian_open, complete}. complete is false while MOPT is ticked
+// and Australian Open is unanswered: saving is refused.
+function rcPickerValue(prefix){
+  var box = document.getElementById(prefix + '-mopt');
+  var mopt = !!(box && box.checked);
+  if(!mopt) return { mopt: false, australian_open: null, complete: true };
+  var picked = document.querySelector('input[name="' + prefix + '-ao"]:checked');
+  if(!picked) return { mopt: true, australian_open: null, complete: false };
+  return { mopt: true, australian_open: picked.value === 'yes', complete: true };
+}
+
+function bkEditRateCard(bookingId, hostId){
+  var host = document.getElementById(hostId);
+  var st = _bkRateCardState[hostId];
+  if(!host || !st || st === 'unknown') return;
+  var prefix = 'rc-' + hostId;
+  host.innerHTML = bkRateCardHead()
+    + '<div style="border:1px solid var(--border);border-radius:4px;padding:9px;background:var(--surface2)">'
+    + rcPickerHtml(prefix, !!st.mopt, st.australian_open)
+    + '<div style="margin-top:9px">'
+    + '<button onclick="bkSaveRateCard(\'' + bookingId + '\',\'' + hostId + '\')" '
+    + 'style="background:var(--surface);border:1px solid var(--border-gold);color:var(--accent);border-radius:4px;'
+    + "padding:4px 12px;font-family:'Share Tech Mono',monospace;font-size:11px;margin-right:6px;cursor:pointer\">Save</button>"
+    + '<button onclick="bkLoadRateCard(\'' + bookingId + '\',\'' + hostId + '\')" '
+    + 'style="background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;'
+    + "padding:4px 12px;font-family:'Share Tech Mono',monospace;font-size:11px;cursor:pointer\">Cancel</button>"
+    + '<div id="' + prefix + '-msg" style="font-size:11px;color:var(--conflict);margin-top:6px"></div>'
+    + '</div></div>';
+}
+
+async function bkSaveRateCard(bookingId, hostId){
+  if(_bkRateCardBusy[hostId]) return;
+  var prefix = 'rc-' + hostId;
+  var v = rcPickerValue(prefix);
+  var msgEl = document.getElementById(prefix + '-msg');
+  if(!v.complete){
+    if(msgEl) msgEl.textContent = 'Answer Australian Open: Yes or No.';
+    return;
+  }
+  if(!confirm('This changes the rates for every call on this booking.')) return;
+  _bkRateCardBusy[hostId] = true;
+  var msg = '';
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/rate-card', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mopt: v.mopt, australian_open: v.australian_open })
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok) msg = (j && j.error) || "Couldn't change the rate card.";
+    else if(j.warning) msg = j.warning;
+    else showFeedback('Rate card: ' + (j.label || 'saved'));
+  }catch(e){
+    msg = "Couldn't reach the rate card service.";
+  }
+  try{
+    await bkLoadRateCard(bookingId, hostId, undefined, msg);   // show what it IS now
+  } finally {
+    delete _bkRateCardBusy[hostId];
+  }
+}
+
 var _bkCheckinBusy = {};
 
 function bkCheckinControl(mode, bookingId, hostId){
@@ -29300,6 +29613,23 @@ function perfMoney(v){
   return '$' + Math.round(v || 0);
 }
 function perfMoneyFull(v){ return '$' + Math.round(v || 0).toLocaleString('en-AU'); }
+// "Rates as of <last_changed>", plus "(offline copy from <fetched_at>)" when the
+// Estimator couldn't be reached and the forward book priced from the disk copy.
+// Returns escaped HTML, or '' when there's nothing to say.
+function perfWhen(iso){
+  if(!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso)
+    : d.toLocaleString('en-AU', {day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+}
+function perfRatesAsOf(card){
+  if(!card) return '';
+  let s = '';
+  if(card.last_changed) s = 'Rates as of <b>' + escapeHtml(perfWhen(card.last_changed)) + '</b>';
+  if(card.stale) s += (s ? ' ' : '') + '<b style="color:var(--conflict)">(offline copy from '
+    + escapeHtml(perfWhen(card.fetched_at) || 'unknown') + ')</b>';
+  return s;
+}
 function perfNum(v, dp){ return Number(v || 0).toLocaleString('en-AU', {minimumFractionDigits: dp||0, maximumFractionDigits: dp||0}); }
 function perfPct(part, whole){ return whole > 0 ? (100 * part / whole) : 0; }
 
@@ -29772,11 +30102,10 @@ function perfChartKey(s, accent){
     const unmapped = dq.forward_unmapped_calls || 0;
     const errs     = dq.forward_price_errors || 0;
 
-    let sub = 'Forward revenue is priced at <b>list rates</b>';
-    if(card.captured_at){
-      sub += ' from a rate card captured <b>' + escapeHtml(String(card.captured_at)) + '</b>';
-    }
-    sub += '. There are no customer discount rates.';
+    let sub = 'Forward revenue is priced at <b>list rates</b>, read live from the Estimator';
+    const asOf = perfRatesAsOf(card);
+    if(asOf) sub += ' — ' + asOf;
+    sub += '. Each call is priced on its booking\'s rate card; there are no other discount rates.';
 
     if(unmapped || errs){
       const parts = [];
@@ -30893,7 +31222,7 @@ function perfForwardCard(d){
   const heads = '<div class="perf-heads">'
     + tile(perfMoney(t.revenue), 'forward revenue',
            'required seats, list rates'
-           + (card.captured_at ? ' · <span style="white-space:nowrap">card ' + escapeHtml(String(card.captured_at)) + '</span>' : ''), true)
+           + (perfRatesAsOf(card) ? ' · <span style="white-space:nowrap">' + perfRatesAsOf(card) + '</span>' : ''), true)
     + tile(booked ? fillPct.toFixed(1) + '%' : '—', 'seats filled',
            booked ? perfNum(conSeats) + ' of ' + perfNum(reqSeats) + ' confirmed'
                   : (onBook ? perfNum(fwdCalls) + ' calls, no seats required'

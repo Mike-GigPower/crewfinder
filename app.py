@@ -31,7 +31,7 @@ import requests as http
 # perfectly from source. That is the 3.4.x distance-search failure shape exactly.
 # 'estimator_calc' is also listed in The GOAT.spec's hiddenimports as a belt to
 # this brace.
-from estimator_calc import calc_line, resolve_smartstaff_call_name, MODE_DURATION
+from estimator_calc import calc_line, resolve_role, call_name_index, MODE_DURATION
 
 app = Flask(__name__)
 app.secret_key = "crewfinder-gigpower-2026-internal"
@@ -59,6 +59,7 @@ import visa_extract
 import docs_render
 import docs_source
 import public_holidays
+import pricing_rules
 import name_match
 import drive_contracts
 # When running inside a PyInstaller bundle, use the executable's directory
@@ -73,6 +74,7 @@ VENUE_CACHE_FILE = os.path.join(BASE_DIR, "venue_cache.json")  # venue geo, rebu
 # FORECAST_CACHE_FILE and UNAVAIL_CACHE_FILE removed in 3.4.5 (live reads).
 UNAVAIL_TIMES_FILE         = os.path.join(BASE_DIR, "unavail_times.json")
 PUBLIC_HOLIDAYS_CACHE_FILE = os.path.join(BASE_DIR, "public_holidays_cache.json")  # last good Estimator copy
+PRICING_RULES_CACHE_FILE   = os.path.join(BASE_DIR, "pricing_rules_cache.json")    # last good rate-cards read (D32: a cache, never a copy)
 # FORECAST_CACHE_MAX_AGE_HRS and UNAVAIL_CACHE_MAX_AGE_HRS removed in 3.4.5.
 PROD_BASE_URL = "https://smartstaffsolutions.com"
 BASE_URL      = PROD_BASE_URL
@@ -148,9 +150,24 @@ def _estimator_supabase():
         return str(cfg.get(name) or "").strip()
     return pick("ESTIMATOR_SUPABASE_URL"), pick("ESTIMATOR_SUPABASE_KEY")
 
-# Config only: no fetch here. The first load_holidays() call does the network
-# work, so a slow Estimator can never delay THE GOAT opening.
+def _rate_cards_secret():
+    """RATE_CARDS_SECRET for the Estimator's rate-cards edge function (D32).
+    Environment first, then config.json `rate_cards_secret` (from
+    build_secrets.json at build time). Never raises, never printed or logged,
+    never sent to the browser. '' leaves pricing_rules on its disk copy or
+    'unavailable'."""
+    v = os.environ.get("RATE_CARDS_SECRET")
+    if v and v.strip():
+        return v.strip()
+    try:
+        return str(load_config().get("rate_cards_secret") or "").strip()
+    except Exception:
+        return ""
+
+# Config only: no fetch here. The first load_holidays() / load_rules() call does
+# the network work, so a slow Estimator can never delay THE GOAT opening.
 public_holidays.configure(*_estimator_supabase(), PUBLIC_HOLIDAYS_CACHE_FILE)
+pricing_rules.configure(_rate_cards_secret(), PRICING_RULES_CACHE_FILE)
 
 # Load Anthropic API key from config if not already in environment
 if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -164,7 +181,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.75.0"
+APP_VERSION    = "5.76.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -722,6 +739,156 @@ def current_checkin_switcher_id():
     except (TypeError, ValueError):
         return None
     return uid if uid in CHECKIN_PILOT_SWITCHERS else None
+
+# ─── BOOKING RATE CARD (C7–C9) ────────────────────────────────────────────────
+# Each booking's two answers — MOPT? and, when MOPT, a mandatory Australian Open
+# Yes / No — live in THE GOAT's Supabase (booking_rate_card), reached only
+# through the booking-rate-card edge function, exactly as checkin-booking-mode
+# is reached. No row means Standard.
+BOOKING_RATE_CARD_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/booking-rate-card"
+# Its own secret, so it can be revoked alone. Env first, then config.json, never
+# hardcoded, never sent to the browser. It ships in the DMG, so the Admin-only
+# rule for changing an existing booking's card (Q-S1-1) is enforced HERE.
+GOAT_RATE_CARD_KEY = os.environ.get("GOAT_RATE_CARD_KEY", "") or load_config().get("goat_rate_card_key", "")
+BOOKING_RATE_CARD_GET_MAX = 500   # the edge function's own limit per GET
+
+
+def current_user_id():
+    """The session's SmartStaff userID, or None. Server-side identity only:
+    set_by_user_id is never taken from the browser."""
+    raw = (current_identity() or {}).get("user_id")
+    if raw in (None, "", 0, "0"):
+        return None
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def rate_card_answers_error(mopt, australian_open):
+    """None if the two answers are storable, else a plain-words reason. The
+    edge function's 422 says the same; this saves the round trip."""
+    if not isinstance(mopt, bool):
+        return "MOPT booking must be yes or no."
+    if mopt and not isinstance(australian_open, bool):
+        return "A MOPT booking needs an Australian Open answer: Yes or No."
+    if not mopt and australian_open is not None:
+        return "Australian Open is only asked of a MOPT booking."
+    return None
+
+
+def fetch_booking_rate_cards(booking_ids):
+    """({booking_id: row}, error). Only bookings that have a row come back; a
+    booking missing from the dict is Standard. Batched at the edge function's
+    limit. Sequential, and nothing to do with SmartStaff's per-session lock."""
+    ids = []
+    for b in booking_ids:
+        try:
+            i = int(b)
+        except (TypeError, ValueError):
+            continue
+        if i > 0 and i not in ids:
+            ids.append(i)
+    if not ids:
+        return {}, None
+    if not GOAT_RATE_CARD_KEY:
+        return {}, "rate card key not configured"
+    out = {}
+    for at in range(0, len(ids), BOOKING_RATE_CARD_GET_MAX):
+        chunk = ids[at:at + BOOKING_RATE_CARD_GET_MAX]
+        try:
+            r = http.get(BOOKING_RATE_CARD_URL,
+                         params={"booking_ids": ",".join(str(i) for i in chunk)},
+                         headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY},
+                         timeout=10)
+        except Exception as e:
+            return {}, f"request failed: {type(e).__name__}"
+        if r.status_code != 200:
+            return {}, f"HTTP {r.status_code}"
+        try:
+            rows = (r.json() or {}).get("rows") or []
+        except Exception:
+            return {}, "bad JSON"
+        for row in rows:
+            try:
+                out[int(row.get("booking_id"))] = row
+            except (TypeError, ValueError):
+                continue
+    return out, None
+
+
+def save_booking_rate_card(booking_id, mopt, australian_open, source, quote_number=None):
+    """(result, error). POSTs the answers; the edge function upserts the row
+    and appends booking_rate_card_log. result carries set_code,
+    previous_set_code and logged. A 500 with logged false means the card DID
+    change and the audit row did not; the caller says so."""
+    err = rate_card_answers_error(mopt, australian_open)
+    if err:
+        return None, err
+    if not GOAT_RATE_CARD_KEY:
+        return None, "rate card key not configured"
+    # set_by_user_id is an integer in the contract. An identity whoami couldn't
+    # resolve is refused here rather than sent as null.
+    uid = current_user_id()
+    if uid is None:
+        return None, "couldn't identify who is setting the card (no SmartStaff userID)"
+    # set_code is generated by the database from the two answers: never sent.
+    body = {
+        "booking_id":      int(booking_id),
+        "mopt":            mopt,
+        "australian_open": australian_open if mopt else None,
+        "source":          source,
+        "quote_number":    quote_number,
+        "set_by_user_id":  uid,
+    }
+    try:
+        r = http.post(BOOKING_RATE_CARD_URL, json=body,
+                      headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=10)
+    except Exception as e:
+        print(f"[rate-card] save request failed: {type(e).__name__}")
+        return None, "rate card service unavailable"
+    try:
+        data = r.json() or {}
+    except Exception:
+        data = {}
+    if r.status_code == 200:
+        return data, None
+    # Saved, but booking_rate_card_log wasn't written: the card DID change.
+    # Treated as saved; every caller warns on logged false.
+    if r.status_code == 500 and data.get("logged") is False:
+        print(f"[rate-card] booking {booking_id} saved but the log write failed")
+        return data, None
+    if r.status_code == 422:
+        return None, str(data.get("error") or "The rate card answers were refused.")
+    print(f"[rate-card] save edge function returned {r.status_code}")
+    return None, f"rate card service error (HTTP {r.status_code})"
+
+
+def rate_card_label(set_code):
+    if set_code is None:
+        return "Incomplete (Australian Open not answered)"
+    return pricing_rules.SET_LABELS.get(set_code) or str(set_code)
+
+
+def rate_card_customer_note(set_code, customer_id, rules=None):
+    """§7.5: an amber note when the card and the customer's listed card
+    disagree. A note only, never a block. Silent while every set's
+    smartstaff_customer_ids is empty, which it is today."""
+    try:
+        cid = int(customer_id)
+    except (TypeError, ValueError):
+        return None
+    if rules is None:
+        rules, _ = pricing_rules.load_rules()
+    by_set = pricing_rules.customer_ids_by_set(rules)
+    listed = {code for code, ids in by_set.items() if code != pricing_rules.STANDARD and cid in ids}
+    if not any(by_set.get(c) for c in by_set if c != pricing_rules.STANDARD):
+        return None
+    if set_code == pricing_rules.STANDARD and listed:
+        return "This customer has its own rate card."
+    if set_code in (pricing_rules.MOPT, pricing_rules.MOPT_AO) and set_code not in listed:
+        return "This customer isn't listed for this rate card."
+    return None
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
 # When True, the app will try the new bulk SmartStaff endpoints first and fall
@@ -4872,6 +5039,70 @@ def validate_non_labour(nls):
 
     return errors
 
+def payload_rate_card(payload):
+    """(answers, set_code, errors) from a payload's rate_card block (C9).
+
+    1.0 / 1.1 carry no block and import as Standard. A 1.2 block must be
+    internally consistent: set_code one of the three, australian_open null
+    exactly when mopt is false, and set_code agreeing with the two answers.
+    Any mismatch is an error, never a guess."""
+    std = ({"mopt": False, "australian_open": None}, pricing_rules.STANDARD, [])
+    if not isinstance(payload, dict) or "rate_card" not in payload:
+        return std
+    rc = payload.get("rate_card")
+    if rc is None and payload.get("schema_version") != "1.2":
+        return std
+    if not isinstance(rc, dict):
+        return None, None, ["rate_card must be an object"]
+    errors = []
+    code = rc.get("set_code")
+    mopt = rc.get("mopt")
+    ao = rc.get("australian_open")
+    if code not in pricing_rules.SET_CODES:
+        errors.append(f"rate_card.set_code is {code!r}; expected standard, mopt or mopt-ao")
+    if not isinstance(mopt, bool):
+        errors.append("rate_card.mopt must be true or false")
+    elif mopt and not isinstance(ao, bool):
+        errors.append("rate_card.australian_open must be true or false on a MOPT estimate")
+    elif not mopt and ao is not None:
+        errors.append("rate_card.australian_open must be null when mopt is false")
+    if not errors:
+        implied = pricing_rules.set_for_booking({"mopt": mopt, "australian_open": ao})
+        if implied != code:
+            errors.append(f"rate_card.set_code {code!r} disagrees with its answers "
+                          f"(mopt {str(mopt).lower()}, australian_open "
+                          f"{'null' if ao is None else str(ao).lower()} means {implied!r})")
+    if errors:
+        return None, None, errors
+    return {"mopt": mopt, "australian_open": ao if mopt else None}, code, []
+
+
+def rate_card_line_errors(set_code, lines, rules=None):
+    """The §7.3 tripwire: on a customer card, every labour line's call name
+    must be one of the card's call_names. The Estimator already refuses to
+    export one that isn't, so a hit here means the file was edited.
+
+    Returns (errors, warning). If the rules can't be read the check can't run,
+    and the warning says so rather than passing silently."""
+    if set_code in (None, pricing_rules.STANDARD):
+        return [], None
+    if rules is None:
+        rules, _ = pricing_rules.load_rules()
+    if rules is None:
+        return [], ("The rate card's call names couldn't be checked: the "
+                    "Estimator's pricing rules are unavailable.")
+    names = pricing_rules.call_names_for_set(rules, set_code)
+    if not names:
+        return [f"Rate card {set_code!r} isn't in the Estimator's pricing rules."], None
+    errs = []
+    for ll in lines:
+        cn = (ll.get("call_name") or "").strip()
+        if cn not in names:
+            errs.append(f"Line {ll.get('line_id', '?')}: '{cn}' isn't on the "
+                        f"{rate_card_label(set_code)} card.")
+    return errs, None
+
+
 def validate_payload(payload):
     """Validate import payload. Returns list of error strings (empty = valid)."""
     errors = []
@@ -4880,8 +5111,8 @@ def validate_payload(payload):
         return ["Payload must be a JSON object"]
 
     # 1.2 (Estimator, 14 Oct 2026) adds a top-level rate_card block and the
-    # MOPT call names "Training" / "Field of Play". rate_card is ignored here;
-    # the call names pass through like any other name sourced from the file.
+    # MOPT call names. The block is validated by payload_rate_card; the call
+    # names are checked against the card in api_import_validate.
     if payload.get("schema_version") not in ("1.0", "1.1", "1.2"):
         errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0', '1.1' or '1.2')")
 
@@ -4934,6 +5165,9 @@ def validate_payload(payload):
 
     # Non-labour lines (schema 1.1) — looser rules, no scheduling fields required
     errors.extend(validate_non_labour(non_labour))
+
+    # Rate card (schema 1.2, C9)
+    errors.extend(payload_rate_card(payload)[2])
 
     return errors
 
@@ -11022,74 +11256,33 @@ def fetch_performance(ss, weeks):
 # `rate_row` is therefore left unset on every calc_line call below: that argument
 # existed for the ladder that no longer exists, and get_rate_row resolves by shift
 # date, which is correct.
-FORWARD_RATE_CARD_FILE = os.path.join(BASE_DIR, "estimator_rate_card.json")
-
-_fwd_card_lock = threading.Lock()
-_fwd_card      = None          # {"cfg": {...}, "captured_at": "...", "source": {...}}
+# THE CARD IS READ LIVE (D32). pricing_rules owns the read, the 12-hour cache
+# and the disk copy; nothing here caches it again.
 
 
 def load_forward_rate_card():
-    """Read, validate and cache the vendored Estimator rate card.
+    """The live pricing rules, as the forward book needs them.
 
-    Returns (card, error). `card["cfg"]` is a calc_line config with `rates`,
-    `dayStart`, `nightStart` and `minBillableHours`; `publicHolidays` is left
-    EMPTY here and filled per call from SmartStaff's own flags — see
-    price_forward_book.
+    Returns (card, error). `card["rules"]` is the validated rules-1 body;
+    `cfg_for_set` builds each card's calc_line config from it, holidays (D22)
+    and D31 windows included.
 
-    EVERY FIELD IS VALIDATED RATHER THAN DEFAULTED, because the engine's own
-    fallbacks are silent and each one moves money: _split_epoch falls back to
-    08:00/20:00 and calc_line falls back to a minimum of 0 hours. A card missing
-    minBillableHours would therefore under-bill every short call with no error
-    raised, which is precisely the failure mode this workstream keeps rejecting.
-    A card we cannot trust prices NOTHING and says so."""
-    global _fwd_card
-    with _fwd_card_lock:
-        if _fwd_card is not None:
-            return _fwd_card, None
-
-        try:
-            with io.open(FORWARD_RATE_CARD_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except Exception as e:
-            return None, f"rate card unreadable ({FORWARD_RATE_CARD_FILE}): {e}"
-
-        if not isinstance(raw, dict):
-            return None, "rate card is not an object"
-
-        # is_active mirrors serverConfig.ts loadAppConfigServer, which reads
-        # rate_cards with .eq("is_active", true). The capture keeps the inactive
-        # rows so the file is an auditable snapshot of the table; the filter is
-        # here, in one place, matching the Estimator.
-        rates = [r for r in (raw.get("rates") or []) if r.get("isActive")]
-        if not rates:
-            return None, "rate card carries no active rows"
-
-        settings = raw.get("settings") or {}
-        missing  = [k for k in ("dayStart", "nightStart", "minBillableHours")
-                    if settings.get(k) in (None, "")]
-        if missing:
-            return None, "rate card settings missing: " + ", ".join(missing)
-
-        try:
-            min_billable = float(settings["minBillableHours"])
-        except (TypeError, ValueError):
-            return None, "rate card minBillableHours is not a number"
-
-        cfg = {
-            "rates":            rates,
-            "dayStart":         settings["dayStart"],
-            "nightStart":       settings["nightStart"],
-            "minBillableHours": min_billable,
-            "publicHolidays":   [],
-        }
-
-        _fwd_card = {
-            "cfg":         cfg,
-            "captured_at": raw.get("captured_at"),
-            "source":      raw.get("source") or {},
-            "roles":       len(rates),
-        }
-        return _fwd_card, None
+    Unavailable rules (no fresh read and no disk copy) -> (None, error), and
+    the forward view says "unavailable" and prices NOTHING. pricing_rules has
+    already refused any response missing a setting, so no default reaches the
+    engine: every default moves money."""
+    rules, meta = pricing_rules.load_rules()
+    if rules is None:
+        return None, f"pricing rules unavailable: {meta.get('error') or 'unknown'}"
+    std = pricing_rules.find_set(rules, pricing_rules.STANDARD) or {}
+    return {
+        "rules":        rules,
+        "captured_at":  meta.get("fetched_at"),
+        "fetched_at":   meta.get("fetched_at"),
+        "last_changed": meta.get("last_changed"),
+        "stale":        bool(meta.get("stale")),
+        "roles":        len(std.get("rates") or []),
+    }, None
 
 
 def price_forward_book(fwd):
@@ -11127,17 +11320,52 @@ def price_forward_book(fwd):
     THE FOUR-HOUR MINIMUM APPLIES FORWARD and calc_line handles it, so
     billableHours can exceed est_length. Both are reported.
 
-    CALL NAMES ARE RESOLVED BY FOUR RULES, not by exact match — SmartStaff's call
-    name is free text where the Estimator's is a dropdown. See
-    resolve_smartstaff_call_name. Rule 3 (the prefix) is a heuristic and is
-    counted separately so the share of the book resting on it stays visible."""
+    EACH CALL PRICES ON ITS BOOKING'S CARD (C7, C8). The answers are batch-read
+    from booking-rate-card by the rows' booking_id; no row means Standard. A
+    row without a booking_id (get-performance.php before 5.76.0) prices on
+    Standard, which is what happened before. If the answers can't be read,
+    every call prices on Standard and data_quality says so: a MOPT call then
+    finds no role on Standard and is counted unpriced, never mispriced.
+
+    CALL NAMES ARE RESOLVED AGAINST THAT CARD by resolve_role: exact, then the
+    prefix before the first "-" or "/". Never a fallback to Standard Crew. The
+    prefix rule is a heuristic and is counted separately so the share of the
+    book resting on it stays visible.
+
+    HOLIDAYS ARE THE ESTIMATOR'S (D22), with the D31 windows, both in the cfg.
+    SmartStaff's is_pubhol / is_pubhol_tomorrow flags are no longer used to
+    price; where they disagree with the Estimator the call is counted in
+    pubhol_flag_mismatches (invoicing D3: flagged, never trusted)."""
     card, err = load_forward_rate_card()
     if err is not None:
         return {"unavailable": True, "error": err}
 
-    base_cfg = card["cfg"]
-    keys     = list(fwd.get("week_keys") or [])
-    calls    = list(fwd.get("calls") or [])
+    rules = card["rules"]
+    keys  = list(fwd.get("week_keys") or [])
+    calls = list(fwd.get("calls") or [])
+
+    # One cfg and one call-name index per card, built once.
+    _cards = {}
+
+    def card_for(set_code):
+        if set_code not in _cards:
+            cfg_ = pricing_rules.cfg_for_set(rules, set_code) if set_code else None
+            _cards[set_code] = (cfg_, call_name_index(cfg_) if cfg_ else {})
+        return _cards[set_code]
+
+    holiday_dates = {h.get("date") for h in (rules.get("public_holidays") or [])}
+
+    booking_ids = {c.get("booking_id") for c in calls if c.get("booking_id")}
+    answers, answers_err = ({}, None)
+    if booking_ids:
+        answers, answers_err = fetch_booking_rate_cards(booking_ids)
+        if answers_err:
+            app.logger.warning(f"[performance] booking rate cards unreadable: {answers_err}")
+            answers = {}
+    calls_by_set     = {}
+    unknown_set_calls = 0
+    pubhol_mismatches = 0
+    pubhol_mismatch_samples = []
 
     acc = {}
     for k in keys:
@@ -11220,8 +11448,32 @@ def price_forward_book(fwd):
             else:
                 w["not_started"] += 1
 
-        res_name = resolve_smartstaff_call_name(c.get("call_name"))
-        role     = res_name["role"]
+        # D22: count where SmartStaff's flags disagree with the Estimator's list.
+        # Same day both ways; the next day only when SmartStaff claims a holiday
+        # the Estimator doesn't have, since ops set the flag only for calls
+        # that run past midnight.
+        same_day_ph = c.get("date_iso") in holiday_dates
+        if bool(c.get("is_pubhol")) != same_day_ph or \
+                (c.get("is_pubhol_tomorrow") and c.get("next_date_iso") not in holiday_dates):
+            pubhol_mismatches += 1
+            if len(pubhol_mismatch_samples) < 5:
+                pubhol_mismatch_samples.append(f"call {c.get('call_id')} on {c.get('date_iso')}")
+
+        try:
+            bid = int(c.get("booking_id") or 0)
+        except (TypeError, ValueError):
+            bid = 0
+        set_code = pricing_rules.set_for_booking(answers.get(bid)) if bid else pricing_rules.STANDARD
+        cfg, name_index = card_for(set_code)
+        calls_by_set[set_code or "unknown"] = calls_by_set.get(set_code or "unknown", 0) + 1
+
+        if cfg is None:
+            # An answer that names no card we have. Unpriced, never Standard.
+            unknown_set_calls += 1
+            res_name = {"role": None, "rule": None, "ambiguous": False}
+        else:
+            res_name = resolve_role(c.get("call_name"), cfg, name_index)
+        role = res_name["role"]
 
         if res_name["rule"] == "prefix":
             prefix_resolved += 1
@@ -11237,21 +11489,6 @@ def price_forward_book(fwd):
             name = str(c.get("call_name") or "")
             unmapped_names[name] = unmapped_names.get(name, 0) + 1
             continue
-
-        # publicHolidays is built PER CALL from SmartStaff's own flags rather than
-        # from a vendored copy of the Estimator's public_holidays table: one less
-        # list to drift, and SmartStaff's is the one operations maintains.
-        # is_pubhol_tomorrow carries the FOLLOWING date, so a load-out crossing
-        # midnight into a holiday takes the penalty on the correct segment —
-        # calc_line already prices per-segment by date.
-        holidays = []
-        if c.get("is_pubhol"):
-            holidays.append({"date": c.get("date_iso")})
-        if c.get("is_pubhol_tomorrow") and c.get("next_date_iso"):
-            holidays.append({"date": c.get("next_date_iso")})
-
-        cfg = dict(base_cfg)
-        cfg["publicHolidays"] = holidays
 
         try:
             res = calc_line({
@@ -11369,9 +11606,14 @@ def price_forward_book(fwd):
 
     return {
         "rate_card": {
+            "source":                 "Estimator",
             "captured_at":            card.get("captured_at"),
+            "fetched_at":             card.get("fetched_at"),
+            "last_changed":           card.get("last_changed"),
+            "stale":                  card.get("stale"),
             "roles":                  card.get("roles"),
-            "rate_cards_last_change": (card.get("source") or {}).get("rate_cards_last_change"),
+            # Kept for any older index.html still reading it.
+            "rate_cards_last_change": card.get("last_changed"),
         },
         "weeks":  weeks,
         "totals": totals,
@@ -11395,6 +11637,15 @@ def price_forward_book(fwd):
             "forward_price_error_samples": error_samples,
             "forward_below_minimum":   below_min_calls,
             "forward_unbucketed_priced": unbucketed,
+            # D22: SmartStaff's holiday flags against the Estimator's list.
+            "pubhol_flag_mismatches":  pubhol_mismatches,
+            "pubhol_flag_mismatch_samples": pubhol_mismatch_samples,
+            # C7/C8: which card each call priced on, and whether the answers
+            # could be read at all (unreadable -> everything on Standard).
+            "forward_calls_by_rate_card": calls_by_set,
+            "forward_unknown_rate_card_calls": unknown_set_calls,
+            "booking_ids_present":     bool(booking_ids),
+            "booking_rate_cards_error": answers_err,
         },
     }
 
@@ -14035,6 +14286,13 @@ def api_import_validate():
     lines   = payload.get("labour_lines", [])
     non_labour = extract_non_labour(payload)
 
+    # C9: the card the estimate was priced on, and the §7.3 tripwire.
+    rc_answers, rc_set, _ = payload_rate_card(payload)
+    rc_errors, rc_warning = rate_card_line_errors(rc_set, lines)
+    if rc_errors:
+        return jsonify({"valid": False, "errors": rc_errors,
+                        "rate_card": {"set_code": rc_set, "label": rate_card_label(rc_set)}})
+
     # Duplicate check
     existing = find_import_log_entry(est["estimate_id"])
     if existing:
@@ -14153,6 +14411,16 @@ def api_import_validate():
             "calls":           call_previews,
             "non_labour_count": len(non_labour_previews),
             "non_labour":      non_labour_previews,
+            "rate_card": {
+                "set_code":        rc_set,
+                "label":           rate_card_label(rc_set),
+                "mopt":            rc_answers["mopt"],
+                "australian_open": rc_answers["australian_open"],
+                "from_file":       "rate_card" in payload,
+                "warning":         rc_warning,
+                "customer_note":   rate_card_customer_note(
+                    rc_set, customer_match["id"] if customer_match else None),
+            },
         },
         "matching": {
             "customer_name":          customer["company_name"],
@@ -14242,6 +14510,15 @@ def api_import_start():
     errors = validate_payload(payload)
     if errors:
         return jsonify({"error": "Payload failed validation", "errors": errors}), 400
+
+    # C9: the card, and the §7.3 tripwire again on the FINAL call names, since
+    # the operator can rename a call in the preview.
+    rc_answers, rc_set, _ = payload_rate_card(payload)
+    rc_errors, _ = rate_card_line_errors(
+        rc_set, [dict(ll, call_name=resolved_call_names.get(ll.get("line_id"), ll.get("call_name")))
+                 for ll in lines])
+    if rc_errors:
+        return jsonify({"error": "; ".join(rc_errors[:5]), "errors": rc_errors}), 400
 
     est   = payload["estimate"]
     event = payload["event"]
@@ -14395,6 +14672,21 @@ def api_import_start():
                     _import_progress["done"] += 1
                     time.sleep(1.2)
 
+            # The booking's rate card (C9). A failure here never undoes the
+            # import: the booking and its calls exist. It is LOUD instead — the
+            # result panel shows it in red until someone sets the card by hand.
+            _import_progress["rate_card"] = {"set_code": rc_set, "label": rate_card_label(rc_set)}
+            if booking_id:
+                rc_res, rc_err = save_booking_rate_card(
+                    booking_id, rc_answers["mopt"], rc_answers["australian_open"],
+                    "estimate_import", est.get("quote_number"))
+                if rc_err:
+                    _import_progress["rate_card_error"] = (
+                        f"Rate card not saved: set it on the booking. ({rc_err})")
+                elif rc_res.get("logged") is False:
+                    _import_progress["rate_card_error"] = (
+                        "Rate card saved, but the change wasn't logged. Check the booking's card.")
+
             # Step 3: record in import log
             import_log = load_import_log()
             import_log.append({
@@ -14405,6 +14697,8 @@ def api_import_start():
                 "smartstaff_booking_id": booking_id,
                 "calls_created":        _import_progress["done"],
                 "errors":               len(_import_progress["errors"]),
+                "rate_card":            rc_set,
+                "rate_card_saved":      not _import_progress.get("rate_card_error"),
             })
             save_import_log(import_log)
 
@@ -14491,11 +14785,34 @@ def api_booking_create():
         if not str(c.get("start_date", "")).strip():
             return jsonify({"error": f"Call {i+1}: date is required"}), 400
 
+    # The rate card (C7, C8). Validated BEFORE anything is created: a MOPT
+    # booking with Australian Open unanswered is refused, not saved as Standard.
+    # A body with no rate_card (an older index.html) creates a Standard booking
+    # with no row, which reads "Standard (not set)".
+    rc = body.get("rate_card")
+    if rc is not None:
+        if not isinstance(rc, dict):
+            return jsonify({"error": "rate_card must be an object"}), 400
+        rc_mopt = rc.get("mopt") is True
+        rc_ao = rc.get("australian_open") if rc_mopt else None
+        rc_err = rate_card_answers_error(rc_mopt, rc_ao)
+        if rc_err:
+            return jsonify({"error": rc_err}), 400
+
     booking.setdefault("status", 0)  # 0 = Active/open
 
     result, err = ss_create_booking_bulk(ss, booking, calls)
     if err:
         return jsonify({"error": err}), 502
+
+    if rc is not None and result.get("booking_id"):
+        saved, rc_err = save_booking_rate_card(result.get("booking_id"), rc_mopt, rc_ao, "manual")
+        set_code = pricing_rules.set_for_booking({"mopt": rc_mopt, "australian_open": rc_ao})
+        result["rate_card"] = {"set_code": set_code, "label": rate_card_label(set_code)}
+        if rc_err:
+            result["rate_card_error"] = f"Rate card not saved: set it on the booking. ({rc_err})"
+        elif saved.get("logged") is False:
+            result["rate_card_error"] = "Rate card saved, but the change wasn't logged."
     return jsonify(result)
 
 
@@ -16892,6 +17209,113 @@ def api_checkin_mode_set(booking_id):
 
     print(f"[checkin] mode write edge function returned {r.status_code}")
     return jsonify({"error": "Check-in service error"}), 502
+
+
+# ─── BOOKING RATE CARD (booking dialog) ───────────────────────────────────────
+# Same doorway discipline as the check-in mode above: both routes proxy
+# booking-rate-card server-side with GOAT_RATE_CARD_KEY, which never reaches
+# the browser.
+
+@app.route("/api/booking/<booking_id>/rate-card", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_rate_card_get(booking_id):
+    """One booking's rate card. No row reads "Standard (not set)" (§7.4), so a
+    legacy booking reads honestly. ?customer_id= adds the §7.5 note.
+
+    can_change is presentation only; the POST re-checks the cohort."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    rows, err = fetch_booking_rate_cards([bid])
+    if err:
+        print(f"[rate-card] read failed: {err}")
+        return jsonify({"error": "Rate card service unavailable"}), 502
+    row = rows.get(bid)
+    set_code = pricing_rules.set_for_booking(row)
+    return jsonify({
+        "booking_id":      bid,
+        "is_set":          row is not None,
+        "set_code":        set_code,
+        "label":           rate_card_label(set_code) + ("" if row else " (not set)"),
+        "mopt":            bool(row and row.get("mopt")),
+        "australian_open": row.get("australian_open") if row else None,
+        "source":          row.get("source") if row else None,
+        "quote_number":    row.get("quote_number") if row else None,
+        "set_at":          row.get("set_at") if row else None,
+        "can_change":      current_cohort() == "admin",
+        "customer_note":   rate_card_customer_note(set_code, request.args.get("customer_id")),
+    })
+
+
+@app.route("/api/booking/<booking_id>/rate-card", methods=["POST"])
+@require_cohort("admin")
+def api_booking_rate_card_set(booking_id):
+    """Change an existing booking's rate card. Admin only (Q-S1-1, enforced
+    here because the key ships in the DMG). The confirm dialog is the
+    browser's; the audit row is the edge function's booking_rate_card_log,
+    attributed from the server-side identity, never from the body."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    data = request.get_json(silent=True) or {}
+    mopt = data.get("mopt")
+    ao = data.get("australian_open")
+    if mopt is False:
+        ao = None
+    err = rate_card_answers_error(mopt, ao)
+    if err:
+        return jsonify({"error": err}), 422
+    res, err = save_booking_rate_card(bid, mopt, ao, "manual")
+    if err:
+        return jsonify({"error": err}), 502
+    set_code = res.get("set_code") or pricing_rules.set_for_booking({"mopt": mopt, "australian_open": ao})
+    out = {"booking_id": bid, "set_code": set_code, "label": rate_card_label(set_code),
+           "previous_set_code": res.get("previous_set_code"), "logged": res.get("logged")}
+    if res.get("logged") is False:
+        out["warning"] = "The card changed, but the change wasn't logged."
+    return jsonify(out)
+
+
+# ─── PRICING RULES (Administration › Reference data) ──────────────────────────
+
+def _pricing_rules_status(rules, meta):
+    return {
+        "source":       meta.get("source") or "Estimator",
+        "last_changed": meta.get("last_changed"),
+        "fetched_at":   meta.get("fetched_at"),
+        "stale":        bool(meta.get("stale")),
+        "unavailable":  bool(meta.get("unavailable")),
+        "error":        meta.get("error"),
+        "counts":       pricing_rules.summary(rules) if rules else None,
+    }
+
+
+@app.route("/api/pricing-rules")
+@require_cohort(*READ_ALL_COHORTS)
+def api_pricing_rules():
+    """Where the pricing rules came from and how much of them there is. Never
+    the rules themselves: customer cards stay server-side. ?force=1 skips the
+    12-hour memory cache. Always 200: stale and unavailable are states."""
+    force = request.args.get("force") in ("1", "true", "yes")
+    rules, meta = pricing_rules.load_rules(force=force)
+    return jsonify(dict(_pricing_rules_status(rules, meta), ok=True))
+
+
+@app.route("/api/pricing-rules/run-cases", methods=["POST"])
+@require_cohort("admin")
+def api_pricing_rules_run_cases():
+    """Run the Estimator's shared cases in THIS install (D33): the check that
+    a user's copy agrees with the Estimator, not just the build machine's.
+    Fetches fresh; a stale disk copy is run but labelled as such."""
+    rules, meta = pricing_rules.load_rules(force=True)
+    status = _pricing_rules_status(rules, meta)
+    if rules is None:
+        return jsonify(dict(status, ok=False, ran=0, passed=0, failed=0, results=[]))
+    res = pricing_rules.run_shared_cases(pricing_rules.test_cases(rules))
+    return jsonify(dict(status, ok=res["ok"], ran=res["ran"], passed=res["passed"],
+                        failed=res["failed"], skipped=res["skipped"],
+                        results=[{k: r[k] for k in ("code", "rule", "status", "expected", "got", "problems")}
+                                 for r in res["results"]]))
 
 
 def ss_get_crew(ss, crew_id):

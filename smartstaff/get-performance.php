@@ -955,6 +955,7 @@
 	$sql_fwd = "
 		SELECT
 			c.id                  AS call_id,
+			c.bookingID           AS booking_id,
 			c.call_name           AS call_name,
 			c.start_date          AS start_date,
 			c.start_time          AS start_time,
@@ -1046,6 +1047,9 @@
 		*/
 		$fwd_rows[] = array(
 			'call_id'            => (int) $row->call_id,
+			/* The booking, so app.py can price each call on its booking's rate */
+			/* card (C7, C8). Additive: an older app.py ignores it.             */
+			'booking_id'         => (int) $row->booking_id,
 			'call_name'          => (string) $row->call_name,
 			'week_key'           => $key,
 			'date_iso'           => date('Y-m-d', $ts),
