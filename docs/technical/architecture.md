@@ -72,7 +72,8 @@ When frozen, `BASE_DIR` is the directory of the executable — `The GOAT.app/Con
 | `timesheet_links.json` | Booking id → the Google Sheet THE GOAT generated. Machine-local, which is why a sheet made on another Mac needs finding by name | No |
 | `google_token.json` | Shared Google OAuth token as gigpower@gmail.com, refreshed in place | **Yes** |
 | `au_postcodes.json` | Postcode centroids for radius search | **Yes** |
-| `estimator_rate_card.json` | Rate card the forward revenue view prices from | **Yes** |
+| `public_holidays_cache.json` | Last good read of the Estimator's VIC public holidays | No |
+| `pricing_rules_cache.json` | Last good read of the Estimator's pricing rules (`rate-cards` edge function): cards, call names, holidays, double-penalty windows, shared test cases. A cache, never edited; the forward view uses it only when the Estimator can't be reached, and says so | No |
 | `crew_master_template.xlsx` | Template the Excel timesheet generator clones | **Yes** |
 
 The bundled files are copied in **after** PyInstaller runs and **before** codesigning — signing seals the bundle, so anything added afterwards breaks the signature.

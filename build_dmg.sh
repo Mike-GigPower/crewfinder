@@ -22,6 +22,16 @@ fi
 echo "▶ Activating venv..."
 source "${VENV}/bin/activate"
 
+# THE GOAT's pricing engine must agree with the Estimator's on every shared
+# case (D33) before anything is built. test_pricing_cases.py fetches the cases
+# FRESH (a stale disk copy fails it), reading RATE_CARDS_SECRET from env, then
+# config.json, then build_secrets.json. PRICING_TESTS_OFFLINE is never set here.
+echo "▶ Shared pricing cases (D33)..."
+if ! env -u PRICING_TESTS_OFFLINE python3 test_pricing_cases.py; then
+  echo "✗ THE GOAT's pricing engine disagrees with the Estimator. Not building."
+  exit 1
+fi
+
 echo "▶ Building app with PyInstaller..."
 rm -rf "dist/${APP_NAME}.app" "dist/${APP_NAME}" build
 
@@ -51,6 +61,7 @@ pyinstaller \
   --hidden-import timesheet_gsheet \
   --hidden-import timesheet_gsheet_read \
   --hidden-import estimator_calc \
+  --hidden-import pricing_rules \
   --hidden-import visa_extract \
   --hidden-import pypdf \
   --hidden-import docs_render \
@@ -104,16 +115,8 @@ if [ ! -f "au_postcodes.json" ]; then
 fi
 echo "▶ Bundling au_postcodes.json..."
 cp au_postcodes.json "dist/${APP_NAME}.app/Contents/MacOS/au_postcodes.json"
-# Bundle the vendored Estimator rate card beside the executable (BASE_DIR). The
-# GM Performance forward view prices the book from this file; without it the
-# forward zone soft-fails to "unavailable" while the historical view still draws,
-# so the failure is quiet — hence the hard abort here rather than a warning.
-if [ ! -f "estimator_rate_card.json" ]; then
-  echo "✗ estimator_rate_card.json not found in repo root — forward revenue would not price. Aborting."
-  exit 1
-fi
-echo "▶ Bundling estimator_rate_card.json..."
-cp estimator_rate_card.json "dist/${APP_NAME}.app/Contents/MacOS/estimator_rate_card.json"
+# No rate card is bundled: the pricing rules are read live from the Estimator
+# (pricing_rules.py, D32), and the disk cache is written at runtime, never shipped.
 # Bundle the crew master template beside the executable (BASE_DIR) too — the
 # offline Excel timesheet generator clones its Master tab from here.
 if [ ! -f "crew_master_template.xlsx" ]; then
