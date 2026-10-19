@@ -17,12 +17,19 @@
 	/*
 	/* mysql_* to match both including files. Adds to the PHP 8 backlog — convert
 	/* with them.
+	/*
+	/* NAMING: every helper here is goat_clash_* / goat_*_clashes / goat_confirmed_*.
+	/* v1 called its window helper goat_call_window, which resolve-call-contact.php
+	/* ALSO declares (unguarded, returning array('start','end')). my-call-offers.php
+	/* includes that file first, so the function_exists guard silently picked the
+	/* other version, $w[0] was undefined and every offer read clashes_with:[]
+	/* (found 19 Oct 2026). Do not reuse an existing goat_* name.
 	*/
 
-	if (!function_exists('goat_call_window'))
+	if (!function_exists('goat_clash_window'))
 	{
 		/* wall-clock start/end in the same form my-call-offers.php emits */
-		function goat_call_window($row)
+		function goat_clash_window($row)
 		{
 			$dateStr = date('Y-m-d', (int) $row->start_date);
 			$start   = strtotime($dateStr . ' ' . $row->start_time);
@@ -62,7 +69,7 @@
 
 			while ($r = mysql_fetch_object($res))
 			{
-				$w = goat_call_window($r);
+				$w = goat_clash_window($r);
 
 				$out[(int) $r->id] = array(
 					'call_id'      => (int) $r->id,
@@ -112,7 +119,7 @@
 
 			while ($c = mysql_fetch_object($res))
 			{
-				$w = goat_call_window($c);
+				$w = goat_clash_window($c);
 
 				foreach ($confirmed as $sid => $s)
 				{
