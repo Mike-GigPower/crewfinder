@@ -22,9 +22,11 @@
 	/*
 	/* WHAT THIS WRITES
 	/*   call_crew_map   : status restored per the map below, prev_status cleared,
-	/*                     cancel_reason / cancel_charge cleared -- per row
-	/*   calls           : cancelled_at, cancelled_by -> NULL, cancel_reason and
-	/*                     cancel_charge cleared, "CANCELLED - " prefix stripped
+	/*                     cancel_reason / cancel_charge / cancel_pay cleared --
+	/*                     per row; times RESET on paid-cancellation rows (below)
+	/*   calls           : cancelled_at, cancelled_by -> NULL, cancel_reason,
+	/*                     cancel_charge, cancel_pay, cancel_times_confirmed_at
+	/*                     cleared, "CANCELLED - " prefix stripped
 	/*   calendars       : NOTHING. See "no calendar entries" below.
 	/*
 	/* NOBODY COMES BACK COMMITTED
@@ -71,6 +73,16 @@
 	/*     no prev_status. Those people were added deliberately AFTER the
 	/*     cancellation and must survive reinstatement unchanged.
 	/*   - It does NOT restore a reduction. There is no reduction yet.
+	/*
+	/* PAID-CANCELLATION TIMES ARE WIPED (BRIEF-late-cancellation-pay, slice B).
+	/* A late cancellation with pay or charge on pre-fills on/off for the crew
+	/* who were Confirmed. Reinstating means the cancellation no longer stands,
+	/* so neither does the pay: those rows go back to 00:00:00 in the SAME
+	/* write that restores their status. Otherwise a reinstated call would
+	/* carry hours -- and pay -- for a cancellation that never happened.
+	/* Wiped whether Rich had edited them or not: they were times FOR THE
+	/* CANCELLATION, and the call is in the future (guarded below), so no real
+	/* worked times can exist on it yet.
 	/*
 	/* IDEMPOTENT, AND ORDERED SO A PARTIAL RUN IS SAFE. MyISAM has no transactions.
 	/* The crew sweep runs FIRST and ALWAYS -- even when calls.cancelled_at is
@@ -223,8 +235,23 @@
 	*/
 
 	$crew = array();
+	/*
+	/* cancel_pay / cancel_times_confirmed_at exist only after the
+	/* late-cancellation migration. Before it, nothing here touches them and no
+	/* row can have been pre-filled, so the old behaviour is exactly right.
+	*/
+
+	$havePay = goat_ccm_have_cancel_pay();
+
+	/*
+	/* paid_cancel is the SHARED TEST (goat_ccm_cancel_paid_sql, cohort.php),
+	/* evaluated by SQL on the row as it stands before we restore it.
+	*/
+
+	$paidSel = $havePay ? (', ' . goat_ccm_cancel_paid_sql('') . ' AS paid_cancel') : ', 0 AS paid_cancel';
+
 	$res  = mysql_query(
-		'SELECT crewmapID, userID, status, prev_status
+		'SELECT crewmapID, userID, status, prev_status' . $paidSel . '
 		   FROM call_crew_map
 		  WHERE callID = ' . $callID . ' AND status = 9'
 	);
@@ -272,14 +299,38 @@
 		/* THE RESTORE MAP. Only 5 moves; everything else returns as it was. */
 		$new = ($prev === 5) ? 0 : $prev;
 
+		$restore = array(
+			'status'        => $new,
+			'prev_status'   => 'NULL',
+			'cancel_reason' => q(''),
+			'cancel_charge' => 0
+		);
+
+		$timesReset = false;
+
+		if ($havePay)
+		{
+			$restore['cancel_pay'] = 0;
+
+			/*
+			/* Paid-cancellation row -> wipe the pre-filled times, in this same
+			/* UPDATE so status and times can never disagree after a failure.
+			/* Plain keys: $db->update() backticks field names itself.
+			*/
+
+			if ((int) $row->paid_cancel === 1)
+			{
+				$restore['on']          = q('00:00:00');
+				$restore['off']         = q('00:00:00');
+				$restore['break']       = q('00:00:00');
+				$restore['break_night'] = q('00:00:00');
+				$timesReset             = true;
+			}
+		}
+
 		$db->update(
 			'call_crew_map',
-			array(
-				'status'        => $new,
-				'prev_status'   => 'NULL',
-				'cancel_reason' => q(''),
-				'cancel_charge' => 0
-			),
+			$restore,
 			'status = 9 AND callID=' . $callID . ' AND userID=' . $userID
 		);
 
@@ -310,6 +361,7 @@
 			'prev_status'  => $prev,
 			'new_status'   => $new,
 			'unknown_prev' => $unknownPrev,
+			'times_reset'  => $timesReset,
 			'changed'      => true
 		);
 	}
@@ -329,17 +381,21 @@
 
 	$wasCancelled = ($call->cancelled_at !== null && (int) $call->cancelled_at > 0);
 
-	$db->update(
-		'calls',
-		array(
-			'cancelled_at'  => 'NULL',
-			'cancelled_by'  => 'NULL',
-			'cancel_reason' => q(''),
-			'cancel_charge' => 0,
-			'call_name'     => q($newName)
-		),
-		'id=' . $callID
+	$callSet = array(
+		'cancelled_at'  => 'NULL',
+		'cancelled_by'  => 'NULL',
+		'cancel_reason' => q(''),
+		'cancel_charge' => 0,
+		'call_name'     => q($newName)
 	);
+
+	if ($havePay)
+	{
+		$callSet['cancel_pay']                = 0;
+		$callSet['cancel_times_confirmed_at'] = 'NULL';
+	}
+
+	$db->update('calls', $callSet, 'id=' . $callID);
 
 	if (mysql_error())
 	{

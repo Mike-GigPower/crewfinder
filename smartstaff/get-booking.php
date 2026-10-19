@@ -268,6 +268,34 @@
 	               : '';
 
 	/*
+	/* Late-cancellation columns (BRIEF-late-cancellation-pay), capability-
+	/* checked through cohort.php for the same reason as the two above: absent
+	/* before the migration, and a failed query here takes the dialog down.
+	/* Absent reads as cancel_pay 0 / confirmed_at null / cancel_paid false --
+	/* "nobody is paid for this cancellation", which is what D8 did and what
+	/* an unmigrated database can still only mean.
+	*/
+
+	$havePay = goat_ccm_have_cancel_pay();
+
+	if ($havePay)
+		$callCancelSel .= ', cancel_pay, cancel_times_confirmed_at';
+
+	/*
+	/* cancel_paid uses the EDITABLE test (paid, and the call not settled
+	/* under the old rule), so this dialog and the Enter Times grid agree
+	/* about who can have times. Needs calls joined, as ccx.
+	*/
+
+	$paidSel = $havePay
+	         ? ', ' . goat_ccm_cancel_editable_sql('call_crew_map', 'ccx') . ' AS cancel_paid'
+	         : '';
+
+	$paidJoin = $havePay
+	          ? ' INNER JOIN calls ccx ON ccx.id = call_crew_map.callID'
+	          : '';
+
+	/*
 	/* Open call-outs touching this booking (brief §D7), in two booking-wide
 	/* queries so the per-call emit is a lookup:
 	/*
@@ -346,11 +374,11 @@
 
 			$crres = mysql_query("SELECT users.id, users.firstname, users.lastname, users.mobile, users.phone,
 			                             users.ein, users.email,
-			                             call_crew_map.status, call_crew_map.is_call_boss" . $prevSel . ",
+			                             call_crew_map.status, call_crew_map.is_call_boss" . $prevSel . $paidSel . ",
 			                             cca.id AS change_ack_id,
 			                             cpa.promoted_at AS promo_at,
 			                             cpa.acked_at    AS promo_acked_at
-			                      FROM call_crew_map
+			                      FROM call_crew_map" . $paidJoin . "
 			                      LEFT JOIN users ON call_crew_map.userID = users.id
 			                      LEFT JOIN call_change_ack cca
 			                             ON cca.callID = call_crew_map.callID
@@ -425,6 +453,14 @@
 						/* anyone raising the invoice asks.
 						*/
 						'prev_status'    => (isset($cr->prev_status) && $cr->prev_status !== null) ? (int) $cr->prev_status : null,
+						/*
+						/* Paid as if the call went ahead, and still open for times
+						/* (goat_ccm_cancel_editable_sql: stood down from Confirmed,
+						/* pay or charge ticked, call not settled under the old
+						/* rule). Its times reach payroll and the invoice as ordinary
+						/* hours.
+						*/
+						'cancel_paid'    => (isset($cr->cancel_paid) && (int) $cr->cancel_paid === 1),
 						'is_call_boss'   => (int) $cr->is_call_boss,
 						'change_pending' => $changePending,
 						'promo_pending'  => $promoPending,
@@ -458,6 +494,13 @@
 				'cancelled_by'   => (isset($call->cancelled_by) && $call->cancelled_by !== null) ? (int) $call->cancelled_by : null,
 				'cancel_reason'  => isset($call->cancel_reason) ? $call->cancel_reason : '',
 				'cancel_charge'  => isset($call->cancel_charge) ? (int) $call->cancel_charge : 0,
+				/*
+				/* The pay decision (D13) and the ops done-tick. While either
+				/* tick is on and confirmed_at is null, the call's pre-filled
+				/* times are still waiting for Rich to check them.
+				*/
+				'cancel_pay'                => isset($call->cancel_pay) ? (int) $call->cancel_pay : 0,
+				'cancel_times_confirmed_at' => (isset($call->cancel_times_confirmed_at) && $call->cancel_times_confirmed_at !== null) ? (int) $call->cancel_times_confirmed_at : null,
 				'feeds'              => isset($feedsOf[$callID]) ? $feedsOf[$callID] : array(),
 				'fed_by'             => isset($fedByOf[$callID]) ? $fedByOf[$callID] : array(),
 				'feeds_recommended'  => isset($feedsRec[$callID]) ? $feedsRec[$callID] : array(),

@@ -230,4 +230,180 @@
 		}
 	}
 
+	if (!function_exists('goat_ccm_cancel_paid_sql'))
+	{
+		/*
+		/* THE PAID-CANCELLATION TEST (BRIEF-late-cancellation-pay, D13/D14).
+		/* A call_crew_map row is paid (and charged) as if the call went ahead
+		/* when it was CONFIRMED at the moment of cancelling and ops answered
+		/* Yes to either question:
+		/*
+		/*   status = 9 AND prev_status = 5 AND (cancel_pay = 1 OR cancel_charge = 1)
+		/*
+		/* Derived, never stored. THIS IS THE ONLY COPY in THE GOAT's PHP --
+		/* every endpoint that asks the question builds its SQL from here. The
+		/* one deliberate duplicate is the widening in SmartStaff's own
+		/* classes/class.accounting.php, which does not include this file; if
+		/* the rule changes, change both.
+		/*
+		/* $alias is the table alias to qualify with ('ccm', 'call_crew_map'),
+		/* or '' for unqualified columns. Returns a parenthesised fragment.
+		/*
+		/* cancel_pay exists only after MIGRATION-late-cancellation-pay.sql.
+		/* Callers that must degrade before the migration check
+		/* goat_ccm_have_cancel_pay() first; this function does not.
+		*/
+		function goat_ccm_cancel_paid_sql($alias)
+		{
+			$p = ($alias === '' || $alias === null) ? '' : ($alias . '.');
+
+			return '(' . $p . 'status = 9 AND ' . $p . 'prev_status = 5 AND ('
+			     . $p . 'cancel_pay = 1 OR ' . $p . 'cancel_charge = 1))';
+		}
+
+		/*
+		/* MAY TIMES BE KEYED ON THIS ROW? The paid test, MINUS calls SETTLED
+		/* UNDER THE OLD RULE.
+		/*
+		/* A call is settled under the old rule when
+		/*   cancel_times_confirmed_at = cancelled_at
+		/* -- the migration's backfill writes exactly that on every call
+		/* cancelled before this feature, and cancel-call.php writes it on a
+		/* legacy (chargeable-only) request. Those calls were never asked the
+		/* pay question, but their Confirmed rows still pass the paid test
+		/* through cancel_charge = 1. Nobody may key times on them that would
+		/* pay crew under the new rule.
+		/*
+		/* Rich's own done-tick (update-call-times.php) writes time() at save,
+		/* which is never the cancel instant, so a call he has checked stays
+		/* editable for corrections.
+		/*
+		/* Needs calls joined: $ccmAlias for call_crew_map, $callAlias for
+		/* calls. Use this for ANY "can times be entered / is this row unlocked"
+		/* question -- update-call-times.php, get-call-times.php and
+		/* get-booking.php's cancel_paid. The bare paid test stays for
+		/* questions about the cancellation itself (uncancel-call.php's reset,
+		/* the ops lane's count, class.accounting.php).
+		*/
+		function goat_ccm_cancel_editable_sql($ccmAlias, $callAlias)
+		{
+			$c = $callAlias . '.';
+
+			return '(' . goat_ccm_cancel_paid_sql($ccmAlias)
+			     . ' AND NOT (' . $c . 'cancel_times_confirmed_at IS NOT NULL AND '
+			     . $c . 'cancel_times_confirmed_at = ' . $c . 'cancelled_at))';
+		}
+
+		/*
+		/* Has the late-cancellation migration run here? Checks BOTH tables'
+		/* new columns, because the paid test and the done-tick need all three.
+		/* Static per request.
+		*/
+		function goat_ccm_have_cancel_pay()
+		{
+			static $has = null;
+
+			if ($has === null)
+			{
+				$r1  = mysql_query("SHOW COLUMNS FROM call_crew_map LIKE 'cancel_pay'");
+				$r2  = mysql_query("SHOW COLUMNS FROM calls LIKE 'cancel_times_confirmed_at'");
+				$has = ($r1 !== false && mysql_num_rows($r1) > 0 &&
+				        $r2 !== false && mysql_num_rows($r2) > 0);
+			}
+
+			return $has;
+		}
+	}
+
+	if (!function_exists('goat_cancel_prefill_window'))
+	{
+		/*
+		/* THE LATE-CANCELLATION PRE-FILL -- one implementation, used by
+		/* cancel-call.php at cancel time and by oneoff-late-cancel-pay.php for
+		/* the calls cancelled before it existed.
+		/*
+		/* goat_cancel_prefill_window($call) -> array('on' => 'HH:MM:SS',
+		/* 'off' => 'HH:MM:SS'), or null when the call has no usable start.
+		/* $call needs start_date, start_time and est_length.
+		/*
+		/* Same arithmetic as goat_call_window() (resolve-call-contact.php): the
+		/* start instant through strtotime(), the end as start + seconds, so the
+		/* two Melbourne DST transitions are handled by PHP rather than by SQL
+		/* time arithmetic, which is an hour wrong on those days.
+		/*
+		/* est_length is DECIMAL HOURS (8.5 = 8h30m) and 0 occurs on prod, so the
+		/* 4-hour minimum is a floor under it, not a top-up on top of it. `off`
+		/* may roll past midnight; generateCallData reads off < on as next day.
+		/*
+		/* No start_date, no window: a guessed date is worse than none, and Rich
+		/* keys the times by hand.
+		*/
+		function goat_cancel_prefill_window($call)
+		{
+			if ((int) $call->start_date <= 0)
+				return null;
+
+			$startTs = strtotime(date('Y-m-d', (int) $call->start_date) . ' ' . $call->start_time);
+
+			if ($startTs === false)
+				return null;
+
+			$hours = max((double) $call->est_length, 4.0);
+			$endTs = $startTs + (int) round($hours * 3600);
+
+			return array('on' => date('H:i:s', $startTs), 'off' => date('H:i:s', $endTs));
+		}
+
+		/*
+		/* Are a row's times still blank? `on` and `off` are `time NOT NULL`, so
+		/* blank is 00:00:00; '' is tolerated for the same reason
+		/* goat_time_is_set() tolerates it.
+		*/
+		function goat_ccm_times_blank($on, $off)
+		{
+			$on  = (string) $on;
+			$off = (string) $off;
+
+			return ($on  === '' || $on  === '00:00:00') &&
+			       ($off === '' || $off === '00:00:00');
+		}
+
+		/*
+		/* Write the pre-fill onto ONE stood-down row: on/off from the window,
+		/* breaks zero. Times only -- callpaygradeID and the four rate columns
+		/* are untouched, so the crew member is paid at the grade they were
+		/* booked on.
+		/*
+		/* NEVER OVERWRITES. The blank test is in the WHERE as well as in the
+		/* callers, so real times (a call stood down mid-shift, or times Rich
+		/* keyed by hand) survive even a race. Reserved words backticked.
+		/*
+		/* Returns true when this call wrote the row, false when the row was
+		/* not blank (or not status 9), or the mysql_error() string on failure.
+		*/
+		function goat_cancel_prefill_row($callID, $userID, $win)
+		{
+			$on  = mysql_real_escape_string($win['on']);
+			$off = mysql_real_escape_string($win['off']);
+
+			$ok = mysql_query(
+				"UPDATE call_crew_map
+				    SET `on` = '" . $on . "', `off` = '" . $off . "',
+				        `break` = '00:00:00', `break_night` = '00:00:00'
+				  WHERE callID = " . (int) $callID . "
+				    AND userID = " . (int) $userID . "
+				    AND status = 9
+				    AND `on`  = '00:00:00'
+				    AND `off` = '00:00:00'"
+			);
+
+			$err = mysql_error();
+
+			if ($ok === false || $err !== '')
+				return ($err !== '') ? $err : 'pre-fill write failed';
+
+			return (mysql_affected_rows() > 0);
+		}
+	}
+
 ?>

@@ -148,6 +148,8 @@
 	/*
 	/* Recorded = not BOTH on and off at midnight. Same eligibility as
 	/* get-crew-hours.php: status 5, booking not hidden, dated today or earlier.
+	/* status = 5 is LOAD-BEARING (D18): paid cancellations are status 9 WITH
+	/* times -- paid, never worked -- and must not count toward probation.
 	/*
 	/* `timing` in the response splits the cost (candidates / rows / build) so
 	/* the next slow day says where it went instead of needing a probe.

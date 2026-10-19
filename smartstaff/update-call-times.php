@@ -52,6 +52,24 @@
 	/* Refuses a row for a crew member whose promotion off backup is unanswered
 	/* (call_promo_ack.acked_at IS NULL) -- see the check in the row loop.
 	/*
+	/* CANCELLED CREW (status 9) -- REFUSED UNLESS PAID (BRIEF-late-cancellation-
+	/* pay, slice B). A stood-down row is writable ONLY when it passes
+	/* goat_ccm_cancel_editable_sql (cohort.php): Confirmed when the call was
+	/* cancelled, ops ticked pay or charge, AND the call is not settled under
+	/* the old rule (cancel_times_confirmed_at = cancelled_at -- every call
+	/* cancelled before this feature, and every legacy chargeable-only
+	/* cancel). Every other status-9 row is refused per row with code
+	/* "cancelled"; the rest of the
+	/* save still lands. Until this, the grid refused cancelled crew only
+	/* incidentally (THE GOAT never sent them); now the server says so. A
+	/* failed check FAILS CLOSED, as the promo_pending guard does.
+	/*
+	/* DONE-TICK. On a cancelled call, once every paid-cancellation row on the
+	/* call has saved in one request with none refused, this sets
+	/* calls.cancel_times_confirmed_at -- the condition that takes the call off
+	/* the ops Times outstanding lane. Pre-filled times make the call look
+	/* keyed, so "keyed" cannot be the done-condition; Rich's save is.
+	/*
 	/* Refuses to write when the call is locked (closed/invoiced) to protect accounting.
 	/* Each crew member must already be booked on the call; a row for a crew member not
 	/* on the call is reported and skipped, never inserted. Re-running is safe
@@ -93,7 +111,22 @@
 		die('{"error":"Missing or invalid ?id"}');
 	}
 
-	$cDetails = $db->selectFirst('id, bookingID, call_locked', 'calls', 'id=' . intval($callID));
+	/*
+	/* Capability checks. cancelled_at predates this (5.24.0); the paid test
+	/* needs the late-cancellation migration. Without it, NO status-9 row can
+	/* pass the test, so every one is refused -- the fail-closed direction,
+	/* and exactly the D8 rule an unmigrated database still records.
+	*/
+
+	$haveCancelled = false;
+	$ccr = mysql_query("SHOW COLUMNS FROM calls LIKE 'cancelled_at'");
+	if ($ccr !== false && mysql_num_rows($ccr) > 0)
+		$haveCancelled = true;
+
+	$havePay = goat_ccm_have_cancel_pay();
+
+	$cDetails = $db->selectFirst('id, bookingID, call_locked' . ($haveCancelled ? ', cancelled_at' : ''),
+		'calls', 'id=' . intval($callID));
 
 	if (!$cDetails)
 	{
@@ -122,6 +155,9 @@
 
 	$results = array();
 
+	$paidSaved   = array();   /* userID => true: paid-cancellation rows written OK */
+	$paidRefused = false;     /* any paid-cancellation row failed in this request */
+
 	foreach ($payload->rows as $row)
 	{
 
@@ -142,6 +178,45 @@
 		{
 			$results[] = array('user_id' => $userID, 'ok' => false, 'error' => 'Not booked on call');
 			continue;
+		}
+
+		/* STOOD DOWN -> NO TIMES, UNLESS PAID. See the header. The paid test
+		/* is the shared SQL fragment, asked of this one row; a lookup error
+		/* refuses the row (fails closed). */
+
+		$isPaidCancel = false;
+
+		if (intval($existing->status) === 9)
+		{
+			$paidRow = false;
+			$paidErr = '';
+
+			if ($havePay)
+			{
+				/* the EDITABLE test: paid, and the call not settled under the
+				/* old rule (cancel_times_confirmed_at = cancelled_at) */
+				$paidRow = $db->selectFirst('ccm.crewmapID',
+					'call_crew_map ccm INNER JOIN calls c ON c.id = ccm.callID',
+					'ccm.callID=' . intval($callID) . ' AND ccm.userID=' . intval($userID) .
+					' AND ' . goat_ccm_cancel_editable_sql('ccm', 'c'));
+				$paidErr = mysql_error();
+			}
+
+			if ($paidErr !== '')
+			{
+				$results[] = array('user_id' => $userID, 'ok' => false,
+					'error' => 'Cancellation check failed: ' . $paidErr);
+				continue;
+			}
+
+			if (!$paidRow)
+			{
+				$results[] = array('user_id' => $userID, 'ok' => false, 'code' => 'cancelled',
+					'error' => 'Stood down from a cancelled call and not paid for it -- no times');
+				continue;
+			}
+
+			$isPaidCancel = true;
 		}
 
 		/* UNANSWERED PROMOTION -> NO TIMES. A backup promoted to Confirmed (5)
@@ -245,19 +320,76 @@
 		if ($err !== '')
 		{
 			$results[] = array('user_id' => $userID, 'ok' => false, 'error' => $err);
+
+			if ($isPaidCancel)
+				$paidRefused = true;
 		}
 		else
 		{
 			$results[] = array('user_id' => $userID, 'ok' => true, 'affected_rows' => $aff);
+
+			if ($isPaidCancel)
+				$paidSaved[$userID] = true;
 		}
 
+	}
+
+	/*
+	/* ---- DONE-TICK for a paid cancellation ----
+	/*
+	/* Set only when EVERY paid-cancellation row on the call was in this save
+	/* and landed: a partial POST (one EIN from an import, a single-row fix)
+	/* must not clear the call off the ops lane while other rows are still
+	/* unchecked. THE GOAT's Enter Times sends all of them at once.
+	/*
+	/* Paid rows that failed for any reason other than the write itself (bad
+	/* paygrade, no fields) are simply not in $paidSaved, so they hold the tick
+	/* back too. The tick is written once, and not moved by a later re-save.
+	*/
+
+	$ticked = false;
+
+	if ($havePay && $haveCancelled && isset($cDetails->cancelled_at) &&
+	    $cDetails->cancelled_at !== null && intval($cDetails->cancelled_at) > 0 &&
+	    !$paidRefused && count($paidSaved) > 0)
+	{
+		$allRes = mysql_query('SELECT ccm.userID AS userID
+			FROM call_crew_map ccm INNER JOIN calls c ON c.id = ccm.callID
+			WHERE ccm.callID=' . intval($callID) .
+			' AND ' . goat_ccm_cancel_editable_sql('ccm', 'c'));
+
+		$covered = ($allRes !== false);
+
+		if ($covered)
+		{
+			while ($ar = mysql_fetch_object($allRes))
+			{
+				if (!isset($paidSaved[intval($ar->userID)]))
+				{
+					$covered = false;
+					break;
+				}
+			}
+		}
+
+		if ($covered)
+		{
+			$db->update('calls', array('cancel_times_confirmed_at' => time()),
+				'id=' . intval($callID) . ' AND cancel_times_confirmed_at IS NULL');
+
+			if (mysql_error() === '')
+				$ticked = true;
+		}
 	}
 
 	echo json_encode(array(
 		'ok'         => true,
 		'call_id'    => intval($callID),
 		'booking_id' => intval($cDetails->bookingID),
-		'rows'       => $results
+		'rows'       => $results,
+		/* true when this save set calls.cancel_times_confirmed_at. The
+		/* booking re-read is the authority; this is a hint for the UI. */
+		'cancel_times_confirmed' => $ticked
 	));
 
 ?>

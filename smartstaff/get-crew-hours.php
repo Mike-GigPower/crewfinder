@@ -57,6 +57,10 @@
 	}
 
 	/*
+	/* status = 5 IS NOW LOAD-BEARING (D18, late-cancellation pay): a paid
+	/* cancellation is status 9 WITH times, paid but never worked, and must
+	/* never count toward probation or hours worked. Do not widen to 9.
+	/*
 	/* start_date is a unix timestamp at LOCAL midnight, so "today or earlier" is
 	/* <= today's local midnight, built in PHP with strtotime() (one clock).
 	/*

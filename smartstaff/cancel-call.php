@@ -23,11 +23,40 @@
 	/* the people who were committed are the evidence for that (design section 1).
 	/*
 	/* WHAT THIS WRITES
-	/*   calls           : cancelled_at, cancelled_by, cancel_reason, cancel_charge
-	/*                     and a "CANCELLED - " prefix on call_name
+	/*   calls           : cancelled_at, cancelled_by, cancel_reason, cancel_pay,
+	/*                     cancel_charge and a "CANCELLED - " prefix on call_name.
+	/*                     cancel_times_confirmed_at is left NULL (see PRE-FILL).
 	/*   call_crew_map   : prev_status (what they WERE), status = 9 (Cancelled),
-	/*                     cancel_reason, cancel_charge -- per row
+	/*                     cancel_reason, cancel_pay, cancel_charge -- per row
+	/*   call_crew_map   : on / off / break / break_night PRE-FILLED for rows
+	/*                     that were CONFIRMED, when either question is Yes
 	/*   calendars       : the row is removed for EVERY crew member stood down
+	/*
+	/* LATE CANCELLATION -- PAY AND CHARGE AS IF IT WENT AHEAD (D13/D14,
+	/* BRIEF-late-cancellation-pay.md). This replaces D8 ("cancelled crew are
+	/* not paid"). Ops answer TWO separate questions, because the cut-off for
+	/* paying crew and the cut-off for charging the customer can differ:
+	/*   pay_crew        -> cancel_pay     "Pay confirmed crew for this call?"
+	/*   charge_customer -> cancel_charge  "Charge the customer?"
+	/* When either is Yes, every row that was CONFIRMED at the moment of
+	/* cancelling (prev_status = 5) is a PAID CANCELLATION row -- the test is
+	/* goat_ccm_cancel_paid_sql() in cohort.php, derived, never stored -- and
+	/* flows through the normal pay and invoice path as ordinary hours (D17).
+	/* Backups, offered and declined crew are never paid for a cancellation.
+	/*
+	/* PRE-FILL. Each paid-cancellation row gets on = scheduled start, off =
+	/* start + max(est_length, 4) hours -- the 4-hour minimum -- and zero
+	/* breaks, so Rich checks them in Enter Times rather than typing them.
+	/* A row that ALREADY has times keyed (a call stood down mid-shift) is NOT
+	/* overwritten: those are real times and beat a schedule-based guess.
+	/* Pre-filled times make the call look "keyed" to goat_times_keyed(), which
+	/* is why calls.cancel_times_confirmed_at exists: the ops Times outstanding
+	/* lane holds the call until update-call-times.php sets it on Rich's save.
+	/*
+	/* ONE-SIDED ANSWERS (pay only, or charge only) still produce BOTH pay and
+	/* charge in SmartStaff's generateCallData / generateAccountingData. Until
+	/* cutover, ops zero the other side by hand (D20); THE GOAT shows the
+	/* reminder. This file records the decision faithfully and does no more.
 	/*
 	/* WHAT THIS DELIBERATELY DOES NOT DO
 	/*   - It does NOT notify anybody. The Crew Hub push lives in THE GOAT's
@@ -52,17 +81,34 @@
 	/*
 	/* Request:  POST ?id=<callID>
 	/*   {
-	/*     "scope"      : "call",              required
-	/*     "chargeable" : true | false,        REQUIRED -- see below
-	/*     "reason"     : "free text",         optional
-	/*     "confirm"    : true                 required only to override the
-	/*                                         fed-calls warning
+	/*     "scope"           : "call",          required
+	/*     "pay_crew"        : true | false,    REQUIRED -- see below
+	/*     "charge_customer" : true | false,    REQUIRED -- see below
+	/*     "reason"          : "free text",     optional
+	/*     "confirm"         : true             required only to override the
+	/*                                          fed-calls warning
 	/*   }
 	/*
-	/* chargeable has NO DEFAULT and its absence is a 422. Blackout terms vary by
-	/* customer and ops decide every time (decision D6); a defaulted toggle is a
-	/* decision nobody made, and on this field that means silently not billing for
-	/* work the customer owes for.
+	/* pay_crew and charge_customer have NO DEFAULT and the absence of either is
+	/* a 422 naming it. Blackout terms vary by customer and ops decide every time
+	/* (decisions D6, D21); a defaulted toggle is a decision nobody made, and on
+	/* these fields that means silently paying, or not paying, real money.
+	/*
+	/* BACK-COMPAT SHIM -- REMOVE IN A LATER RELEASE. Installed 5.7x DMGs send
+	/* only "chargeable". When NEITHER new field is present but chargeable is,
+	/* the request behaves EXACTLY as it did before this feature (option A,
+	/* decided after the 19 Oct test run): cancel_charge = chargeable,
+	/* cancel_pay = 0, and NOBODY is pre-filled -- even when chargeable is
+	/* true. "prefilled" in the response is empty. An old DMG never asked the
+	/* pay question, so it must not trigger the pay machinery. The call is also
+	/* SETTLED at once (cancel_times_confirmed_at = cancelled_at), which keeps
+	/* it off the ops lane and its rows closed to times -- see "mark the call".
+	/*
+	/* BEFORE THE MIGRATION (cancel_pay / cancel_times_confirmed_at absent) this
+	/* file degrades to the old behaviour: cancel_charge is recorded, nothing is
+	/* pre-filled, and a request with pay_crew = true is REFUSED (503) before any
+	/* write -- a pay decision this database cannot record must not be accepted
+	/* and silently dropped.
 	/*
 	/* PHP 5.x -- mysql_*, array(), no null-coalescing (??), no short arrays, tabs.
 	*/
@@ -126,7 +172,7 @@
 	$call = $db->selectFirst(
 		'id, bookingID, call_name, required, call_locked, invoiceID,
 		 invoice_generated, payslips_generated, cancelled_at,
-		 start_date, start_time',
+		 start_date, start_time, est_length',
 		'calls',
 		'id=' . $callID
 	);
@@ -165,18 +211,61 @@
 	}
 
 	/*
-	/* chargeable: REQUIRED, no default (decision D6). isset() on the raw payload,
-	/* not P(), because false is a legitimate value and must be distinguishable
-	/* from absent.
+	/* pay_crew / charge_customer: BOTH REQUIRED, no default (D6, D13, D21).
+	/* isset() on the raw payload, not P(), because false is a legitimate value
+	/* and must be distinguishable from absent.
 	*/
 
-	if (!isset($payload->chargeable) || $payload->chargeable === null)
+	$hasPay    = isset($payload->pay_crew)        && $payload->pay_crew        !== null;
+	$hasCharge = isset($payload->charge_customer) && $payload->charge_customer !== null;
+	$hasLegacy = isset($payload->chargeable)      && $payload->chargeable      !== null;
+
+	$legacy = false;   /* true -> the shim: old behaviour, no pre-fill */
+
+	if (!$hasPay && !$hasCharge && $hasLegacy)
 	{
-		send_status(422, 'Unprocessable Entity');
-		die('{"error":"chargeable is required (true or false). Blackout terms vary by customer, so this is always an explicit decision -- there is no default."}');
+		/* the shim -- see the header. Old D8 behaviour: charge as asked, never
+		/* pay, pre-fill nobody. */
+		$legacy     = true;
+		$payCrew    = 0;
+		$chargeable = $payload->chargeable ? 1 : 0;
+	}
+	else
+	{
+		$missing = array();
+
+		if (!$hasPay)    $missing[] = 'pay_crew';
+		if (!$hasCharge) $missing[] = 'charge_customer';
+
+		if (count($missing))
+		{
+			goat_json_error(422, implode(' and ', $missing) . (count($missing) > 1 ? ' are' : ' is')
+				. ' required (true or false). Paying crew and charging the customer are separate decisions ops make every time -- there is no default.');
+		}
+
+		$payCrew    = $payload->pay_crew        ? 1 : 0;
+		$chargeable = $payload->charge_customer ? 1 : 0;
 	}
 
-	$chargeable = $payload->chargeable ? 1 : 0;
+	/*
+	/* Migration present? Checked once. Without it there is nowhere to record
+	/* the pay decision, so pay_crew = true is refused here, before any write.
+	*/
+
+	$havePay = goat_ccm_have_cancel_pay();
+
+	if (!$havePay && $payCrew === 1)
+	{
+		goat_json_error(503, 'Paying crew for a cancelled call needs the late-cancellation migration, which has not run on this database. Nothing was changed.');
+	}
+
+	/*
+	/* Does this request run the pay machinery (pre-fill, per-crew "paid")?
+	/* Only a request that answered the two new questions. A legacy request
+	/* never does, whatever chargeable says -- see the shim in the header.
+	*/
+
+	$paidCancel = ($havePay && !$legacy && ($payCrew === 1 || $chargeable === 1));
 
 	/* ---- already cancelled: succeed, do not error ---- */
 
@@ -198,9 +287,11 @@
 	/* calls carries FOUR accounting-state flags, not one. An earlier draft of the
 	/* design guarded only call_locked, copied from how editing is gated; the prod
 	/* column read on 1 Sep showed the other three. payslips_generated is the
-	/* sharpest of them: cancelled crew are not paid (decision D8), and standing
-	/* someone down AFTER their payslip exists is a different operation with a
-	/* different fix.
+	/* sharpest of them: whether a stood-down crew member is paid is now decided
+	/* HERE, at cancel time (D13/D14), and that decision is carried to payroll by
+	/* the times this file pre-fills. Once a payslip exists that route is closed
+	/* -- the pay run has already read what it read -- so cancelling after it is
+	/* a different operation with a different fix, and stays refused.
 	/*
 	/* Name which flag tripped -- a locking problem, a billing problem and a
 	/* payroll problem need different follow-ups, and "cannot cancel" alone sends
@@ -294,7 +385,8 @@
 
 	$crew = array();
 	$res  = mysql_query(
-		'SELECT crewmapID, userID, status FROM call_crew_map WHERE callID=' . $callID
+		'SELECT crewmapID, userID, status, prev_status, `on` AS on_time, `off` AS off_time
+		   FROM call_crew_map WHERE callID=' . $callID
 	);
 
 	if ($res === false)
@@ -319,27 +411,51 @@
 	/* destroy exactly the fact the column exists to hold.
 	*/
 
-	$results = array();
-	$notify  = array();
+	/*
+	/* The pre-fill window, computed ONCE for the call, by the shared helper in
+	/* cohort.php (also used by oneoff-late-cancel-pay.php): start + max(
+	/* est_length, 4) hours through strtotime(), DST-safe. null when the call
+	/* has no usable start -- then nothing is pre-filled and Rich keys the
+	/* times by hand. The response says so per crew.
+	*/
+
+	$win        = $paidCancel ? goat_cancel_prefill_window($call) : null;
+	$prefillOn  = ($win !== null) ? $win['on']  : '';
+	$prefillOff = ($win !== null) ? $win['off'] : '';
+
+	$results  = array();
+	$notify   = array();
+	$prefills = array();
 
 	foreach ($crew as $row)
 	{
 		$userID = (int) $row->userID;
 		$prev   = (int) $row->status;
 
-		$cleared  = false;
-		$changed  = false;
+		$cleared   = false;
+		$changed   = false;
+		$prefilled = false;
+
+		/*
+		/* The column set for the stand-down write. cancel_pay only once the
+		/* migration has run -- naming it before then fails the UPDATE.
+		*/
+
+		$standDown = array(
+			'prev_status'   => $prev,
+			'status'        => 9,
+			'cancel_reason' => q($reason),
+			'cancel_charge' => $chargeable
+		);
+
+		if ($havePay)
+			$standDown['cancel_pay'] = $payCrew;
 
 		if ($prev !== 9)
 		{
 			$db->update(
 				'call_crew_map',
-				array(
-					'prev_status'   => $prev,
-					'status'        => 9,
-					'cancel_reason' => q($reason),
-					'cancel_charge' => $chargeable
-				),
+				$standDown,
 				'status <> 9 AND callID=' . $callID . ' AND userID=' . $userID
 			);
 
@@ -399,6 +515,53 @@
 
 			$cleared = ($hadCal > 0);
 		}
+		else if ($havePay)
+		{
+			/*
+			/* Already stood down by an earlier, partial run of this request.
+			/* Carry THIS request's decisions onto it so every row on the call
+			/* agrees -- prev_status is left exactly as the first run captured it.
+			*/
+
+			$db->update(
+				'call_crew_map',
+				array('cancel_pay' => $payCrew, 'cancel_charge' => $chargeable),
+				'status = 9 AND callID=' . $callID . ' AND userID=' . $userID
+			);
+
+			if (mysql_error())
+				goat_json_error(500, 'crew decision write failed: ' . mysql_error());
+		}
+
+		/*
+		/* PRE-FILL the paid-cancellation rows. "Was confirmed" is the status we
+		/* just read, or -- for a row a partial run already stood down -- the
+		/* prev_status that run captured. Only rows with NO times keyed: real
+		/* times (a call stood down mid-shift) are never overwritten by a guess.
+		/*
+		/* Times only (goat_cancel_prefill_row, cohort.php): callpaygradeID and
+		/* the four rate columns are untouched, so the crew member is paid at
+		/* the grade they were booked on.
+		*/
+
+		$wasConfirmed = ($prev === 5) ||
+		                ($prev === 9 && $row->prev_status !== null && (int) $row->prev_status === 5);
+
+		$hasTimes = !goat_ccm_times_blank($row->on_time, $row->off_time);
+
+		if ($paidCancel && $wasConfirmed && !$hasTimes && $win !== null)
+		{
+			$pf = goat_cancel_prefill_row($callID, $userID, $win);
+
+			if (is_string($pf))
+				goat_json_error(500, 'times pre-fill failed: ' . $pf);
+
+			if ($pf === true)
+			{
+				$prefilled  = true;
+				$prefills[] = $userID;
+			}
+		}
 
 		/*
 		/* Who app.py must tell. Offered crew (0/1) are included deliberately:
@@ -414,7 +577,10 @@
 			'user_id'          => $userID,
 			'prev_status'      => $prev,
 			'changed'          => $changed,
-			'calendar_cleared' => $cleared
+			'calendar_cleared' => $cleared,
+			'paid'             => ($paidCancel && $wasConfirmed),
+			'prefilled'        => $prefilled,
+			'kept_times'       => ($paidCancel && $wasConfirmed && $hasTimes)
 		);
 	}
 
@@ -437,17 +603,36 @@
 	$prefix  = 'CANCELLED - ';
 	$newName = (strpos($name, $prefix) === 0) ? $name : ($prefix . $name);
 
-	$db->update(
-		'calls',
-		array(
-			'cancelled_at'  => $now,
-			'cancelled_by'  => $actorID,
-			'cancel_reason' => q($reason),
-			'cancel_charge' => $chargeable,
-			'call_name'     => q($newName)
-		),
-		'id=' . $callID
+	$callSet = array(
+		'cancelled_at'  => $now,
+		'cancelled_by'  => $actorID,
+		'cancel_reason' => q($reason),
+		'cancel_charge' => $chargeable,
+		'call_name'     => q($newName)
 	);
+
+	/*
+	/* cancel_times_confirmed_at is written explicitly, never left alone: NULL
+	/* for a request that answered the two questions, so a call reinstated and
+	/* cancelled again goes back on the ops lane; cancelled_at for a legacy one.
+	*/
+
+	/*
+	/* A LEGACY request (the shim) is SETTLED UNDER THE OLD RULE in this same
+	/* write: cancel_times_confirmed_at = cancelled_at, exactly as the
+	/* migration's backfill settles every call cancelled before this feature.
+	/* That equality is what keeps the call off the ops lane and what
+	/* goat_ccm_cancel_editable_sql() reads to refuse times on it, so nobody
+	/* can key times that would pay crew the old DMG never asked about.
+	*/
+
+	if ($havePay)
+	{
+		$callSet['cancel_pay']                = $payCrew;
+		$callSet['cancel_times_confirmed_at'] = $legacy ? $now : 'NULL';
+	}
+
+	$db->update('calls', $callSet, 'id=' . $callID);
 
 	if (mysql_error())
 	{
@@ -486,7 +671,14 @@
 		'start'        => $startIso,
 		'cancelled_at' => $now,
 		'cancelled_by' => $actorID,
+		'pay_crew'        => ($payCrew === 1),
+		'charge_customer' => ($chargeable === 1),
+		/* kept for installed 5.7x DMGs, which read it -- same value as charge_customer */
 		'chargeable'   => $chargeable,
+		/* userIDs whose times were pre-filled, for the result panel */
+		'prefilled'    => $prefills,
+		'prefill_on'   => $prefillOn,
+		'prefill_off'  => $prefillOff,
 		'reason'       => $reason,
 		'crew'         => $results,
 		'notify'       => $notify,

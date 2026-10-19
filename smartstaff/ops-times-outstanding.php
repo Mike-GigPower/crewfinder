@@ -134,23 +134,34 @@
 	/*
 	/* ---- 1 of 6: CANDIDATE CALLS ----
 	/*
-	/* CANCELLED CALLS ARE EXCLUDED -- as DEFENCE IN DEPTH, not as the only
-	/* guard. The roster read at 3 of 6 is `ccm.status = 5`, and every row on a
-	/* cancelled call is status 9, so otl_needing() already returns 0 for it and
-	/* the call is dropped at 5 of 6 without this clause. That protection is
-	/* INCIDENTAL and would disappear the day the roster predicate widens. This
-	/* states the intent directly, and drops the row before the sibling, roster,
-	/* submission and boss queries run on it.
+	/* CANCELLED CALLS ARE EXCLUDED -- EXCEPT A PAID CANCELLATION AWAITING
+	/* RICH (BRIEF-late-cancellation-pay, slice B). This is now a DELIBERATE
+	/* rule, not defence in depth. A cancelled call stays on the lane only
+	/* when ops ticked pay or charge (so confirmed crew had times pre-filled
+	/* and will be paid as ordinary hours) AND calls.cancel_times_confirmed_at
+	/* is still NULL. update-call-times.php sets that tick when Rich saves
+	/* every paid row, and the call leaves the lane.
+	/*
+	/* WHY NOT THE KEYED TEST. Pre-filled times ARE keyed, so 3 of 6 would
+	/* call every paid row done the moment the cancel landed and drop the call
+	/* at 5 of 6 before anybody looked. For a cancelled call, "needing" counts
+	/* the paid-cancellation rows (goat_ccm_cancel_paid_sql) instead, and the
+	/* done-condition is the tick -- see 3 and 5 of 6.
+	/*
+	/* Every other cancelled call -- no pay, no charge, or already checked --
+	/* is excluded here, before the sibling, roster, submission and boss
+	/* queries run on it.
 	/*
 	/* No capability guard, unlike get-calls-bulk.php: the file rule above is
 	/* that a failed lookup is a 500, never an empty lane. A missing column here
 	/* SHOULD break loudly rather than report the all-clear this lane exists to
-	/* earn.
+	/* earn. Deploy this file AFTER the migration.
 	/*
-	/* The SIBLING path (2 of 6) needs nothing: the roster read is
+	/* The SIBLING path (2 of 6) is unchanged: the confirmed roster read is
 	/* `ccm.status = 5`, every row on a cancelled call is status 9, so
 	/* $confirmedOf is never populated for it and otl_needing() returns 0. A
-	/* cancelled sibling cannot raise sibling_times_pending.
+	/* cancelled sibling cannot raise sibling_times_pending -- correctly, since
+	/* derive_times() has no hours of its to wait for.
 	/*
 	/* SQL PREFILTERS COARSELY ON start_date; PHP FILTERS EXACTLY ON THE END,
 	/* for the reason calls-awaiting-times.php sets out at length: start_date is
@@ -173,6 +184,7 @@
 			c.start_time   AS start_time,
 			c.est_length   AS est_length,
 			c.times_filled AS times_filled,
+			c.cancelled_at AS cancelled_at,
 			c.bookingID    AS booking_id,
 			b.name         AS booking_name,
 			v.venue        AS venue_name
@@ -181,7 +193,9 @@
 		LEFT JOIN venues   v ON v.id = b.venueID
 		WHERE c.start_date >= " . (int) $scan_from . "
 		  AND c.start_date <= " . (int) $until . "
-		  AND c.cancelled_at IS NULL
+		  AND (c.cancelled_at IS NULL
+		       OR ((c.cancel_pay = 1 OR c.cancel_charge = 1)
+		           AND c.cancel_times_confirmed_at IS NULL))
 		ORDER BY c.start_date ASC, c.start_time ASC
 	";
 
@@ -224,6 +238,7 @@
 			'start'        => date('Y-m-d H:i', $win['start']),
 			'end'          => date('Y-m-d H:i', $win['end']),
 			'end_unix'     => $win['end'],
+			'cancelled'    => ($row->cancelled_at !== null && (int) $row->cancelled_at > 0),
 		);
 	}
 
@@ -341,6 +356,43 @@
 	                          WHERE ccm.callID IN (" . $allList . ")
 	                            AND ccm.status = 5");
 
+	/*
+	/* PAID-CANCELLATION ROWS on the cancelled candidates -- a separate read,
+	/* so the confirmed roster above (and with it every sibling and keyed
+	/* test) is untouched. Keyed-ness is deliberately NOT asked: pre-filled
+	/* times are keyed by construction. Until the tick, every paid row needs
+	/* Rich. A failed lookup is a 500, per the file rule.
+	*/
+
+	$cancelledIDs = array();
+
+	foreach ($callInfo as $cid => $info)
+	{
+		if ($info['cancelled'])
+			$cancelledIDs[] = (int) $cid;
+	}
+
+	$paidOf = array();   /* callID -> count of paid-cancellation rows */
+
+	if (count($cancelledIDs) > 0)
+	{
+		$paidRes = mysql_query("SELECT ccm.callID AS call_id, COUNT(*) AS n
+		                        FROM call_crew_map ccm
+		                        WHERE ccm.callID IN (" . implode(',', $cancelledIDs) . ")
+		                          AND " . goat_ccm_cancel_paid_sql('ccm') . "
+		                        GROUP BY ccm.callID");
+
+		if ($paidRes === false)
+		{
+			goat_json_error(500, 'paid-cancellation query failed: ' . mysql_error());
+		}
+
+		while ($prow = mysql_fetch_object($paidRes))
+		{
+			$paidOf[(int) $prow->call_id] = (int) $prow->n;
+		}
+	}
+
 	if ($rosterRes === false)
 	{
 		goat_json_error(500, 'roster query failed: ' . mysql_error());
@@ -439,9 +491,17 @@
 		);
 	}
 
-	foreach ($callInfo as $cid => $ignored)
+	foreach ($callInfo as $cid => $info)
 	{
-		$needing = otl_needing($cid, $confirmedOf, $keyedOf, $submittedOf);
+		/*
+		/* A cancelled candidate (paid, unticked -- 1 of 6) needs every one of
+		/* its paid-cancellation rows. None at all -- nobody was Confirmed when
+		/* it was cancelled -- means nothing to pay or check, and it drops.
+		*/
+
+		$needing = $info['cancelled']
+		         ? (isset($paidOf[$cid]) ? $paidOf[$cid] : 0)
+		         : otl_needing($cid, $confirmedOf, $keyedOf, $submittedOf);
 
 		if ($needing <= 0)
 		{
@@ -586,6 +646,22 @@
 		else                        $status = 'not_submitted';
 
 		/*
+		/* A PAID CANCELLATION IS awaiting_review, with NO BOSSES. Nobody worked
+		/* it, so there is no boss to ring and nothing is coming on its own --
+		/* but it is not no_boss either, which says "ring somebody who was
+		/* there". The times are already on the screen, pre-filled; Rich
+		/* checking them IS the review. Kept within the three statuses so the
+		/* total = sum(status) identity below still holds; the row carries
+		/* `cancelled: true` so THE GOAT can label it.
+		*/
+
+		if ($info['cancelled'])
+		{
+			$status = 'awaiting_review';
+			$bosses = array();
+		}
+
+		/*
 		/* AGE from the call's scheduled END, in the same buckets the other
 		/* lanes use (24h / 72h), so a bucket means the same thing on every
 		/* lane of the dashboard.
@@ -614,6 +690,11 @@
 
 		$confirmed = isset($confirmedOf[$cid]) ? count($confirmedOf[$cid]) : 0;
 
+		/* nobody on a cancelled call is status 5 any more; the people it is
+		/* about are the ones who were, and are being paid -- see 3 of 6 */
+		if ($info['cancelled'])
+			$confirmed = (int) $info['needing'];
+
 		$rows[] = array(
 			'call_id'      => $info['call_id'],
 			'booking_id'   => $info['booking_id'],
@@ -629,7 +710,9 @@
 			'age_bucket'   => $age_bucket,
 			'bosses'       => array_values($bosses),
 			'sibling_times_pending' => ($sibPending > 0),
-			'sibling_pending_count' => $sibPending
+			'sibling_pending_count' => $sibPending,
+			/* a paid cancellation awaiting Rich's check -- label it "Cancelled - paid" */
+			'cancelled'    => $info['cancelled']
 		);
 
 		$c_status[$status]++;
