@@ -21,6 +21,7 @@
 	/* the boss of any call that does not happen to overlap its boss call.
 	*/
 	include_once('supervision-graph.php');
+	include_once('offer-clash.php');
 
 	/*
 	/* JSON response */
@@ -178,6 +179,17 @@
 		}
 	}
 
+	/* Confirmed shifts, for the per-offer clash lock (DESIGN-overlapping-offer-
+	/* accept). On a query failure every offer reads clashes_with:[] and the
+	/* server-side guard in respond-to-call.php still refuses a clashing accept. */
+
+	$confirmedShifts = goat_confirmed_shifts($userID);
+
+	if ($confirmedShifts === false)
+	{
+		$confirmedShifts = array();
+	}
+
 	$offers = array();
 
 	foreach ($rows as $r)
@@ -209,6 +221,19 @@
 		$row = $r['row'];
 		$lg  = $r['lg'];
 
+		$clashOut = array();
+
+		foreach (goat_offer_clashes($pkg, $confirmedShifts) as $c)
+		{
+			$clashOut[] = array(
+				'call_id'      => $c['call_id'],
+				'call_name'    => $c['call_name'],
+				'booking_name' => $c['booking_name'],
+				'start'        => date('Y-m-d\TH:i:s', $c['startUnix']),
+				'end'          => date('Y-m-d\TH:i:s', $c['endUnix'])
+			);
+		}
+
 		$offers[] = array(
 			'call_id'      => (int) $row->call_id,
 			'booking_id'   => (int) $row->booking_id,
@@ -230,6 +255,7 @@
 			'status'       => (int) $row->status,
 			'is_call_boss' => (int) $row->is_call_boss,
 			'callout'      => isset($calloutCalls[(int) $row->call_id]) ? true : false,
+			'clashes_with' => $clashOut,
 			/* contact hierarchy — everything emitted here is upcoming by
 			   construction (pass 2 drops started offers and started packages) */
 			'contacts'     => goat_resolve_call_contact((int) $row->call_id, $userID)

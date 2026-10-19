@@ -8,6 +8,7 @@
 	include('cohort.php');
 	include('call-graph.php');
 	include_once('callout.php');
+	include_once('offer-clash.php');
 
 	/*
 	/* JSON response */
@@ -317,6 +318,67 @@
 	{
 		http_response_code(503);
 		die('{"ok":false,"error":"busy","retry":true}');
+	}
+
+	/*
+	/* CLASH GUARD — accepts only (DESIGN-overlapping-offer-accept §2).
+	/*
+	/* Ops send overlapping offers on purpose so the crew member can pick one.
+	/* Refuse an accept that would overlap a shift they are already CONFIRMED
+	/* on. Inside the capacity lock, so two fast taps on overlapping offers
+	/* are serialised and the second one sees the first one's status 5.
+	/*
+	/* Applies even when the call would only have produced a Backup (7) — a
+	/* backup can be promoted later, which would re-create the clash (D7).
+	/*
+	/* A query failure refuses the accept. It must never proceed unchecked.
+	/*
+	/* Same 200 + ok:false shape as the "already started" refusal, so a Crew
+	/* Hub that doesn't know about `clash` still shows `error`.
+	*/
+
+	if ($callStatus == 5)
+	{
+		$confirmedShifts = goat_confirmed_shifts($userID);
+
+		if ($confirmedShifts === false)
+		{
+			goat_capacity_unlock();
+			http_response_code(500);
+			die('{"ok":false,"error":"Could not check your other shifts. Please try again."}');
+		}
+
+		$clashes = goat_offer_clashes($callIDs, $confirmedShifts);
+
+		if (count($clashes))
+		{
+			goat_capacity_unlock();
+
+			$first = $clashes[0];
+			$when  = date('D j M, H:i', $first['startUnix']) . '–' . date('H:i', $first['endUnix']);
+
+			$with = array();
+
+			foreach ($clashes as $c)
+			{
+				$with[] = array(
+					'call_id'      => $c['call_id'],
+					'call_name'    => $c['call_name'],
+					'booking_name' => $c['booking_name'],
+					'start'        => date('Y-m-d\TH:i:s', $c['startUnix']),
+					'end'          => date('Y-m-d\TH:i:s', $c['endUnix'])
+				);
+			}
+
+			echo json_encode(array(
+				'ok'           => false,
+				'clash'        => true,
+				'error'        => "You're already confirmed on " . html_entity_decode($first['call_name'], ENT_QUOTES, 'UTF-8')
+				                . ' (' . $when . ') at that time, so you can\'t accept this one too.',
+				'clashes_with' => $with
+			));
+			exit;
+		}
 	}
 
 	/*
