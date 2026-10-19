@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.2",
+  "exported_at": "2026-10-16T05:27:07.046Z",
+  "rate_card": {
+    "set_code": "mopt-ao",
+    "mopt": true,
+    "australian_open": true
+  },
+  "estimate": {
+    "estimate_id": "425856f0-8b54-4747-b7b6-54132ca8767d",
+    "quote_number": "GP-000249",
+    "version": 1,
+    "status": "Approved",
+    "created_at": "2026-10-16T05:26:45.624+00:00",
+    "approved_at": "2026-10-16T05:27:07.046Z",
+    "created_by": "Test Staff",
+    "approved_by": "staff@example.com"
+  },
+  "customer": {
+    "company_name": "MOPT",
+    "contact_name": "Test Contact",
+    "contact_email": "test@example.com",
+    "contact_phone": "0400 000 000"
+  },
+  "event": {
+    "event_name": "Untitled EstimateTest MOPT",
+    "event_date": "2026-10-19",
+    "venue_name": "RCA",
+    "venue_address": "",
+    "onsite_contact": "",
+    "onsite_contact_phone": "",
+    "event_notes": "",
+    "access_notes": "",
+    "operational_notes": ""
+  },
+  "labour_lines": [
+    {
+      "line_id": "ll_001",
+      "crew_type": "Australian Open Event Operations",
+      "call_name": "Australian Open Event Operations",
+      "quantity": 1,
+      "date": "2026-10-19",
+      "start_time": "08:00",
+      "duration_hours": 4,
+      "shift_notes": null,
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    }
+  ],
+  "non_labour_lines": []
+}

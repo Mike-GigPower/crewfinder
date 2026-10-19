@@ -1,0 +1,135 @@
+{
+  "schema_version": "1.2",
+  "exported_at": "2026-10-16T05:24:41.198Z",
+  "rate_card": {
+    "set_code": "standard",
+    "mopt": false,
+    "australian_open": null
+  },
+  "estimate": {
+    "estimate_id": "1ab6152e-1c5a-4726-9895-2da0b416fc43",
+    "quote_number": "GP-000247",
+    "version": 2,
+    "status": "Approved",
+    "created_at": "2026-10-16T00:22:49.516+00:00",
+    "approved_at": "2026-10-16T05:24:41.198Z",
+    "created_by": "Test Staff",
+    "approved_by": "staff@example.com"
+  },
+  "customer": {
+    "company_name": "TEG Dainty",
+    "contact_name": "Test Contact",
+    "contact_email": "test@example.com",
+    "contact_phone": "0400 000 000"
+  },
+  "event": {
+    "event_name": "Henry Lau - Forum",
+    "event_date": "2026-10-22",
+    "venue_name": "Forum Melbourne",
+    "venue_address": "",
+    "onsite_contact": "",
+    "onsite_contact_phone": "",
+    "event_notes": "",
+    "access_notes": "",
+    "operational_notes": ""
+  },
+  "labour_lines": [
+    {
+      "line_id": "ll_001",
+      "crew_type": "Crew Boss",
+      "call_name": "Crew Boss",
+      "quantity": 1,
+      "date": "2026-10-22",
+      "start_time": "10:30",
+      "duration_hours": 5,
+      "shift_notes": null,
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    },
+    {
+      "line_id": "ll_002",
+      "crew_type": "Standard Crew",
+      "call_name": "Load In",
+      "quantity": 20,
+      "date": "2026-10-22",
+      "start_time": "10:30",
+      "duration_hours": 5,
+      "shift_notes": null,
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    },
+    {
+      "line_id": "ll_003",
+      "crew_type": "Show Crew",
+      "call_name": "Show Call",
+      "quantity": 4,
+      "date": "2026-10-22",
+      "start_time": "16:00",
+      "duration_hours": 4,
+      "shift_notes": null,
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    },
+    {
+      "line_id": "ll_004",
+      "crew_type": "Show Crew",
+      "call_name": "FOH Spot",
+      "quantity": 5,
+      "date": "2026-10-22",
+      "start_time": "16:00",
+      "duration_hours": 4,
+      "shift_notes": "2 FOH, 3 Robo",
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    },
+    {
+      "line_id": "ll_005",
+      "crew_type": "Show Crew",
+      "call_name": "Show Call",
+      "quantity": 4,
+      "date": "2026-10-23",
+      "start_time": "12:00",
+      "duration_hours": 9,
+      "shift_notes": null,
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    },
+    {
+      "line_id": "ll_006",
+      "crew_type": "Show Crew",
+      "call_name": "FOH Spot",
+      "quantity": 5,
+      "date": "2026-10-23",
+      "start_time": "12:00",
+      "duration_hours": 9,
+      "shift_notes": "2 FOH, 3 Robo",
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    },
+    {
+      "line_id": "ll_007",
+      "crew_type": "Crew Boss",
+      "call_name": "Crew Boss",
+      "quantity": 1,
+      "date": "2026-10-23",
+      "start_time": "22:00",
+      "duration_hours": 4,
+      "shift_notes": null,
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    },
+    {
+      "line_id": "ll_008",
+      "crew_type": "Standard Crew",
+      "call_name": "Load Out",
+      "quantity": 20,
+      "date": "2026-10-23",
+      "start_time": "22:00",
+      "duration_hours": 4,
+      "shift_notes": null,
+      "public_holiday_same_day": false,
+      "public_holiday_next_day": false
+    }
+  ],
+  "non_labour_lines": []
+}
