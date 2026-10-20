@@ -753,6 +753,21 @@ BOOKING_RATE_CARD_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/b
 GOAT_RATE_CARD_KEY = os.environ.get("GOAT_RATE_CARD_KEY", "") or load_config().get("goat_rate_card_key", "")
 BOOKING_RATE_CARD_GET_MAX = 500   # the edge function's own limit per GET
 
+# The error the rate card and call-types helpers return when there is no key,
+# so no request was sent. A run from source has none unless config.json or the
+# environment carries it: build_secrets.json only reaches the DMG's config.
+RATE_CARD_KEY_MISSING = "rate card key not configured"
+
+
+def rate_card_read_failure(err, service="Rate card service"):
+    """(message, status) for a failed booking-rate-card / call-types read.
+    A missing key is said plainly, NOT as "service unavailable": nothing left
+    this machine, so the service's own logs would show nothing wrong."""
+    if err == RATE_CARD_KEY_MISSING:
+        return ("THE GOAT has no rate card key on this machine (goat_rate_card_key "
+                "in config.json, or GOAT_RATE_CARD_KEY), so nothing was sent.", 503)
+    return (f"{service} unavailable", 502)
+
 
 def current_user_id():
     """The session's SmartStaff userID, or None. Server-side identity only:
@@ -793,7 +808,7 @@ def fetch_booking_rate_cards(booking_ids):
     if not ids:
         return {}, None
     if not GOAT_RATE_CARD_KEY:
-        return {}, "rate card key not configured"
+        return {}, RATE_CARD_KEY_MISSING
     out = {}
     for at in range(0, len(ids), BOOKING_RATE_CARD_GET_MAX):
         chunk = ids[at:at + BOOKING_RATE_CARD_GET_MAX]
@@ -832,7 +847,7 @@ def save_booking_rate_card(booking_id, mopt, australian_open, source, quote_numb
     if err:
         return None, err
     if not GOAT_RATE_CARD_KEY:
-        return None, "rate card key not configured"
+        return None, RATE_CARD_KEY_MISSING
     # set_by_user_id is an integer in the contract. An identity whoami couldn't
     # resolve is refused here rather than sent as null.
     uid = set_by if set_by is not None else current_user_id()
@@ -927,7 +942,7 @@ def fetch_call_types(booking_ids=None, call_ids=None):
     if not ids:
         return out, None
     if not GOAT_RATE_CARD_KEY:
-        return out, "rate card key not configured"
+        return out, RATE_CARD_KEY_MISSING
     for at in range(0, len(ids), cap):
         chunk = ids[at:at + cap]
         try:
@@ -955,7 +970,7 @@ def _post_call_types(path, body, what):
     the change DID take and its log row didn't; treated as saved, and every
     caller warns on logged false, as with the rate card."""
     if not GOAT_RATE_CARD_KEY:
-        return None, "rate card key not configured"
+        return None, RATE_CARD_KEY_MISSING
     try:
         r = http.post(CALL_TYPES_URL + path, json=body,
                       headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=10)
@@ -15458,7 +15473,8 @@ def api_booking_add_call(booking_id):
         return jsonify({"error": "booking_id must be an integer"}), 400
     set_code, err = booking_set_code(bid)
     if err:
-        return jsonify({"error": "Rate card service unavailable, so the Call Type can't be checked."}), 502
+        msg, status = rate_card_read_failure(err)
+        return jsonify({"error": msg + " The Call Type can't be checked."}), status
     if set_code is None:
         return jsonify({"error": "This booking's rate card is incomplete. Set it first."}), 409
     rules, _ = pricing_rules.load_rules()
@@ -17542,7 +17558,8 @@ def api_booking_rate_card_get(booking_id):
     rows, err = fetch_booking_rate_cards([bid])
     if err:
         print(f"[rate-card] read failed: {err}")
-        return jsonify({"error": "Rate card service unavailable"}), 502
+        msg, status = rate_card_read_failure(err)
+        return jsonify({"error": msg}), status
     row = rows.get(bid)
     set_code = pricing_rules.set_for_booking(row)
     return jsonify({
@@ -17612,12 +17629,14 @@ def api_booking_call_types(booking_id):
     rows, err = fetch_booking_rate_cards([bid])
     if err:
         print(f"[call-types] rate card read failed: {err}")
-        return jsonify({"error": "Rate card service unavailable"}), 502
+        msg, status = rate_card_read_failure(err)
+        return jsonify({"error": msg}), status
     set_code = pricing_rules.set_for_booking(rows.get(bid))
     stored, err = fetch_call_types(booking_ids=[bid])
     if err:
         print(f"[call-types] read failed: {err}")
-        return jsonify({"error": "Call types service unavailable"}), 502
+        msg, status = rate_card_read_failure(err, "Call types service")
+        return jsonify({"error": msg}), status
     rules, _ = pricing_rules.load_rules()
     out = {}
     for c in calls:
@@ -17658,7 +17677,9 @@ def api_call_type_options():
             return jsonify({"error": "booking_id must be an integer"}), 400
         set_code, err = booking_set_code(b)
         if err:
-            return jsonify({"error": "Rate card service unavailable"}), 502
+            print(f"[call-types] rate card read failed: {err}")
+            msg, status = rate_card_read_failure(err)
+            return jsonify({"error": msg}), status
         if set_code is None:
             return jsonify({"error": "This booking's rate card is incomplete (Australian Open "
                                      "not answered). Set it on the booking first."}), 409
@@ -17693,11 +17714,11 @@ def _call_pricing_context(ss, booking_id, call_id):
     set_code, err = booking_set_code(bid)
     if err:
         print(f"[call-types] rate card read failed: {err}")
-        return None, ("Rate card service unavailable", 502)
+        return None, rate_card_read_failure(err)
     stored, err = fetch_call_types(call_ids=[call_id])
     if err:
         print(f"[call-types] read failed: {err}")
-        return None, ("Call types service unavailable", 502)
+        return None, rate_card_read_failure(err, "Call types service")
     rules, _ = pricing_rules.load_rules()
     cid = int(call_id)
     return {
