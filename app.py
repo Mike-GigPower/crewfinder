@@ -181,7 +181,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.76.0"
+APP_VERSION    = "5.77.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -15777,7 +15777,7 @@ def ss_uncancel_call(ss, call_id):
     """Reinstate a cancelled call via uncancel-call.php. Returns
     (body, http_status, None), or (None, 0, error) when the request itself failed.
 
-    No payload: unlike cancellation, which needs a chargeable ruling and a reason,
+    No payload: unlike cancellation, which needs pay and charge rulings and a reason,
     reinstating restores a state that was already recorded. There is nothing to
     decide, so there is nothing to send.
 
@@ -15846,7 +15846,8 @@ def ss_cancel_call(ss, call_id, payload):
     UNLIKE ss_remove_crew_from_call, a non-200 is NOT collapsed into an error
     string. cancel-call.php answers with bodies worth reading at every status:
     409 names WHICH accounting flag blocked the cancellation (lock, invoice,
-    payslips), 422 says chargeable was missing, and a 200 carrying ok:false is
+    payslips), 422 names whichever of pay_crew / charge_customer was missing,
+    503 refuses a pay decision on an unmigrated database, and a 200 carrying ok:false is
     the fed-calls warning with its crew counts. Flattening those to "502 error"
     would throw away the only thing ops can act on."""
     url = f"{BASE_URL}/ajax/crew/cancel-call.php"
@@ -15867,12 +15868,21 @@ def api_call_cancel(booking_id, call_id):
     Cancelled (status 9) rather than deleted, and everything that reads calls
     skips it. booking_id is taken for URL symmetry with the other call routes.
 
-    Body is passed through to the endpoint verbatim:
-        {"scope": "call", "chargeable": true|false, "reason": "...", "confirm": true}
+    Body is passed through to the endpoint, minus `chargeable`:
+        {"scope": "call", "pay_crew": true|false, "charge_customer": true|false,
+         "reason": "...", "confirm": true}
 
-    `chargeable` is REQUIRED and has no default -- blackout terms vary by
-    customer, so it is a decision ops make every time. The endpoint 422s without
-    it, and this route does not paper over that.
+    `pay_crew` and `charge_customer` are BOTH REQUIRED and have no default
+    (late cancellation, D13/D21) -- the cut-off for paying crew and the cut-off
+    for charging the customer can differ, so they are two decisions ops make
+    every time. The endpoint 422s naming whichever is missing, and this route
+    does not paper over that.
+
+    `chargeable` IS NEVER SENT. cancel-call.php still accepts it alone, for
+    installed 5.7x DMGs, and treats such a request as the OLD rule: charge as
+    asked, pay nobody, pre-fill nothing, and settle the call at once. Forwarding
+    it from this build could only ever turn a missing answer into that legacy
+    path, so it is dropped here and the 422 reaches the dialog instead.
 
     THE RESPONSE CARRIES A `notify` ARRAY OF userIDs, AND NOTHING HAS BEEN SENT
     TO THEM. There is no /api/push/cancel on the portal yet (see the module
@@ -15884,7 +15894,8 @@ def api_call_cancel(booking_id, call_id):
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
 
-    payload = request.get_json(silent=True) or {}
+    payload = dict(request.get_json(silent=True) or {})
+    payload.pop("chargeable", None)
 
     body, status, err = ss_cancel_call(ss, call_id, payload)
 

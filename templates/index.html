@@ -20592,20 +20592,41 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     const meta = [];
     if(cx.cancelled_at) meta.push(new Date(cx.cancelled_at*1000).toLocaleString());
     if(cx.cancelled_by) meta.push('by #'+cx.cancelled_by);
-    // CHARGEABLE is the money fact and gets the loud colour. "Detail
-    // unavailable" is shown INSTEAD of a charge state when we are working off
-    // the name prefix -- guessing "not chargeable" would lose a real invoice.
-    const chargeChip = cancelUnknown
-      ? '<span style="font-size:9px;letter-spacing:.5px;color:var(--muted);background:var(--surface2);border-radius:3px;padding:2px 7px">DETAIL UNAVAILABLE</span>'
-      : (cx.cancel_charge
-          ? '<span style="font-size:9px;letter-spacing:.5px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 7px">CHARGEABLE</span>'
-          : '<span style="font-size:9px;letter-spacing:.5px;color:var(--muted);background:var(--surface2);border-radius:3px;padding:2px 7px">NOT CHARGEABLE</span>');
+    // The money facts get the loud colour. "Detail unavailable" is shown
+    // INSTEAD of pay / charge state when we are working off the name prefix --
+    // guessing "not charged" would lose a real invoice, and guessing "not
+    // paid" would drop a real pay line.
+    //
+    // LATE CANCELLATION (slice C). Three chips from the get-booking call:
+    //   Crew paid / Not paid             cancel_pay
+    //   Customer charged / Not charged   cancel_charge
+    //   Times to check                   while cancel_times_confirmed_at is
+    //                                    null, either tick is on, and some row
+    //                                    is still open for times
+    // "Some row is open" is the crew's cancel_paid, which get-booking.php
+    // builds from the EDITABLE test -- so a call settled under the old rule
+    // (cancel_times_confirmed_at = cancelled_at) never shows "Times to check",
+    // and nothing here re-derives that rule. Legacy cancels carry cancel_pay 0,
+    // so they never show "Crew paid" either.
+    const chip = function(text, loud){
+      return loud
+        ? '<span style="font-size:9px;letter-spacing:.5px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 7px">'+text+'</span>'
+        : '<span style="font-size:9px;letter-spacing:.5px;color:var(--muted);background:var(--surface2);border-radius:3px;padding:2px 7px">'+text+'</span>';
+    };
+    const anyPaidRow = crew.some(function(c){ return !!c.cancel_paid; });
+    const timesToCheck = !cancelUnknown && goatCancelTimesToCheck(cx);
+    const moneyChips = cancelUnknown
+      ? chip('DETAIL UNAVAILABLE', false)
+      : chip(cx.cancel_pay    ? 'CREW PAID'        : 'NOT PAID',     !!cx.cancel_pay)
+        + chip(cx.cancel_charge ? 'CUSTOMER CHARGED' : 'NOT CHARGED', !!cx.cancel_charge)
+        + (timesToCheck ? '<span title="Pre-filled times are waiting to be checked in ⏱ Enter Times" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 6px">TIMES TO CHECK</span>' : '');
     cancelBanner =
         '<div style="margin:0 0 12px;border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px">'
       +   '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
       +     '<span style="font-size:11px;letter-spacing:.5px;color:#94a3b8;text-transform:uppercase">This call is cancelled</span>'
-      +     chargeChip
+      +     moneyChips
       +   '</div>'
+      +   (cancelUnknown ? '' : goatCancelOneSidedBanner(cx.cancel_pay, cx.cancel_charge, anyPaidRow))
       +   (meta.length      ? '<div style="margin-top:5px;font-size:11px;color:var(--muted)">'+escapeHtml(meta.join(' · '))+'</div>' : '')
       +   (cx.cancel_reason ? '<div style="margin-top:5px;font-size:12px;color:var(--text)">'+escapeHtml(cx.cancel_reason)+'</div>' : '')
       +   (stoodDown        ? '<div style="margin-top:5px;font-size:11px;color:var(--muted)">'+stoodDown+' crew stood down — kept on the call as the billing record, not removed.</div>' : '')
@@ -20694,7 +20715,12 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     + (window._curCallEdit
         ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
-    + (isCancelled ? '' : entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')"))
+    // Enter Times is back on a cancelled call (5.77.0): stood-down crew who
+    // are paid for the cancellation have times to check, and the grid now
+    // says why every other stood-down row is read-only ("Stood down — not
+    // paid.") instead of telling ops to change their status. Still hidden on
+    // the name-prefix fallback, which cannot see the roster.
+    + ((isCancelled && cancelUnknown) ? '' : entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')"))
     + ((isCancelled || window._cohort !== 'admin')
         ? ''
         : entityBtn('⏹ Stand down', "openCallStandDown('"+bookingId+"','"+callId+"')", {title:'Cancel this call — crew are stood down, not removed'}))
@@ -20762,23 +20788,75 @@ async function openCallStandDown(bookingId, callId){
     + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Crew on this call ('+live.length+' to stand down)</div>'
     + roster
 
-    + '<div style="margin-top:16px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Is this cancellation chargeable?</div>'
-    + '<div style="display:flex;flex-direction:column;gap:6px">'
-    +   '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text);cursor:pointer"><input type="radio" name="sd-charge" value="1" style="margin-top:2px"><span><strong>Chargeable</strong> — cancelled inside the blackout period, the customer is billed.</span></label>'
-    +   '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text);cursor:pointer"><input type="radio" name="sd-charge" value="0" style="margin-top:2px"><span><strong>Not chargeable</strong> — no charge to the customer.</span></label>'
-    + '</div>'
-    + '<div style="margin-top:5px;font-size:10px;color:var(--muted)">No default — blackout terms vary by customer, so this is a decision every time.</div>'
+    // LATE CANCELLATION (D13/D21): TWO questions, not one. The cut-off for
+    // paying crew and the cut-off for charging the customer can differ, so
+    // each is its own Yes / No with NOTHING pre-selected. A default here is a
+    // decision nobody made, and on these two it is real money either way.
+    + _sdQuestion('sd-pay',    'Pay confirmed crew for this call?')
+    + _sdQuestion('sd-charge', 'Charge the customer?')
+    + '<div style="margin-top:6px;font-size:10px;color:var(--muted)">These are separate — the cut-off for paying crew and charging the customer can differ.</div>'
+    + '<div id="sd-prefill" style="margin-top:8px"></div>'
 
     + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Reason <span style="color:var(--conflict)">*</span></div>'
     + '<textarea id="sd-reason" rows="2" placeholder="Why was it cancelled?" style="width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:inherit;padding:6px 8px;outline:none"></textarea>'
-    + '<div style="margin-top:4px;font-size:10px;color:var(--muted)">Required. Quoted back if the charge — or the decision not to charge — is ever queried.</div>'
+    + '<div style="margin-top:4px;font-size:10px;color:var(--muted)">Required. Quoted back if the pay or charge decision is ever queried.</div>'
 
     + '<div id="sd-error" style="margin-top:10px"></div>';
 
+  // The pre-fill note counts the people cancel-call.php will pre-fill: rows
+  // CONFIRMED at the moment of cancelling. Backups and offered crew are never
+  // paid for a cancellation.
+  window._standDownConfirmed = crew.filter(function(c){ return (c.status||'').toLowerCase() === 'confirmed'; }).length;
+
+  // Confirm starts DISABLED and stays so until both questions are answered
+  // (sdSync). The reason is checked on click, as before.
   document.getElementById('entity-modal-actions').innerHTML =
-      entityBtn('⏹ Stand down call', "submitStandDown('"+bookingId+"','"+callId+"',false)", {primary:true})
+      entityBtn('⏹ Stand down call', "submitStandDown('"+bookingId+"','"+callId+"',false)", {primary:true, disabled:true, id:'sd-submit'})
     + entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')")
     + entityBtn('Close', 'closeEntityModal()');
+}
+
+// One Yes / No question. Radios, so an unanswered question is visibly
+// unanswered -- a checkbox has no "not yet" state and would read as No.
+function _sdQuestion(name, text){
+  const opt = function(val, lbl){
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);cursor:pointer">'
+         +   '<input type="radio" name="'+name+'" value="'+val+'" onchange="sdSync()"> '+lbl
+         + '</label>';
+  };
+  return '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+text+'</div>'
+       + '<div style="display:flex;gap:18px">'+opt('1','Yes')+opt('0','No')+'</div>';
+}
+
+// The two answers, as true / false, or null while unanswered.
+function _sdAnswer(name){
+  const el = document.querySelector('input[name="'+name+'"]:checked');
+  return el ? (el.value === '1') : null;
+}
+
+// Enables Confirm once BOTH questions are answered, and says what pre-fill
+// will do. Pre-fill runs when either answer is Yes (cancel-call.php's
+// $paidCancel), so the note shows on either.
+function sdSync(){
+  const pay    = _sdAnswer('sd-pay');
+  const charge = _sdAnswer('sd-charge');
+  const both   = (pay !== null && charge !== null);
+  const btn = document.getElementById('sd-submit');
+  if(btn){
+    btn.disabled      = !both;
+    btn.style.opacity = both ? '1' : '0.45';
+    btn.style.cursor  = both ? 'pointer' : 'not-allowed';
+  }
+  const note = document.getElementById('sd-prefill');
+  if(!note) return;
+  if(pay || charge){
+    const n = window._standDownConfirmed || 0;
+    note.innerHTML = n
+      ? '<div style="font-size:12px;color:var(--text);background:rgba(100,116,139,0.10);border:1px solid #64748b;border-radius:4px;padding:7px 9px">Times will be pre-filled for '+n+' confirmed crew (4-hour minimum). Check them in ⏱ Enter Times.</div>'
+      : '<div style="font-size:12px;color:var(--muted)">Nobody on this call is confirmed, so there are no times to pre-fill.</div>';
+  }else{
+    note.innerHTML = '';
+  }
 }
 
 function _sdError(html){
@@ -20786,41 +20864,44 @@ function _sdError(html){
   if(el) el.innerHTML = '<div style="font-size:12px;color:var(--conflict);background:var(--conf-bg);border:1px solid var(--conflict);border-radius:4px;padding:7px 9px">'+html+'</div>';
 }
 
-// Two things are refused before anything is sent: a missing chargeable choice,
-// and an empty reason. Neither has a default and neither is inferred.
+// Three things are refused before anything is sent: either question left
+// unanswered, and an empty reason. None has a default and none is inferred.
 //
 // confirmed=false on the first attempt. A call that feeds others comes back 200
 // with ok:false + needs_confirm and NOTHING CHANGED; ops see what is downstream
-// and choose again. Warn, never cascade.
+// and choose again. Warn, never cascade. The answers stay on screen, so the
+// "Stand down anyway" re-send carries the same two decisions.
 async function submitStandDown(bookingId, callId, confirmed){
-  const pick = document.querySelector('input[name="sd-charge"]:checked');
-  if(!pick){
-    // The endpoint 422s on a missing chargeable. Refusing here is the same rule,
-    // stated earlier and in words. NOT defaulted -- a wrong default is a wrong
-    // invoice, in whichever direction it falls.
-    _sdError('Choose whether this cancellation is <strong>chargeable</strong> before standing the call down.');
+  const pay    = _sdAnswer('sd-pay');
+  const charge = _sdAnswer('sd-charge');
+  if(pay === null || charge === null){
+    // The endpoint 422s on either missing. Confirm is disabled until both are
+    // answered, so this is the belt to that braces. NOT defaulted -- a wrong
+    // default is a wrong pay run or a wrong invoice.
+    _sdError('Answer both questions — <strong>pay confirmed crew</strong> and <strong>charge the customer</strong> — before standing the call down.');
     return;
   }
   const reasonEl = document.getElementById('sd-reason');
   const reason   = reasonEl ? reasonEl.value.trim() : '';
   if(!reason){
-    // MANDATORY WHETHER OR NOT IT IS CHARGEABLE. On a chargeable cancellation
-    // this is the justification quoted back when the customer queries the
-    // invoice. On a non-chargeable one it is the justification for forgoing
-    // revenue, questioned just as often but internally and much later.
+    // MANDATORY WHATEVER THE ANSWERS. It is the justification quoted back when
+    // the customer queries a charge, or when someone asks why crew were (or
+    // were not) paid for a shift that never ran.
     //
-    // Enforced HERE only -- cancel-call.php requires `chargeable` and nothing
-    // else, so a console POST can still omit this. The endpoint should grow the
-    // same guard next time it is touched; until then this is a convention, not
-    // a constraint.
-    _sdError('Give a <strong>reason</strong> for the cancellation. It is quoted back if the charge — or the decision not to charge — is ever queried.');
+    // Enforced HERE only -- cancel-call.php does not require it, so a console
+    // POST can still omit it. The endpoint should grow the same guard next
+    // time it is touched; until then this is a convention, not a constraint.
+    _sdError('Give a <strong>reason</strong> for the cancellation. It is quoted back if the pay or charge decision is ever queried.');
     return;
   }
+  // pay_crew + charge_customer, NEVER chargeable: cancel-call.php treats a
+  // request carrying only chargeable as an old DMG and pays nobody.
   const payload = {
-    scope:      'call',
-    chargeable: pick.value === '1',
-    reason:     reason,
-    confirm:    !!confirmed
+    scope:           'call',
+    pay_crew:        pay,
+    charge_customer: charge,
+    reason:          reason,
+    confirm:         !!confirmed
   };
   _sdError('Standing down…');
   try{
@@ -20832,9 +20913,10 @@ async function submitStandDown(bookingId, callId, confirmed){
     const j = await r.json();
 
     // 409 names WHICH accounting flag blocked it (locked / invoiced / payslips);
-    // 422 is the missing chargeable. Both carry a sentence worth showing verbatim
-    // -- that is why ss_cancel_call passes the body through instead of
-    // flattening a non-200 into "HTTP 409".
+    // 422 names the missing answer; 503 refuses a pay decision the database
+    // cannot record. All carry a sentence worth showing verbatim -- that is why
+    // ss_cancel_call passes the body through instead of flattening a non-200
+    // into "HTTP 409".
     if(!r.ok){
       _sdError(escapeHtml(j.error || ('HTTP '+r.status)));
       return;
@@ -20885,7 +20967,11 @@ function renderStandDownResult(bookingId, callId, j){
     +     (j.crew && j.crew.length ? j.crew.length+' crew stood down and their calendars cleared. ' : '')
     +     'The call keeps its roster as the billing record.'
     +   '</div>'
+    +   '<div style="margin-top:6px;font-size:11px;color:var(--muted)">'
+    +     (j.pay_crew ? 'Crew paid' : 'Crew not paid')+' · '+(j.charge_customer ? 'Customer charged' : 'Customer not charged')
+    +   '</div>'
     + '</div>'
+    + _sdPrefillPanel(j, byId)
     + goatDeliveryPanel(
         j, byId,
         'They will not know the call is off unless you tell them.',
@@ -20893,7 +20979,71 @@ function renderStandDownResult(bookingId, callId, j){
 
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
+    + ((j.prefilled || []).length
+        ? entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')")
+        : '')
     + entityBtn('Close', 'closeEntityModal()');
+}
+
+// Who cancel-call.php pre-filled, from its own response: `prefilled` is the
+// userIDs it wrote, `crew[].kept_times` the paid rows that already had real
+// times (never overwritten), and a paid row that is neither had no usable
+// start to pre-fill from. Names come from the roster read before the cancel.
+// Empty when nobody is paid -- the panel only speaks when there is a check
+// waiting in Enter Times.
+function _sdPrefillPanel(j, byId){
+  const crew = (j.crew || []).filter(function(c){ return c.paid; });
+  if(!crew.length) return '';
+  const nameOf = function(uid){
+    const c = byId[String(uid)];
+    return c ? escapeHtml(decodeEntities(c.name)) : ('#'+escapeHtml(String(uid)));
+  };
+  const pre  = crew.filter(function(c){ return c.prefilled; });
+  const kept = crew.filter(function(c){ return c.kept_times; });
+  const none = crew.filter(function(c){ return !c.prefilled && !c.kept_times; });
+  const win  = (j.prefill_on && j.prefill_off) ? (' '+hms2hm(j.prefill_on)+'–'+hms2hm(j.prefill_off)) : '';
+  const line = function(label, list){
+    return list.length
+      ? '<div style="margin-top:5px;font-size:12px;color:var(--text)"><strong>'+label+'</strong> '+list.map(function(c){ return nameOf(c.user_id); }).join(', ')+'</div>'
+      : '';
+  };
+  return '<div style="margin:0 0 14px;border:1px solid var(--border);border-radius:4px;padding:9px 11px">'
+    +   '<div style="font-size:10px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">Times to check in ⏱ Enter Times</div>'
+    +   line('Pre-filled'+win+':', pre)
+    +   line('Kept their existing times:', kept)
+    +   line('No start time to pre-fill from — key by hand:', none)
+    + '</div>';
+}
+
+// THE ONE-SIDED REMINDER (D20). SmartStaff's generateCallData and
+// generateAccountingData produce BOTH pay and charge from the same hours, so a
+// pay-only or charge-only cancellation still makes the other side until ops
+// zero it by hand. Shown in the booking dialog and in Enter Times.
+//
+// Only when exactly one tick is on AND some row is open for times (cancel_paid,
+// the endpoints' editable test). With no paid row there are no hours, so
+// nothing reaches pay or the invoice and there is nothing to zero -- which is
+// also what keeps every call settled under the old rule (charge only, never
+// asked about pay) from carrying a reminder it cannot act on.
+// "Times to check" for a get-booking call object (with its crew): cancelled,
+// either tick on, the done-tick not yet set, and some row still open for
+// times (cancel_paid, the endpoint's editable test -- which is what keeps
+// calls settled under the old rule out). ONE copy, read by the call dialog's
+// chip and the booking dialog's call list, so the two can never disagree.
+function goatCancelTimesToCheck(cx){
+  if(!cx || !(cx.cancelled || cx.cancelled_at)) return false;
+  if(cx.cancel_times_confirmed_at != null) return false;
+  if(!(Number(cx.cancel_pay) || Number(cx.cancel_charge))) return false;
+  return (cx.crew || []).some(function(c){ return !!c.cancel_paid; });
+}
+
+function goatCancelOneSidedBanner(pay, charge, anyPaidRow){
+  pay = !!Number(pay); charge = !!Number(charge);
+  if(pay === charge || !anyPaidRow) return '';
+  const text = pay
+    ? 'Pay only — zero the customer charge for this call in SmartStaff before invoicing'
+    : 'Charge only — zero crew pay in SmartStaff before the pay run';
+  return '<div style="margin-top:7px;font-size:12px;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:4px;padding:6px 8px">&#9888; '+text+'</div>';
 }
 
 
@@ -21471,8 +21621,12 @@ async function openCallTimes(bookingId, callId){
       document.getElementById('entity-modal-actions').innerHTML = entityBtn('‹ Back to call',"openCallDialog('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
       return;
     }
+    // cancelled / cancel_pay / cancel_charge are get-call-times.php's call
+    // fields (absent before the migration, which reads as a live call).
     _ctState = {bookingId:bookingId, callId:callId, crew:data.crew||[],
-                paygrades:data.paygrades||[], locked:!!data.call_locked, unbookedSubs:[]};
+                paygrades:data.paygrades||[], locked:!!data.call_locked, unbookedSubs:[],
+                cancelled:!!data.cancelled, cancelPay:Number(data.cancel_pay)||0,
+                cancelCharge:Number(data.cancel_charge)||0};
     // Then, separately, what the crew boss submitted — see _ctLoadSubmissions.
     // Sequential and soft: it pre-fills the empty rows and marks them, and a
     // failure leaves the grid exactly as it was before submissions existed.
@@ -21490,6 +21644,19 @@ async function openCallTimes(bookingId, callId){
 // update-call-times.php refuses the row anyway -- this is so nobody keys it.
 function _ctIsConfirmed(c){ return Number(c && c.status) === 5 && !_ctPromoPending(c); }
 function _ctPromoPending(c){ return Number(c && c.status) === 5 && !!(c && c.promo_pending); }
+
+// Stood down from a cancelled call AND paid for it (late cancellation, D13):
+// these rows are keyed like confirmed ones and saved as ordinary hours.
+// cancel_paid comes from get-call-times.php, which builds it from the
+// EDITABLE test -- it already excludes calls settled under the old rule.
+// Never re-derived here: update-call-times.php refuses exactly the rows this
+// is false for, and two copies of that rule would drift.
+function _ctIsCancelPaid(c){ return Number(c && c.status) === 9 && !!(c && c.cancel_paid); }
+function _ctIsStoodDown(c){  return Number(c && c.status) === 9 && !_ctIsCancelPaid(c); }
+
+// The rows that take times: confirmed crew, plus paid-cancellation crew.
+// Drives the inputs, the fill-down arrow and the save.
+function _ctEditable(c){ return _ctIsConfirmed(c) || _ctIsCancelPaid(c); }
 
 // The lock and the way out of it, on the row itself. The amber pill in the
 // call dialog is hidden while a time change is also pending, so the grid
@@ -21528,10 +21695,13 @@ function renderCallTimesGrid(){
     ? '<div style="color:var(--conflict);font-size:11px;padding:6px 0">This call is locked — times can\'t be edited. Unlock it in SmartStaff first.</div>'
     : '';
 
-  // Only Confirmed (status 5) crew get editable fields. Anyone declined, sent,
-  // no-showed or unresponded is rendered read-only and is never included in a
-  // save — their stored times stay exactly as they are.
-  const confirmed = s.crew.filter(_ctIsConfirmed);
+  // Confirmed (status 5) crew get editable fields, and so do crew stood down
+  // from a cancelled call who are PAID for it (_ctIsCancelPaid). Anyone
+  // declined, sent, no-showed, unresponded, or stood down and not paid is
+  // rendered read-only and is never included in a save — their stored times
+  // stay exactly as they are.
+  const editable = s.crew.filter(_ctEditable);
+  const paidRows = s.crew.filter(_ctIsCancelPaid);
 
   const pgOpts = function(sel){
     return s.paygrades.map(function(p){
@@ -21547,14 +21717,30 @@ function renderCallTimesGrid(){
            'color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px;text-align:center">';
   };
 
+  // The paid-cancellation chip replaces the plain "Cancelled" status badge:
+  // it is the one thing that says why a stood-down row is open.
+  //
+  // CHARGE ONLY is worded as what it is. cancel_paid is true on these rows
+  // because the paid test is pay OR charge -- the hours exist for the
+  // customer charge -- but crew were NOT to be paid, and "paid as if it went
+  // ahead" would tell Rich the opposite of the decision ops made. Pay-only
+  // and both keep the paid wording.
+  const chargeOnly = !!(s.cancelled && !s.cancelPay && s.cancelCharge);
+  const paidChip = chargeOnly
+    ? ' <span title="Stood down from a cancelled call. These hours are for the customer charge — crew pay must be zeroed in SmartStaff" style="font-size:9px;letter-spacing:.5px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:1px 4px">CANCELLED · CHARGED</span>'
+    : ' <span title="Stood down from a cancelled call and paid as if it went ahead — check these times" style="font-size:9px;letter-spacing:.5px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:1px 4px">CANCELLED · PAID</span>';
+
   const rows = s.crew.length ? s.crew.map(function(c){
     const uid   = c.user_id;
-    const ok    = _ctIsConfirmed(c);
+    const ok    = _ctEditable(c);
+    const paid  = _ctIsCancelPaid(c);
     const dis   = (s.locked || !ok) ? ' disabled' : '';
     const rowSt = ok ? '' : 'opacity:.45;';
     const rowTt = ok ? '' : (_ctPromoPending(c)
       ? ' title="Promoted off backup and has not accepted — times are locked."'
-      : ' title="Only confirmed crew can have times entered."');
+      : (_ctIsStoodDown(c)
+          ? ' title="Stood down — not paid."'
+          : ' title="Only confirmed crew can have times entered."'));
     const name  = escapeHtml(decodeEntities((c.lastname||'')+', '+(c.firstname||'')));
     const pgSel = (c.callpaygradeID && c.callpaygradeID > 0) ? c.callpaygradeID : c.user_paygradeID;
     // A pre-filled row is the boss's claim, not a saved value, and it has to
@@ -21567,11 +21753,15 @@ function renderCallTimesGrid(){
     const chip = c._prefilled
       ? ' <span title="Submitted by the crew boss — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">BOSS</span>'
       : '';
+    const badge = paid ? paidChip : (_ctPromoPending(c) ? '' : _ctStatusBadge(c.status));
     return '<tr style="border-bottom:1px solid var(--border);'+mark+rowSt+'"'+rowTt+'>'
-      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+(_ctPromoPending(c) ? '' : _ctStatusBadge(c.status))+_ctPromoChip(c)+chip+_ctSubHint(c)+'</td>'
+      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+badge+_ctPromoChip(c)+chip+_ctSubHint(c)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock', dis)+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  c.break,       '00:00', 'dur',   dis)+'</td>'
-      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, c.break_night, '00:00', 'dur',   dis)+'</td>'
+      // Breaks through hms2hm too: pre-filled and reinstated rows come back as
+      // the raw TIME column ("00:00:00"), and every box shows HH:MM. Save
+      // parses either form, so this is display only.
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brk-'+uid,  hms2hm(c.break),       '00:00', 'dur',   dis)+'</td>'
+      + '<td style="padding:6px 4px;text-align:center">'+inp('ct-brkn-'+uid, hms2hm(c.break_night), '00:00', 'dur',   dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-off-'+uid,  hms2hm(c.off), 'HH:MM', 'clock', dis)+'</td>'
       + '<td style="padding:6px 4px;text-align:center"><select id="ct-pg-'+uid+'"'+dis+' style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:\'Share Tech Mono\',monospace;font-size:11px;padding:4px 5px">'+pgOpts(pgSel)+'</select></td>'
       + '<td style="padding:6px 4px;text-align:center"><input type="checkbox" id="ct-late-'+uid+'"'+(c.late?' checked':'')+dis+'></td>'
@@ -21580,20 +21770,27 @@ function renderCallTimesGrid(){
   }).join('') : '<tr><td colspan="8" style="padding:10px;color:var(--muted);font-size:12px">No crew booked on this call.</td></tr>';
 
   const th = function(t){ return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">'+t+'</th>'; };
-  // Header with a fill-down arrow: copies the topmost CONFIRMED row's value down to
-  // every other confirmed crew member — for large calls where everyone shares the
-  // same times. Shown only when editable and there are >1 confirmed rows to fill.
+  // Header with a fill-down arrow: copies the topmost EDITABLE row's value down
+  // to every other editable row (confirmed, or paid for a cancellation) — for
+  // large calls where everyone shares the same times. Shown only when editable
+  // and there are >1 such rows to fill.
   const thFill = function(t, col){
-    const arrow = (!s.locked && confirmed.length > 1)
-      ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top confirmed row down to all confirmed crew (skips anyone whose promotion is not accepted)" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
+    const arrow = (!s.locked && editable.length > 1)
+      ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top row down to all confirmed and paid-cancellation crew (skips anyone whose promotion is not accepted, and anyone stood down and not paid)" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
       : '';
     return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;white-space:nowrap">'+t+arrow+'</th>';
   };
 
   const promoRows = s.crew.filter(_ctPromoPending);
-  const skipped = s.crew.length - confirmed.length - promoRows.length;
+  const stoodDown = s.crew.filter(_ctIsStoodDown);
+  const skipped = s.crew.length - editable.length - promoRows.length - stoodDown.length;
   const skipNote = (!s.locked && skipped > 0)
     ? '<div style="font-size:10px;color:var(--muted);padding:6px 0 0">'+skipped+' crew '+(skipped===1?'is':'are')+' not confirmed — those rows are read-only and are left untouched when you save. Change their status on the call first if they worked.</div>'
+    : '';
+  // Stood-down rows get their own sentence: "change their status" is wrong
+  // advice for them, because changing it would destroy the cancellation record.
+  const stoodNote = (!s.locked && stoodDown.length)
+    ? '<div style="font-size:10px;color:var(--muted);padding:6px 0 0">'+stoodDown.length+' crew '+(stoodDown.length===1?'was':'were')+' stood down and '+(stoodDown.length===1?'is':'are')+' not paid for this cancellation — read-only.</div>'
     : '';
   // Times ALREADY stored against a locked promotion (keyed before this fix, or
   // by SmartStaff's own screen) are payroll-live and nothing here can clear
@@ -21608,25 +21805,60 @@ function renderCallTimesGrid(){
       + '</div>'
     : '';
 
+  // A CANCELLED call: say so at the top, with what the paid rows are and the
+  // one-sided reminder. Save is the whole action -- update-call-times.php
+  // ticks the call's done-tick when every paid row is saved in one request,
+  // which is what takes it off the Times outstanding lane. Accept (times_filled)
+  // is not offered: it is the live-call tick and means nothing here.
+  const cancelNote = s.cancelled
+    ? '<div style="margin:0 0 10px;border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:8px 10px">'
+      + '<div style="font-size:11px;letter-spacing:.5px;color:#94a3b8;text-transform:uppercase">This call is cancelled</div>'
+      + '<div style="margin-top:4px;font-size:12px;color:var(--text)">'
+      +   (!paidRows.length
+            ? 'Nobody on this call is paid for the cancellation, so there are no times to enter.'
+            : (chargeOnly
+                ? paidRows.length+' crew '+(paidRows.length===1?'has':'have')+' hours for the customer charge — crew pay must be zeroed in SmartStaff. '
+                : paidRows.length+' crew '+(paidRows.length===1?'is':'are')+' paid as if the call went ahead. ')
+              + 'Their times were pre-filled from the schedule (4-hour minimum) — check them and <b>Save</b>.')
+      + '</div>'
+      + goatCancelOneSidedBanner(s.cancelPay, s.cancelCharge, paidRows.length > 0)
+      + '</div>'
+    : '';
+
+  // No footer on a cancelled call with nothing to save: there is no Save
+  // button to explain, and cancelNote already says why.
+  const footNote = (s.cancelled && !paidRows.length)
+    ? ''
+    : s.cancelled
+    ? '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). <b>Save</b> writes the open rows as ordinary hours. Saving every open row at once marks the times checked and takes the call off the Times outstanding lane. It never locks the call — that stays a SmartStaff action.</div>'
+    : '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). <b>Save</b> writes times, rate, late and note and leaves the call outstanding. <b>Accept</b> saves and then ticks “Times filled”, which is what clears the call from the Times outstanding lane. Neither ever locks the call — that stays a SmartStaff action.</div>';
+
   document.getElementById('entity-modal-body').innerHTML =
       lockNote
+    + cancelNote
     + _ctUnbookedNote()
     + '<div id="ct-result" style="font-size:11px;padding:0 0 6px"></div>'
     + '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%">'
     + '<thead><tr style="border-bottom:1px solid var(--border)">'
     + th('Crew')+thFill('On','on')+thFill('Day Break','break')+thFill('Night Break','break_night')+thFill('Off','off')+thFill('Rate','rate')+th('Late')+th('Note')
     + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
-    + '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). <b>Save</b> writes times, rate, late and note and leaves the call outstanding. <b>Accept</b> saves and then ticks “Times filled”, which is what clears the call from the Times outstanding lane. Neither ever locks the call — that stays a SmartStaff action.</div>'
+    + footNote
     + promoNote
+    + stoodNote
     + skipNote;
 
   // Two buttons, two states — a call is outstanding or it is done (§B.4).
   // Save keeps exactly the meaning it has always had, for a half-finished
   // keying session; Accept is the one that says a human reviewed these numbers,
-  // and it is the only thing that clears the lane.
-  const actions = s.locked
-    ? entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()')
-    : entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn'}) + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()');
+  // and it is the only thing that clears the lane. On a cancelled call Save
+  // alone does both (see cancelNote), and with no paid rows there is nothing
+  // to save at all.
+  const back  = entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()');
+  let actions;
+  if(s.locked)                         actions = back;
+  else if(s.cancelled && !paidRows.length) actions = back;
+  else if(s.cancelled)                 actions = entityBtn('Save Times',"saveCallTimes()",{primary:true, id:'ct-save-btn'}) + back;
+  else                                 actions = entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn'}) + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + back;
   document.getElementById('entity-modal-actions').innerHTML = actions;
 }
 
@@ -21689,7 +21921,8 @@ function ctNormalize(el, type){
 function ctFillDown(col){
   const s = _ctState;
   if(!s || s.locked) return;
-  const confirmed = s.crew.filter(_ctIsConfirmed);
+  // Confirmed AND paid-cancellation rows -- the same set the grid opens.
+  const confirmed = s.crew.filter(_ctEditable);
   if(confirmed.length < 2) return;
   const prefix = {on:'ct-on-', break:'ct-brk-', break_night:'ct-brkn-', off:'ct-off-', rate:'ct-pg-'}[col];
   if(!prefix) return;
@@ -21719,7 +21952,10 @@ async function _ctSave(accept){
 
   const rows = [];
   const bad  = [];
-  s.crew.filter(_ctIsConfirmed).forEach(function(c){
+  // Every editable row in ONE request. On a cancelled call that matters:
+  // update-call-times.php sets the done-tick only when every paid row is
+  // saved together with none refused.
+  s.crew.filter(_ctEditable).forEach(function(c){
     const uid  = c.user_id;
     const on   = (document.getElementById('ct-on-'+uid)   || {}).value   || '';
     const brk  = (document.getElementById('ct-brk-'+uid)  || {}).value   || '';
@@ -21748,7 +21984,9 @@ async function _ctSave(accept){
 
   if(!rows.length){
     result.style.color = 'var(--conflict)';
-    result.innerHTML   = 'No confirmed crew on this call — nothing to save.';
+    result.innerHTML   = s.cancelled
+      ? 'Nobody on this cancelled call is paid — nothing to save.'
+      : 'No confirmed crew on this call — nothing to save.';
     return;
   }
 
@@ -21782,6 +22020,20 @@ async function _ctSave(accept){
       result.style.color = 'var(--conflict)';
       result.innerHTML   = 'Saved with issues'+(accept ? ' — NOT accepted' : '')+': '
                          + escapeHtml(fails.map(function(r){ return r.user_id+': '+r.error; }).join('; '));
+      return;
+    }
+    if(!accept && s.cancelled){
+      // cancel_times_confirmed is update-call-times.php saying it set the
+      // done-tick on this save: Times to check clears and the call leaves the
+      // lane. False on a re-save of a call already checked -- still fine.
+      result.style.color = 'var(--ok,#10b981)';
+      result.innerHTML   = '✓ Times saved for '+(data.rows||[]).length+' crew'
+                         + (data.cancel_times_confirmed ? ' and marked checked — the call is off the Times outstanding lane.' : '.');
+      if(data.cancel_times_confirmed){
+        const lane = OPS_LANES.find(function(l){ return l.key === 'times_outstanding'; });
+        const lst  = lane && _opsLaneState[lane.key];
+        if(lane && lst && lst.status === 'ready') await loadOpsTimes(lane, true);
+      }
       return;
     }
     if(!accept){
@@ -23844,6 +24096,12 @@ function bkCallRow(bookingId, c, maps, smaps){
     + 'title="Create a crew list for this call" '
     + 'style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px;margin-right:10px;cursor:pointer;white-space:nowrap" '
     + 'onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--muted)\'">📋 Crew list</span>';
+  // Late cancellation: the call dialog's TIMES TO CHECK chip, repeated small
+  // here so a paid cancellation waiting on Rich is visible without opening
+  // every cancelled call. Same rule, same function.
+  var ttcChip = goatCancelTimesToCheck(c)
+    ? ' <span title="Cancelled and paid — pre-filled times waiting to be checked in ⏱ Enter Times" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;white-space:nowrap">TIMES TO CHECK</span>'
+    : '';
   return '<div onclick="entityOpenCall(\''+bookingId+'\',\''+c.call_id+'\')" '
     + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
     + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
@@ -23851,7 +24109,7 @@ function bkCallRow(bookingId, c, maps, smaps){
     + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
     + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
     + '<div style="flex:1;min-width:0">'
-    +   '<div style="font-size:12px;color:var(--text)">'+name+chips+'</div>'
+    +   '<div style="font-size:12px;color:var(--text)">'+name+chips+ttcChip+'</div>'
     +   whenLine
     +   clLine
     +   notesLine
@@ -28411,6 +28669,11 @@ function renderOpsTimesList(lane){
 // call. Neither repeats the status pill; they say what to do about it.
 function opsTimesLabels(o){
   const L = [];
+  // A cancelled call is on this lane only while it is PAID and its pre-filled
+  // times are unchecked (ops-times-outstanding.php sets `cancelled`). Nobody
+  // worked it, so there is nobody to chase: the work is Rich checking the
+  // pre-fill in Enter Times, which the row opens.
+  if(o.cancelled) L.push('<span class="ops-lbl lbl-sf">Cancelled – paid</span>');
   if(o.status === 'no_boss') L.push('<span class="ops-lbl lbl-nm">Nobody to chase</span>');
   // The sibling flag (§B.7). derive_times() tops a short engagement up to the
   // four-hour minimum across a continuous block, and where a linked call's real
@@ -28430,6 +28693,11 @@ function opsTimesLabels(o){
 // leads and the rest are counted, never silently dropped.
 function opsTimesChase(o){
   const bosses = o.bosses || [];
+  // The endpoint sends bosses:[] for a cancelled call on purpose. "No crew
+  // boss assigned" would read as a staffing problem; it is a check to do.
+  if(o.cancelled){
+    return '<span class="ops-offered">Check the pre-filled times in Enter Times</span>';
+  }
   if(!bosses.length){
     return '<span class="ops-offered" style="color:var(--accent2)">No crew boss assigned</span>';
   }
