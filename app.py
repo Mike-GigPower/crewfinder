@@ -181,7 +181,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.77.0"
+APP_VERSION    = "5.77.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -16546,6 +16546,10 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
       needs_call_tabs looks like a call tab, has crew, but carries no Call ID
       unmapped_tabs   no stamp, and no EIN overlap with any call on this booking
 
+    plus cancelled_tabs (5.77.1): the tab mapped -- by stamp, manual choice or
+    best EIN overlap -- to a CANCELLED call, so nothing is built or written for
+    it; times on a cancelled call are checked in Enter Times, never imported.
+
     plus recovered_tabs, which DID import but with the A1 label missing (Call ID
     read from B1 alone). Before 5.40.0 the first four collapsed into skipped_tabs,
     rendered as a grey "Ignored support tabs" line — which is how booking 11952's
@@ -16586,6 +16590,12 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
             "dt":        cd,
             "iso":       cd.isoformat() if cd else None,
             "eins":      set(ein_map.keys()),
+            # get-booking.php deliberately includes cancelled calls. They stay
+            # in call_index -- with their rosters -- so a tab that belongs to
+            # one still MAPS to it and is reported as skipped, rather than
+            # falling through to "foreign" or, on the EIN-overlap path, to the
+            # next-best live call that shares some of the same crew.
+            "cancelled": bool(c.get("cancelled") or c.get("cancelled_at")),
         })
     by_id = {ci["call_id"]: ci for ci in call_index}
 
@@ -16597,6 +16607,13 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
 
     out_calls, unmapped, foreign = [], [], []
     duplicates, needs_call, recovered, skipped_extra = [], [], [], []
+    # Tabs that mapped to a CANCELLED call (5.77.1). Never become cards, so no
+    # row is ever built or written for them. Before this the only guard was
+    # incidental -- update-call-times.php refusing status-9 rows -- and since
+    # 5.77.0 a paid-cancellation row is writable, so an import could have
+    # overwritten the pre-filled times Rich checks and set the call's
+    # done-tick without anyone looking at it. Their times belong in Enter Times.
+    cancelled_tabs = []
 
     # Apply the operator's manual tab -> call choices for tabs classify_tab returned
     # as 'no_id'. Treated exactly as a stamp, so the rows they tick come out of the
@@ -16656,6 +16673,8 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
             tab_eins_ni = set(r["ein"] for r in tab["rows"] if r.get("ein") is not None)
             cands = []
             for ci in call_index:
+                if ci["cancelled"]:
+                    continue  # never offer a cancelled call as a target
                 ov = len(tab_eins_ni & ci["eins"])
                 if ov > 0:
                     cands.append({"call_id": ci["call_id"], "call_name": ci["call_name"],
@@ -16682,6 +16701,12 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
                 # round-trip guard: this tab belongs to a different booking
                 foreign.append({"tab_name": tab["tab_name"], "call_id": explicit,
                                 "crew_count": len(tab["rows"])})
+                continue
+            if ci["cancelled"]:
+                cancelled_tabs.append({"tab_name": tab["tab_name"],
+                                       "call_id": ci["call_id"],
+                                       "call_name": ci["call_name"],
+                                       "crew_count": len(tab["rows"])})
                 continue
             best, map_by = ci, "call_id"
             best_overlap = len(tab_eins & ci["eins"])   # informational only
@@ -16731,6 +16756,17 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
                 unmapped.append({"tab_name": tab["tab_name"],
                                  "call_time": tab.get("call_time"),
                                  "crew_count": len(tab["rows"])})
+                continue
+
+            if best["cancelled"]:
+                # The best EIN match is a cancelled call. Skipped, NOT re-matched
+                # to the runner-up: this tab's crew were on the cancelled call,
+                # and giving their times to another call they share is exactly
+                # the wrong write this guard exists to stop.
+                cancelled_tabs.append({"tab_name": tab["tab_name"],
+                                       "call_id": best["call_id"],
+                                       "call_name": best["call_name"],
+                                       "crew_count": len(tab["rows"])})
                 continue
 
         roster_ein = rosters.get(best["call_id"], {})
@@ -16794,9 +16830,12 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
         "duplicate_tabs":  duplicates,
         "needs_call_tabs": needs_call,
         "recovered_tabs":  recovered,
+        "cancelled_tabs":  cancelled_tabs,
         "skipped_tabs":    list(parsed.get("skipped_tabs", [])) + skipped_extra,
+        # Live calls only: this is the manual tab -> call picker.
         "available_calls": [{"call_id": ci["call_id"], "call_name": ci["call_name"],
-                             "call_time": ci["iso"]} for ci in call_index],
+                             "call_time": ci["iso"]} for ci in call_index
+                            if not ci["cancelled"]],
     }, None)
 
 def _manual_map_from_request():

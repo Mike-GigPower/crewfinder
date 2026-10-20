@@ -23415,6 +23415,23 @@ function _tiRecoveredBlock(d){
     + '. Imported normally; worth restoring the label in the sheet.</div>';
 }
 
+// Tabs that mapped to a CANCELLED call (5.77.1). The server never builds rows
+// for them, so nothing here can write them. Counted by CALL, not by tab -- two
+// tabs for one cancelled call are still one call to check -- and named, so
+// whoever reads this knows which calls to open in Enter Times.
+function _tiCancelledBlock(d){
+  const tabs = d.cancelled_tabs || [];
+  if(!tabs.length) return '';
+  const byCall = {};
+  tabs.forEach(function(t){ byCall[String(t.call_id)] = t.call_name || ('Call '+t.call_id); });
+  const names = Object.keys(byCall).map(function(k){ return decodeEntities(byCall[k]); });
+  const n = names.length;
+  return '<div style="font-size:11px;color:#f59e0b;padding-bottom:8px">'
+    + n+' cancelled call'+(n===1?'':'s')+' skipped — check their times in Enter Times: '
+    + escapeHtml(names.join(', '))
+    + '</div>';
+}
+
 function renderTimesheetImportPreview(){
   const s = _tiState, d = s.data;
   const calls = d.calls || [];
@@ -23488,6 +23505,7 @@ function renderTimesheetImportPreview(){
         : '')
     + _tiDuplicateBlock(d)
     + _tiNeedsCallBlock(d)
+    + _tiCancelledBlock(d)
     + _tiRecoveredBlock(d)
     + flagNote
     + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found.</div>')
