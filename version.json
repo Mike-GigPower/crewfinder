@@ -1,6 +1,6 @@
 {
-  "version": "5.77.1",
-  "release_date": "2026-10-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.77.1/TheGOAT.dmg",
-  "release_notes": "Import Times now skips cancelled calls, so a timesheet can't overwrite the pre-filled times on a paid cancellation. Check those times in Enter Times."
+  "version": "5.77.2",
+  "release_date": "2026-10-21",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.77.2/TheGOAT.dmg",
+  "release_notes": "Importing an estimate works again. If you saw \"Unexpected error\" importing one since 20 October, check that booking's rate card and don't import it again."
 }
