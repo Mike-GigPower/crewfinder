@@ -85,7 +85,8 @@
 		5 => 'Confirmed',
 		6 => 'Declined',
 		7 => 'Backup',
-		8 => 'No-show'
+		8 => 'No-show',
+		9 => 'Cancelled' 
 	);
 
 	$shifts = array();
