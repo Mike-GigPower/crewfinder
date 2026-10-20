@@ -1,6 +1,6 @@
 {
-  "version": "5.76.0",
+  "version": "5.77.0",
   "release_date": "2026-10-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.76.0/TheGOAT.dmg",
-  "release_notes": "Rates, public holidays and the Christmas and New Year double rate now come live from the Estimator, and each booking can be marked as an M&OP booking with its own rate card."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.77.0/TheGOAT.dmg",
+  "release_notes": "Standing down a call now asks two separate questions, whether to pay confirmed crew and whether to charge the customer. Paid crew get their times pre-filled to check in Enter Times."
 }
