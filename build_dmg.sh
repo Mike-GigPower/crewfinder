@@ -62,6 +62,7 @@ pyinstaller \
   --hidden-import timesheet_gsheet_read \
   --hidden-import estimator_calc \
   --hidden-import pricing_rules \
+  --hidden-import call_types \
   --hidden-import visa_extract \
   --hidden-import pypdf \
   --hidden-import docs_render \

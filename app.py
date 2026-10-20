@@ -60,6 +60,7 @@ import docs_render
 import docs_source
 import public_holidays
 import pricing_rules
+import call_types
 import name_match
 import drive_contracts
 # When running inside a PyInstaller bundle, use the executable's directory
@@ -894,6 +895,155 @@ def rate_card_customer_note(set_code, customer_id, rules=None):
     if set_code in (pricing_rules.MOPT, pricing_rules.MOPT_AO) and set_code not in listed:
         return "This customer isn't listed for this rate card."
     return None
+
+# ─── CALL TYPES (Stage 2, BRIEF-goat-call-types-stage2) ───────────────────────
+# Every call's Call Type and any crew row overrides live in THE GOAT's Supabase
+# (call_type, crew_row_override, call_pricing_log), reached only through the
+# call-types edge function, the same doorway as booking-rate-card. It reuses
+# GOAT_RATE_CARD_KEY: same trust boundary. The function knows nothing of the
+# cards, so every role name is checked against the live rules HERE first
+# (call_types.py holds that logic). Nothing is priced from it until Stage 4.
+CALL_TYPES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/call-types"
+CALL_TYPES_GET_MAX_BOOKINGS = 200   # the edge function's own limits per GET
+CALL_TYPES_GET_MAX_CALLS = 500
+
+
+def fetch_call_types(booking_ids=None, call_ids=None):
+    """({"call_types": {call_id: row}, "overrides": [row…]}, error) for the
+    given bookings OR calls. Only stored rows come back: a call with no row is
+    "not set" here and derived by call_types.effective_call_type."""
+    field, raw, cap = (("booking_ids", booking_ids, CALL_TYPES_GET_MAX_BOOKINGS)
+                       if booking_ids is not None else
+                       ("call_ids", call_ids, CALL_TYPES_GET_MAX_CALLS))
+    ids = []
+    for b in raw or []:
+        try:
+            i = int(b)
+        except (TypeError, ValueError):
+            continue
+        if i > 0 and i not in ids:
+            ids.append(i)
+    out = {"call_types": {}, "overrides": []}
+    if not ids:
+        return out, None
+    if not GOAT_RATE_CARD_KEY:
+        return out, "rate card key not configured"
+    for at in range(0, len(ids), cap):
+        chunk = ids[at:at + cap]
+        try:
+            r = http.get(CALL_TYPES_URL, params={field: ",".join(str(i) for i in chunk)},
+                         headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=10)
+        except Exception as e:
+            return out, f"request failed: {type(e).__name__}"
+        if r.status_code != 200:
+            return out, f"HTTP {r.status_code}"
+        try:
+            data = r.json() or {}
+        except Exception:
+            return out, "bad JSON"
+        for row in data.get("call_types") or []:
+            try:
+                out["call_types"][int(row.get("call_id"))] = row
+            except (TypeError, ValueError):
+                continue
+        out["overrides"].extend(data.get("overrides") or [])
+    return out, None
+
+
+def _post_call_types(path, body, what):
+    """(result, error) for one call-types POST. A 500 with logged false means
+    the change DID take and its log row didn't; treated as saved, and every
+    caller warns on logged false, as with the rate card."""
+    if not GOAT_RATE_CARD_KEY:
+        return None, "rate card key not configured"
+    try:
+        r = http.post(CALL_TYPES_URL + path, json=body,
+                      headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=10)
+    except Exception as e:
+        print(f"[call-types] {what} request failed: {type(e).__name__}")
+        return None, "call types service unavailable"
+    try:
+        data = r.json() or {}
+    except Exception:
+        data = {}
+    if r.status_code == 200:
+        return data, None
+    if r.status_code == 500 and data.get("logged") is False:
+        print(f"[call-types] {what} saved but the log write failed")
+        return data, None
+    if r.status_code in (400, 422):
+        return None, str(data.get("error") or f"The {what} was refused.")
+    print(f"[call-types] {what} edge function returned {r.status_code}")
+    return None, f"call types service error (HTTP {r.status_code})"
+
+
+def save_call_type(call_id, booking_id, role_name, set_code, source, set_by):
+    """Upsert one call's type and log old -> new. role_name must already have
+    been checked against the booking's card by the caller."""
+    if set_by is None:
+        return None, "couldn't identify who is setting the type (no SmartStaff userID)"
+    return _post_call_types("/type", {
+        "call_id": int(call_id), "booking_id": int(booking_id), "role_name": role_name,
+        "set_code": set_code, "source": source, "set_by_user_id": int(set_by),
+    }, "call type")
+
+
+def save_crew_row_override(call_id, user_id, booking_id, kind, charge_role, pay_paygrade_id, set_by):
+    if set_by is None:
+        return None, "couldn't identify who is setting the override (no SmartStaff userID)"
+    return _post_call_types("/override", {
+        "call_id": int(call_id), "user_id": int(user_id), "booking_id": int(booking_id),
+        "kind": kind, "charge_role": charge_role, "pay_paygrade_id": pay_paygrade_id,
+        "set_by_user_id": int(set_by),
+    }, "override")
+
+
+def clear_crew_row_override(call_id, user_id, set_by):
+    if set_by is None:
+        return None, "couldn't identify who is clearing the override (no SmartStaff userID)"
+    return _post_call_types("/override/clear", {
+        "call_id": int(call_id), "user_id": int(user_id), "set_by_user_id": int(set_by),
+    }, "override")
+
+
+def booking_set_code(booking_id):
+    """(set_code, error) for one booking's card. No row is Standard; a MOPT
+    row with Australian Open unanswered is None (the caller refuses to pick)."""
+    rows, err = fetch_booking_rate_cards([booking_id])
+    if err:
+        return None, err
+    return pricing_rules.set_for_booking(rows.get(int(booking_id))), None
+
+
+def save_call_types_for_calls(booking_id, set_code, typed_calls, source, set_by):
+    """Write a Call Type for each (call_id, role) just created. Returns an
+    error string for the red "not saved" banner, or None. Never undoes the
+    calls: they show a derived type instead, which is right for nearly all."""
+    failed, unlogged, no_id = 0, 0, 0
+    first = None
+    for call_id, role in typed_calls:
+        cid = call_types.as_call_id(call_id)
+        if cid is None:
+            no_id += 1
+            continue
+        res, err = save_call_type(cid, booking_id, role, set_code, source, set_by)
+        if err:
+            failed += 1
+            first = first or err
+        elif res.get("logged") is False:
+            unlogged += 1
+    bits = []
+    if failed:
+        bits.append(f"{failed} call type{'s' if failed != 1 else ''} not saved ({first})")
+    if no_id:
+        bits.append(f"{no_id} call{'s' if no_id != 1 else ''} came back from SmartStaff "
+                    f"without an ID, so {'their types' if no_id != 1 else 'its type'} couldn't be saved")
+    if unlogged:
+        bits.append(f"{unlogged} call type{'s' if unlogged != 1 else ''} saved but not logged")
+    if not bits:
+        return None
+    return ("Call Types: " + "; ".join(bits)
+            + ". Those calls show a type from their call names; an Admin can set it on the call.")
 
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
 # When True, the app will try the new bulk SmartStaff endpoints first and fall
@@ -14298,6 +14448,17 @@ def api_import_validate():
         return jsonify({"valid": False, "errors": rc_errors,
                         "rate_card": {"set_code": rc_set, "label": rate_card_label(rc_set)}})
 
+    # Stage 2 §5.2: each line's crew_type becomes its call's Call Type, so it
+    # must be on the card. Checked before anything is created.
+    ct_errors, ct_warning = [], None
+    if rc_set:
+        ct_rules, _ = pricing_rules.load_rules()
+        ct_errors, ct_warning = call_types.crew_type_errors(
+            lines, ct_rules, rc_set, rate_card_label(rc_set))
+    if ct_errors:
+        return jsonify({"valid": False, "errors": ct_errors,
+                        "rate_card": {"set_code": rc_set, "label": rate_card_label(rc_set)}})
+
     # Duplicate check
     existing = find_import_log_entry(est["estimate_id"])
     if existing:
@@ -14423,6 +14584,7 @@ def api_import_validate():
                 "australian_open": rc_answers["australian_open"],
                 "from_file":       "rate_card" in payload,
                 "warning":         rc_warning,
+                "call_type_warning": ct_warning,
                 "customer_note":   rate_card_customer_note(
                     rc_set, customer_match["id"] if customer_match else None),
             },
@@ -14525,8 +14687,19 @@ def api_import_start():
     if rc_errors:
         return jsonify({"error": "; ".join(rc_errors[:5]), "errors": rc_errors}), 400
 
+    # Stage 2 §5.2, again on the FINAL lines (the operator can delete or add
+    # lines; an added line has no crew_type and gets a derived type).
+    ct_errors, ct_warning = [], None
+    if rc_set:
+        ct_rules, _ = pricing_rules.load_rules()
+        ct_errors, ct_warning = call_types.crew_type_errors(
+            lines, ct_rules, rc_set, rate_card_label(rc_set))
+    if ct_errors:
+        return jsonify({"error": "; ".join(ct_errors[:5]), "errors": ct_errors}), 400
+    write_call_types = bool(rc_set) and ct_warning is None
+
     # The import runs in a thread, where Flask's session can't be read: take
-    # who is importing NOW, for the rate card's audit row.
+    # who is importing NOW, for the rate card and Call Type audit rows.
     set_by = current_user_id()
 
     est   = payload["estimate"]
@@ -14696,6 +14869,24 @@ def api_import_start():
                     _import_progress["rate_card_error"] = (
                         "Rate card saved, but the change wasn't logged. Check the booking's card.")
 
+            # Each labour call's Call Type (Stage 2 §5.2), written AFTER the
+            # calls exist. Like the rate card, a failure never undoes the
+            # import: those calls show a derived type, and the banner is red.
+            # Labour lines are logged first, in order, on both creation paths.
+            if booking_id and write_call_types:
+                _import_progress["step"] = "Saving Call Types..."
+                typed = []
+                for ll, entry in zip(lines, _import_progress["call_log"][:len(lines)]):
+                    ct = str(ll.get("crew_type") or "").strip()
+                    if ct and entry.get("success"):
+                        typed.append((entry.get("call_id"), ct))
+                ct_err = save_call_types_for_calls(booking_id, rc_set, typed,
+                                                   "estimate_import", set_by)
+                if ct_err:
+                    _import_progress["call_type_error"] = ct_err
+            elif booking_id and ct_warning:
+                _import_progress["call_type_error"] = ct_warning
+
             # Step 3: record in import log
             import_log = load_import_log()
             import_log.append({
@@ -14808,8 +14999,32 @@ def api_booking_create():
         if rc_err:
             return jsonify({"error": rc_err}), 400
 
+    # Every call's Call Type (Stage 2 §5.3): required, and on the chosen card,
+    # checked before anything is created. call_type is popped so the
+    # create-booking endpoint sees exactly the shape it always has. A body
+    # with no rate_card is an older index.html and carries no types either.
+    set_code = (pricing_rules.set_for_booking({"mopt": rc_mopt, "australian_open": rc_ao})
+                if rc is not None else None)
+    roles = []
+    if rc is not None:
+        rules, _ = pricing_rules.load_rules()
+        if rules is None:
+            return jsonify({"error": "The Estimator's pricing rules are unavailable, so the "
+                                     "Call Types can't be checked. Try again shortly."}), 503
+        card = call_types.roles_for_set(rules, set_code)
+        for i, c in enumerate(calls):
+            role = str(c.pop("call_type", "") or "").strip()
+            if not role:
+                return jsonify({"error": f"Call {i+1}: Call Type is required"}), 400
+            if role not in card:
+                return jsonify({"error": f"Call {i+1}: '{role}' isn't on the "
+                                         f"{rate_card_label(set_code)} card."}), 422
+            roles.append(role)
+
     booking.setdefault("status", 0)  # 0 = Active/open
 
+    # Captured before the SmartStaff round trip, while the request is ours.
+    set_by = current_user_id()
     result, err = ss_create_booking_bulk(ss, booking, calls)
     if err:
         return jsonify({"error": err}), 502
@@ -14822,6 +15037,14 @@ def api_booking_create():
             result["rate_card_error"] = f"Rate card not saved: set it on the booking. ({rc_err})"
         elif saved.get("logged") is False:
             result["rate_card_error"] = "Rate card saved, but the change wasn't logged."
+    if roles and result.get("booking_id"):
+        ids = call_types.created_call_ids(len(calls), result)
+        ct_err = save_call_types_for_calls(
+            result.get("booking_id"), set_code,
+            [(cid, role) for cid, role in zip(ids, roles) if cid is not None],
+            "manual_booking", set_by)
+        if ct_err:
+            result["call_type_error"] = ct_err
     return jsonify(result)
 
 
@@ -15204,9 +15427,14 @@ def api_booking_add_call(booking_id):
     no new PHP endpoint, and no crew-side rows (calendars / call_crew_map are
     only written when crew are actually assigned, a separate workflow).
 
-    Body: {call: {call_name, call_name_free?, start_date (YYYY-MM-DD),
+    Body: {call: {call_name, call_name_free?, call_type, start_date (YYYY-MM-DD),
                   start_time (HH:MM:SS)?, length?, required?, notes?}}
     Mirrors the {call:{...}} body shape of the call-edit route.
+
+    call_type is REQUIRED (Stage 2 §5.3): a role on the booking's card,
+    checked before the call is created, and saved with source add_call once
+    it exists. Names off SmartStaff's own dropdown (the card's MOPT names,
+    Robo Spot…) travel exactly as an "Other" free name always has.
     """
     ss = get_ss_session()
     if not ss:
@@ -15217,10 +15445,28 @@ def api_booking_add_call(booking_id):
 
     name = str(call.get("call_name", "")).strip()
     date = str(call.get("start_date", "")).strip()
+    role = str(call.get("call_type", "")).strip()
     if not name:
         return jsonify({"error": "Call name is required"}), 400
     if not date:
         return jsonify({"error": "Call date is required"}), 400
+    if not role:
+        return jsonify({"error": "Call Type is required"}), 400
+
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    set_code, err = booking_set_code(bid)
+    if err:
+        return jsonify({"error": "Rate card service unavailable, so the Call Type can't be checked."}), 502
+    if set_code is None:
+        return jsonify({"error": "This booking's rate card is incomplete. Set it first."}), 409
+    rules, _ = pricing_rules.load_rules()
+    if rules is None:
+        return jsonify({"error": "The Estimator's pricing rules are unavailable, so the Call "
+                                 "Type can't be checked. Try again shortly."}), 503
+    if role not in call_types.roles_for_set(rules, set_code):
+        return jsonify({"error": f"'{role}' isn't on the {rate_card_label(set_code)} card."}), 422
 
     # A blank time means "start of day" — matches SmartStaff's own default.
     start_time = str(call.get("start_time", "")).strip() or "00:00:00"
@@ -15240,11 +15486,19 @@ def api_booking_add_call(booking_id):
     free = str(call.get("call_name_free", "")).strip()
     if free:
         call_data["call_name_free"] = free
+    elif name not in VALID_CALL_NAMES:
+        # A card name SmartStaff's dropdown doesn't list goes as a free name.
+        call_data["call_name_free"] = name
 
     call_id, err = ss_create_call(ss, booking_id, call_data)
     if err:
         return jsonify({"error": err}), 502
-    return jsonify({"ok": True, "call_id": call_id})
+    out = {"ok": True, "call_id": call_id}
+    ct_err = save_call_types_for_calls(bid, set_code, [(call_id, role)], "add_call",
+                                       current_user_id())
+    if ct_err:
+        out["call_type_error"] = ct_err
+    return jsonify(out)
 
 
 @app.route("/api/calls/feeds/add", methods=["POST"])
@@ -17333,6 +17587,297 @@ def api_booking_rate_card_set(booking_id):
     if res.get("logged") is False:
         out["warning"] = "The card changed, but the change wasn't logged."
     return jsonify(out)
+
+
+# ─── CALL TYPES (Stage 2 §4–§6) ───────────────────────────────────────────────
+# Same doorway discipline as the rate card: every route proxies call-types
+# server-side with GOAT_RATE_CARD_KEY. Admin-only writes are enforced HERE (the
+# key ships in the DMG); can_change and friends in the reads are presentation.
+
+def _call_type_payload(eff):
+    return {k: eff.get(k) for k in ("role", "source", "status", "set_by_user_id", "set_at")}
+
+
+@app.route("/api/booking/<booking_id>/call-types", methods=["POST"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_call_types(booking_id):
+    """Every call's effective Call Type for the booking dialog's chips (§4.2).
+    A READ, posted only because it carries the call names to derive from.
+    Body {calls: [{call_id, call_name}]}. One call-types GET per open, never
+    one per call. Derived types are never written back (PL-2)."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    calls = (request.get_json(silent=True) or {}).get("calls") or []
+    rows, err = fetch_booking_rate_cards([bid])
+    if err:
+        print(f"[call-types] rate card read failed: {err}")
+        return jsonify({"error": "Rate card service unavailable"}), 502
+    set_code = pricing_rules.set_for_booking(rows.get(bid))
+    stored, err = fetch_call_types(booking_ids=[bid])
+    if err:
+        print(f"[call-types] read failed: {err}")
+        return jsonify({"error": "Call types service unavailable"}), 502
+    rules, _ = pricing_rules.load_rules()
+    out = {}
+    for c in calls:
+        cid = call_types.as_call_id((c or {}).get("call_id"))
+        if cid is None:
+            continue
+        eff = call_types.effective_call_type(c.get("call_name"), set_code, rules,
+                                             stored["call_types"].get(cid))
+        out[str(cid)] = _call_type_payload(eff)
+    return jsonify({
+        "booking_id":  bid,
+        "set_code":    set_code,
+        "rules_ok":    rules is not None,
+        "call_types":  out,
+        "override_counts": _override_counts(stored["overrides"]),
+    })
+
+
+def _override_counts(overrides):
+    counts = {}
+    for o in overrides or []:
+        k = str(o.get("call_id"))
+        counts[k] = counts.get(k, 0) + 1
+    return counts
+
+
+@app.route("/api/call-types/options")
+@require_cohort("admin")
+def api_call_type_options():
+    """The Call Type and Call Name options for one card (§5.1, §5.3), for the
+    Add call form (?booking_id=) and the manual Booking form (?set_code=).
+    name_roles drives the pre-select when a Call Name is picked."""
+    set_code = request.args.get("set_code")
+    bid = request.args.get("booking_id")
+    if bid is not None:
+        b = _checkin_booking_id(bid)
+        if b is None:
+            return jsonify({"error": "booking_id must be an integer"}), 400
+        set_code, err = booking_set_code(b)
+        if err:
+            return jsonify({"error": "Rate card service unavailable"}), 502
+        if set_code is None:
+            return jsonify({"error": "This booking's rate card is incomplete (Australian Open "
+                                     "not answered). Set it on the booking first."}), 409
+    if set_code not in pricing_rules.SET_CODES:
+        return jsonify({"error": "set_code must be standard, mopt or mopt-ao"}), 400
+    rules, _ = pricing_rules.load_rules()
+    if rules is None:
+        return jsonify({"error": "The Estimator's pricing rules are unavailable, so there are "
+                                 "no Call Types to choose from."}), 503
+    return jsonify({
+        "set_code":   set_code,
+        "label":      rate_card_label(set_code),
+        "roles":      call_types.roles_for_set(rules, set_code),
+        "call_names": call_types.call_names_for_set(rules, set_code),
+        "name_roles": call_types.call_name_roles(rules, set_code),
+        "honesty":    call_types.HONESTY_LINE,
+    })
+
+
+def _call_pricing_context(ss, booking_id, call_id):
+    """(ctx, (error, status)) for one call: its roster and pay grades from
+    get-call-times.php, the booking's card, the live rules, and the stored
+    type and overrides. Everything the call dialog and the write routes need."""
+    times, err = ss_get_call_times(ss, call_id)
+    if err:
+        return None, (err, 502)
+    bid = times.get("booking_id") or booking_id
+    try:
+        bid = int(bid)
+    except (TypeError, ValueError):
+        return None, ("booking_id must be an integer", 400)
+    set_code, err = booking_set_code(bid)
+    if err:
+        print(f"[call-types] rate card read failed: {err}")
+        return None, ("Rate card service unavailable", 502)
+    stored, err = fetch_call_types(call_ids=[call_id])
+    if err:
+        print(f"[call-types] read failed: {err}")
+        return None, ("Call types service unavailable", 502)
+    rules, _ = pricing_rules.load_rules()
+    cid = int(call_id)
+    return {
+        "booking_id": bid,
+        "call_id":    cid,
+        "call_name":  times.get("call_name") or "",
+        "set_code":   set_code,
+        "rules":      rules,
+        "stored":     stored["call_types"].get(cid),
+        "overrides":  [o for o in stored["overrides"] if str(o.get("call_id")) == str(cid)],
+        "paygrades":  times.get("paygrades") or [],
+        "crew_ids":   {int(c.get("userID") or c.get("user_id") or 0) for c in times.get("crew") or []},
+    }, None
+
+
+@app.route("/api/call/<booking_id>/<call_id>/pricing")
+@require_cohort("admin")
+def api_call_pricing(booking_id, call_id):
+    """The call dialog's Call Type row and per-crew Rate controls (§4.2, §6)."""
+    if call_types.as_call_id(call_id) is None:
+        return jsonify({"error": "call_id must be an integer"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    ctx, fail = _call_pricing_context(ss, booking_id, call_id)
+    if fail:
+        return jsonify({"error": fail[0]}), fail[1]
+    rules, set_code = ctx["rules"], ctx["set_code"]
+    eff = call_types.effective_call_type(ctx["call_name"], set_code, rules, ctx["stored"])
+    grade, grade_err = call_types.find_crew_boss_grade(ctx["paygrades"])
+    cb_reason = None
+    if not call_types.crew_boss_allowed(set_code):
+        cb_reason = "hidden"   # M&OP doesn't use Crew Bosses (S2-1)
+    elif rules is None or call_types.CREW_BOSS_ROLE not in call_types.roles_for_set(rules, pricing_rules.STANDARD):
+        cb_reason = "No Crew Boss role on the Standard card"
+    elif grade_err:
+        cb_reason = grade_err
+    return jsonify({
+        "booking_id":     ctx["booking_id"],
+        "call_id":        ctx["call_id"],
+        "set_code":       set_code,
+        "set_label":      rate_card_label(set_code),
+        "rules_ok":       rules is not None,
+        "call_type":      _call_type_payload(eff),
+        "roles":          call_types.roles_for_set(rules, set_code) if rules and set_code else [],
+        "override_roles": call_types.override_roles(rules, set_code) if rules and set_code else [],
+        "overrides":      ctx["overrides"],
+        "paygrades":      [{"id": p.get("id"), "name": p.get("day_desc"), "rate": p.get("rate")}
+                           for p in ctx["paygrades"]],
+        "crew_boss":      {"allowed": cb_reason is None, "hidden": cb_reason == "hidden",
+                           "reason": None if cb_reason in (None, "hidden") else cb_reason,
+                           "grade": grade},
+        "honesty":        call_types.HONESTY_LINE,
+    })
+
+
+@app.route("/api/call/<booking_id>/<call_id>/call-type", methods=["POST"])
+@require_cohort("admin")
+def api_call_type_set(booking_id, call_id):
+    """Change one call's type (§5.4). Admin only. source 'admin'; the edge
+    function logs old -> new, attributed from the server-side identity."""
+    if call_types.as_call_id(call_id) is None:
+        return jsonify({"error": "call_id must be an integer"}), 400
+    role = str((request.get_json(silent=True) or {}).get("role_name") or "").strip()
+    if not role:
+        return jsonify({"error": "Pick a Call Type"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    ctx, fail = _call_pricing_context(ss, booking_id, call_id)
+    if fail:
+        return jsonify({"error": fail[0]}), fail[1]
+    if ctx["set_code"] is None:
+        return jsonify({"error": "This booking's rate card is incomplete. Set it first."}), 409
+    if ctx["rules"] is None:
+        return jsonify({"error": "The Estimator's pricing rules are unavailable; try again shortly."}), 503
+    if role not in call_types.roles_for_set(ctx["rules"], ctx["set_code"]):
+        return jsonify({"error": f"'{role}' isn't on the {rate_card_label(ctx['set_code'])} card."}), 422
+    res, err = save_call_type(ctx["call_id"], ctx["booking_id"], role, ctx["set_code"],
+                              "admin", current_user_id())
+    if err:
+        return jsonify({"error": err}), 502
+    out = {"ok": True, "role": role, "previous": (res.get("previous") or {}).get("role_name")}
+    if res.get("logged") is False:
+        out["warning"] = "The Call Type changed, but the change wasn't logged."
+    return jsonify(out)
+
+
+def _override_route_ctx(booking_id, call_id, user_id):
+    """(ctx, uid, None) or (None, None, response) shared by the row routes."""
+    if call_types.as_call_id(call_id) is None or call_types.as_call_id(user_id) is None:
+        return None, None, (jsonify({"error": "call_id and user_id must be integers"}), 400)
+    ss = get_ss_session()
+    if not ss:
+        return None, None, (jsonify({"error": "Not logged in"}), 401)
+    ctx, fail = _call_pricing_context(ss, booking_id, call_id)
+    if fail:
+        return None, None, (jsonify({"error": fail[0]}), fail[1])
+    uid = int(user_id)
+    if uid not in ctx["crew_ids"]:
+        return None, None, (jsonify({"error": "That crew member isn't on this call."}), 404)
+    if ctx["rules"] is None:
+        return None, None, (jsonify({"error": "The Estimator's pricing rules are unavailable; "
+                                              "try again shortly."}), 503)
+    return ctx, uid, None
+
+
+def _override_result(res):
+    out = {"ok": True}
+    if res.get("logged") is False:
+        out["warning"] = "Saved, but the change wasn't logged."
+    return jsonify(out)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/override/<user_id>", methods=["POST"])
+@require_cohort("admin")
+def api_crew_row_override_set(booking_id, call_id, user_id):
+    """A manual override on one crew row (§6.1). Admin only. Body
+    {charge_role|null, pay_paygrade_id|null}; at least one must be set.
+    Charge as: the card's roles plus the Standard card's. Pay as: a grade
+    from SmartStaff's own list."""
+    ctx, uid, fail = _override_route_ctx(booking_id, call_id, user_id)
+    if fail:
+        return fail
+    body = request.get_json(silent=True) or {}
+    charge = str(body.get("charge_role") or "").strip() or None
+    pg = body.get("pay_paygrade_id")
+    pay = None
+    if pg not in (None, ""):
+        try:
+            pay = int(pg)
+        except (TypeError, ValueError):
+            return jsonify({"error": "pay_paygrade_id must be an integer"}), 400
+    if charge is None and pay is None:
+        return jsonify({"error": "Pick a charge role, a pay grade, or both (or Clear the override)."}), 422
+    if charge is not None and charge not in call_types.override_roles(ctx["rules"], ctx["set_code"]):
+        return jsonify({"error": f"'{charge}' isn't on this booking's card or the Standard card."}), 422
+    if pay is not None and pay not in {int(p.get("id") or 0) for p in ctx["paygrades"]}:
+        return jsonify({"error": "That pay grade isn't in SmartStaff's list."}), 422
+    res, err = save_crew_row_override(ctx["call_id"], uid, ctx["booking_id"], "manual",
+                                      charge, pay, current_user_id())
+    if err:
+        return jsonify({"error": err}), 502
+    return _override_result(res)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/override/<user_id>/clear", methods=["POST"])
+@require_cohort("admin")
+def api_crew_row_override_clear(booking_id, call_id, user_id):
+    """Remove a row's override, manual or Crew Boss. Logged with the old value."""
+    if call_types.as_call_id(call_id) is None or call_types.as_call_id(user_id) is None:
+        return jsonify({"error": "call_id and user_id must be integers"}), 400
+    res, err = clear_crew_row_override(int(call_id), int(user_id), current_user_id())
+    if err:
+        return jsonify({"error": err}), 502
+    return _override_result(res)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/crew-boss/<user_id>", methods=["POST"])
+@require_cohort("admin")
+def api_crew_row_crew_boss(booking_id, call_id, user_id):
+    """Make Crew Boss (§6.3): a row-level system override, kind crew_boss,
+    charging the Standard card's Crew Boss role and paying SmartStaff's Crew
+    Boss grade, found by name. Separate from Team Lead (the makeboss tick),
+    and never offered on M&OP bookings (S2-1). Writes nothing to SmartStaff."""
+    ctx, uid, fail = _override_route_ctx(booking_id, call_id, user_id)
+    if fail:
+        return fail
+    if not call_types.crew_boss_allowed(ctx["set_code"]):
+        return jsonify({"error": "M&OP bookings don't have Crew Bosses. Use a manual override."}), 422
+    if call_types.CREW_BOSS_ROLE not in call_types.roles_for_set(ctx["rules"], pricing_rules.STANDARD):
+        return jsonify({"error": "No Crew Boss role on the Standard card."}), 422
+    grade, err = call_types.find_crew_boss_grade(ctx["paygrades"])
+    if err:
+        return jsonify({"error": err}), 422
+    res, err = save_crew_row_override(ctx["call_id"], uid, ctx["booking_id"], "crew_boss",
+                                      call_types.CREW_BOSS_ROLE, grade["id"], current_user_id())
+    if err:
+        return jsonify({"error": err}), 502
+    return _override_result(res)
 
 
 # ─── PRICING RULES (Administration › Reference data) ──────────────────────────

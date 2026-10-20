@@ -2377,9 +2377,11 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
           <div class="import-section-head"><span class="import-section-title">📞 Calls</span><span style="font-size:10px;color:var(--muted)">one row per call — optional (booking can have none)</span></div>
           <div class="import-section-body">
             <div class="mb-call-head">
-              <span>Call Name</span><span>Date</span><span>Start</span><span>Length (h)</span><span>Required</span><span>Notes</span><span></span>
+              <span>Call Name / Type</span><span>Date</span><span>Start</span><span>Length (h)</span><span>Required</span><span>Notes</span><span></span>
             </div>
             <div id="mb-calls"></div>
+            <div id="mb-ct-note" style="font-size:10px;color:var(--warn);margin-top:6px"></div>
+            <div style="font-size:10px;color:var(--muted);margin-top:6px">Call Type: Used by THE GOAT's pricing from cutover. Until then SmartStaff still bills and pays from its RATE column.</div>
             <button class="btn" style="margin-top:12px" onclick="addManualCall()">+ Add Call</button>
           </div>
         </div>
@@ -11606,7 +11608,7 @@ function renderImportPreview(data){
   const rc = p.rate_card || {};
   document.getElementById('prev-ratecard').textContent =
     (rc.label || 'Standard') + (rc.from_file ? '' : ' (no rate card in this file)');
-  const rcNotes = [rc.warning, rc.customer_note].filter(Boolean);
+  const rcNotes = [rc.warning, rc.call_type_warning, rc.customer_note].filter(Boolean);
   document.getElementById('prev-ratecard-note').innerHTML = rcNotes.map(function(n){
     return '<div style="font-size:11px;color:var(--warn);margin-top:4px">' + escapeHtml(n) + '</div>';
   }).join('');
@@ -11971,11 +11973,15 @@ function updateImportProgressUI(data){
     // A rate card that didn't save is LOUD: the import completed, the card didn't.
     const rcHost = document.getElementById('import-rc-result');
     if(rcHost){
-      rcHost.innerHTML = data.rate_card_error
+      rcHost.innerHTML = (data.rate_card_error
         ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg);margin-top:8px">'
           + escapeHtml(data.rate_card_error) + '</div>'
         : (data.rate_card ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">Rate card: '
-          + escapeHtml(data.rate_card.label || '') + '</div>' : '');
+          + escapeHtml(data.rate_card.label || '') + '</div>' : ''))
+        // Call Types not saved: the calls exist and show a derived type (§5.2).
+        + (data.call_type_error
+        ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg);margin-top:8px">'
+          + escapeHtml(data.call_type_error) + '</div>' : '');
     }
   } else {
     const rcHost = document.getElementById('import-rc-result');
@@ -12056,11 +12062,76 @@ async function loadImportHistory(){
 
 let _mbLookups = null;            // {customers, venues, contacts, customer_map}
 
+// SmartStaff's own callsheet names. Still the Estimate Import preview's list;
+// the manual Booking form and Add call use the booking card's call_names
+// instead (Stage 2 §5.3), and fall back to this only until those load.
 const MB_CALL_NAMES = [
   'Load In','Load Out','LX','SX','VX','Backline','Show Call',
   'FOH Spot','Truss Spot','Wardrobe','Steel','Fork','Truck','EWP',
   'Crown Hand','Crew Boss','Site','Utility','General','Seamstress','Other'
 ];
+
+// ── CALL TYPES (Stage 2, BRIEF-goat-call-types-stage2) ──────────────────────
+// A call's Call Type is the Estimator role it charges at, separate from its
+// Call Name. Options come from the booking's card via /api/call-types/options;
+// nothing is priced from them until cutover (CT_HONESTY says so wherever an
+// Admin sets one).
+const CT_HONESTY = "Used by THE GOAT's pricing from cutover. Until then SmartStaff still bills and pays from its RATE column.";
+var _ctOptions = {};   // set_code -> {roles, call_names, name_roles}
+
+async function ctLoadOptions(query){
+  var r = await fetch('/api/call-types/options?' + query, { headers: { 'Accept': 'application/json' } });
+  var j = {};
+  try{ j = await r.json(); }catch(_){}
+  if(!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+  _ctOptions[j.set_code] = j;
+  return j;
+}
+
+// The set code the manual form's card picker selects, or null while MOPT is
+// ticked and Australian Open unanswered.
+function ctSetFromPicker(prefix){
+  var v = rcPickerValue(prefix);
+  if(!v.complete) return null;
+  if(!v.mopt) return 'standard';
+  return v.australian_open ? 'mopt-ao' : 'mopt';
+}
+
+// The role a call name pre-selects (exact match on the card), or ''.
+function ctRoleForName(opts, name){
+  return (opts && opts.name_roles && name && opts.name_roles[name]) || '';
+}
+
+function ctTypeOptionsHtml(roles, selected){
+  return '<option value="">-- Call Type --</option>' + (roles || []).map(function(r){
+    return '<option value="' + escapeHtml(r) + '"' + (r === selected ? ' selected' : '') + '>' + escapeHtml(r) + '</option>';
+  }).join('');
+}
+
+// §4.2: the chip after a call name. Stored -> plain; derived -> greyed "from
+// call name"; not set / off card -> amber.
+function ctChip(eff){
+  if(!eff) return '';
+  var base = 'font-size:9px;letter-spacing:.3px;border-radius:3px;padding:0 5px;margin-left:6px;white-space:nowrap;vertical-align:middle;';
+  if(eff.status === 'not_set'){
+    return '<span title="No Call Type stored, and the call name matches no role on this booking\'s card" style="' + base
+      + 'color:#f59e0b;background:rgba(245,158,11,0.12)">not set</span>';
+  }
+  if(eff.status === 'off_card'){
+    return '<span title="This Call Type isn\'t on the booking\'s current card. An Admin picks again; nothing is changed automatically." style="' + base
+      + 'color:#f59e0b;background:rgba(245,158,11,0.12)">' + escapeHtml(eff.role || '') + ' · off card</span>';
+  }
+  if(eff.source === 'derived'){
+    return '<span title="Not stored: worked out from the call name" style="' + base
+      + 'color:var(--muted);border:1px dashed var(--border)">' + escapeHtml(eff.role || '') + ' · from call name</span>';
+  }
+  var who = eff.set_by_user_id ? ' by #' + eff.set_by_user_id : '';
+  var when = eff.set_at ? ' · ' + new Date(eff.set_at).toLocaleString() : '';
+  var src = { estimate_import: 'From the estimate', add_call: 'Set on Add call',
+              manual_booking: 'Set on the Booking form', admin: 'Changed by an Admin' }[eff.source] || 'Stored';
+  return '<span title="' + escapeHtml(src + who + when) + '" style="' + base
+    + 'color:var(--text);border:1px solid var(--border)">' + escapeHtml(eff.role || '') + '</span>';
+}
 
 function switchBookingMode(mode){
   document.getElementById('mb-mode-btn-manual').classList.toggle('active', mode==='manual');
@@ -12087,6 +12158,7 @@ async function initManualBooking(){
     const d = document.getElementById('mb-date');
     if(d && !d.value) d.value = new Date().toISOString().slice(0,10);
     if(!document.querySelectorAll('#mb-calls .mb-call-row').length) addManualCall();
+    mbRefreshCallOptions();   // async; rebuilds the rows' Name / Call Type lists
     updateManualReadiness();
   }catch(e){ status.textContent = 'Error loading lists'; }
 }
@@ -15657,7 +15729,7 @@ async function ceLoadShifts(id){
     if(s.venue) sub.push(escapeHtml(s.venue));
     if(s.call_name && s.call_name!==s.booking_name) sub.push(escapeHtml(s.call_name));
     var meta = escapeHtml(s.date||'') + (s.time? ' \u00b7 '+escapeHtml(s.time):'') + (s.length? ' \u00b7 '+s.length+'h':'');
-    var boss = s.is_call_boss ? ' <span style="font-size:9px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;vertical-align:middle">CALL BOSS</span>' : '';
+    var boss = s.is_call_boss ? ' <span style="font-size:9px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;vertical-align:middle">TEAM LEAD</span>' : '';
     var late = s.is_late ? ' <span style="color:var(--conflict);font-size:9px;font-weight:600">LATE</span>' : '';
     return '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">'
       + '<div style="min-width:0">'
@@ -18954,14 +19026,15 @@ function addManualCall(){
   // Booking Date first, falling back to the row above only when it's blank.
   const lastDate = document.getElementById('mb-date')?.value
                  || wrap.querySelector('.mb-call-row:last-child .mbc-date')?.value || '';
-  const opts = '<option value="">-- select --</option>' +
-    MB_CALL_NAMES.map(n => `<option value="${n}">${n}</option>`).join('');
+  const ct = _ctOptions[ctSetFromPicker('mb-rc')];
+  const opts = mbCallNameOptionsHtml(ct ? ct.call_names : MB_CALL_NAMES, '');
   const row = document.createElement('div');
   row.className = 'mb-call-row';
   row.innerHTML =
     `<div>
        <select class="mbc-name" onchange="onManualCallName(this)">${opts}</select>
-       <input class="mbc-name-free" placeholder="custom name" style="display:none;margin-top:4px" oninput="updateManualReadiness()">
+       <input class="mbc-name-free" placeholder="custom name" style="display:none;margin-top:4px" oninput="onManualCallFree(this)">
+       <select class="mbc-type" title="Call Type: the role this call charges at" style="margin-top:4px" onchange="this.dataset.userSet='1';updateManualReadiness()">${ctTypeOptionsHtml(ct ? ct.roles : [], '')}</select>
      </div>
      <div>
        <input class="mbc-date" type="date" value="${lastDate}" onchange="onManualCallDate(this)">
@@ -18981,11 +19054,63 @@ function removeManualCall(btn){
   updateManualReadiness();
 }
 
+function mbCallNameOptionsHtml(names, selected){
+  return '<option value="">-- select --</option>' + (names || []).map(function(n){
+    return '<option value="' + escapeHtml(n) + '"' + (n === selected ? ' selected' : '') + '>' + escapeHtml(n) + '</option>';
+  }).join('');
+}
+
+// Picking a Call Name pre-selects the Call Type it resolves to on the card
+// (§5.3). A type the Admin picked by hand is left alone.
+function mbPreselectType(row){
+  const typeSel = row.querySelector('.mbc-type');
+  if(!typeSel || typeSel.dataset.userSet === '1') return;
+  const role = ctRoleForName(_ctOptions[ctSetFromPicker('mb-rc')], mbCallNameValue(row));
+  if(role) typeSel.value = role;
+}
+
 function onManualCallName(sel){
   const free = sel.parentElement.querySelector('.mbc-name-free');
   if(!free) return;
   if(sel.value === 'Other'){ free.style.display = ''; free.focus(); }
   else { free.style.display = 'none'; free.value = ''; }
+  mbPreselectType(sel.closest('.mb-call-row'));
+  updateManualReadiness();
+}
+
+function onManualCallFree(inp){
+  mbPreselectType(inp.closest('.mb-call-row'));
+  updateManualReadiness();
+}
+
+// Rebuild every row's Call Name and Call Type lists for the card now picked.
+// A name or type still on the new card is kept; one that isn't is cleared, so
+// a MOPT booking can't keep a Standard name by accident.
+async function mbRefreshCallOptions(){
+  const note = document.getElementById('mb-ct-note');
+  const set = ctSetFromPicker('mb-rc');
+  if(!set) return;   // MOPT with Australian Open unanswered: wait for it
+  let ct = _ctOptions[set];
+  if(!ct){
+    try{ ct = await ctLoadOptions('set_code=' + encodeURIComponent(set)); }
+    catch(e){ if(note) note.textContent = 'Call Types unavailable: ' + e.message; updateManualReadiness(); return; }
+  }
+  if(ctSetFromPicker('mb-rc') !== set) return;   // the card changed while loading
+  if(note) note.textContent = '';
+  document.querySelectorAll('#mb-calls .mb-call-row').forEach(function(row){
+    const nameSel = row.querySelector('.mbc-name');
+    const typeSel = row.querySelector('.mbc-type');
+    const keepName = ct.call_names.indexOf(nameSel.value) >= 0 ? nameSel.value : '';
+    nameSel.innerHTML = mbCallNameOptionsHtml(ct.call_names, keepName);
+    if(keepName !== 'Other'){
+      const free = row.querySelector('.mbc-name-free');
+      if(free){ free.style.display = 'none'; free.value = ''; }
+    }
+    const keepType = ct.roles.indexOf(typeSel.value) >= 0 ? typeSel.value : '';
+    typeSel.innerHTML = ctTypeOptionsHtml(ct.roles, keepType);
+    if(!keepType) typeSel.dataset.userSet = '';
+    mbPreselectType(row);
+  });
   updateManualReadiness();
 }
 
@@ -19002,7 +19127,7 @@ function updateManualReadiness(){
   const ctc   = document.getElementById('mb-contact')?.value;
   const venue = document.getElementById('mb-venue')?.value;
   const rows  = [...document.querySelectorAll('#mb-calls .mb-call-row')];
-  const callsOk = rows.every(r => mbCallNameValue(r) && r.querySelector('.mbc-date').value && parseFlexTime(r.querySelector('.mbc-time').value));
+  const callsOk = rows.every(r => mbCallNameValue(r) && r.querySelector('.mbc-type')?.value && r.querySelector('.mbc-date').value && parseFlexTime(r.querySelector('.mbc-time').value));
   const btn  = document.getElementById('mb-create-btn');
   const note = document.getElementById('mb-action-note');
   if(!btn) return;
@@ -19010,7 +19135,7 @@ function updateManualReadiness(){
   btn.disabled = !(name && cust && ctc && venue && callsOk && rcOk);
   if(!name)                    note.textContent = 'Enter a booking name';
   else if(!cust||!ctc||!venue) note.textContent = 'Select customer, contact and venue';
-  else if(!callsOk)            note.textContent = 'Each call needs a name, date and valid time';
+  else if(!callsOk)            note.textContent = 'Each call needs a name, Call Type, date and valid time';
   else if(!rcOk)               note.textContent = 'MOPT booking: answer Australian Open, Yes or No';
   else note.textContent = rows.length ? `${rows.length} call${rows.length!==1?'s':''} ready` : 'No calls — booking only';
 }
@@ -19020,6 +19145,7 @@ function buildManualPayload(){
     const t = parseFlexTime(r.querySelector('.mbc-time').value) || '00:00';
     return {
       call_name:  mbCallNameValue(r),
+      call_type:  r.querySelector('.mbc-type').value,
       start_date: r.querySelector('.mbc-date').value,
       start_time: t + ':00',
       length:     parseFloat(r.querySelector('.mbc-length').value) || 0,
@@ -19096,11 +19222,14 @@ function renderManualResult(data, payload){
   // A rate card that didn't save is LOUD: the booking exists, its card doesn't.
   const rcHost = document.getElementById('mb-result-rc');
   if(rcHost){
-    rcHost.innerHTML = data.rate_card_error
+    rcHost.innerHTML = (data.rate_card_error
       ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg)">'
         + escapeHtml(data.rate_card_error) + '</div>'
       : (data.rate_card ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Rate card: '
-        + escapeHtml(data.rate_card.label || '') + '</div>' : '');
+        + escapeHtml(data.rate_card.label || '') + '</div>' : ''))
+      + (data.call_type_error
+      ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg);margin-top:6px">'
+        + escapeHtml(data.call_type_error) + '</div>' : '');
   }
   const link = document.getElementById('mb-booking-link');
   link.href = ssUrl('/bookings/' + data.booking_id);
@@ -20361,22 +20490,24 @@ async function promoteBackup(bookingId, callId, userId, btn, ackOver){
     alert('Could not promote: '+(e.message||e));
   }
 }
-// Admin-only "Set Boss" button, shown next to any crew member who is NOT already
-// the call boss. Proxies SmartStaff's native makeboss, which clears is_call_boss
-// on every other row before setting this one — so there is structurally only ever
-// one boss per call. This is rung 1 of the crew-facing contact hierarchy, so it
-// changes who the crew on this call are told to contact in Crew Hub.
+// Admin-only "Team Lead" button, shown next to any crew member who is NOT already
+// the call's team lead. Proxies SmartStaff's native makeboss, which clears
+// is_call_boss on every other row before setting this one — so there is
+// structurally only ever one per call. This is rung 1 of the crew-facing contact
+// hierarchy, so it changes who the crew on this call are told to contact in Crew
+// Hub. SmartStaff calls it the call boss; THE GOAT says Team Lead (Stage 2 Q12)
+// because it has NO charge or pay effect, unlike the row-level Crew Boss.
 function crewBossControl(c, bookingId, callId){
   if(window._cohort !== 'admin' || !c.id) return '';
   if(c.is_call_boss) return '';
-  return '<button type="button" title="Make call boss (their number is shown to this call\'s crew)"'
+  return '<button type="button" title="Make team lead (their number is shown to this call\'s crew)"'
     + ' onclick="setCallBoss(\'' + bookingId + '\',\'' + callId + '\',' + c.id + ',this)"'
     + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);'
     + 'background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:2px 6px;'
-    + 'font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&#9733; Boss</button>';
+    + 'font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&#9733; Team Lead</button>';
 }
 async function setCallBoss(bookingId, callId, userId, btn){
-  if(!confirm('Make this crew member the boss for this call?\n\nAny existing boss on this call is cleared. Their mobile number will be shown to the crew booked on this call.')) return;
+  if(!confirm('Make this crew member the team lead for this call?\n\nAny existing team lead on this call is cleared. Their mobile number will be shown to the crew booked on this call. No pay or charge effect.')) return;
   if(btn) btn.disabled = true;
   try{
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/boss/'+userId, {method:'POST'});
@@ -20385,7 +20516,7 @@ async function setCallBoss(bookingId, callId, userId, btn){
     openCallDialog(bookingId, callId);
   }catch(e){
     if(btn) btn.disabled = false;
-    alert('Could not set boss: '+(e.message||e));
+    alert('Could not set team lead: '+(e.message||e));
   }
 }
 function entityBtn(label, onclick, opts){
@@ -20490,6 +20621,229 @@ function goatHarryStop(){
   if(a){ a.pause(); a.currentTime = 0; }
   var b = document.getElementById('harry-mute');
   if(b && b.parentNode) b.parentNode.removeChild(b);
+}
+
+// ── CALL TYPE AND CREW ROW OVERRIDES (call dialog, Stage 2 §4.2, §5.4, §6) ──
+// Admin only (the call dialog itself is). One GET /pricing per open: the
+// call's effective type, its overrides, the card's roles, SmartStaff's pay
+// grades and whether Make Crew Boss is offered. Loaded async after the dialog
+// renders; a failure shows "unavailable" and no row controls, never a guess.
+var _callPricing = {};   // callId -> /pricing payload
+
+function ctBtn(label, onclick, title, disabled){
+  return '<button type="button"' + (disabled ? ' disabled' : '') + (title ? ' title="' + escapeHtml(title) + '"' : '')
+    + (onclick && !disabled ? ' onclick="' + onclick + '"' : '')
+    + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:' + (disabled ? 'var(--muted)' : 'var(--accent)') + ';'
+    + 'background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:2px 6px;white-space:nowrap;'
+    + "font-family:'Share Tech Mono',monospace;cursor:" + (disabled ? 'not-allowed' : 'pointer') + ';outline:none;opacity:' + (disabled ? '.5' : '1') + '">'
+    + label + '</button>';
+}
+
+async function callLoadPricing(bookingId, callId, msg){
+  var host = document.getElementById('call-ct-wrap-' + callId);
+  if(!host) return;
+  var token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  var p = null, err = '';
+  try{
+    var r = await fetch('/api/call/' + bookingId + '/' + callId + '/pricing');
+    var j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status); else p = j;
+  }catch(e){ err = e.message || String(e); }
+  if(host.__loadToken !== token || !host.isConnected) return;   // superseded / closed
+  if(!p){
+    delete _callPricing[callId];
+    host.innerHTML = entityRow('Call Type', '<span style="font-size:11px;color:var(--muted)">Unavailable (' + escapeHtml(err) + ')'
+      + '<span onclick="callLoadPricing(\'' + bookingId + '\',\'' + callId + '\')" style="color:var(--accent);cursor:pointer;margin-left:8px">Retry</span></span>');
+    return;
+  }
+  _callPricing[callId] = p;
+  callRenderCallType(bookingId, callId, false, msg);
+  callRenderRowControls(bookingId, callId);
+}
+
+function callRenderCallType(bookingId, callId, editing, msg){
+  var host = document.getElementById('call-ct-wrap-' + callId);
+  var p = _callPricing[callId];
+  if(!host || !p) return;
+  var eff = p.call_type || {};
+  var err = msg ? '<div style="font-size:11px;color:var(--conflict);margin-top:4px">' + escapeHtml(msg) + '</div>' : '';
+  if(editing){
+    var sel = '<select id="call-ct-sel-' + callId + '" style="' + EF_INPUT_STYLE + ';max-width:260px">'
+      + ctTypeOptionsHtml(p.roles, eff.status === 'off_card' ? '' : eff.role) + '</select>';
+    host.innerHTML = entityRow('Call Type',
+        sel
+      + '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + escapeHtml(p.set_label || '') + ' card</div>'
+      + '<div style="margin-top:6px">'
+      +   ctBtn('Save', "callSaveCallType('" + bookingId + "','" + callId + "')")
+      +   ' ' + ctBtn('Cancel', "callRenderCallType('" + bookingId + "','" + callId + "')")
+      + '</div>'
+      + '<div style="font-size:10px;color:var(--muted);margin-top:5px">' + escapeHtml(p.honesty || CT_HONESTY) + '</div>' + err);
+    return;
+  }
+  var shown = eff.role ? escapeHtml(eff.role) : '<span style="color:#f59e0b">Not set</span>';
+  var note = '';
+  if(eff.status === 'off_card') note = '<span style="font-size:10px;color:#f59e0b;margin-left:8px">not on the ' + escapeHtml(p.set_label || '') + ' card: pick again</span>';
+  else if(eff.source === 'derived') note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">from call name</span>';
+  else if(eff.status === 'not_set') note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">the call name matches no role on the ' + escapeHtml(p.set_label || '') + ' card</span>';
+  else if(eff.set_by_user_id) note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">set by #' + escapeHtml(String(eff.set_by_user_id))
+    + (eff.set_at ? ' · ' + escapeHtml(new Date(eff.set_at).toLocaleString()) : '') + '</span>';
+  var change = (window._cohort === 'admin' && p.roles && p.roles.length)
+    ? '<span onclick="callRenderCallType(\'' + bookingId + '\',\'' + callId + '\',true)" style="font-size:11px;color:var(--accent);cursor:pointer;margin-left:10px">Change…</span>'
+    : '';
+  host.innerHTML = entityRow('Call Type', shown + note + change + err);
+}
+
+async function callSaveCallType(bookingId, callId){
+  var role = _efVal('call-ct-sel-' + callId);
+  if(!role) return callRenderCallType(bookingId, callId, true, 'Pick a Call Type.');
+  if(!confirm('This changes the charge rate for every crew row on this call.')) return;
+  var msg = '';
+  try{
+    var r = await fetch('/api/call/' + bookingId + '/' + callId + '/call-type', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role_name: role })
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok || j.error) return callRenderCallType(bookingId, callId, true, j.error || ('HTTP ' + r.status));
+    if(j.warning) msg = j.warning; else showFeedback('Call Type: ' + role);
+  }catch(e){
+    return callRenderCallType(bookingId, callId, true, "Couldn't reach the call types service.");
+  }
+  callLoadPricing(bookingId, callId, msg);   // show what it IS now
+}
+
+function callOverrideFor(p, uid){
+  return (p.overrides || []).find(function(o){ return Number(o.user_id) === Number(uid); }) || null;
+}
+
+function callGradeName(p, id){
+  var g = (p.paygrades || []).find(function(x){ return Number(x.id) === Number(id); });
+  return g ? g.name : ('grade #' + id);
+}
+
+function callRenderRowControls(bookingId, callId){
+  var p = _callPricing[callId];
+  if(!p) return;
+  document.querySelectorAll('[data-ct-row="' + callId + '"]').forEach(function(ctl){
+    var uid = Number(ctl.getAttribute('data-uid'));
+    var o = callOverrideFor(p, uid);
+    var tag = document.getElementById('ct-tag-' + callId + '-' + uid);
+    if(tag){
+      if(o){
+        var bits = [];
+        if(o.charge_role) bits.push('Charge as ' + o.charge_role);
+        if(o.pay_paygrade_id != null) bits.push('Pay as ' + callGradeName(p, o.pay_paygrade_id));
+        var tip = bits.join(' · ') + ' — set by #' + o.set_by_user_id + (o.set_at ? ', ' + new Date(o.set_at).toLocaleString() : '');
+        tag.innerHTML = o.kind === 'crew_boss'
+          ? ' <span title="' + escapeHtml(tip) + '" style="font-size:8px;letter-spacing:.5px;color:#0b0b0b;background:var(--accent);border-radius:3px;padding:0 4px">CREW BOSS</span>'
+          : ' <span title="' + escapeHtml(tip) + '" style="font-size:8px;letter-spacing:.5px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:0 4px">override</span>';
+      } else {
+        tag.innerHTML = '';
+      }
+    }
+    var cb = p.crew_boss || {};
+    var cbBtn = '';
+    if(!cb.hidden && !(o && o.kind === 'crew_boss')){
+      cbBtn = cb.allowed
+        ? ctBtn('&#9819; Crew Boss', "callMakeCrewBoss('" + bookingId + "','" + callId + "'," + uid + ")",
+                'Charge this row at Crew Boss and pay the Crew Boss grade. Separate from Team Lead.')
+        : ctBtn('&#9819; Crew Boss', '', cb.reason || 'Not available', true);
+    }
+    ctl.innerHTML = ctBtn('Rate', "callOpenRateEditor('" + bookingId + "','" + callId + "'," + uid + ")",
+                          'Charge or pay this crew member differently from the Call Type') + cbBtn;
+  });
+}
+
+function callOpenRateEditor(bookingId, callId, uid, msg){
+  var p = _callPricing[callId];
+  var host = document.getElementById('ct-edit-' + callId + '-' + uid);
+  if(!p || !host) return;
+  var o = callOverrideFor(p, uid);
+  var curCharge = (o && o.charge_role) || '';
+  var curPay = (o && o.pay_paygrade_id != null) ? String(o.pay_paygrade_id) : '';
+  var opt = function(v, label, sel){
+    return '<option value="' + escapeHtml(v) + '"' + (sel ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+  };
+  var callRole = (p.call_type && p.call_type.role) || 'not set';
+  var cardRoles = p.roles || [];
+  var extra = (p.override_roles || []).filter(function(r){ return cardRoles.indexOf(r) < 0; });
+  var charge = '<select id="ct-charge-' + callId + '-' + uid + '" style="' + EF_INPUT_STYLE + '">'
+    + opt('', 'Call type (' + callRole + ')', !curCharge)
+    + '<optgroup label="' + escapeHtml((p.set_label || '') + ' card') + '">'
+    + cardRoles.map(function(r){ return opt(r, r, r === curCharge); }).join('') + '</optgroup>'
+    + (extra.length ? '<optgroup label="Standard card (manual override)">'
+       + extra.map(function(r){ return opt(r, r, r === curCharge); }).join('') + '</optgroup>' : '')
+    + '</select>';
+  var pay = '<select id="ct-pay-' + callId + '-' + uid + '" style="' + EF_INPUT_STYLE + '">'
+    + opt('', 'Their own grade', !curPay)
+    + (p.paygrades || []).map(function(g){
+        return opt(String(g.id), g.name + (g.rate != null && g.rate !== '' ? ' (' + g.rate + ')' : ''), String(g.id) === curPay);
+      }).join('')
+    + '</select>';
+  var lab = function(t){ return '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:6px 0 3px">' + t + '</div>'; };
+  host.innerHTML = '<div style="border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin:4px 0 8px;background:var(--surface2)">'
+    + lab('Charge as') + charge
+    + lab('Pay as') + pay
+    + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+    +   ctBtn('Save', "callSaveOverride('" + bookingId + "','" + callId + "'," + uid + ")")
+    +   (o ? ctBtn('Clear', "callClearOverride('" + bookingId + "','" + callId + "'," + uid + ")",
+                   o.kind === 'crew_boss' ? 'Remove Crew Boss from this row' : 'Remove this override') : '')
+    +   ctBtn('Cancel', "document.getElementById('ct-edit-" + callId + "-" + uid + "').innerHTML=''")
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">' + escapeHtml(p.honesty || CT_HONESTY) + '</div>'
+    + (msg ? '<div style="font-size:11px;color:var(--conflict);margin-top:4px">' + escapeHtml(msg) + '</div>' : '')
+    + '</div>';
+}
+
+async function callRowPost(bookingId, callId, uid, path, body){
+  try{
+    var r = await fetch('/api/call/' + bookingId + '/' + callId + '/' + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok || j.error) return { error: j.error || ('HTTP ' + r.status) };
+    return j;
+  }catch(e){
+    return { error: "Couldn't reach the call types service." };
+  }
+}
+
+async function callSaveOverride(bookingId, callId, uid){
+  var charge = _efVal('ct-charge-' + callId + '-' + uid);
+  var pay = _efVal('ct-pay-' + callId + '-' + uid);
+  if(!charge && !pay){
+    return callOpenRateEditor(bookingId, callId, uid,
+      'Pick a charge role or a pay grade. To go back to the Call Type and their own grade, Clear.');
+  }
+  var j = await callRowPost(bookingId, callId, uid, 'override/' + uid,
+    { charge_role: charge || null, pay_paygrade_id: pay ? Number(pay) : null });
+  if(j.error) return callOpenRateEditor(bookingId, callId, uid, j.error);
+  var host = document.getElementById('ct-edit-' + callId + '-' + uid);
+  if(host) host.innerHTML = '';
+  callLoadPricing(bookingId, callId, j.warning || '');
+}
+
+async function callClearOverride(bookingId, callId, uid){
+  if(!confirm('Remove this row\'s override? It goes back to the Call Type and their own grade.')) return;
+  var j = await callRowPost(bookingId, callId, uid, 'override/' + uid + '/clear');
+  if(j.error) return callOpenRateEditor(bookingId, callId, uid, j.error);
+  var host = document.getElementById('ct-edit-' + callId + '-' + uid);
+  if(host) host.innerHTML = '';
+  callLoadPricing(bookingId, callId, j.warning || '');
+}
+
+async function callMakeCrewBoss(bookingId, callId, uid){
+  var p = _callPricing[callId];
+  var g = p && p.crew_boss && p.crew_boss.grade;
+  if(!confirm('Make this crew member Crew Boss on this call?\n\nTheir row charges at Crew Boss and pays the '
+      + (g ? g.name + ' grade' : 'Crew Boss grade') + ' instead of their own. This is separate from Team Lead.\n\n'
+      + CT_HONESTY)) return;
+  var j = await callRowPost(bookingId, callId, uid, 'crew-boss/' + uid);
+  if(j.error){ alert('Could not make Crew Boss: ' + j.error); return; }
+  callLoadPricing(bookingId, callId, j.warning || '');
 }
 
 async function openCallDialog(bookingId, callId){
@@ -20652,7 +21006,13 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   const crewRows = crew.length
     ? crew.map(function(c){
         var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(fmtPhone(c.mobile))+'</a>' : '';
-        var boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
+        var boss = c.is_call_boss ? ' <span title="Team Lead: the crew\'s contact on this call. No pay or charge effect." style="font-size:8px;color:var(--accent);letter-spacing:.5px">TEAM LEAD</span>' : '';
+        // Stage 2 §6: the row's override tag and its Rate / Crew Boss controls,
+        // filled by callLoadPricing once the call's pricing context arrives.
+        var ctId = (window._cohort === 'admin' && Number(c.id) > 0) ? (callId + '-' + Number(c.id)) : '';
+        var ctTag = ctId ? '<span id="ct-tag-' + ctId + '"></span>' : '';
+        var ctCtl = ctId ? '<span id="ct-ctl-' + ctId + '" data-ct-row="' + callId + '" data-uid="' + Number(c.id) + '" style="display:flex;align-items:center;gap:4px"></span>' : '';
+        var ctEdit = ctId ? '<div id="ct-edit-' + ctId + '"></div>' : '';
         // A confirmed/backup crew member with an outstanding timing change hasn't
         // re-confirmed yet — the filling risk ops watch for (get-booking.php sets
         // change_pending, guarded to status 5/7).
@@ -20669,10 +21029,11 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
           nm = '<button type="button" class="ce-call-link" title="Open crew record" onclick="entityOpenCrew('
             + Number(bookingId) + ',' + Number(callId) + ',' + Number(c.id) + ')">' + nm + '</button>';
         }
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+(isCancelled ? '' : crewBossControl(c, bookingId, callId))+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'; }).join('')
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+ctTag+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+ctCtl+(isCancelled ? '' : crewBossControl(c, bookingId, callId))+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'+ctEdit; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       cancelBanner
+    + '<div id="call-ct-wrap-'+callId+'"></div>'
     + entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
     + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
@@ -20688,6 +21049,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     + bossCallWarn
     + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Booked Crew</div>'
     + crewRows;
+  if(window._cohort === 'admin') callLoadPricing(bookingId, callId);   // async, never awaited
   // FIND CREW AND ENTER TIMES ARE REMOVED ON A CANCELLED CALL.
   //
   // Find Crew is primary-styled, so on a cancelled call the brightest thing on
@@ -21175,7 +21537,7 @@ function renderCallResponses(bookingId, callId){
 
   const rows = crew.map(function(c){
     const name = escapeHtml(decodeEntities(((c.firstname||'')+' '+(c.lastname||'')).trim() || ('User #'+c.user_id)));
-    const boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">BOSS</span>' : '';
+    const boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">TEAM LEAD</span>' : '';
     const st   = crewStatusBadge(CREW_STATUS_LABEL_BY_INT[c.status] || String(c.status));
     const el   = (c.respond_seconds === null || c.respond_seconds === undefined)
       ? '<span style="color:var(--muted)">—</span>'
@@ -23990,8 +24352,42 @@ function bkFeedEdgeList(bookingId, c, maps){
   return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 0 26px">'+items+'</div>';
 }
 
+// Call Type chips (Stage 2 §4.2). ONE POST per booking open, never one per
+// call; the rows render first and redraw when the types arrive. A failure
+// leaves the rows chip-less rather than showing a wrong type.
+var _bkCallTypes = { bookingId: null, types: {}, overrides: {} };
+
+async function bkLoadCallTypes(bookingId, d){
+  _bkCallTypes = { bookingId: String(bookingId), types: {}, overrides: {} };
+  var calls = ((d && d.calls) || []).map(function(c){
+    return { call_id: c.call_id, call_name: decodeEntities(c.call_name || '') };
+  });
+  if(!calls.length) return;
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/call-types', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calls: calls })
+    });
+    var j = await r.json();
+    if(!r.ok || j.error) return;
+    if(window._curBookingEdit !== d) return;   // another booking opened meanwhile
+    _bkCallTypes = { bookingId: String(bookingId), types: j.call_types || {},
+                     overrides: j.override_counts || {} };
+    bkRerenderCalls(bookingId);
+  }catch(e){ /* no chips */ }
+}
+
+function bkCallTypeChip(bookingId, c){
+  if(_bkCallTypes.bookingId !== String(bookingId)) return '';
+  var chip = ctChip(_bkCallTypes.types[String(c.call_id)]);
+  var n = _bkCallTypes.overrides[String(c.call_id)];
+  if(n) chip += '<span title="' + n + ' crew row' + (n === 1 ? '' : 's') + ' priced differently from the Call Type"'
+    + ' style="font-size:9px;color:var(--muted);margin-left:4px;white-space:nowrap">+' + n + ' override' + (n === 1 ? '' : 's') + '</span>';
+  return chip;
+}
+
 function bkCallRow(bookingId, c, maps, smaps){
-  var chips = bkFeedChips(c, maps) + bkSupChips(c, smaps);
+  var chips = bkCallTypeChip(bookingId, c) + bkFeedChips(c, maps) + bkSupChips(c, smaps);
   var name  = escapeHtml(decodeEntities(c.call_name || 'Call'));
   var when  = _abCallWhen(c.start_date, c.start_time);
   var whenLine = when
@@ -24610,6 +25006,7 @@ function renderBookingDialog(bookingId, d, cached){
   bkLoadCheckinMode(bookingId, 'bk-checkin-wrap');   // async, never awaited
   gsheetLoadStatus(bookingId);                        // async, never awaited
   if(d) bkLoadCrewlistStatus(bookingId);              // async, never awaited
+  if(d) bkLoadCallTypes(bookingId, d);                // async, never awaited
   entityRestoreScroll();   // stepped back into this view -- put it where it was
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
@@ -24738,7 +25135,10 @@ function rcPickerChanged(prefix){
   var box = document.getElementById(prefix + '-mopt');
   var row = document.getElementById(prefix + '-ao-row');
   if(row && box) row.style.display = box.checked ? '' : 'none';
-  if(prefix === 'mb-rc' && typeof updateManualReadiness === 'function') updateManualReadiness();
+  if(prefix === 'mb-rc' && typeof updateManualReadiness === 'function'){
+    mbRefreshCallOptions();   // the card decides the Call Name and Call Type lists
+    updateManualReadiness();
+  }
 }
 
 // {mopt, australian_open, complete}. complete is false while MOPT is ticked
@@ -25120,13 +25520,47 @@ async function saveCallEdit(bookingId, callId){
 // Creates a new call on an existing booking via SmartStaff's own callsheet
 // form (POST /api/booking/<id>/call -> ss_create_call). No crew are booked
 // onto the new call. Call-name field mirrors the manual Booking form: a
-// dropdown of MB_CALL_NAMES plus "Other -> free text".
+// dropdown of the booking card's call names plus "Other -> free text", and a
+// required Call Type from the same card (Stage 2 §5.3). The lists load async;
+// until they do, both selects say so and Add call refuses.
+
+var _acOpts = null;   // this form's /api/call-types/options result
 
 function acCallNameSelect(){
-  var opts = MB_CALL_NAMES.map(function(n){
-    return '<option value="'+escapeHtml(n)+'">'+escapeHtml(n)+'</option>';
-  }).join('');
-  return '<select id="ac-name" onchange="acToggleOther()" style="'+EF_INPUT_STYLE+'">'+opts+'</select>';
+  return '<select id="ac-name" onchange="acToggleOther()" disabled style="'+EF_INPUT_STYLE+'">'
+    + '<option value="">Loading the card\u2019s call names\u2026</option></select>';
+}
+
+function acCallTypeSelect(){
+  return '<select id="ac-type" disabled onchange="this.dataset.userSet=\'1\'" style="'+EF_INPUT_STYLE+'">'
+    + '<option value="">Loading\u2026</option></select>';
+}
+
+async function acLoadOptions(bookingId){
+  var st = document.getElementById('ac-status');
+  try{
+    var o = await ctLoadOptions('booking_id=' + encodeURIComponent(bookingId));
+    _acOpts = o;
+    var nameSel = document.getElementById('ac-name');
+    var typeSel = document.getElementById('ac-type');
+    if(!nameSel || !typeSel) return;   // form closed meanwhile
+    nameSel.innerHTML = mbCallNameOptionsHtml(o.call_names, '');
+    typeSel.innerHTML = ctTypeOptionsHtml(o.roles, '');
+    nameSel.disabled = false; typeSel.disabled = false;
+    var lab = document.getElementById('ac-card');
+    if(lab) lab.textContent = 'Rate card: ' + (o.label || o.set_code);
+  }catch(e){
+    if(st){ st.style.color = 'var(--conflict)'; st.textContent = 'Call Types unavailable: ' + e.message; }
+  }
+}
+
+function acPreselectType(){
+  var typeSel = document.getElementById('ac-type');
+  if(!typeSel || typeSel.dataset.userSet === '1') return;
+  var sel = _efVal('ac-name');
+  var name = sel === 'Other' ? _efVal('ac-name-free').trim() : sel;
+  var role = ctRoleForName(_acOpts, name);
+  if(role) typeSel.value = role;
 }
 
 function acToggleOther(){
@@ -25134,6 +25568,7 @@ function acToggleOther(){
   var row = document.getElementById('ac-other-row');
   if(!sel || !row) return;
   row.style.display = (sel.value === 'Other') ? 'block' : 'none';
+  acPreselectType();
 }
 
 function openAddCallForm(bookingId){
@@ -25142,11 +25577,15 @@ function openAddCallForm(bookingId){
   document.getElementById('entity-modal-title').textContent = 'Add call';
   document.getElementById('entity-modal-sub').textContent   = 'New call \u00b7 Booking #'+bookingId;
   var today = new Date().toISOString().slice(0,10);
+  _acOpts = null;
   document.getElementById('entity-modal-body').innerHTML =
       efRow('Name',       acCallNameSelect())
     + '<div id="ac-other-row" style="display:none">'
-    +   efRow('Other name', efInput('ac-name-free', '', 'text'))
+    +   efRow('Other name', '<input id="ac-name-free" type="text" value="" oninput="acPreselectType()" style="'+EF_INPUT_STYLE+'">')
     + '</div>'
+    + efRow('Call Type',  acCallTypeSelect()
+        + '<div id="ac-card" style="font-size:10px;color:var(--muted);margin-top:3px"></div>'
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + escapeHtml(CT_HONESTY) + '</div>')
     + efRow('Date',       efInput('ac-date', today, 'date'))
     + efRow('Time',       '<input id="ac-time" type="text" inputmode="numeric" placeholder="HH:MM (24hr) \u2014 optional" value="" style="'+EF_INPUT_STYLE+'">')
     + efRow('Length (h)', efInput('ac-length', '', 'number'))
@@ -25157,12 +25596,14 @@ function openAddCallForm(bookingId){
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('\uD83D\uDCBE Add call', "saveAddCall('"+bookingId+"')", {primary:true, id:'ac-save'})
     + entityBtn('Cancel',  "openBookingDialog('"+bookingId+"')");
+  acLoadOptions(bookingId);   // async, never awaited
 }
 
 async function saveAddCall(bookingId){
   var sel  = _efVal('ac-name');
   var free = _efVal('ac-name-free').trim();
   var date = _efVal('ac-date');
+  var type = _efVal('ac-type');
   var st = document.getElementById('ac-status');
   function fail(msg){ if(st){ st.style.color='var(--conflict)'; st.textContent=msg; } }
 
@@ -25172,6 +25613,7 @@ async function saveAddCall(bookingId){
     name = free;              // Other calls send the free text as the call name
   }
   if(!name) return fail('Name is required');
+  if(!type) return fail('Call Type is required');
   if(!date) return fail('Date is required');
 
   var t = _efVal('ac-time').trim();
@@ -25186,7 +25628,7 @@ async function saveAddCall(bookingId){
   if(st){ st.style.color='var(--muted)'; st.textContent='Adding\u2026'; }
   var btn = document.getElementById('ac-save'); if(btn) btn.disabled = true;
 
-  var payload = { call_name: name, start_date: date, start_time: t,
+  var payload = { call_name: name, call_type: type, start_date: date, start_time: t,
                   length: _efVal('ac-length'), required: _efVal('ac-required'),
                   notes: _efVal('ac-notes') };
   if(sel === 'Other') payload.call_name_free = free;
@@ -25203,6 +25645,9 @@ async function saveAddCall(bookingId){
       return;
     }
     delete window._bookingIndex[bookingId];   // cached call list is now stale
+    // The call exists; its type didn't save. Loud, like the import's banner:
+    // it shows a type from its name until an Admin sets it on the call.
+    if(j && j.call_type_error) alert(j.call_type_error);
     openBookingDialog(bookingId);             // re-fetch + show the new call
   }catch(e){
     fail('Add failed: '+e.message);
@@ -27941,7 +28386,7 @@ function opsRowLabels(o){
   // Awaiting reply / SMS failed). Absent when Crew Hub didn't answer.
   if(o.delivery && OPS_DELIVERY_PILLS[o.delivery])
     L.push('<span class="ops-lbl dv-' + o.delivery + '">' + OPS_DELIVERY_PILLS[o.delivery] + '</span>');
-  if(o.is_call_boss === 1) L.push('<span class="ops-lbl lbl-cb">Call boss</span>');
+  if(o.is_call_boss === 1) L.push('<span class="ops-lbl lbl-cb">Team lead</span>');
   return L.join('');
 }
 
