@@ -753,6 +753,16 @@ BOOKING_RATE_CARD_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/b
 GOAT_RATE_CARD_KEY = os.environ.get("GOAT_RATE_CARD_KEY", "") or load_config().get("goat_rate_card_key", "")
 BOOKING_RATE_CARD_GET_MAX = 500   # the edge function's own limit per GET
 
+# ─── CREW NOTES (read only) ───────────────────────────────────────────────────
+# The notes crew see in Crew Hub, shown on the call and booking dialogs' Crew
+# Notes tab. Read through the goat-crew-notes edge function; posting stays in
+# Crew Hub. BRIEF-dialog-tabs-5_79_0.md §6.
+GOAT_CREW_NOTES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat-crew-notes"
+# Its own secret (Q-B3), so it can be revoked alone. Env first, then config.json,
+# never hardcoded, never sent to the browser.
+GOAT_CREW_NOTES_KEY = os.environ.get("GOAT_CREW_NOTES_KEY", "") or load_config().get("goat_crew_notes_key", "")
+GOAT_CREW_NOTES_MAX_CALLS = 200   # the edge function's own limit per GET
+
 # The error the rate card and call-types helpers return when there is no key,
 # so no request was sent. A run from source has none unless config.json or the
 # environment carries it: build_secrets.json only reaches the DMG's config.
@@ -17403,6 +17413,62 @@ def api_gsheet_status(booking_id):
     except Exception as e:
         return jsonify({"exists": None, "error": str(e)}), 502
     return jsonify({"exists": bool(sheets), "sheets": sheets})
+
+
+# ─── CREW NOTES (dialog tab) ──────────────────────────────────────────────────
+# Proxies goat-crew-notes server-side with GOAT_CREW_NOTES_KEY in the
+# X-Goat-Service-Key header. The key stays in Python. Read only.
+
+@app.route("/api/booking/<booking_id>/crew-notes", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_crew_notes(booking_id):
+    """The live crew notes for one booking and the given calls (?call_ids=1,2).
+
+    READ_ALL_COHORTS matches who openCrewNotes() already lets through (Admin or
+    a read-only cohort), so nobody gains or loses notes access. Returns
+    {notes: [...]} exactly as the edge function sends it."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    raw = (request.args.get("call_ids") or "").strip()
+    call_ids = []
+    if raw:
+        for part in raw.split(","):
+            p = part.strip()
+            if not p.isdigit():
+                return jsonify({"error": "call_ids must be integers"}), 400
+            call_ids.append(int(p))
+    call_ids = list(dict.fromkeys(call_ids))
+    if len(call_ids) > GOAT_CREW_NOTES_MAX_CALLS:
+        return jsonify({"error": f"at most {GOAT_CREW_NOTES_MAX_CALLS} call IDs"}), 400
+    # Said plainly (the 5.78.0 rule): nothing left this machine, so the
+    # service's own logs would show nothing wrong.
+    if not GOAT_CREW_NOTES_KEY:
+        return jsonify({"error": "no crew notes key on this machine"}), 500
+    params = {"booking_id": bid}
+    if call_ids:
+        params["call_ids"] = ",".join(str(c) for c in call_ids)
+    try:
+        r = http.get(
+            GOAT_CREW_NOTES_URL,
+            params=params,
+            headers={"X-Goat-Service-Key": GOAT_CREW_NOTES_KEY},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[crew-notes] request failed: {e}")
+        return jsonify({"error": "Crew notes service error"}), 502
+    if r.status_code != 200:
+        print(f"[crew-notes] edge function returned {r.status_code}")
+        return jsonify({"error": "Crew notes service error"}), 502
+    try:
+        data = r.json()
+    except Exception:
+        return jsonify({"error": "Crew notes service error"}), 502
+    notes = data.get("notes") if isinstance(data, dict) else None
+    if not isinstance(notes, list):
+        return jsonify({"error": "Crew notes service error"}), 502
+    return jsonify({"notes": notes})
 
 
 # ─── LIVE CHECK-IN PILOT MODE (booking dialog switch) ─────────────────────────
