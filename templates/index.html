@@ -12143,6 +12143,12 @@ function ctTypeOptionsHtml(roles, selected){
   }).join('');
 }
 
+// Who set a Call Type or an override: their name, or #id if the crew cache
+// doesn't know them.
+function ctWho(row){
+  return (row && row.set_by_name) || ('#' + (row && row.set_by_user_id));
+}
+
 // §4.2: the chip after a call name. Stored -> plain; derived -> greyed "from
 // call name"; not set / off card -> amber.
 function ctChip(eff){
@@ -12160,7 +12166,7 @@ function ctChip(eff){
     return '<span title="Not stored: worked out from the call name" style="' + base
       + 'color:var(--muted);border:1px dashed var(--border)">' + escapeHtml(eff.role || '') + ' · from call name</span>';
   }
-  var who = eff.set_by_user_id ? ' by #' + eff.set_by_user_id : '';
+  var who = eff.set_by_user_id ? ' by ' + ctWho(eff) : '';
   var when = eff.set_at ? ' · ' + new Date(eff.set_at).toLocaleString() : '';
   var src = { estimate_import: 'From the estimate', add_call: 'Set on Add call',
               manual_booking: 'Set on the Booking form', admin: 'Changed by an Admin' }[eff.source] || 'Stored';
@@ -20718,7 +20724,7 @@ function callRenderCallType(bookingId, callId, editing, msg){
   if(eff.status === 'off_card') note = '<span style="font-size:10px;color:#f59e0b;margin-left:8px">not on the ' + escapeHtml(p.set_label || '') + ' card: pick again</span>';
   else if(eff.source === 'derived') note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">from call name</span>';
   else if(eff.status === 'not_set') note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">the call name matches no role on the ' + escapeHtml(p.set_label || '') + ' card</span>';
-  else if(eff.set_by_user_id) note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">set by #' + escapeHtml(String(eff.set_by_user_id))
+  else if(eff.set_by_user_id) note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">set by ' + escapeHtml(ctWho(eff))
     + (eff.set_at ? ' · ' + escapeHtml(new Date(eff.set_at).toLocaleString()) : '') + '</span>';
   var change = (window._cohort === 'admin' && p.roles && p.roles.length)
     ? '<span onclick="callRenderCallType(\'' + bookingId + '\',\'' + callId + '\',true)" style="font-size:11px;color:var(--accent);cursor:pointer;margin-left:10px">Change…</span>'
@@ -20763,7 +20769,7 @@ function callRenderRowControls(bookingId, callId){
     var o = callOverrideFor(p, uid);
     var tag = document.getElementById('ct-tag-' + callId + '-' + uid);
     if(tag) tag.innerHTML = '';   // the state now lives on the controls themselves
-    var who = o ? ' Set by #' + o.set_by_user_id + (o.set_at ? ', ' + new Date(o.set_at).toLocaleString() : '') + '.' : '';
+    var who = o ? ' Set by ' + ctWho(o) + (o.set_at ? ', ' + new Date(o.set_at).toLocaleString() : '') + '.' : '';
     var edit = "callOpenRateEditor('" + bookingId + "','" + callId + "'," + uid + ")";
 
     // CREW BOSS: on when the row's override is the system Crew Boss one.

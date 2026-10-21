@@ -17609,8 +17609,36 @@ def api_booking_rate_card_set(booking_id):
 # server-side with GOAT_RATE_CARD_KEY. Admin-only writes are enforced HERE (the
 # key ships in the DMG); can_change and friends in the reads are presentation.
 
-def _call_type_payload(eff):
-    return {k: eff.get(k) for k in ("role", "source", "status", "set_by_user_id", "set_at")}
+def user_names_for(user_ids):
+    """{user_id: name} for the people who set a Call Type or an override,
+    from the crew cache (admins are in it too) and the signed-in person's own
+    identity. A stale cache is fine for a name; an ID it doesn't know is left
+    out, and the UI shows it as #id."""
+    want = {i for i in (call_types.as_call_id(u) for u in user_ids or []) if i is not None}
+    if not want:
+        return {}
+    out = {}
+    ident = current_identity() or {}
+    me = call_types.as_call_id(ident.get("user_id"))
+    if me in want and str(ident.get("name") or "").strip():
+        out[me] = str(ident["name"]).strip()
+    crew, _ = load_cache()
+    for row in (crew or {}).values():
+        uid = call_types.as_call_id((row or {}).get("user_id"))
+        if uid in want and uid not in out and str(row.get("name") or "").strip():
+            out[uid] = str(row["name"]).strip()
+    return out
+
+
+def _call_type_payload(eff, names=None):
+    out = {k: eff.get(k) for k in ("role", "source", "status", "set_by_user_id", "set_at")}
+    out["set_by_name"] = (names or {}).get(call_types.as_call_id(eff.get("set_by_user_id")))
+    return out
+
+
+def _with_names(overrides, names):
+    return [dict(o, set_by_name=names.get(call_types.as_call_id(o.get("set_by_user_id"))))
+            for o in overrides or []]
 
 
 @app.route("/api/booking/<booking_id>/call-types", methods=["POST"])
@@ -17636,6 +17664,7 @@ def api_booking_call_types(booking_id):
         msg, status = rate_card_read_failure(err, "Call types service")
         return jsonify({"error": msg}), status
     rules, _ = pricing_rules.load_rules()
+    names = user_names_for([r.get("set_by_user_id") for r in stored["call_types"].values()])
     out = {}
     for c in calls:
         cid = call_types.as_call_id((c or {}).get("call_id"))
@@ -17643,7 +17672,7 @@ def api_booking_call_types(booking_id):
             continue
         eff = call_types.effective_call_type(c.get("call_name"), set_code, rules,
                                              stored["call_types"].get(cid))
-        out[str(cid)] = _call_type_payload(eff)
+        out[str(cid)] = _call_type_payload(eff, names)
     return jsonify({
         "booking_id":  bid,
         "set_code":    set_code,
@@ -17758,6 +17787,8 @@ def api_call_pricing(booking_id, call_id):
         return jsonify({"error": fail[0]}), fail[1]
     rules, set_code = ctx["rules"], ctx["set_code"]
     eff = call_types.effective_call_type(ctx["call_name"], set_code, rules, ctx["stored"])
+    names = user_names_for([(ctx["stored"] or {}).get("set_by_user_id")]
+                           + [o.get("set_by_user_id") for o in ctx["overrides"]])
     grade, grade_err = call_types.find_crew_boss_grade(ctx["paygrades"])
     cb_reason = None
     if not call_types.crew_boss_allowed(set_code):
@@ -17772,10 +17803,10 @@ def api_call_pricing(booking_id, call_id):
         "set_code":       set_code,
         "set_label":      rate_card_label(set_code),
         "rules_ok":       rules is not None,
-        "call_type":      _call_type_payload(eff),
+        "call_type":      _call_type_payload(eff, names),
         "roles":          call_types.roles_for_set(rules, set_code) if rules and set_code else [],
         "override_roles": call_types.override_roles(rules, set_code) if rules and set_code else [],
-        "overrides":      ctx["overrides"],
+        "overrides":      _with_names(ctx["overrides"], names),
         "paygrades":      [{"id": p.get("id"), "name": p.get("day_desc"), "rate": p.get("rate")}
                            for p in ctx["paygrades"]],
         "crew_boss":      {"allowed": cb_reason is None, "hidden": cb_reason == "hidden",
