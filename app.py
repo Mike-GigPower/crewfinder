@@ -4244,6 +4244,35 @@ def ss_create_booking(ss, booking_data):
 
     return None, f"Booking creation failed — unexpected response URL: {resp.url}"
 
+def _booking_call_ids(ss, booking_id):
+    """{call_id: call_name} for one booking via get-booking.php, or None if
+    it can't be read. Used to find a call SmartStaff created without naming."""
+    data, err = fetch_booking_bulk(ss, booking_id)
+    if err or not isinstance(data, dict):
+        return None
+    out = {}
+    for c in data.get("calls") or []:
+        cid = call_types.as_call_id(c.get("call_id"))
+        if cid is not None:
+            out[cid] = c.get("call_name") or ""
+    return out
+
+
+def find_new_call_id(before, after, call_name):
+    """The ID of the call that appeared between two reads of a booking, or
+    None. One new call is it. Several (someone else added one at the same
+    moment) are narrowed by name; still more than one is a guess, so None."""
+    if before is None or after is None:
+        return None
+    new = [cid for cid in after if cid not in before]
+    if len(new) == 1:
+        return new[0]
+    from html import unescape   # NB: `http` at module level is requests
+    want = unescape(str(call_name or "")).strip().lower()
+    named = [cid for cid in new if unescape(str(after[cid] or "")).strip().lower() == want]
+    return named[0] if len(named) == 1 else None
+
+
 def ss_create_call(ss, booking_id, call_data):
     """POST to SmartStaff to create a call within a booking.
     URL confirmed: /bookings/{id}/callsheet/add
@@ -4252,7 +4281,13 @@ def ss_create_call(ss, booking_id, call_data):
       required, notes, times_filled, call_locked, edit_times,
       is_pubhol, is_pubhol_tomorrow, action
     Returns: (call_id, error_str)
+
+    SmartStaff often answers by redirecting to /bookings/{id}, naming no call.
+    The booking's calls are read before and after, and the one new call is
+    the ID returned. Only if that can't be told does it return "created"
+    (success with no ID), which callers report rather than guess.
     """
+    before = _booking_call_ids(ss, booking_id)
     resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/add")
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -4313,9 +4348,15 @@ def ss_create_call(ss, booking_id, call_data):
         return m.group(1), None
 
     # SmartStaff redirects to /bookings/{id} after successful call creation
-    # (confirmed from live testing — treat this as success)
+    # (confirmed from live testing — treat this as success), naming no call:
+    # find it by what's new on the booking.
     if re.search(r"/bookings/\d+$", final_url.rstrip("/")):
-        return "created", None
+        cid = find_new_call_id(before, _booking_call_ids(ss, booking_id),
+                               call_data.get("call_name_free") or call_data.get("call_name"))
+        if cid is None:
+            print(f"[add-call] booking {booking_id}: created, but the new call's ID couldn't be found")
+            return "created", None
+        return str(cid), None
 
     return None, f"Call creation failed — unexpected response: {resp.url}"
 
