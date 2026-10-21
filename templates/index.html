@@ -23417,6 +23417,7 @@ function openCrewLists(bookingId, callIds){
     + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Create Crew Lists', "crewListGenerate('"+bookingId+"')", {primary:true})
+    + (window._cohort === 'admin' ? entityBtn('🪪 Photos (zip)', "openAccredPhotos('"+bookingId+"', _clTickedCallIds())", {title:'Zip of crew photos for accreditation, for the ticked calls'}) : '')
     + entityBtn('Close','closeEntityModal()');
   _clLoadChecklist(bookingId);   // async, never awaited
 }
@@ -23481,10 +23482,208 @@ async function _clLoadChecklist(bookingId){
   box.setAttribute('data-loaded', '1');
 }
 
+// ── ACCREDITATION PHOTOS (zip of crew photos, named per event) ────────────────
+// BRIEF-accreditation-photo-export.md. Admin only (button hidden for other
+// cohorts; the route is @require_cohort("admin")). The server builds the zip and
+// decides every file name — the JS name builder below drives the PREVIEW line
+// only, and mirrors accred_names.py closely enough for that.
+const AP_PRESETS = ['{first}_{last}', '{f}.{last}', '{First} {Last}', '{LAST}_{First}', '{first}_{last}_{ein}'];
+const AP_DEFAULT = '{first}_{last}';
+
+function _apPart(s){
+  s = String(s||'').normalize('NFKD').replace(/[̀-ͯ]/g,'').trim();
+  s = s.replace(/['’‘`]/g,'').replace(/\s+/g,' ');
+  return s.replace(/[^A-Za-z0-9._\- ]/g,'_');
+}
+function _apCap(s){ return s.replace(/[A-Za-z0-9]+/g, function(w){ return w.charAt(0).toUpperCase()+w.slice(1).toLowerCase(); }); }
+function _apName(pattern, first, last, ein){
+  const f=_apPart(first), l=_apPart(last), e=_apPart(ein);
+  const map = {first:f.toLowerCase(), First:_apCap(f), FIRST:f.toUpperCase(),
+               last:l.toLowerCase(),  Last:_apCap(l),  LAST:l.toUpperCase(),
+               f:f.charAt(0).toLowerCase(), F:f.charAt(0).toUpperCase(),
+               l:l.charAt(0).toLowerCase(), L:l.charAt(0).toUpperCase(), ein:e};
+  let out = String(pattern).replace(/\{([^{}]*)\}/g, function(_,t){ return map.hasOwnProperty(t) ? map[t] : ''; });
+  out = out.replace(/[^A-Za-z0-9._\- ]/g,'_').replace(/_+/g,'_').replace(/^[._\- ]+|[._\- ]+$/g,'');
+  return out || ('crew_'+e);
+}
+// Client-side check so the operator sees the problem before a round trip. The
+// server validates again (accred_names.validate_pattern) and its word is final.
+function _apPatternError(p){
+  if(typeof p !== 'string' || !p.trim()) return 'Enter a file name format.';
+  if(p.length > 60) return 'The format can be at most 60 characters.';
+  if((p.match(/\{/g)||[]).length !== (p.match(/\}/g)||[]).length) return 'Every { needs a matching }.';
+  const ok = ['first','First','FIRST','last','Last','LAST','f','F','l','L','ein'];
+  const toks = p.match(/\{([^{}]*)\}/g) || [];
+  if(!toks.length) return 'The format must include at least one name part, e.g. {first}.';
+  for(const t of toks){ if(ok.indexOf(t.slice(1,-1)) === -1) return 'Unknown part '+t+'.'; }
+  return null;
+}
+
+function openAccredPhotos(bookingId, callIds){
+  if(window._cohort !== 'admin') return;
+  entityModalWidth(ENTITY_MODAL_W);
+  entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
+  let saved = goatPrefs.get('accredPhotos', 'lastPattern', AP_DEFAULT);
+  if(typeof saved !== 'string' || saved.length > 60 || _apPatternError(saved)) saved = AP_DEFAULT;
+  const isPreset = AP_PRESETS.indexOf(saved) !== -1;
+  window._apPick = {bookingId: String(bookingId),
+                    callIds: Array.isArray(callIds) && callIds.length ? callIds.map(String) : null,
+                    sample: null};
+  const lbl = 'font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;';
+  document.getElementById('entity-modal-title').textContent = 'Accreditation photos';
+  document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div style="padding:6px 0">'
+    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Downloads a zip of the confirmed crew\'s photos on the ticked calls, each person once, named the way the venue or promoter asks. Full-size onboarding photos are used where we have them, otherwise the small SmartStaff photo.</div>'
+    + '<div style="'+lbl+'padding-bottom:6px">Calls to include</div>'
+    + '<div id="ap-calls" data-loaded="0" style="padding-bottom:6px"><div style="font-size:12px;color:var(--muted);padding:4px 0">Loading calls…</div></div>'
+    + '<div style="'+lbl+'padding:8px 0 6px">File name format</div>'
+    + '<select id="ap-preset" onchange="apFormatChanged()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:13px">'
+    +   AP_PRESETS.map(function(p){ return '<option value="'+escapeHtml(p)+'"'+(isPreset && p===saved?' selected':'')+'>'+escapeHtml(p)+'</option>'; }).join('')
+    +   '<option value="__custom"'+(isPreset?'':' selected')+'>Custom…</option>'
+    + '</select>'
+    + '<div id="ap-custom-wrap" style="padding-top:8px;'+(isPreset?'display:none':'')+'">'
+    +   '<input id="ap-custom" type="text" maxlength="60" oninput="apFormatChanged()" value="'+escapeHtml(isPreset?'':saved)+'" placeholder="{first}_{last}" style="width:100%;box-sizing:border-box;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:13px">'
+    +   '<div style="font-size:10px;color:var(--muted);padding-top:4px">{first} {last} {f} {l} {ein} — capitalise for Upper ({First}) or UPPER ({FIRST})</div>'
+    + '</div>'
+    + '<div id="ap-preview" style="font-size:12px;color:var(--muted);padding-top:8px"></div>'
+    + '<div style="padding-top:12px">'+_clCheckbox('ap-summary','Include summary (_summary.csv)',true)+'</div>'
+    + '<div id="ap-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
+    + '</div>';
+  document.getElementById('entity-modal-actions').innerHTML =
+      entityBtn('Download zip', "accredPhotosDownload('"+bookingId+"')", {primary:true, id:'ap-go'})
+    + entityBtn('Close','closeEntityModal()');
+  apFormatChanged();
+  _apLoadChecklist(bookingId);   // async, never awaited
+}
+
+function _apPattern(){
+  const sel = document.getElementById('ap-preset');
+  if(!sel) return AP_DEFAULT;
+  if(sel.value !== '__custom') return sel.value;
+  return (document.getElementById('ap-custom') || {}).value || '';
+}
+
+function apFormatChanged(){
+  const sel = document.getElementById('ap-preset');
+  const wrap = document.getElementById('ap-custom-wrap');
+  if(sel && wrap) wrap.style.display = sel.value === '__custom' ? '' : 'none';
+  const pv = document.getElementById('ap-preview');
+  if(!pv) return;
+  const p = _apPattern();
+  const err = _apPatternError(p);
+  if(err){ pv.style.color = 'var(--conflict)'; pv.textContent = err; return; }
+  const s = (window._apPick && window._apPick.sample) || {first:'Jane', last:'Smith', ein:'3315'};
+  pv.style.color = 'var(--muted)';
+  pv.textContent = 'e.g. '+_apName(p, s.first, s.last, s.ein)+'.jpg';
+}
+
+async function _apLoadChecklist(bookingId){
+  let data = null;
+  try{
+    const r = await fetch('/api/booking/'+encodeURIComponent(bookingId));
+    const j = await r.json();
+    if(r.ok && !j.error) data = j;
+  }catch(e){ data = null; }
+  const box = document.getElementById('ap-calls');
+  if(!box || !box.isConnected) return;
+  if(!window._apPick || window._apPick.bookingId !== String(bookingId)) return;
+  const calls = (data && data.calls) || [];
+  if(!data){ box.innerHTML = '<div style="font-size:12px;color:var(--conflict);padding:4px 0">Couldn\'t load the calls. Close and try again.</div>'; return; }
+  if(!calls.length){ box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:4px 0">This booking has no calls.</div>'; return; }
+  const pick = window._apPick.callIds;
+  box.innerHTML = calls.map(function(c){
+    const id = String(c.call_id);
+    const cx = _clIsCancelled(c);
+    const on = !cx && (!pick || pick.indexOf(id) !== -1);
+    const when = _abCallWhen(c.start_date, c.start_time);
+    const nConf = (c.crew||[]).filter(function(m){ return (m.status||'').toLowerCase() === 'confirmed'; }).length;
+    const tag = cx ? '<span style="font-size:10px;color:var(--muted);margin-left:8px">Cancelled</span>'
+                   : '<span style="font-size:10px;color:var(--muted);margin-left:8px">'+nConf+' confirmed</span>';
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:'+(cx?'var(--muted)':'var(--text)')+';padding:3px 0;cursor:pointer">'
+      + '<input type="checkbox" class="ap-call-pick" value="'+escapeHtml(id)+'"'+(on?' checked':'')+'> '
+      + '<span>'+escapeHtml(decodeEntities(c.call_name||'Call'))+(when?' · '+escapeHtml(when):'')+'</span>'
+      + tag + '</label>';
+  }).join('');
+  box.setAttribute('data-loaded', '1');
+  // Preview sample: the first confirmed crew member on a live call.
+  for(const c of calls){
+    if(_clIsCancelled(c)) continue;
+    const m = (c.crew||[]).find(function(x){ return (x.status||'').toLowerCase() === 'confirmed'; });
+    if(m){ window._apPick.sample = {first:decodeEntities(m.firstname||''), last:decodeEntities(m.lastname||''), ein:String(m.ein||'')}; break; }
+  }
+  apFormatChanged();
+}
+
+function _apList(title, items, fmt){
+  if(!items || !items.length) return '';
+  return '<details style="padding-top:6px"><summary style="cursor:pointer;color:var(--text)">'+escapeHtml(title)+' ('+items.length+')</summary>'
+    + '<div style="padding:4px 0 0 14px">'+items.map(function(x){ return '<div>'+fmt(x)+'</div>'; }).join('')+'</div></details>';
+}
+
+async function accredPhotosDownload(bookingId){
+  const status = document.getElementById('ap-status');
+  const say = function(msg, bad){ if(status){ status.style.color = bad ? 'var(--conflict)' : 'var(--muted)'; status.textContent = msg; } };
+  const box = document.getElementById('ap-calls');
+  if(!box || box.getAttribute('data-loaded') !== '1'){ say('The calls are still loading.', true); return; }
+  const callIds = Array.prototype.map.call(box.querySelectorAll('input.ap-call-pick:checked'), function(el){ return String(el.value); });
+  if(!callIds.length){ say('Tick at least one call.', true); return; }
+  const pattern = _apPattern();
+  const perr = _apPatternError(pattern);
+  if(perr){ say(perr, true); return; }
+  // Remember the format before the fetch, as Create Crew Lists does. Calls and
+  // the summary tick are deliberately not remembered.
+  goatPrefs.set('accredPhotos', 'lastPattern', pattern);
+  const summary = !!(document.getElementById('ap-summary') || {}).checked;
+  const btn = document.getElementById('ap-go');
+  if(btn) btn.disabled = true;
+  say('Collecting photos…');
+  try{
+    const r = await fetch('/api/booking/'+encodeURIComponent(bookingId)+'/accreditation-photos', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({call_ids: callIds, pattern: pattern, summary: summary})});
+    let j = null;
+    try{ j = await r.json(); }catch(e){ j = null; }
+    if(!r.ok || !j || !j.ok){ say((j && j.error) || ('Couldn\'t build the zip (HTTP '+r.status+').'), true); return; }
+    const bin = atob(j.zip_b64);
+    const bytes = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], {type:'application/zip'}));
+    const a = document.createElement('a');
+    a.href = url; a.download = j.filename || ('booking_'+bookingId+'_photos.zip');
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 10000);
+    const k = j.counts || {};
+    const nPhotos = (k.full||0) + (k.low_res||0);
+    const who = function(x){ return escapeHtml(decodeEntities(x.name||''))+' · '+escapeHtml(String(x.ein||'')); };
+    if(status){
+      status.style.color = 'var(--muted)';
+      status.innerHTML = '<div style="color:var(--text)">Downloaded '+escapeHtml(j.filename||'')+' — '+nPhotos+' photo'+(nPhotos===1?'':'s')
+        + ' ('+(k.full||0)+' full-size, '+(k.low_res||0)+' low-res)'
+        + (k.missing ? ' · <span style="color:var(--warn)">'+k.missing+' missing</span>' : '')+'</div>'
+        + _apList('Missing photo', j.missing, who)
+        + _apList('Low-res (SmartStaff photo only)', j.low_res, who)
+        + _apList('Renamed to avoid a clash', j.clashes, function(x){ return who(x)+' → '+escapeHtml(x.file||''); });
+    }
+  }catch(e){
+    say('Couldn\'t build the zip: '+e.message, true);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
 function _clCheckbox(id,label,checked){
   return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);padding:4px 0;cursor:pointer">'
        + '<input type="checkbox" id="'+id+'"'+(checked?' checked':'')+'> '+label
        + '</label>';
+}
+
+// The call ids ticked in Create Crew Lists, or null while the checklist hasn't
+// loaded (or failed). Shared by crewListGenerate and the 🪪 Photos (zip) button.
+function _clTickedCallIds(){
+  const box = document.getElementById('cl-calls');
+  if(!box || box.getAttribute('data-loaded') !== '1') return null;
+  return Array.prototype.map.call(box.querySelectorAll('input.cl-call-pick:checked'), function(el){ return String(el.value); });
 }
 
 async function crewListGenerate(bookingId){
@@ -23499,10 +23698,8 @@ async function crewListGenerate(bookingId){
   // Which calls (D6). Checklist loaded -> exactly the ticked ones. Not loaded
   // (still loading, or failed) -> the ids a caller passed, else every call.
   // Read BEFORE window.open so an empty selection never leaves a blank tab.
-  const box = document.getElementById('cl-calls');
-  let callIds = null;
-  if(box && box.getAttribute('data-loaded') === '1'){
-    callIds = Array.prototype.map.call(box.querySelectorAll('input.cl-call-pick:checked'), function(el){ return String(el.value); });
+  let callIds = _clTickedCallIds();
+  if(callIds !== null){
     if(!callIds.length){
       if(status){ status.style.color='var(--conflict)'; status.textContent='Tick at least one call.'; }
       return;
@@ -25387,6 +25584,7 @@ function renderBookingDialog(bookingId, d, cached){
         ? entityBtn('✎ Edit', "openBookingEditForm('"+bookingId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
     + entityBtn('📋 Crew Lists', "openCrewLists('"+bookingId+"')")
+    + (window._cohort === 'admin' ? entityBtn('🪪 Accreditation photos', "openAccredPhotos('"+bookingId+"')", {title:'Zip of crew photos for accreditation, named per event'}) : '')
     + entityBtn('📥 Import Times', "openTimesImport('"+bookingId+"')")
     + entityBtn('📊 Generate Google Sheet', "generateGoogleSheet('"+bookingId+"')", {id:'bk-gsheet-btn'})
     + entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})

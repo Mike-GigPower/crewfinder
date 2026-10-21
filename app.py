@@ -63,6 +63,7 @@ import pricing_rules
 import call_types
 import name_match
 import drive_contracts
+import accred_names
 # When running inside a PyInstaller bundle, use the executable's directory
 # When running as a script, use the script's directory
 if getattr(_sys, 'frozen', False):
@@ -627,6 +628,10 @@ RECRUITMENT_WELCOME_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1
 # data — plus short-lived signed URLs for the headshot/licence files, so the
 # browser must re-fetch on each expand to get URLs that are still valid.
 RECRUITMENT_CANDIDATE_DETAIL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidate-detail"
+# Same base URL and key: full-size onboarding headshots for a LIST of SmartStaff
+# user ids -> {photos: {"<id>": {url, taken_at}}}. Signed URLs only, no names.
+# Used by the accreditation photo export (BRIEF-accreditation-photo-export.md).
+CREW_HEADSHOTS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat-crew-headshots"
 # Same base URL: the SEALED health answers for ONE candidate — the single most
 # sensitive thing we hold. Its proxy route is gated to the ADMIN cohort ONLY
 # (never operations); the edge function returns just { reference, name, health }.
@@ -12294,20 +12299,14 @@ def api_crew_card(crew_id):
         out["photo_url"] = photo_url
     return jsonify(out)
 
-@app.route("/api/crew-photo/<crew_id>")
-@require_cohort(*READ_ALL_COHORTS)
-def api_crew_photo(crew_id):
-    """Authenticated proxy for a crew member's profile photo, streamed back so the
-    browser <img> can render an image that sits behind the SmartStaff session.
+def _ss_crew_thumb(ss, crew_id):
+    """A crew member's SmartStaff profile photo as (bytes, content_type), or None.
 
     Fast path: the deterministic `images/crewpics/crewimg_<id>.jpg`. Falls back to
     scraping the profile page only if that misses (non-standard filename), and
-    caches the discovered URL so the heavy page fetch happens at most once."""
-    ss = get_ss_session()
-    if not ss:
-        return jsonify({"error": "Not logged in"}), 401
-
-    def _serve(url):
+    caches the discovered URL so the heavy page fetch happens at most once.
+    Shared by /api/crew-photo and the accreditation photo export."""
+    def _fetch(url):
         # Only ever fetch a SmartStaff-hosted image, server-derived — no SSRF surface.
         if not url or not url.startswith(BASE_URL.rstrip("/")):
             return None
@@ -12321,13 +12320,12 @@ def api_crew_photo(crew_id):
         # redirects to the (non-image) login page. None of these is a photo.
         if img.status_code != 200 or not img.content or "image" not in ctype or "nophoto" in final:
             return None
-        return app.response_class(img.content, mimetype=ctype,
-                                  headers={"Cache-Control": "private, max-age=600"})
+        return img.content, ctype
 
     # 1) Deterministic crewpics path — no profile fetch needed.
-    resp = _serve(f"{BASE_URL.rstrip('/')}/images/crewpics/crewimg_{crew_id}.jpg")
-    if resp is not None:
-        return resp
+    got = _fetch(f"{BASE_URL.rstrip('/')}/images/crewpics/crewimg_{crew_id}.jpg")
+    if got is not None:
+        return got
 
     # 2) Fallback: discover the real filename from the profile page (cached).
     with _crew_card_lock:
@@ -12342,8 +12340,25 @@ def api_crew_photo(crew_id):
             photo_url = None
         with _crew_card_lock:
             _crew_card_cache[str(crew_id)] = {"photo_url": photo_url}
-    resp = _serve(photo_url)
-    return resp if resp is not None else ("", 404)
+    return _fetch(photo_url)
+
+
+@app.route("/api/crew-photo/<crew_id>")
+@require_cohort(*READ_ALL_COHORTS)
+def api_crew_photo(crew_id):
+    """Authenticated proxy for a crew member's profile photo, streamed back so the
+    browser <img> can render an image that sits behind the SmartStaff session.
+    The lookup itself lives in _ss_crew_thumb (shared with the accreditation
+    photo export)."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    got = _ss_crew_thumb(ss, crew_id)
+    if got is None:
+        return ("", 404)
+    content, ctype = got
+    return app.response_class(content, mimetype=ctype,
+                              headers={"Cache-Control": "private, max-age=600"})
 
 
 # ─── GOAT DOMAIN GLOSSARY ─────────────────────────────────────────────────────
@@ -17152,6 +17167,177 @@ def _manual_map_from_request():
         if name:
             out[name] = cid
     return out
+
+
+# ─── ACCREDITATION PHOTO EXPORT ───────────────────────────────────────────────
+# BRIEF-accreditation-photo-export.md / DESIGN-accreditation-photo-export-v0_3.md.
+# Admin only. Zip of the confirmed crew's photos on the ticked calls of one
+# booking, each named to an operator-chosen pattern (accred_names.py).
+# Photo source, best first (D1): full-size onboarding headshot (Supabase
+# goat-crew-headshots) -> SmartStaff 125x138 thumbnail (flagged low-res) ->
+# missing (left out and listed, never blocks the export — D4).
+
+def _accred_fetch_headshots(user_ids):
+    """{str(user_id): {"url", "taken_at"}} from goat-crew-headshots. Never raises:
+    any failure returns {} and everyone falls back to the SmartStaff thumbnail."""
+    if not GOAT_RECRUITMENT_KEY or not user_ids:
+        return {}
+    try:
+        r = http.post(CREW_HEADSHOTS_URL,
+                      headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                      json={"user_ids": [int(u) for u in user_ids]},
+                      timeout=20)
+    except Exception as e:
+        print(f"[accred] headshots request failed: {e}")
+        return {}
+    if r.status_code != 200:
+        print(f"[accred] headshots edge function returned {r.status_code}")
+        return {}
+    try:
+        photos = (r.json() or {}).get("photos") or {}
+        return photos if isinstance(photos, dict) else {}
+    except Exception:
+        print("[accred] headshots: bad JSON")
+        return {}
+
+
+def _accred_photo(ss, person, headshots):
+    """(bytes, content_type, source, taken_at) for one person, or
+    (None, None, "missing", None). source is "full-size" | "low-res" | "missing".
+    The ONE place the photo source is chosen — the later photo-refresh work (D7)
+    adds its Supabase crew-photo store as a new first step here."""
+    hs = headshots.get(str(person["id"])) or {}
+    url = hs.get("url") if isinstance(hs, dict) else None
+    if url:
+        try:
+            img = http.get(url, timeout=20)
+            ctype = (img.headers.get("Content-Type") or "").split(";")[0].strip()
+            if img.status_code == 200 and img.content and ctype.startswith("image/"):
+                return img.content, ctype, "full-size", hs.get("taken_at")
+            print(f"[accred] headshot not usable (HTTP {img.status_code}, type {ctype!r})")
+        except Exception as e:
+            print(f"[accred] headshot fetch failed: {e}")
+    got = _ss_crew_thumb(ss, person["id"])
+    if got is not None:
+        return got[0], got[1], "low-res", None
+    return None, None, "missing", None
+
+
+def _accred_melb_date(ts):
+    """ISO timestamp -> YYYY-MM-DD in Melbourne, or "" if unparseable."""
+    if not ts:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            return d.strftime("%Y-%m-%d")
+        return d.astimezone(ZoneInfo("Australia/Melbourne")).strftime("%Y-%m-%d")
+    except Exception:
+        return str(ts)[:10]
+
+
+@app.route("/api/booking/<booking_id>/accreditation-photos", methods=["POST"])
+@require_cohort("admin")
+def api_booking_accreditation_photos(booking_id):
+    """Build the accreditation photo zip. Body {call_ids:[str], pattern:str,
+    summary:bool}. Returns JSON with the zip base64-encoded (loopback only, a few
+    MB) plus counts and the missing / low-res / clash lists for the dialog."""
+    import base64, csv, zipfile
+    from html import unescape as _html_unescape
+    from concurrent.futures import ThreadPoolExecutor
+
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body = request.get_json(silent=True) or {}
+    pattern = body.get("pattern")
+    perr = accred_names.validate_pattern(pattern)
+    if perr:
+        return jsonify({"error": perr}), 400
+    call_ids = body.get("call_ids")
+    if not isinstance(call_ids, list) or not call_ids:
+        return jsonify({"error": "Tick at least one call."}), 400
+    wanted = {str(c) for c in call_ids}
+    want_summary = body.get("summary", True) is not False
+
+    data, err = fetch_booking_bulk(ss, booking_id)
+    if err or not isinstance(data, dict):
+        print(f"[accred] booking {booking_id} load failed: {err}")
+        return jsonify({"error": "Couldn't load the booking from SmartStaff."}), 502
+
+    # Confirmed crew on the ticked, live calls of THIS booking, once each.
+    people, seen, n_calls = [], set(), 0
+    for c in (data.get("calls") or []):
+        if str(c.get("call_id")) not in wanted or _crewlist_is_cancelled(c):
+            continue
+        n_calls += 1
+        for m in (c.get("crew") or []):
+            if str(m.get("status") or "").lower() != "confirmed":
+                continue
+            try:
+                uid = int(m.get("id"))
+            except (TypeError, ValueError):
+                continue
+            if uid in seen:
+                continue
+            seen.add(uid)
+            first = _html_unescape(str(m.get("firstname") or "")).strip()
+            last = _html_unescape(str(m.get("lastname") or "")).strip()
+            people.append({"id": uid, "first": first, "last": last,
+                           "ein": str(m.get("ein") or "").strip(),
+                           "name": (first + " " + last).strip()})
+    if not people:
+        return jsonify({"error": "No confirmed crew on the ticked calls."}), 400
+
+    named = accred_names.assign_names(people, pattern)
+    headshots = _accred_fetch_headshots([p["id"] for p in named])
+    with ThreadPoolExecutor(max_workers=min(4, len(named))) as ex:
+        photos = list(ex.map(lambda p: _accred_photo(ss, p, headshots), named))
+
+    buf = io.BytesIO()
+    rows, missing, low_res, clashes = [], [], [], []
+    counts = {"crew": len(named), "full": 0, "low_res": 0, "missing": 0, "clashes": 0}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p, (content, ctype, source, taken_at) in zip(named, photos):
+            fname = ""
+            if content is not None:
+                ext = ".png" if (ctype or "").lower() == "image/png" else ".jpg"
+                fname = p["stem"] + ext
+                zf.writestr(fname, content)
+            if source == "full-size":
+                counts["full"] += 1
+            elif source == "low-res":
+                counts["low_res"] += 1
+                low_res.append({"name": p["name"], "ein": p["ein"]})
+            else:
+                counts["missing"] += 1
+                missing.append({"name": p["name"], "ein": p["ein"]})
+            if p["clash"] and fname:
+                counts["clashes"] += 1
+                clashes.append({"name": p["name"], "ein": p["ein"], "file": fname})
+            rows.append([p["name"], p["ein"], fname, source,
+                         _accred_melb_date(taken_at) if source == "full-size" else ""])
+        if want_summary:
+            sio = io.StringIO()
+            w = csv.writer(sio)
+            w.writerow(["Name", "EIN", "File", "Photo", "Photo date"])
+            w.writerows(rows)
+            zf.writestr("_summary.csv", sio.getvalue().encode("utf-8-sig"))
+
+    cust = data.get("customer") or {}
+    cslug = accred_names.slug(_html_unescape(str(cust.get("name") or "")))
+    filename = f"{booking_id}_{cslug}_photos.zip" if cslug else f"{booking_id}_photos.zip"
+
+    _write_audit("accred_photos.export", "booking", booking_id, {
+        "calls": n_calls, "crew": counts["crew"], "full": counts["full"],
+        "low_res": counts["low_res"], "missing": counts["missing"], "pattern": pattern})
+
+    return jsonify({"ok": True, "filename": filename,
+                    "zip_b64": base64.b64encode(buf.getvalue()).decode("ascii"),
+                    "counts": counts, "missing": missing, "low_res": low_res,
+                    "clashes": clashes})
 
 
 @app.route("/api/booking/<booking_id>/import-times/preview", methods=["POST"])
