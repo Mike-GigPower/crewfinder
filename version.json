@@ -1,6 +1,6 @@
 {
-  "version": "5.78.0",
+  "version": "5.79.0",
   "release_date": "2026-10-21",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.78.0/TheGOAT.dmg",
-  "release_notes": "Every call now has a Call Type (its rate card role). The boss tick is now Team Lead, and Crew Boss is new. Nothing is priced from these yet."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.79.0/TheGOAT.dmg",
+  "release_notes": "The call and booking dialogs now have tabs: information along the top, actions along the bottom. Crew Hub's crew notes can now be read in THE GOAT."
 }
