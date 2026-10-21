@@ -12169,7 +12169,7 @@ function ctChip(eff){
   var who = eff.set_by_user_id ? ' by ' + ctWho(eff) : '';
   var when = eff.set_at ? ' · ' + new Date(eff.set_at).toLocaleString() : '';
   var src = { estimate_import: 'From the estimate', add_call: 'Set on Add call',
-              manual_booking: 'Set on the Booking form', admin: 'Changed by an Admin' }[eff.source] || 'Stored';
+              manual_booking: 'Set on the Booking form', admin: 'Changed on the call' }[eff.source] || 'Stored';
   return '<span title="' + escapeHtml(src + who + when) + '" style="' + base
     + 'color:var(--text);border:1px solid var(--border)">' + escapeHtml(eff.role || '') + '</span>';
 }
