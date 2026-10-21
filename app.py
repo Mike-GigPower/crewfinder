@@ -17838,6 +17838,10 @@ def api_call_type_set(booking_id, call_id):
         return jsonify({"error": "The Estimator's pricing rules are unavailable; try again shortly."}), 503
     if role not in call_types.roles_for_set(ctx["rules"], ctx["set_code"]):
         return jsonify({"error": f"'{role}' isn't on the {rate_card_label(ctx['set_code'])} card."}), 422
+    # The same type again changes nothing: no write, no log entry, and the
+    # original who/when stands.
+    if call_types.same_call_type(ctx["stored"], role, ctx["set_code"]):
+        return jsonify({"ok": True, "role": role, "unchanged": True})
     res, err = save_call_type(ctx["call_id"], ctx["booking_id"], role, ctx["set_code"],
                               "admin", current_user_id())
     if err:
@@ -17865,6 +17869,15 @@ def _override_route_ctx(booking_id, call_id, user_id):
         return None, None, (jsonify({"error": "The Estimator's pricing rules are unavailable; "
                                               "try again shortly."}), 503)
     return ctx, uid, None
+
+
+def _current_override(ctx, uid):
+    return next((o for o in ctx["overrides"] if call_types.as_call_id(o.get("user_id")) == uid), None)
+
+
+def _override_unchanged():
+    """A save identical to the stored override: nothing written or logged."""
+    return jsonify({"ok": True, "unchanged": True})
 
 
 def _override_result(res):
@@ -17899,6 +17912,8 @@ def api_crew_row_override_set(booking_id, call_id, user_id):
         return jsonify({"error": f"'{charge}' isn't on this booking's card or the Standard card."}), 422
     if pay is not None and pay not in {int(p.get("id") or 0) for p in ctx["paygrades"]}:
         return jsonify({"error": "That pay grade isn't in SmartStaff's list."}), 422
+    if call_types.same_override(_current_override(ctx, uid), "manual", charge, pay):
+        return _override_unchanged()
     res, err = save_crew_row_override(ctx["call_id"], uid, ctx["booking_id"], "manual",
                                       charge, pay, current_user_id())
     if err:
@@ -17935,6 +17950,9 @@ def api_crew_row_crew_boss(booking_id, call_id, user_id):
     grade, err = call_types.find_crew_boss_grade(ctx["paygrades"])
     if err:
         return jsonify({"error": err}), 422
+    if call_types.same_override(_current_override(ctx, uid), "crew_boss",
+                                call_types.CREW_BOSS_ROLE, grade["id"]):
+        return _override_unchanged()
     res, err = save_crew_row_override(ctx["call_id"], uid, ctx["booking_id"], "crew_boss",
                                       call_types.CREW_BOSS_ROLE, grade["id"], current_user_id())
     if err:

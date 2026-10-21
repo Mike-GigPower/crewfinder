@@ -155,6 +155,22 @@ def crew_type_errors(lines, rules, set_code, label):
     return errs, None
 
 
+def same_override(existing, kind, charge_role, pay_paygrade_id):
+    """True when a row's stored override already says exactly this, so saving
+    it again would change nothing and must not write or log."""
+    if not existing:
+        return False
+    pay = existing.get("pay_paygrade_id")
+    return (existing.get("kind") == kind
+            and (existing.get("charge_role") or None) == (charge_role or None)
+            and (None if pay is None else int(pay)) == pay_paygrade_id)
+
+
+def same_call_type(stored, role_name, set_code):
+    """True when the call's stored type is already this role on this card."""
+    return bool(stored) and stored.get("role_name") == role_name and stored.get("set_code") == set_code
+
+
 def find_crew_boss_grade(paygrades):
     """(grade, error) from get-call-times.php's paygrades list, matched by
     name, never by a hard-coded ID (§6.3). grade is {id, name, rate}."""
