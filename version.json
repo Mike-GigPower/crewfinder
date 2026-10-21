@@ -1,6 +1,6 @@
 {
-  "version": "5.80.0",
-  "release_date": "2026-10-21",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.80.0/TheGOAT.dmg",
-  "release_notes": "Admins can download a zip of a booking's crew photos for accreditation, named the way the venue or promoter asks."
+  "version": "5.80.1",
+  "release_date": "2026-10-22",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.80.1/TheGOAT.dmg",
+  "release_notes": "The Call and Booking dialogs now show the SmartStaff Notes field on their Details tab."
 }
