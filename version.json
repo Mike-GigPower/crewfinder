@@ -1,6 +1,6 @@
 {
-  "version": "5.80.1",
+  "version": "5.80.2",
   "release_date": "2026-10-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.80.1/TheGOAT.dmg",
-  "release_notes": "The Call and Booking dialogs now show the SmartStaff Notes field on their Details tab."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.80.2/TheGOAT.dmg",
+  "release_notes": "Dates that start on today, such as Booking Date on Create Booking, now use Melbourne time instead of showing yesterday before 11am."
 }
