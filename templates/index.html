@@ -20497,14 +20497,15 @@ async function promoteBackup(bookingId, callId, userId, btn, ackOver){
 // hierarchy, so it changes who the crew on this call are told to contact in Crew
 // Hub. SmartStaff calls it the call boss; THE GOAT says Team Lead (Stage 2 Q12)
 // because it has NO charge or pay effect, unlike the row-level Crew Boss.
-function crewBossControl(c, bookingId, callId){
-  if(window._cohort !== 'admin' || !c.id) return '';
-  if(c.is_call_boss) return '';
-  return '<button type="button" title="Make team lead (their number is shown to this call\'s crew)"'
-    + ' onclick="setCallBoss(\'' + bookingId + '\',\'' + callId + '\',' + c.id + ',this)"'
-    + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);'
-    + 'background:var(--surface2);border:1px solid var(--border);border-radius:3px;padding:2px 6px;'
-    + 'font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">&#9733; Team Lead</button>';
+function crewBossControl(c, bookingId, callId, isCancelled){
+  if(c.is_call_boss){
+    // SmartStaff has no unset: Team Lead moves when another row is made it.
+    return ctOnChip('Team Lead', '', "Team Lead: the crew's contact on this call. No pay or charge effect."
+      + (window._cohort === 'admin' ? ' To change it, make another crew member Team Lead.' : ''));
+  }
+  if(window._cohort !== 'admin' || !c.id || isCancelled) return '';
+  return ctOffBtn('Team Lead', "setCallBoss('" + bookingId + "','" + callId + "'," + c.id + ",this)",
+                  "Make team lead (their number is shown to this call's crew)");
 }
 async function setCallBoss(bookingId, callId, userId, btn){
   if(!confirm('Make this crew member the team lead for this call?\n\nAny existing team lead on this call is cleared. Their mobile number will be shown to the crew booked on this call. No pay or charge effect.')) return;
@@ -20630,6 +20631,28 @@ function goatHarryStop(){
 // renders; a failure shows "unavailable" and no row controls, never a guess.
 var _callPricing = {};   // callId -> /pricing payload
 
+// The call dialog's per-row states (Team Lead, Crew Boss, Rate) share one
+// look: OFF is a quiet grey outline button in title case, ON is a solid gold
+// chip in capitals. Before this the off buttons were uppercase gold too, so a
+// call read as if every row were already Team Lead.
+function ctOffBtn(label, onclick, title, disabled){
+  return '<button type="button"' + (disabled ? ' disabled' : '') + (title ? ' title="' + escapeHtml(title) + '"' : '')
+    + (onclick && !disabled ? ' onclick="' + onclick + '"' : '')
+    + ' style="font-size:9px;letter-spacing:.3px;color:var(--muted);background:transparent;'
+    + 'border:1px solid var(--border);border-radius:3px;padding:2px 6px;white-space:nowrap;'
+    + "font-family:'Share Tech Mono',monospace;cursor:" + (disabled ? 'not-allowed' : 'pointer') + ';outline:none;opacity:' + (disabled ? '.45' : '1') + '"'
+    + (disabled ? '' : ' onmouseover="this.style.color=\'var(--text)\'" onmouseout="this.style.color=\'var(--muted)\'"')
+    + '>' + label + '</button>';
+}
+function ctOnChip(label, onclick, title){
+  var tag = onclick ? 'button type="button"' : 'span';
+  return '<' + tag + (title ? ' title="' + escapeHtml(title) + '"' : '') + (onclick ? ' onclick="' + onclick + '"' : '')
+    + ' style="font-size:9px;font-weight:bold;text-transform:uppercase;letter-spacing:.5px;color:#0b0b0b;background:var(--accent);'
+    + 'border:1px solid var(--accent);border-radius:3px;padding:2px 6px;white-space:nowrap;'
+    + "font-family:'Share Tech Mono',monospace;cursor:" + (onclick ? 'pointer' : 'default') + ';outline:none">'
+    + label + '</' + (onclick ? 'button' : 'span') + '>';
+}
+
 function ctBtn(label, onclick, title, disabled){
   return '<button type="button"' + (disabled ? ' disabled' : '') + (title ? ' title="' + escapeHtml(title) + '"' : '')
     + (onclick && !disabled ? ' onclick="' + onclick + '"' : '')
@@ -20729,29 +20752,38 @@ function callRenderRowControls(bookingId, callId){
     var uid = Number(ctl.getAttribute('data-uid'));
     var o = callOverrideFor(p, uid);
     var tag = document.getElementById('ct-tag-' + callId + '-' + uid);
-    if(tag){
-      if(o){
-        var bits = [];
-        if(o.charge_role) bits.push('Charge as ' + o.charge_role);
-        if(o.pay_paygrade_id != null) bits.push('Pay as ' + callGradeName(p, o.pay_paygrade_id));
-        var tip = bits.join(' · ') + ' — set by #' + o.set_by_user_id + (o.set_at ? ', ' + new Date(o.set_at).toLocaleString() : '');
-        tag.innerHTML = o.kind === 'crew_boss'
-          ? ' <span title="' + escapeHtml(tip) + '" style="font-size:8px;letter-spacing:.5px;color:#0b0b0b;background:var(--accent);border-radius:3px;padding:0 4px">CREW BOSS</span>'
-          : ' <span title="' + escapeHtml(tip) + '" style="font-size:8px;letter-spacing:.5px;color:#f59e0b;border:1px solid #f59e0b;border-radius:3px;padding:0 4px">override</span>';
-      } else {
-        tag.innerHTML = '';
-      }
-    }
+    if(tag) tag.innerHTML = '';   // the state now lives on the controls themselves
+    var who = o ? ' Set by #' + o.set_by_user_id + (o.set_at ? ', ' + new Date(o.set_at).toLocaleString() : '') + '.' : '';
+    var edit = "callOpenRateEditor('" + bookingId + "','" + callId + "'," + uid + ")";
+
+    // CREW BOSS: on when the row's override is the system Crew Boss one.
+    // Hidden on M&OP (S2-1); greyed and disabled when SmartStaff has no grade.
     var cb = p.crew_boss || {};
-    var cbBtn = '';
-    if(!cb.hidden && !(o && o.kind === 'crew_boss')){
-      cbBtn = cb.allowed
-        ? ctBtn('&#9819; Crew Boss', "callMakeCrewBoss('" + bookingId + "','" + callId + "'," + uid + ")",
-                'Charge this row at Crew Boss and pay the Crew Boss grade. Separate from Team Lead.')
-        : ctBtn('&#9819; Crew Boss', '', cb.reason || 'Not available', true);
+    var cbHtml = '';
+    if(o && o.kind === 'crew_boss'){
+      cbHtml = ctOnChip('Crew Boss', edit, 'Crew Boss: charged at ' + (o.charge_role || 'Crew Boss')
+        + ', paid at ' + callGradeName(p, o.pay_paygrade_id) + '.' + who + ' Click to change or clear.');
+    } else if(!cb.hidden){
+      cbHtml = cb.allowed
+        ? ctOffBtn('Crew Boss', "callMakeCrewBoss('" + bookingId + "','" + callId + "'," + uid + ")",
+                   'Charge this row at Crew Boss and pay the Crew Boss grade. Separate from Team Lead.')
+        : ctOffBtn('Crew Boss', '', cb.reason || 'Not available', true);
     }
-    ctl.innerHTML = ctBtn('Rate', "callOpenRateEditor('" + bookingId + "','" + callId + "'," + uid + ")",
-                          'Charge or pay this crew member differently from the Call Type') + cbBtn;
+
+    // RATE: on for a manual override, saying what it overrides.
+    var rateHtml;
+    if(o && o.kind === 'manual'){
+      var bits = [];
+      if(o.charge_role) bits.push(o.charge_role);
+      if(o.pay_paygrade_id != null) bits.push((o.charge_role ? '' : 'pay ') + callGradeName(p, o.pay_paygrade_id));
+      var tip = (o.charge_role ? 'Charged as ' + o.charge_role + ' instead of the Call Type' : 'Charged at the Call Type')
+        + (o.pay_paygrade_id != null ? '; paid at ' + callGradeName(p, o.pay_paygrade_id) + ' instead of their own grade' : '')
+        + '.' + who + ' Click to change or clear.';
+      rateHtml = ctOnChip('Rate: ' + escapeHtml(bits.join(' · ')), edit, tip);
+    } else {
+      rateHtml = ctOffBtn('Rate', edit, 'Charge or pay this crew member differently from the Call Type');
+    }
+    ctl.innerHTML = cbHtml + rateHtml;
   });
 }
 
@@ -21006,7 +21038,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   const crewRows = crew.length
     ? crew.map(function(c){
         var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(fmtPhone(c.mobile))+'</a>' : '';
-        var boss = c.is_call_boss ? ' <span title="Team Lead: the crew\'s contact on this call. No pay or charge effect." style="font-size:8px;color:var(--accent);letter-spacing:.5px">TEAM LEAD</span>' : '';
+        var boss = '';   // Team Lead now shows with the row's controls, on or off (crewBossControl)
         // Stage 2 §6: the row's override tag and its Rate / Crew Boss controls,
         // filled by callLoadPricing once the call's pricing context arrives.
         var ctId = (window._cohort === 'admin' && Number(c.id) > 0) ? (callId + '-' + Number(c.id)) : '';
@@ -21029,7 +21061,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
           nm = '<button type="button" class="ce-call-link" title="Open crew record" onclick="entityOpenCrew('
             + Number(bookingId) + ',' + Number(callId) + ',' + Number(c.id) + ')">' + nm + '</button>';
         }
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+ctTag+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+ctCtl+(isCancelled ? '' : crewBossControl(c, bookingId, callId))+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'+ctEdit; }).join('')
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+ctTag+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId, isCancelled)+ctCtl+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'+ctEdit; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
   document.getElementById('entity-modal-body').innerHTML =
       cancelBanner
