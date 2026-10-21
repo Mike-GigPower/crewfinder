@@ -12239,7 +12239,7 @@ async function initManualBooking(){
     fillMbSelect('mb-venue',    data.venues,    '-- Select venue --');
     status.textContent = `${data.customers.length} customers · ${data.venues.length} venues · ${data.contacts.length} contacts`;
     const d = document.getElementById('mb-date');
-    if(d && !d.value) d.value = new Date().toISOString().slice(0,10);
+    if(d && !d.value) d.value = _goatLocalISODate(new Date());
     if(!document.querySelectorAll('#mb-calls .mb-call-row').length) addManualCall();
     mbRefreshCallOptions();   // async; rebuilds the rows' Name / Call Type lists
     updateManualReadiness();
@@ -15963,7 +15963,7 @@ async function ceLoadUnavail(id){
   window._ceuView     = 'list';
   window._ceuCalMonth = null;
   window._ceuCalSel   = null;
-  var today = new Date().toISOString().slice(0,10);
+  var today = _goatLocalISODate(new Date());
   var inp = 'background:#0a0a0a;border:1px solid var(--border);color:var(--text);border-radius:3px;padding:5px 7px;font-size:12px;display:block;margin-bottom:5px;width:160px;box-sizing:border-box';
   panel.innerHTML =
       '<div style="display:flex;gap:6px;margin-bottom:12px">'
@@ -19214,7 +19214,7 @@ function buildManualPayload(){
   return {
     booking: {
       name:              document.getElementById('mb-name').value.trim(),
-      creation_date:     document.getElementById('mb-date').value || new Date().toISOString().slice(0,10),
+      creation_date:     document.getElementById('mb-date').value || _goatLocalISODate(new Date()),
       status:            0,
       customer_id:       document.getElementById('mb-customer').value,
       contact_id:        document.getElementById('mb-contact').value,
@@ -26152,7 +26152,7 @@ function openAddCallForm(bookingId){
   entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
   document.getElementById('entity-modal-title').textContent = 'Add call';
   document.getElementById('entity-modal-sub').textContent   = 'New call \u00b7 Booking #'+bookingId;
-  var today = new Date().toISOString().slice(0,10);
+  var today = _goatLocalISODate(new Date());
   _acOpts = null;
   document.getElementById('entity-modal-body').innerHTML =
       efRow('Name',       acCallNameInput())
@@ -26394,7 +26394,7 @@ function renderForecastTable(){
 
   // Build header
   const startDt   = new Date(_fcData.start_date + 'T00:00:00');
-  const today_str = new Date().toISOString().slice(0,10);
+  const today_str = _goatLocalISODate(new Date());
   const dayLabels  = dates.map((d,i) => {
     const dt        = new Date(d + 'T12:00:00');
     const dow       = dt.toLocaleDateString('en-AU',{weekday:'short'});
@@ -27480,7 +27480,7 @@ async function openUnavailManager(crewId, crewName){
   document.getElementById('unavail-modal-crew').textContent = crewName + ' · ID ' + crewId;
   document.getElementById('unavail-msg').textContent = '';
   // sensible defaults: today
-  const today = new Date().toISOString().slice(0,10);
+  const today = _goatLocalISODate(new Date());
   document.getElementById('unavail-start-date').value = today;
   document.getElementById('unavail-end-date').value = today;
   document.getElementById('unavail-reason').value = '';
