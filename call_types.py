@@ -61,8 +61,9 @@ def override_roles(rules, set_code):
 
 
 def call_names_for_set(rules, set_code):
-    """The card's call names for the Add call / manual booking Name list,
-    in role sort_order, plus "Other" (free text) once, last."""
+    """The card's call names, in role sort_order: SUGGESTIONS for the free-text
+    Name on Add call, the manual Booking form and the import preview. The Call
+    Type carries the role, so a call may be named anything."""
     st = pricing_rules.find_set(rules, set_code)
     rates = sorted(((st or {}).get("rates") or []),
                    key=lambda r: (r.get("sort_order") if isinstance(r.get("sort_order"), (int, float)) else 10 ** 6))
@@ -72,9 +73,9 @@ def call_names_for_set(rules, set_code):
             continue
         for n in r.get("call_names") or []:
             n = str(n or "").strip()
-            if n and n != "Other" and n not in names:
+            if n and n not in names:
                 names.append(n)
-    return names + ["Other"]
+    return names
 
 
 def derive_role(call_name, rules, set_code):
@@ -128,10 +129,10 @@ def effective_call_type(call_name, set_code, rules, stored):
 
 
 def crew_type_errors(lines, rules, set_code, label):
-    """§5.2: every file line's crew_type must be a role on the booking's card.
-    The Estimator guarantees it, so a miss is an error in the preview, never a
-    guess. Operator-added lines (line_id "new-N", crew_type "") have no
-    crew_type and are skipped: their calls show a derived type.
+    """§5.2: every line's crew_type must be a role on the booking's card. For
+    a file line the Estimator guarantees it, so a miss is an error in the
+    preview, never a guess. An operator-added line (line_id "new-N") carries
+    the Call Type picked for it in the preview, and must have one.
 
     Returns (errors, warning). With the rules unavailable the check can't run;
     the warning says so and the caller does not write the types."""
@@ -143,13 +144,14 @@ def crew_type_errors(lines, rules, set_code, label):
     errs = []
     for ll in lines or []:
         lid = str(ll.get("line_id") or "?")
-        if lid.startswith("new-"):
-            continue
+        added = lid.startswith("new-")
         ct = str(ll.get("crew_type") or "").strip()
         if not ct:
-            errs.append(f"Line {lid}: no crew_type in the estimate.")
+            errs.append(f"Added call ({ll.get('call_name') or 'no name'}): pick a Call Type."
+                        if added else f"Line {lid}: no crew_type in the estimate.")
         elif ct not in card:
-            errs.append(f"Line {lid}: crew type '{ct}' isn't on the {label} card.")
+            errs.append(f"Added call ({ll.get('call_name') or 'no name'}): '{ct}' isn't on the {label} card."
+                        if added else f"Line {lid}: crew type '{ct}' isn't on the {label} card.")
     return errs, None
 
 

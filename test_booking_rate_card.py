@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import app                      # noqa: E402
+import call_types               # noqa: E402
 import estimator_calc as ec     # noqa: E402
 import pricing_rules            # noqa: E402
 import test_pricing_cases       # noqa: E402
@@ -125,26 +126,26 @@ class RateCardBlockTests(unittest.TestCase):
         self.assertTrue(app.rate_card_answers_error(None, None))
 
 
-class CardTripwireTests(unittest.TestCase):
+class CardCrewTypeTests(unittest.TestCase):
+    """The 5.76 call-name tripwire is gone (Stage 2): a call may be named
+    anything, and its crew_type is what has to be on the card."""
 
     def setUp(self):
         if rules() is None:
             self.skipTest("pricing rules unavailable: %s" % _RULES["meta"].get("error"))
 
-    def test_14_load_in_on_a_mopt_import_names_the_line(self):
+    def test_a_renamed_mopt_call_passes_when_its_type_is_on_the_card(self):
+        p = _payload(AO)
+        p["labour_lines"][0]["call_name"] = "Load In"   # any name
+        self.assertEqual(call_types.crew_type_errors(p["labour_lines"], rules(), "mopt-ao", "AO"), ([], None))
+
+    def test_a_standard_type_on_a_mopt_import_names_the_line(self):
         p = _payload(AO, ("Australian Open Event Operations", "Load In"))
-        errs, warn = app.rate_card_line_errors("mopt-ao", p["labour_lines"], rules())
+        p["labour_lines"][1]["crew_type"] = "Standard Crew"
+        errs, _ = call_types.crew_type_errors(p["labour_lines"], rules(), "mopt-ao", "AO")
         self.assertEqual(len(errs), 1)
         self.assertIn("ll_002", errs[0])
-        self.assertIn("Load In", errs[0])
-
-    def test_a_clean_mopt_import_passes(self):
-        p = _payload(AO)
-        self.assertEqual(app.rate_card_line_errors("mopt-ao", p["labour_lines"], rules()), ([], None))
-
-    def test_standard_is_never_checked(self):
-        p = _payload(STD, ("Anything At All",))
-        self.assertEqual(app.rate_card_line_errors("standard", p["labour_lines"], rules()), ([], None))
+        self.assertIn("Standard Crew", errs[0])
 
 
 class PriceOnStoredCardTests(unittest.TestCase):

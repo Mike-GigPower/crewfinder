@@ -2534,7 +2534,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
                 <table class="import-calls-table">
                   <thead>
                     <tr>
-                      <th>Crew Type</th>
+                      <th>Call Type</th>
                       <th>Call Name</th>
                       <th>Date</th>
                       <th>Start</th>
@@ -11695,8 +11695,9 @@ function renderImportPreview(data){
   }
 
   // Calls table — every field editable, plus add and delete (5.39.0).
-  // Row order is the creation order; MB_CALL_NAMES is shared with the manual
-  // Booking form so both modes offer the same list.
+  // Row order is the creation order. Names are free text with the card's call
+  // names as suggestions (Stage 2); an added row picks its Call Type.
+  ctSetDatalist('ic-call-names', (p.rate_card && p.rate_card.call_types && p.rate_card.call_types.call_names) || MB_CALL_NAMES);
   const tbody = document.getElementById('import-calls-tbody');
   _icAddSeq = 0;
   tbody.innerHTML = (p.calls || []).map(c => icRowHtml(c)).join('');
@@ -11778,24 +11779,40 @@ function icRows(){
   return [...document.querySelectorAll('#import-calls-tbody tr.ic-row')];
 }
 
+// The card's Call Type options for this preview, or null if the rules were
+// unavailable when it was validated.
+function icCallTypes(){
+  return (_importPreview && _importPreview.preview && _importPreview.preview.rate_card
+          && _importPreview.preview.rate_card.call_types) || null;
+}
+
+// An added row's Call Type follows its name until someone picks one by hand.
+function icOnName(inp){
+  const tr = inp.closest('tr.ic-row');
+  const sel = tr && tr.querySelector('.ic-type');
+  if(sel && sel.dataset.userSet !== '1'){
+    const role = ctRoleForName(icCallTypes(), inp.value.trim());
+    if(role) sel.value = role;
+  }
+  updateImportReadiness();
+}
+
 function icRowHtml(c){
   const lid   = (c.line_id == null) ? '' : String(c.line_id);
   const isNew = !!c.is_new;
   const nm    = c.call_name || '';
-  // A call name from the file that isn't in the standard list stays selectable —
-  // same rule the server applies when validating an edited name.
-  const extraOpt = (nm && !MB_CALL_NAMES.includes(nm))
-    ? `<option value="${escapeHtml(nm)}" selected>${escapeHtml(nm)}</option>` : '';
-  const opts = MB_CALL_NAMES.map(n =>
-    `<option value="${n}"${!extraOpt && n === nm ? ' selected' : ''}>${n}</option>`
-  ).join('');
+  // A file line's Call Type is the Estimator's crew_type: how it was quoted,
+  // so it isn't editable here. An added line picks one; it's required.
+  const ct = icCallTypes();
+  const typeCell = isNew
+    ? `<span class="ic-added-tag" style="display:block">added</span>
+       <select class="ic-type" style="margin-top:4px" onchange="this.dataset.userSet='1';updateImportReadiness()">${ctTypeOptionsHtml(ct ? ct.roles : [], '')}</select>`
+    : escapeHtml(c.crew_type || '—');
   return `
     <tr class="ic-row" data-line-id="${escapeHtml(lid)}">
-      <td style="color:var(--muted);font-size:10px">${isNew ? '<span class="ic-added-tag">added</span>' : escapeHtml(c.crew_type || '—')}</td>
-      <td style="min-width:130px">
-        <select class="ic-name" onchange="updateImportReadiness()">
-          <option value="">-- select --</option>${extraOpt}${opts}
-        </select>
+      <td style="color:var(--muted);font-size:10px;min-width:${isNew ? 210 : 0}px">${typeCell}</td>
+      <td style="min-width:${isNew ? 190 : 130}px">
+        <input class="ic-name" type="text" list="ic-call-names" placeholder="any name" value="${escapeHtml(nm)}" oninput="icOnName(this)">
       </td>
       <td style="min-width:140px">
         <input class="ic-date" type="date" value="${escapeHtml(c.date || '')}" onchange="icOnDate(this)">
@@ -11853,9 +11870,12 @@ function icCollectEdits(){
   return icRows().map(r => {
     const len = r.querySelector('.ic-length').value;
     const qty = r.querySelector('.ic-required').value;
+    const type = r.querySelector('.ic-type');
     return {
       line_id:        r.dataset.lineId || null,
-      call_name:      r.querySelector('.ic-name').value,
+      call_name:      r.querySelector('.ic-name').value.trim(),
+      // Only an added row sends one; the server ignores it on a file line.
+      call_type:      type ? type.value : undefined,
       date:           r.querySelector('.ic-date').value,
       start_time:     parseFlexTime(r.querySelector('.ic-time').value) || '',
       duration_hours: len === '' ? 0 : parseFloat(len),
@@ -11872,10 +11892,11 @@ function updateImportReadiness(){
   // A booking may legitimately have zero labour calls (non-labour only), so an
   // empty table is only an error when there are no non-labour items either.
   const hasNonLabour = (_importPreview?.preview?.non_labour_count || 0) > 0;
-  const unnamed = rows.filter(r => !r.querySelector('.ic-name').value).length;
+  const unnamed = rows.filter(r => !r.querySelector('.ic-name').value.trim()).length;
+  const untyped = rows.filter(r => r.querySelector('.ic-type') && !r.querySelector('.ic-type').value).length;
   const undated = rows.filter(r => !r.querySelector('.ic-date').value).length;
   const badTime = rows.filter(r => !parseFlexTime(r.querySelector('.ic-time').value)).length;
-  const rowsOk  = rows.length === 0 ? hasNonLabour : !(unnamed || undated || badTime);
+  const rowsOk  = rows.length === 0 ? hasNonLabour : !(unnamed || untyped || undated || badTime);
   const btn  = document.getElementById('btn-start-import');
   const note = document.getElementById('import-action-note');
   if(!btn) return;
@@ -11884,7 +11905,8 @@ function updateImportReadiness(){
     if(!custOk || !venueOk)  note.textContent = 'Select customer and venue to continue';
     else if(!rows.length && !hasNonLabour)
                              note.textContent = 'No calls left — add a call or re-drop the estimate';
-    else if(unnamed)         note.textContent = `Select a call name for all lines (${unnamed} remaining)`;
+    else if(unnamed)         note.textContent = `Name every call (${unnamed} remaining)`;
+    else if(untyped)         note.textContent = `Pick a Call Type for each added call (${untyped} remaining)`;
     else if(undated)         note.textContent = `${undated} call${undated!==1?'s':''} missing a date`;
     else if(badTime)         note.textContent = `${badTime} call${badTime!==1?'s':''} with an invalid start time`;
     else                     note.textContent = '';
@@ -12062,9 +12084,8 @@ async function loadImportHistory(){
 
 let _mbLookups = null;            // {customers, venues, contacts, customer_map}
 
-// SmartStaff's own callsheet names. Still the Estimate Import preview's list;
-// the manual Booking form and Add call use the booking card's call_names
-// instead (Stage 2 §5.3), and fall back to this only until those load.
+// SmartStaff's own callsheet names: the Name suggestions until the booking
+// card's call_names load. Never a limit: Call Names are free text (Stage 2).
 const MB_CALL_NAMES = [
   'Load In','Load Out','LX','SX','VX','Backline','Show Call',
   'FOH Spot','Truss Spot','Wardrobe','Steel','Fork','Truck','EWP',
@@ -12100,6 +12121,20 @@ function ctSetFromPicker(prefix){
 // The role a call name pre-selects (exact match on the card), or ''.
 function ctRoleForName(opts, name){
   return (opts && opts.name_roles && name && opts.name_roles[name]) || '';
+}
+
+// The card's call names as type-ahead SUGGESTIONS for a free-text Call Name.
+// A call may be named anything: the Call Type is what says how it's priced.
+function ctNamesDatalistHtml(names){
+  return (names || []).map(function(n){ return '<option value="' + escapeHtml(n) + '"></option>'; }).join('');
+}
+function ctSetDatalist(id, names){
+  var dl = document.getElementById(id);
+  if(!dl){
+    dl = document.createElement('datalist'); dl.id = id;
+    document.body.appendChild(dl);
+  }
+  dl.innerHTML = ctNamesDatalistHtml(names);
 }
 
 function ctTypeOptionsHtml(roles, selected){
@@ -19027,13 +19062,12 @@ function addManualCall(){
   const lastDate = document.getElementById('mb-date')?.value
                  || wrap.querySelector('.mb-call-row:last-child .mbc-date')?.value || '';
   const ct = _ctOptions[ctSetFromPicker('mb-rc')];
-  const opts = mbCallNameOptionsHtml(ct ? ct.call_names : MB_CALL_NAMES, '');
+  if(!document.getElementById('mb-call-names')) ctSetDatalist('mb-call-names', ct ? ct.call_names : MB_CALL_NAMES);
   const row = document.createElement('div');
   row.className = 'mb-call-row';
   row.innerHTML =
     `<div>
-       <select class="mbc-name" onchange="onManualCallName(this)">${opts}</select>
-       <input class="mbc-name-free" placeholder="custom name" style="display:none;margin-top:4px" oninput="onManualCallFree(this)">
+       <input class="mbc-name" list="mb-call-names" placeholder="any name" oninput="onManualCallName(this)">
        <select class="mbc-type" title="Call Type: the role this call charges at" style="margin-top:4px" onchange="this.dataset.userSet='1';updateManualReadiness()">${ctTypeOptionsHtml(ct ? ct.roles : [], '')}</select>
      </div>
      <div>
@@ -19054,12 +19088,6 @@ function removeManualCall(btn){
   updateManualReadiness();
 }
 
-function mbCallNameOptionsHtml(names, selected){
-  return '<option value="">-- select --</option>' + (names || []).map(function(n){
-    return '<option value="' + escapeHtml(n) + '"' + (n === selected ? ' selected' : '') + '>' + escapeHtml(n) + '</option>';
-  }).join('');
-}
-
 // Picking a Call Name pre-selects the Call Type it resolves to on the card
 // (§5.3). A type the Admin picked by hand is left alone.
 function mbPreselectType(row){
@@ -19069,23 +19097,14 @@ function mbPreselectType(row){
   if(role) typeSel.value = role;
 }
 
-function onManualCallName(sel){
-  const free = sel.parentElement.querySelector('.mbc-name-free');
-  if(!free) return;
-  if(sel.value === 'Other'){ free.style.display = ''; free.focus(); }
-  else { free.style.display = 'none'; free.value = ''; }
-  mbPreselectType(sel.closest('.mb-call-row'));
-  updateManualReadiness();
-}
-
-function onManualCallFree(inp){
+function onManualCallName(inp){
   mbPreselectType(inp.closest('.mb-call-row'));
   updateManualReadiness();
 }
 
-// Rebuild every row's Call Name and Call Type lists for the card now picked.
-// A name or type still on the new card is kept; one that isn't is cleared, so
-// a MOPT booking can't keep a Standard name by accident.
+// Rebuild the Name suggestions and every row's Call Type list for the card
+// now picked. Names are free text and always kept; a type no longer on the
+// card is cleared, so a MOPT booking can't keep a Standard type by accident.
 async function mbRefreshCallOptions(){
   const note = document.getElementById('mb-ct-note');
   const set = ctSetFromPicker('mb-rc');
@@ -19097,15 +19116,9 @@ async function mbRefreshCallOptions(){
   }
   if(ctSetFromPicker('mb-rc') !== set) return;   // the card changed while loading
   if(note) note.textContent = '';
+  ctSetDatalist('mb-call-names', ct.call_names);
   document.querySelectorAll('#mb-calls .mb-call-row').forEach(function(row){
-    const nameSel = row.querySelector('.mbc-name');
     const typeSel = row.querySelector('.mbc-type');
-    const keepName = ct.call_names.indexOf(nameSel.value) >= 0 ? nameSel.value : '';
-    nameSel.innerHTML = mbCallNameOptionsHtml(ct.call_names, keepName);
-    if(keepName !== 'Other'){
-      const free = row.querySelector('.mbc-name-free');
-      if(free){ free.style.display = 'none'; free.value = ''; }
-    }
     const keepType = ct.roles.indexOf(typeSel.value) >= 0 ? typeSel.value : '';
     typeSel.innerHTML = ctTypeOptionsHtml(ct.roles, keepType);
     if(!keepType) typeSel.dataset.userSet = '';
@@ -19115,10 +19128,7 @@ async function mbRefreshCallOptions(){
 }
 
 function mbCallNameValue(row){
-  const sel  = row.querySelector('.mbc-name');
-  const free = row.querySelector('.mbc-name-free');
-  if(sel.value === 'Other' && free && free.value.trim()) return free.value.trim();
-  return sel.value;
+  return (row.querySelector('.mbc-name')?.value || '').trim();
 }
 
 function updateManualReadiness(){
@@ -25551,16 +25561,14 @@ async function saveCallEdit(bookingId, callId){
 // ---- add call (to an existing booking) ----
 // Creates a new call on an existing booking via SmartStaff's own callsheet
 // form (POST /api/booking/<id>/call -> ss_create_call). No crew are booked
-// onto the new call. Call-name field mirrors the manual Booking form: a
-// dropdown of the booking card's call names plus "Other -> free text", and a
-// required Call Type from the same card (Stage 2 §5.3). The lists load async;
-// until they do, both selects say so and Add call refuses.
+// onto the new call. The Name is free text, with the booking card's call
+// names as suggestions; the Call Type is required and from the same card
+// (Stage 2 §5.3). The options load async; until they do, Add call refuses.
 
 var _acOpts = null;   // this form's /api/call-types/options result
 
-function acCallNameSelect(){
-  return '<select id="ac-name" onchange="acToggleOther()" disabled style="'+EF_INPUT_STYLE+'">'
-    + '<option value="">Loading the card\u2019s call names\u2026</option></select>';
+function acCallNameInput(){
+  return '<input id="ac-name" type="text" list="ac-call-names" placeholder="any name" oninput="acPreselectType()" style="'+EF_INPUT_STYLE+'">';
 }
 
 function acCallTypeSelect(){
@@ -25573,12 +25581,12 @@ async function acLoadOptions(bookingId){
   try{
     var o = await ctLoadOptions('booking_id=' + encodeURIComponent(bookingId));
     _acOpts = o;
-    var nameSel = document.getElementById('ac-name');
     var typeSel = document.getElementById('ac-type');
-    if(!nameSel || !typeSel) return;   // form closed meanwhile
-    nameSel.innerHTML = mbCallNameOptionsHtml(o.call_names, '');
+    if(!typeSel) return;   // form closed meanwhile
+    ctSetDatalist('ac-call-names', o.call_names);
     typeSel.innerHTML = ctTypeOptionsHtml(o.roles, '');
-    nameSel.disabled = false; typeSel.disabled = false;
+    typeSel.disabled = false;
+    acPreselectType();
     var lab = document.getElementById('ac-card');
     if(lab) lab.textContent = 'Rate card: ' + (o.label || o.set_code);
   }catch(e){
@@ -25589,18 +25597,8 @@ async function acLoadOptions(bookingId){
 function acPreselectType(){
   var typeSel = document.getElementById('ac-type');
   if(!typeSel || typeSel.dataset.userSet === '1') return;
-  var sel = _efVal('ac-name');
-  var name = sel === 'Other' ? _efVal('ac-name-free').trim() : sel;
-  var role = ctRoleForName(_acOpts, name);
+  var role = ctRoleForName(_acOpts, _efVal('ac-name').trim());
   if(role) typeSel.value = role;
-}
-
-function acToggleOther(){
-  var sel = document.getElementById('ac-name');
-  var row = document.getElementById('ac-other-row');
-  if(!sel || !row) return;
-  row.style.display = (sel.value === 'Other') ? 'block' : 'none';
-  acPreselectType();
 }
 
 function openAddCallForm(bookingId){
@@ -25611,10 +25609,7 @@ function openAddCallForm(bookingId){
   var today = new Date().toISOString().slice(0,10);
   _acOpts = null;
   document.getElementById('entity-modal-body').innerHTML =
-      efRow('Name',       acCallNameSelect())
-    + '<div id="ac-other-row" style="display:none">'
-    +   efRow('Other name', '<input id="ac-name-free" type="text" value="" oninput="acPreselectType()" style="'+EF_INPUT_STYLE+'">')
-    + '</div>'
+      efRow('Name',       acCallNameInput())
     + efRow('Call Type',  acCallTypeSelect()
         + '<div id="ac-card" style="font-size:10px;color:var(--muted);margin-top:3px"></div>'
         + '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + escapeHtml(CT_HONESTY) + '</div>')
@@ -25632,18 +25627,12 @@ function openAddCallForm(bookingId){
 }
 
 async function saveAddCall(bookingId){
-  var sel  = _efVal('ac-name');
-  var free = _efVal('ac-name-free').trim();
+  var name = _efVal('ac-name').trim();
   var date = _efVal('ac-date');
   var type = _efVal('ac-type');
   var st = document.getElementById('ac-status');
   function fail(msg){ if(st){ st.style.color='var(--conflict)'; st.textContent=msg; } }
 
-  var name = sel;
-  if(sel === 'Other'){
-    if(!free) return fail('Enter a name for the "Other" call');
-    name = free;              // Other calls send the free text as the call name
-  }
   if(!name) return fail('Name is required');
   if(!type) return fail('Call Type is required');
   if(!date) return fail('Date is required');
@@ -25663,7 +25652,6 @@ async function saveAddCall(bookingId){
   var payload = { call_name: name, call_type: type, start_date: date, start_time: t,
                   length: _efVal('ac-length'), required: _efVal('ac-required'),
                   notes: _efVal('ac-notes') };
-  if(sel === 'Other') payload.call_name_free = free;
 
   try{
     var resp = await fetch('/api/booking/'+bookingId+'/call', {

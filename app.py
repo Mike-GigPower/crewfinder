@@ -4972,7 +4972,9 @@ def apply_call_edits(original_lines, edits):
             added_n += 1
             line = {
                 "line_id":                 "new-%d" % added_n,
-                "crew_type":               "",
+                # The Call Type picked in the preview. A file line keeps the
+                # Estimator's crew_type: the client can't change how it was quoted.
+                "crew_type":               str(e.get("call_type") or "").strip(),
                 "public_holiday_same_day": False,
                 "public_holiday_next_day": False,
             }
@@ -4998,12 +5000,6 @@ def validate_call_edits(lines, original_lines):
     than the manual path for no reason ops would recognise.
     """
     errors = []
-    original_names = {}
-    for ll in original_lines or []:
-        lid = ll.get("line_id")
-        if lid is not None:
-            original_names[str(lid)] = ll.get("call_name") or ""
-
     seen = set()
     for i, ll in enumerate(lines):
         lid   = ll.get("line_id", "?")
@@ -5013,11 +5009,10 @@ def validate_call_edits(lines, original_lines):
             errors.append("Duplicate line_id: %s" % lid)
         seen.add(lid)
 
-        cn = ll.get("call_name") or ""
-        if not cn:
+        # Any name: the Call Type carries the role (Stage 2), so the name is
+        # free text, renamed however the job needs.
+        if not (ll.get("call_name") or "").strip():
             errors.append("%s: call name is required" % label)
-        elif cn not in VALID_CALL_NAMES and cn != original_names.get(str(lid), ""):
-            errors.append("%s: invalid call name '%s'" % (label, cn))
 
         try:
             datetime.strptime(ll.get("date", ""), "%Y-%m-%d")
@@ -5245,32 +5240,6 @@ def payload_rate_card(payload):
     if errors:
         return None, None, errors
     return {"mopt": mopt, "australian_open": ao if mopt else None}, code, []
-
-
-def rate_card_line_errors(set_code, lines, rules=None):
-    """The §7.3 tripwire: on a customer card, every labour line's call name
-    must be one of the card's call_names. The Estimator already refuses to
-    export one that isn't, so a hit here means the file was edited.
-
-    Returns (errors, warning). If the rules can't be read the check can't run,
-    and the warning says so rather than passing silently."""
-    if set_code in (None, pricing_rules.STANDARD):
-        return [], None
-    if rules is None:
-        rules, _ = pricing_rules.load_rules()
-    if rules is None:
-        return [], ("The rate card's call names couldn't be checked: the "
-                    "Estimator's pricing rules are unavailable.")
-    names = pricing_rules.call_names_for_set(rules, set_code)
-    if not names:
-        return [f"Rate card {set_code!r} isn't in the Estimator's pricing rules."], None
-    errs = []
-    for ll in lines:
-        cn = (ll.get("call_name") or "").strip()
-        if cn not in names:
-            errs.append(f"Line {ll.get('line_id', '?')}: '{cn}' isn't on the "
-                        f"{rate_card_label(set_code)} card.")
-    return errs, None
 
 
 def validate_payload(payload):
@@ -14456,12 +14425,11 @@ def api_import_validate():
     lines   = payload.get("labour_lines", [])
     non_labour = extract_non_labour(payload)
 
-    # C9: the card the estimate was priced on, and the §7.3 tripwire.
+    # C9: the card the estimate was priced on. The 5.76 call-name tripwire is
+    # gone: names are free text now, and each line's crew_type (checked below)
+    # is what says how it is priced.
     rc_answers, rc_set, _ = payload_rate_card(payload)
-    rc_errors, rc_warning = rate_card_line_errors(rc_set, lines)
-    if rc_errors:
-        return jsonify({"valid": False, "errors": rc_errors,
-                        "rate_card": {"set_code": rc_set, "label": rate_card_label(rc_set)}})
+    rc_warning = None
 
     # Stage 2 §5.2: each line's crew_type becomes its call's Call Type, so it
     # must be on the card. Checked before anything is created.
@@ -14600,6 +14568,9 @@ def api_import_validate():
                 "from_file":       "rate_card" in payload,
                 "warning":         rc_warning,
                 "call_type_warning": ct_warning,
+                # The card's roles and call names: the preview's Call Type
+                # picker for added calls, and the Name suggestions.
+                "call_types": _call_type_options(rc_set),
                 "customer_note":   rate_card_customer_note(
                     rc_set, customer_match["id"] if customer_match else None),
             },
@@ -14666,44 +14637,28 @@ def api_import_start():
     else:
         lines = original_lines
 
-    # Resolve final call name per line: operator selection → JSON field → missing
-    # JSON call_name values are always accepted even if not in VALID_CALL_NAMES
+    # Resolve final call name per line: operator selection → JSON field. Any
+    # name is accepted; the Call Type carries the role (Stage 2).
     resolved_call_names = {}
     missing_names = []
-    invalid_names = []
     for ll in lines:
         lid     = ll.get("line_id", "?")
-        json_cn = ll.get("call_name") or ""
-        op_cn   = call_names.get(lid) or ""
-        cn      = op_cn or json_cn
+        cn      = str(call_names.get(lid) or ll.get("call_name") or "").strip()
         resolved_call_names[lid] = cn
         if not cn:
             missing_names.append(lid)
-        elif cn not in VALID_CALL_NAMES and cn != json_cn:
-            # Only reject operator-entered names not in VALID_CALL_NAMES
-            # JSON-sourced call names pass through regardless
-            invalid_names.append(f"{lid}: '{cn}'")
 
     if missing_names:
         return jsonify({"error": f"Call name not selected for lines: {', '.join(missing_names)}"}), 400
-    if invalid_names:
-        return jsonify({"error": f"Invalid call names: {', '.join(invalid_names)}"}), 400
 
     errors = validate_payload(payload)
     if errors:
         return jsonify({"error": "Payload failed validation", "errors": errors}), 400
 
-    # C9: the card, and the §7.3 tripwire again on the FINAL call names, since
-    # the operator can rename a call in the preview.
     rc_answers, rc_set, _ = payload_rate_card(payload)
-    rc_errors, _ = rate_card_line_errors(
-        rc_set, [dict(ll, call_name=resolved_call_names.get(ll.get("line_id"), ll.get("call_name")))
-                 for ll in lines])
-    if rc_errors:
-        return jsonify({"error": "; ".join(rc_errors[:5]), "errors": rc_errors}), 400
 
-    # Stage 2 §5.2, again on the FINAL lines (the operator can delete or add
-    # lines; an added line has no crew_type and gets a derived type).
+    # Stage 2 §5.2, again on the FINAL lines: the operator can delete lines,
+    # and an added line carries the Call Type picked for it in the preview.
     ct_errors, ct_warning = [], None
     if rc_set:
         ct_rules, _ = pricing_rules.load_rules()
@@ -14812,6 +14767,8 @@ def api_import_start():
                     _import_progress["step"] = f"Creating call {i+1}/{len(lines)}: {resolved_cn}..."
                     call_data = {
                         "call_name":               resolved_cn,
+                        # a name off SmartStaff's dropdown goes as a free name
+                        **({} if resolved_cn in VALID_CALL_NAMES else {"call_name_free": resolved_cn}),
                         "start_date":              format_ss_date(ll["date"]),
                         "start_time":              ll["start_time"] + ":00",
                         "duration_hours":          ll["duration_hours"],
@@ -17663,6 +17620,25 @@ def _override_counts(overrides):
     return counts
 
 
+def _call_type_options(set_code, rules=None):
+    """{roles, call_names, name_roles} for one card, or None when the card or
+    the rules are unknown. call_names are SUGGESTIONS for a free-text Name."""
+    if set_code not in pricing_rules.SET_CODES:
+        return None
+    if rules is None:
+        rules, _ = pricing_rules.load_rules()
+    if rules is None:
+        return None
+    return {
+        "set_code":   set_code,
+        "label":      rate_card_label(set_code),
+        "roles":      call_types.roles_for_set(rules, set_code),
+        "call_names": call_types.call_names_for_set(rules, set_code),
+        "name_roles": call_types.call_name_roles(rules, set_code),
+        "honesty":    call_types.HONESTY_LINE,
+    }
+
+
 @app.route("/api/call-types/options")
 @require_cohort("admin")
 def api_call_type_options():
@@ -17685,18 +17661,11 @@ def api_call_type_options():
                                      "not answered). Set it on the booking first."}), 409
     if set_code not in pricing_rules.SET_CODES:
         return jsonify({"error": "set_code must be standard, mopt or mopt-ao"}), 400
-    rules, _ = pricing_rules.load_rules()
-    if rules is None:
+    opts = _call_type_options(set_code)
+    if opts is None:
         return jsonify({"error": "The Estimator's pricing rules are unavailable, so there are "
                                  "no Call Types to choose from."}), 503
-    return jsonify({
-        "set_code":   set_code,
-        "label":      rate_card_label(set_code),
-        "roles":      call_types.roles_for_set(rules, set_code),
-        "call_names": call_types.call_names_for_set(rules, set_code),
-        "name_roles": call_types.call_name_roles(rules, set_code),
-        "honesty":    call_types.HONESTY_LINE,
-    })
+    return jsonify(opts)
 
 
 def _call_pricing_context(ss, booking_id, call_id):

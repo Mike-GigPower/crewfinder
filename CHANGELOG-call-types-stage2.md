@@ -16,11 +16,12 @@
 
 ## Step 3: setting a call's type
 
-- **Estimate import:** each labour line's `crew_type` must be on the booking's card. If it isn't, the preview names the line (test 4). Once the calls exist, each one gets a Call Type with `source = estimate_import`. If that write fails, the import still completes and a red banner says so. Lines the operator adds in the preview get a derived type.
-- **Add call:** the Name list now comes from the card's `call_names` plus Other. The Call Type is required, and picking a name pre-selects its role. `source = add_call`.
-- **Manual booking:** the same, per call row. Both lists follow the card picker, so a MOPT booking shows only MOPT names and roles. `source = manual_booking`.
+- **Call Names are free text everywhere a call is set up.** The Call Type carries the pricing, so the name can be anything. In the import preview, Add call and the manual Booking form, the Name is a text field, with the card's call names as type-ahead suggestions only. The call edit form was already free text.
+- **Estimate import:** each file line's `crew_type` must be on the booking's card. If it isn't, the preview names the line (test 4). The file line's type isn't editable in the preview, because that's how it was quoted. A call the operator adds in the preview needs a Call Type from the card. Once the calls exist, every call gets a stored Call Type with `source = estimate_import`. If that write fails, the import still completes and a red banner says so.
+- **Dropped:** the 5.76 call-name check (`rate_card_line_errors`, C9 §7.3), which refused a MOPT import whose names weren't the card's, and the server's refusal of operator-typed names outside SmartStaff's 21. `crew_type` now does that job. Names off SmartStaff's dropdown travel as free names, as "Other" always has.
+- **Add call:** the Call Type is required, and typing a name that's on the card pre-selects its role. `source = add_call`.
+- **Manual booking:** the same, per call row. The suggestions and the Call Type list follow the card picker. `source = manual_booking`.
 - **Change…:** shows "This changes the charge rate for every crew row on this call." and writes `source = admin`. Changing a booking's card never rewrites its calls' types.
-- **Names SmartStaff's dropdown doesn't list** (MOPT names, Robo Spot, Tech/Dress Rehearsal) are sent the way an "Other" free name always has been (`call_name_hidden`). create-booking.php stores `call_name` as it's given.
 
 ## Step 4: row overrides and Crew Boss
 

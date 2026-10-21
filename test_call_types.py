@@ -53,11 +53,12 @@ class Roles(unittest.TestCase):
                          ["Event Operations", "Forklift Driver", "Standard Crew", "Show Crew", "Crew Boss"])
         self.assertEqual(ct.override_roles(RULES, "standard"), ct.roles_for_set(RULES, "standard"))
 
-    def test_call_names_follow_the_card_with_other_last_once(self):
+    def test_call_names_follow_the_card(self):
+        # Suggestions only; "Other" appears where the card lists it, once.
         self.assertEqual(ct.call_names_for_set(RULES, "standard"),
-                         ["Load In", "Load Out", "Show Call", "FOH Spot", "Robo Spot", "Crew Boss", "Other"])
+                         ["Load In", "Load Out", "Other", "Show Call", "FOH Spot", "Robo Spot", "Crew Boss"])
         self.assertEqual(ct.call_names_for_set(RULES, "mopt"),
-                         ["Event Operations", "Forklift Driver", "Other"])
+                         ["Event Operations", "Forklift Driver"])
 
     def test_name_roles_preselect(self):
         nr = ct.call_name_roles(RULES, "standard")
@@ -112,11 +113,19 @@ class Import(unittest.TestCase):
         self.assertIn("ll_001", errs[0])
         self.assertIn("Show Crew", errs[0])
 
-    def test_blank_crew_type_on_a_file_line_is_an_error_added_lines_skip(self):
-        lines = [{"line_id": "ll_001", "crew_type": ""}, {"line_id": "new-1", "crew_type": ""}]
+    def test_blank_crew_type_is_an_error_on_file_and_added_lines(self):
+        lines = [{"line_id": "ll_001", "crew_type": ""},
+                 {"line_id": "new-1", "crew_type": "", "call_name": "Spots"}]
         errs, _ = ct.crew_type_errors(lines, RULES, "standard", "Standard")
-        self.assertEqual(len(errs), 1)
+        self.assertEqual(len(errs), 2)
         self.assertIn("ll_001", errs[0])
+        self.assertIn("Spots", errs[1])
+
+    def test_added_line_type_must_be_on_the_card(self):
+        ok = [{"line_id": "new-1", "crew_type": "Show Crew", "call_name": "Spots"}]
+        self.assertEqual(ct.crew_type_errors(ok, RULES, "standard", "Standard"), ([], None))
+        bad = [{"line_id": "new-1", "crew_type": "Show Crew", "call_name": "Spots"}]
+        self.assertEqual(len(ct.crew_type_errors(bad, RULES, "mopt", "MOPT")[0]), 1)
 
     def test_rules_unavailable_warns(self):
         errs, warn = ct.crew_type_errors([{"line_id": "ll_001", "crew_type": "X"}], None, "standard", "Standard")
