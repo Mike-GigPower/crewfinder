@@ -20122,6 +20122,17 @@ function entityRow(label, value){
     + '<div style="flex:1;font-size:12px;color:var(--text)">'+value+'</div></div>';
 }
 
+// The SmartStaff Notes field (calls.notes / bookings.notes) for a Details tab.
+// Not Crew Notes: those are the Crew Hub notes on their own tab. Always shown,
+// "—" when empty, so the field is visibly there rather than silently absent.
+// SmartStaff stores HTML-encoded text, so decode before escaping.
+function entityNotesValue(raw){
+  var t = decodeEntities(raw == null ? '' : String(raw)).replace(/\s+$/, '');
+  return t
+    ? '<div style="white-space:pre-wrap;overflow-wrap:anywhere">'+escapeHtml(t)+'</div>'
+    : '<span style="color:var(--muted)">—</span>';
+}
+
 function crewStatusBadge(status){
   const s = (status||'').toLowerCase();
   let color='var(--muted)', bg='var(--surface2)';
@@ -21371,7 +21382,13 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         ? entityRow('Crew', '<span style="color:var(--muted)">'+crew.length+' assigned when cancelled · none working</span>')
         : entityRow('Crew', '<span id="call-confirmed-count-'+callId+'" data-req="'+req+'">'+filledCount+'</span> booked / '+req+' required'+promoPendingNote+' <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>'
                             + callCalloutButton(bookingId, callId, crew, editSrc, confirmedCount, req, isCancelled))
-          + callCalloutStrip(bookingId, callId, editSrc, isCancelled));
+          + callCalloutStrip(bookingId, callId, editSrc, isCancelled))
+    // SmartStaff call Notes. They come from get-booking.php's call row (editSrc);
+    // the name-prefix fallback has no editSrc, so say where to look instead of
+    // showing "—" for notes that may well exist.
+    + entityRow('Notes', editSrc
+        ? entityNotesValue(editSrc.notes)
+        : '<span style="color:var(--muted)">Not available here — see ↗ SmartStaff</span>');
   // Booked Crew: the boss-call warning (P3), then the filter chips and order,
   // then the rows. Filtering hides rows and never leaves them out:
   // refreshCallCrewSummary() counts the selects in the DOM.
@@ -25533,7 +25550,7 @@ function renderBookingDialog(bookingId, d, cached){
          + entityRow('On-site',  escapeHtml((d.onsite&&d.onsite.name)||'—') + bkPhoneBits(d.onsite))
          + entityRow('Venue',    bkVenueLine(d.venue, cached&&cached.venue))
          + entityRow('Reference',escapeHtml(d.reference||'—'))
-         + (d.notes ? entityRow('Notes', escapeHtml(d.notes)) : '');
+         + entityRow('Notes',    entityNotesValue(d.notes));
   } else {
     rows = entityRow('Venue', escapeHtml((cached&&cached.venue)||'—'))
          + '<div style="color:var(--muted);font-size:11px;padding:6px 0">Couldn\'t load full booking details — showing cached info.</div>';
