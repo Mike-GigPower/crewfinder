@@ -1878,6 +1878,48 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .perf-lead{stroke:var(--border);stroke-width:1}
 .perf-quad{fill:rgba(227,30,36,0.05)}
 .perf-quad-lbl{fill:var(--muted);font-family:'Rajdhani',sans-serif;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+
+/* ── Tabbed entity views (call and booking dialogs, 5.79.0) ──────────────────
+   entityTabs() puts .ent-tabs at the top of #entity-modal-body. While it is
+   there the panel holds a fixed height and only the active tab scrolls; any
+   other view that rewrites the body drops .ent-tabs and, with it, every rule
+   below, so non-tabbed views keep the shell exactly as it was. */
+#entity-modal-panel:has(.ent-tabs){height:min(88vh,660px);display:flex;flex-direction:column;overflow:hidden}
+#entity-modal-panel:has(.ent-tabs) > div{flex-shrink:0}
+#entity-modal-panel:has(.ent-tabs) > #entity-modal-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding-top:10px!important;padding-bottom:0!important}
+.ent-tabs{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.ent-tabs-head{flex-shrink:0}
+.ent-tabbar{flex-shrink:0;display:flex;gap:2px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.ent-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer}
+.ent-tab:hover{color:var(--text)}
+.ent-tab.on{color:var(--accent);border-bottom-color:var(--accent)}
+.ent-tab-count{font-family:'Share Tech Mono',monospace;font-size:10px;font-weight:400;margin-left:5px;opacity:.85}
+.ent-tabpanels{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.ent-tabpanel{flex:1 1 auto;min-height:0;overflow:auto;padding:10px 0 14px}
+
+/* Booked Crew filter chips and order (call dialog) */
+.cc-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.cc-chips{display:flex;gap:4px;flex-wrap:wrap}
+.cc-chip{font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:.3px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:2px 9px;cursor:pointer}
+.cc-chip.on{color:var(--accent);border-color:var(--border-gold)}
+.cc-chip b{font-weight:400;opacity:.8;margin-left:4px}
+.cc-order{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px}
+.cc-order button{background:none;border:none;padding:0 2px;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);cursor:pointer}
+.cc-order button.on{color:var(--accent);text-decoration:underline}
+
+/* Crew Notes tab */
+.cn-top{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+.cn-link{background:none;border:none;padding:0;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--accent);cursor:pointer}
+.cn-link.mut{color:var(--muted)}
+.cn-link:hover{text-decoration:underline}
+.cn-group{margin-bottom:14px}
+.cn-group-h{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
+.cn-group-sub{font-size:11px;color:var(--muted);margin-bottom:6px}
+.cn-note{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:8px 10px;margin-top:6px}
+.cn-body{font-size:12px;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere}
+.cn-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace}
+.cn-chip{font-size:9px;letter-spacing:.4px;border-radius:3px;padding:1px 6px;color:var(--muted);background:rgba(255,255,255,0.05);border:1px solid var(--border)}
+.cn-chip.ack{color:#f59e0b;border-color:rgba(245,158,11,0.5);background:rgba(245,158,11,0.10)}
 </style>
 </head>
 <body>
@@ -19292,12 +19334,15 @@ function _entityPanel(){ return document.getElementById('entity-modal-panel'); }
 function entityStackPush(key, label, reopen){
   var top = _entityStack[_entityStack.length - 1];
   if(top && top.key === key) return;          // already the thing we'd return to
-  var p = _entityPanel();
+  var p = entityScrollEl();
   // name is the breadcrumb text of the view being LEFT. Every push site runs
   // before the child view overwrites the header, so the title (or the crumb the
-  // view declared for itself) is still the parent's here.
+  // view declared for itself) is still the parent's here. So is its tab block,
+  // so the frame also records which tab was open and, on a call, the Booked
+  // Crew filter and order.
+  var tv = entityTabsState(key);
   _entityStack.push({key: key, label: label, reopen: reopen, scroll: p ? p.scrollTop : 0,
-                     name: entityCurrentName()});
+                     name: entityCurrentName(), tab: tv ? tv.tab : null, crewView: tv ? tv.crewView : null});
   entityRenderTrail();
 }
 
@@ -19308,6 +19353,7 @@ function entityStackTrim(key){
   for(var i = 0; i < _entityStack.length; i++){
     if(_entityStack[i].key === key){
       window._entityRestoreScroll = _entityStack[i].scroll;   // a "< Back to ..." button
+      entityTabsHandBack(_entityStack[i]);
       _entityStack.length = i;
       entityRenderTrail();
       return;
@@ -19321,6 +19367,7 @@ function entityStackBack(){
   var f = _entityStack.pop();
   if(!f) return false;
   window._entityRestoreScroll = f.scroll;
+  entityTabsHandBack(f);
   entityRenderTrail();
   f.reopen();
   return true;
@@ -19402,6 +19449,7 @@ function entityJumpTo(i){
     if(!f) return;
     _entityStack.length = i;
     window._entityRestoreScroll = f.scroll;
+    entityTabsHandBack(f);
     entityRenderTrail();
     f.reopen();
   }, 'nav');
@@ -19531,11 +19579,120 @@ function entityRestoreScroll(){
   var y = window._entityRestoreScroll;
   if(y == null) return;
   window._entityRestoreScroll = null;
-  var p = _entityPanel();
+  var p = entityScrollEl();
   if(!p) return;
   p.scrollTop = y;
   if(window.requestAnimationFrame) requestAnimationFrame(function(){ p.scrollTop = y; });
   setTimeout(function(){ p.scrollTop = y; }, 0);
+}
+
+// ── Tabbed views (call and booking dialogs) ─────────────────────────────────
+// entityTabs() returns a block for the TOP of #entity-modal-body: a tab bar and
+// one panel per tab. Every panel is rendered on every render, the inactive ones
+// display:none, because the async loaders find their hosts by id whether or
+// not they are showing (call-ct-wrap-*, ct-ctl-*, bk-ratecard-wrap, the Crew
+// Notes host...) and refreshCallCrewSummary() counts selects in the DOM.
+//
+// The block lives inside the body, not the shell header, so any of the ~30
+// other views that rewrite the body removes the tab bar just by rendering. The
+// fixed height is CSS on #entity-modal-panel:has(.ent-tabs) for the same
+// reason: nothing to clean up.
+//
+// tabs: [{id, label, count (optional), html}]. Switching only toggles display;
+// a view that needs to do something when a tab first shows (Responses' fetch,
+// the booking's edit modes) sets window._entityTabOnShow after rendering.
+function entityTabs(key, tabs, active, head){
+  window._entityTabOnShow = null;
+  if(!tabs.some(function(t){ return t.id === active; })) active = tabs[0].id;
+  var bar = tabs.map(function(t){
+    var c = (t.count === undefined || t.count === null || t.count === '') ? '' : String(t.count);
+    return '<button type="button" class="ent-tab' + (t.id === active ? ' on' : '') + '" data-tab="' + t.id + '"'
+      + ' onclick="entityTabShow(\'' + t.id + '\')">' + t.label
+      + '<span class="ent-tab-count" data-tab-count="' + t.id + '">' + escapeHtml(c) + '</span></button>';
+  }).join('');
+  var panels = tabs.map(function(t){
+    return '<div class="ent-tabpanel" data-tab="' + t.id + '"' + (t.id === active ? '' : ' style="display:none"') + '>'
+      + t.html + '</div>';
+  }).join('');
+  return '<div class="ent-tabs" data-tabs-key="' + escapeHtml(key) + '" data-active="' + active + '">'
+    + (head ? '<div class="ent-tabs-head">' + head + '</div>' : '')
+    + '<div class="ent-tabbar" role="tablist">' + bar + '</div>'
+    + '<div class="ent-tabpanels">' + panels + '</div>'
+    + '</div>';
+}
+
+function entityTabsEl(){
+  return document.querySelector('#entity-modal-body > .ent-tabs');
+}
+
+// The element that scrolls: the active tab panel in a tabbed view, otherwise
+// the shell panel as before.
+function entityScrollEl(){
+  var w = entityTabsEl();
+  if(w){
+    var p = w.querySelector('.ent-tabpanel[data-tab="' + w.getAttribute('data-active') + '"]');
+    if(p) return p;
+  }
+  return _entityPanel();
+}
+
+function entityTabShow(id){
+  var w = entityTabsEl();
+  if(!w) return;
+  var prev = w.getAttribute('data-active');
+  w.setAttribute('data-active', id);
+  w.querySelectorAll('.ent-tab').forEach(function(b){
+    b.classList.toggle('on', b.getAttribute('data-tab') === id);
+  });
+  w.querySelectorAll('.ent-tabpanel').forEach(function(p){
+    p.style.display = (p.getAttribute('data-tab') === id) ? '' : 'none';
+  });
+  if(typeof window._entityTabOnShow === 'function') window._entityTabOnShow(id, prev);
+}
+
+// A tab label's count. null / '' clears it (a failed load shows no count).
+function entityTabCount(id, n){
+  var w = entityTabsEl();
+  var el = w && w.querySelector('[data-tab-count="' + id + '"]');
+  if(el) el.textContent = (n === null || n === undefined) ? '' : String(n);
+}
+
+// What the on-screen tab block for `key` shows: {tab, crewView}, or null when
+// the body is not that view.
+function entityTabsState(key){
+  var w = entityTabsEl();
+  if(!w || w.getAttribute('data-tabs-key') !== key) return null;
+  return { tab: w.getAttribute('data-active'),
+           crewView: (window._callCrewView && window._callCrewView.key === key) ? window._callCrewView.view : null };
+}
+
+// Rule 1 (§3.3): a view about to reload itself (a status change, a save) calls
+// this BEFORE it writes its loading line, while its tab block is still there.
+function entityTabsCarry(key){
+  var st = entityTabsState(key);
+  var sc = st ? entityScrollEl() : null;
+  window._entityTabCarry = st ? { key: key, tab: st.tab, crewView: st.crewView, scroll: sc ? sc.scrollTop : 0 } : null;
+}
+
+// Rule 2: a frame that was popped or trimmed hands back its tab and filter.
+function entityTabsHandBack(f){
+  window._entityTabRestore = f ? { key: f.key, tab: f.tab || null, crewView: f.crewView || null } : null;
+}
+
+// Which tab (and Booked Crew view) a render of `key` opens on: the one already
+// on screen, else the one a frame handed back, else Details. Consumed once.
+// fromCarry tells the view it is re-rendering itself, so it may keep data it
+// already loaded (Crew Notes, §6.4); a reload also keeps its tab's scroll.
+function entityTabsPick(key){
+  var c = window._entityTabCarry, r = window._entityTabRestore;
+  window._entityTabCarry = null;
+  window._entityTabRestore = null;
+  if(c && c.key === key){
+    if(window._entityRestoreScroll == null) window._entityRestoreScroll = c.scroll || 0;
+    return { tab: c.tab || 'details', crewView: c.crewView, fromCarry: true };
+  }
+  if(r && r.key === key && r.tab) return { tab: r.tab, crewView: r.crewView, fromCarry: false };
+  return { tab: 'details', crewView: null, fromCarry: false };
 }
 
 // X, Esc and the backdrop: step back if there is somewhere to step back to.
@@ -19566,6 +19723,11 @@ function closeEntityModal(){
   _entityStack = [];
   window._entityTrailOpen = false;
   window._ceSnapshot = null;
+  // Nothing about the tabs outlives the dialog (Q-T5): reopened, a view starts
+  // on Details with the Booked Crew filter on All.
+  window._entityTabRestore = null;
+  window._entityTabCarry = null;
+  window._entityRestoreScroll = null;
   entityRenderTrail();
   document.getElementById('entity-modal').style.display = 'none';
   goatHarryStop();
@@ -20087,6 +20249,11 @@ async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
     sel.style.background = cols[1];
     sel.style.borderColor = cols[0];
     sel.setAttribute('data-prev', next);
+    // The item's status and the chip counts update now; the row itself stays
+    // where it is until the next chip / order click or re-render (§4.2).
+    var _item = sel.closest ? sel.closest('.call-crew-item') : null;
+    if(_item) _item.setAttribute('data-status', String(next));
+    callCrewChipsRender(callId);
     refreshCallCrewSummary(callId);
   }catch(e){
     sel.value = String(prev);
@@ -20110,9 +20277,102 @@ function refreshCallCrewSummary(callId){
     if(s.getAttribute('data-promo-pending')==='1') pending++; else confirmed++;
   });
   el.textContent = confirmed;
+  var _req = el.getAttribute('data-req');
+  if(_req !== null) entityTabCount('crew', confirmed + '/' + _req);
   var note = document.getElementById('call-promo-note-'+callId);
   if(note) note.textContent = pending > 0 ? '· '+pending+' promoted, awaiting reply' : '';
 }
+// ── Booked Crew: filter chips and order (5.79.0, §4.2) ──────────────────────
+// window._callCrewView = {key, callId, view: {filter: 'all' | <status int>,
+// order: 'status' | 'name'}}, set by renderCallDialog and carried on stack
+// frames. Filtering only hides .call-crew-item nodes; sorting only reorders
+// them. Neither ever removes one.
+//
+// No "Added" order: get-booking.php returns a call's crew ORDER BY lastname,
+// firstname, and carries no added-at field, so insertion order is not
+// recoverable here. Not invented.
+//
+// Chip order. Promoted-not-yet-accepted crew are status Confirmed and count
+// there, as on the Crew line.
+var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show']];
+var CALL_CREW_ORDERS = [['status','Status'],['name','Name']];
+
+function _callCrewItems(callId){
+  var list = document.getElementById('cc-list-'+callId);
+  return list ? Array.prototype.slice.call(list.querySelectorAll(':scope > .call-crew-item')) : [];
+}
+
+// Redraw the chips and their counts from the items' data-status. Only the
+// statuses present are shown; the active one stays even at 0, so a filter
+// whose last row just changed status is not left without its chip.
+function callCrewChipsRender(callId){
+  var v = window._callCrewView;
+  var host = document.getElementById('cc-chips-'+callId);
+  if(!v || v.callId !== String(callId) || !host) return;
+  var counts = {}, total = 0;
+  _callCrewItems(callId).forEach(function(it){
+    var st = parseInt(it.getAttribute('data-status'), 10);
+    counts[st] = (counts[st] || 0) + 1; total++;
+  });
+  var chip = function(val, label, n){
+    var on = String(v.view.filter) === String(val);
+    return '<button type="button" class="cc-chip'+(on ? ' on' : '')+'" onclick="callCrewFilter(\''+callId+'\',\''+val+'\')">'
+      + label + '<b>' + n + '</b></button>';
+  };
+  host.innerHTML = chip('all', 'All', total) + CALL_CREW_CHIPS.map(function(o){
+    var n = counts[o[0]] || 0;
+    return (n || String(v.view.filter) === String(o[0])) ? chip(o[0], o[1], n) : '';
+  }).join('');
+  var ord = document.getElementById('cc-order-'+callId);
+  if(ord) ord.innerHTML = 'Order' + CALL_CREW_ORDERS.map(function(o){
+    return '<button type="button"'+(v.view.order === o[0] ? ' class="on"' : '')
+      + ' onclick="callCrewOrder(\''+callId+'\',\''+o[0]+'\')">'+o[1]+'</button>';
+  }).join('');
+}
+
+// Apply the filter and order to the rows, then redraw the chips.
+function callCrewViewApply(callId){
+  var v = window._callCrewView;
+  var list = document.getElementById('cc-list-'+callId);
+  if(!v || v.callId !== String(callId) || !list) return;
+  var rank = {};
+  CALL_CREW_CHIPS.forEach(function(o, i){ rank[o[0]] = i; });
+  var items = _callCrewItems(callId);
+  var byName = function(a, b){
+    var na = a.getAttribute('data-name') || '', nb = b.getAttribute('data-name') || '';
+    if(na < nb) return -1;
+    if(na > nb) return 1;
+    return parseInt(a.getAttribute('data-idx'), 10) - parseInt(b.getAttribute('data-idx'), 10);
+  };
+  items.sort(function(a, b){
+    if(v.view.order === 'status'){
+      var ra = rank[parseInt(a.getAttribute('data-status'), 10)], rb = rank[parseInt(b.getAttribute('data-status'), 10)];
+      ra = (ra === undefined) ? 99 : ra; rb = (rb === undefined) ? 99 : rb;
+      if(ra !== rb) return ra - rb;
+    }
+    return byName(a, b);
+  });
+  items.forEach(function(it){
+    list.appendChild(it);
+    var show = v.view.filter === 'all' || String(v.view.filter) === it.getAttribute('data-status');
+    it.style.display = show ? '' : 'none';
+  });
+  callCrewChipsRender(callId);
+}
+
+function callCrewFilter(callId, f){
+  var v = window._callCrewView;
+  if(!v || v.callId !== String(callId)) return;
+  v.view.filter = (f === 'all') ? 'all' : parseInt(f, 10);
+  callCrewViewApply(callId);
+}
+function callCrewOrder(callId, o){
+  var v = window._callCrewView;
+  if(!v || v.callId !== String(callId)) return;
+  v.view.order = (o === 'name') ? 'name' : 'status';
+  callCrewViewApply(callId);
+}
+
 // Admin-only crew remove (the X). Removes a person from the call ENTIRELY (not a
 // status change / decline) -- for fixing wrong-person assignments. Hits our
 // DELETE route, which proxies SmartStaff's native add-call.php?action=remove and
@@ -20895,6 +21155,7 @@ async function callMakeCrewBoss(bookingId, callId, uid){
 }
 
 async function openCallDialog(bookingId, callId){
+  entityTabsCarry('call:'+bookingId+':'+callId);   // a reload keeps its tab (§3.3 rule 1)
   openEntityModal();
   entityStackTrim('call:'+bookingId+':'+callId);
   document.getElementById('entity-modal-title').textContent = 'Call';
@@ -21052,7 +21313,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     ? '<div style="margin-top:10px;font-size:11px;color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid #f59e0b;border-radius:4px;padding:6px 8px">&#9888; This Crew Boss call has '+confirmedCount+' confirmed crew. Boss calls should carry one — the crew will see all of them as their contact.</div>'
     : '';
   const crewRows = crew.length
-    ? crew.map(function(c){
+    ? crew.map(function(c, _ci){
         var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(fmtPhone(c.mobile))+'</a>' : '';
         var boss = '';   // Team Lead now shows with the row's controls, on or off (crewBossControl)
         // Stage 2 §6: the row's override tag and its Rate / Crew Boss controls,
@@ -21077,11 +21338,26 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
           nm = '<button type="button" class="ce-call-link" title="Open crew record" onclick="entityOpenCrew('
             + Number(bookingId) + ',' + Number(callId) + ',' + Number(c.id) + ')">' + nm + '</button>';
         }
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+ctTag+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId, isCancelled)+ctCtl+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'+ctEdit; }).join('')
+        // One item per person, the row AND its ct-edit line, so filtering and
+        // sorting (callCrewViewApply) move them together. data-idx is the
+        // position as received, kept for a stable sort.
+        return '<div class="call-crew-item" data-status="'+crewStatusInt(c.status)+'" data-name="'+escapeHtml(decodeEntities(c.name||'').toLowerCase())+'" data-idx="'+_ci+'">'
+          + '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+ctTag+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId, isCancelled)+ctCtl+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'+ctEdit
+          + '</div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
-  document.getElementById('entity-modal-body').innerHTML =
-      cancelBanner
-    + '<div id="call-ct-wrap-'+callId+'"></div>'
+  // ── TABS (5.79.0) ─────────────────────────────────────────────────────────
+  // Details · Booked Crew · Responses (Admin) · Crew Notes. The content below
+  // is moved, not rewritten; the bottom bar keeps actions only. The cancelled
+  // banner sits above the tab bar so it shows on every tab (P1).
+  const _tabsKey = 'call:'+bookingId+':'+callId;
+  const _pick = entityTabsPick(_tabsKey);
+  window._callCrewView = { key: _tabsKey, callId: String(callId),
+                           view: _pick.crewView ? { filter: _pick.crewView.filter, order: _pick.crewView.order }
+                                                : { filter: 'all', order: 'status' } };
+  _respCtx = null;   // a re-render drops the loaded Responses (§4.3)
+  const _notesOk = (window._cohort === 'admin' || window.isReadOnlyCohort());
+  const detailsHtml =
+      '<div id="call-ct-wrap-'+callId+'"></div>'
     + entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
     + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
@@ -21091,12 +21367,35 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     // fires from the status selects, and slice F1 removed those for status 9.
     + (isCancelled
         ? entityRow('Crew', '<span style="color:var(--muted)">'+crew.length+' assigned when cancelled · none working</span>')
-        : entityRow('Crew', '<span id="call-confirmed-count-'+callId+'">'+filledCount+'</span> booked / '+req+' required'+promoPendingNote+' <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>'
+        : entityRow('Crew', '<span id="call-confirmed-count-'+callId+'" data-req="'+req+'">'+filledCount+'</span> booked / '+req+' required'+promoPendingNote+' <span style="color:var(--muted);font-size:10px">('+crew.length+' assigned incl. declined/pending)</span>'
                             + callCalloutButton(bookingId, callId, crew, editSrc, confirmedCount, req, isCancelled))
-          + callCalloutStrip(bookingId, callId, editSrc, isCancelled))
-    + bossCallWarn
-    + '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Booked Crew</div>'
-    + crewRows;
+          + callCalloutStrip(bookingId, callId, editSrc, isCancelled));
+  // Booked Crew: the boss-call warning (P3), then the filter chips and order,
+  // then the rows. Filtering hides rows and never leaves them out:
+  // refreshCallCrewSummary() counts the selects in the DOM.
+  const crewHtml = bossCallWarn
+    + (crew.length
+        ? '<div class="cc-bar"'+(bossCallWarn ? ' style="margin-top:10px"' : '')+'><div class="cc-chips" id="cc-chips-'+callId+'"></div>'
+          + '<div class="cc-order" id="cc-order-'+callId+'"></div></div>'
+          + '<div id="cc-list-'+callId+'">' + crewRows + '</div>'
+        : crewRows);
+  const tabs = [
+    { id: 'details', label: 'Details', html: detailsHtml },
+    { id: 'crew',    label: 'Booked Crew', count: isCancelled ? crew.length : (filledCount+'/'+req), html: crewHtml }
+  ];
+  // Responses: Admin only, matching /api/call/…/responses. No count: its rows
+  // are the crew on the call, so a count would repeat Booked Crew's (Q-B2).
+  if(window._cohort === 'admin') tabs.push({ id: 'responses', label: 'Responses',
+    html: '<div id="call-resp-host-'+callId+'"></div>' });
+  if(_notesOk) tabs.push({ id: 'notes', label: 'Crew Notes', html: '<div id="crew-notes-host" data-key="'+_tabsKey+'"></div>' });
+  document.getElementById('entity-modal-body').innerHTML = entityTabs(_tabsKey, tabs, _pick.tab, cancelBanner);
+  if(crew.length) callCrewViewApply(callId);
+  window._entityTabOnShow = function(id){
+    if(id === 'responses') callResponsesLoad(bookingId, callId);
+  };
+  var _act = entityTabsEl();
+  if(_act && _act.getAttribute('data-active') === 'responses') callResponsesLoad(bookingId, callId);
+  if(_notesOk) crewNotesInit({ key: _tabsKey, bookingId: bookingId, callId: callId, callIds: [callId] }, _pick.fromCarry);
   if(window._cohort === 'admin') callLoadPricing(bookingId, callId);   // async, never awaited
   // FIND CREW AND ENTER TIMES ARE REMOVED ON A CANCELLED CALL.
   //
@@ -21113,15 +21412,14 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   //
   // Nothing is primary on a cancelled call. There is no next action here.
   //
-  // KEPT: SmartStaff, Edit and Crew Notes. None of them can damage the
-  // cancellation record, and Crew Notes is how ops tell the crew what happened
-  // until the portal has a push route (see the slice E patch).
+  // KEPT: SmartStaff and Edit. Neither can damage the cancellation record.
+  // Crew Notes (how ops tell the crew what happened) is a tab now, shown on a
+  // cancelled call like any other.
   entityRestoreScroll();   // stepped back into this view -- put it where it was
   var _backTo = entityStackTop();
   document.getElementById('entity-modal-actions').innerHTML =
       (_backTo ? entityBtn('‹ Back to '+escapeHtml(_backTo.name || _backTo.label), 'entityBack()') : '')
     + (isCancelled ? '' : entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true}))
-    + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')")
     + (window._curCallEdit
         ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
@@ -21134,11 +21432,10 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     + ((isCancelled || window._cohort !== 'admin')
         ? ''
         : entityBtn('⏹ Stand down', "openCallStandDown('"+bookingId+"','"+callId+"')", {title:'Cancel this call — crew are stood down, not removed'}))
-    // Offered on a cancelled call too, unlike Find Crew and Enter Times: this
-    // is read-only and cannot invite wrong work. Who was stood down and when
-    // they had accepted is exactly what someone asks afterwards.
-    + entityBtn('📋 Responses', "openCallResponses('"+bookingId+"','"+callId+"')", {title:'Who accepted, when, and what else they are holding'})
-    + entityBtn('💬 Crew Notes', "openCrewNotes('"+bookingId+"','"+callId+"')", {title:'Post notes for crew on this call'})
+    + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')")
+    // Responses and Crew Notes are tabs now (5.79.0). Responses is still
+    // offered on a cancelled call: who was stood down and when they had
+    // accepted is exactly what someone asks afterwards.
     + entityBtn('Close', 'closeEntityModal()');
 }
 
@@ -21494,40 +21791,47 @@ function goatFmtElapsed(sec){
   return Math.round(sec/86400)+'d';
 }
 
-async function openCallResponses(bookingId, callId){
-  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
-  document.getElementById('entity-modal-title').textContent = 'Response history';
-  document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
-  document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
-  document.getElementById('entity-modal-actions').innerHTML = '';
+// The Responses tab (5.79.0, §4.3). Loads on its first activation, not on every
+// dialog open: it costs two SmartStaff calls. The result is kept for this
+// render, so switching away and back does not refetch; a re-render of the
+// dialog sets _respCtx = null and the next activation fetches again. Renders
+// into the tab's own host and never touches the title, sub or action bar.
+var _respCtx = null;   // {key, bookingId, callId, state: 'loading' | 'loaded'}
 
+async function callResponsesLoad(bookingId, callId){
+  var key = 'call:'+bookingId+':'+callId;
+  if(_respCtx && _respCtx.key === key && _respCtx.state) return;
+  var host = document.getElementById('call-resp-host-'+callId);
+  if(!host) return;
+  var ctx = _respCtx = { key: key, bookingId: String(bookingId), callId: String(callId), state: 'loading' };
+  host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading…</div>';
   try{
     const r = await fetch('/api/call/'+bookingId+'/'+callId+'/responses');
     const j = await r.json();
+    if(_respCtx !== ctx || !host.isConnected) return;   // the dialog moved on
     if(!r.ok || j.error){
-      document.getElementById('entity-modal-body').innerHTML =
-        '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(j.error || ('HTTP '+r.status))+'</div>';
-      document.getElementById('entity-modal-actions').innerHTML =
-          entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')")
-        + entityBtn('Close', 'closeEntityModal()');
+      ctx.state = null;   // a later activation tries again
+      host.innerHTML = '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(j.error || ('HTTP '+r.status))+'</div>';
       return;
     }
     _respData = j;
     _respSort = { key: 'responded_at', dir: 1 };
+    ctx.state = 'loaded';
     renderCallResponses(bookingId, callId);
   }catch(e){
-    document.getElementById('entity-modal-body').innerHTML =
+    if(_respCtx !== ctx || !host.isConnected) return;
+    ctx.state = null;
+    host.innerHTML =
       '<div style="color:var(--conflict);font-size:12px">Couldn\'t load the history: '+escapeHtml(e.message||String(e))+'</div>';
-    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close', 'closeEntityModal()');
   }
 }
 
+// The IDs come from the loader, never from the sub line: that now starts with
+// the booking name, which could itself contain "#123".
 function goatRespSort(key){
   if(_respSort.key === key) _respSort.dir = -_respSort.dir;
   else                      _respSort = { key: key, dir: 1 };
-  const sub = document.getElementById('entity-modal-sub').textContent || '';
-  const m = sub.match(/#(\d+).*#(\d+)/);
-  renderCallResponses(m ? m[2] : '', m ? m[1] : '');
+  if(_respCtx) renderCallResponses(_respCtx.bookingId, _respCtx.callId);
 }
 
 function renderCallResponses(bookingId, callId){
@@ -21608,7 +21912,9 @@ function renderCallResponses(bookingId, callId){
 
   const since = escapeHtml(goatFmtStamp(String(j.tracking_since||'').replace('T',' ')));
 
-  document.getElementById('entity-modal-body').innerHTML =
+  const host = document.getElementById('call-resp-host-'+callId);
+  if(!host) return;
+  host.innerHTML =
       '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:8px">'
     +   '<div style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(j.call_name||('Call #'+callId)))+'</div>'
     +   '<div style="font-size:11px;color:var(--muted)">'+crew.length+' crew · '+(j.required||0)+' required</div>'
@@ -21641,10 +21947,6 @@ function renderCallResponses(bookingId, callId){
     +     (j.stats_available ? '' : '<li style="color:#f59e0b"><strong>History figures are unavailable right now</strong> — the crew statistics could not be loaded. The columns are blank rather than zero on purpose.</li>')
     +   '</ul>'
     + '</details>';
-
-  document.getElementById('entity-modal-actions').innerHTML =
-      entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
-    + entityBtn('Close', 'closeEntityModal()');
 }
 
 // Status int -> the label crewStatusBadge() understands. The reverse of
@@ -24238,10 +24540,11 @@ function entityOpenCall(bookingId, callId){
 }
 
 async function openBookingDialog(bookingId){
+  entityTabsCarry('booking:'+bookingId);   // a reload (a save) keeps its tab (§3.3 rule 1)
   openEntityModal();
   entityStackTrim('booking:'+bookingId);
-  _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
-  _bkSupMode  = false; _bkSupBoss = null; _bkSupSel  = {};
+  // The feed / crew boss mode flags are set by renderBookingDialog from the
+  // tab it opens on: the tab is the mode (5.79.0).
   const cached = window._bookingIndex[bookingId];
   document.getElementById('entity-modal-title').textContent = cached ? cached.name : 'Booking';
   if(cached) goatHarryCheck(cached.name);
@@ -24585,26 +24888,12 @@ function bkCallsSection(bookingId, d){
   var smaps    = bkSupMaps(calls);
   var hasCalls = calls.length > 0;
 
-  // Feeds editing is ungated here as it always has been (the route enforces
-  // admin). Supervision editing is gated in the UI too, so a non-admin sees
-  // the chips and the warning but is never offered a control that would 403.
-  var toggle = '';
-  if(d && hasCalls){
-    if(_bkFeedMode){
-      toggle = '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>';
-    } else if(_bkSupMode){
-      toggle = '<span onclick="bkToggleSupMode(\''+bookingId+'\')" style="font-size:10px;color:var(--muted);cursor:pointer">Done</span>';
-    } else {
-      toggle = '<span onclick="bkToggleFeedMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">\u21e2 Call feeds</span>';
-      if(window._cohort === 'admin'){
-        toggle += '<span onclick="bkToggleSupMode(\''+bookingId+'\')" style="font-size:10px;color:var(--accent);cursor:pointer">👷 Crew bosses</span>';
-      }
-    }
-  }
-  var header = '<div style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
+  // The Call feeds / Crew bosses editors are tabs now (5.79.0): the tab is the
+  // mode, so the in-list toggles and their Done are gone. renderBookingDialog
+  // decides which tabs a cohort sees (Crew bosses: Admin only).
+  var header = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
     + '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Calls'
     +   '<span id="bk-cl-summary">'+bkCrewlistSummaryHtml(bookingId)+'</span></span>'
-    + (toggle ? '<span style="display:flex;align-items:center;gap:12px">'+toggle+'</span>' : '')
     + '</div>';
 
   // Always visible, in every mode and for every cohort — it is advisory, and
@@ -24672,17 +24961,30 @@ function bkRerenderCalls(bookingId){
   if(wrap) wrap.innerHTML = bkCallsSection(bookingId, window._curBookingEdit);
 }
 
-function bkToggleFeedMode(bookingId){
-  _bkFeedMode = !_bkFeedMode;
-  _bkFeedSrc  = null;
-  _bkFeedSel  = {};
-  _bkFeedRecommended = false;
-  // Mutually exclusive with the supervision editor — see bkToggleSupMode.
-  if(_bkFeedMode){
-    _bkSupMode = false; _bkSupBoss = null; _bkSupSel = {};
-  }
+// The booking's three call tabs (Calls, Call feeds, Crew bosses) share ONE
+// host, #bk-calls-wrap, which moves into whichever of the three panels is
+// active: bkRerenderCalls() and bkApplyCrewlistStatus() keep finding it by id,
+// and there is never a second element with that id. Activating a tab sets the
+// mode and clears the selection exactly as the old toggles did, so leaving a
+// tab is Done and unsaved ticks are dropped.
+var BK_CALL_TABS = { calls: true, feeds: true, bosses: true };
+
+function bkModeForTab(tab){
+  _bkFeedMode = (tab === 'feeds');
+  _bkSupMode  = (tab === 'bosses');
+  _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
+  _bkSupBoss = null; _bkSupSel  = {};
+}
+
+function bkShowCallsTab(bookingId, tab){
+  bkModeForTab(tab);
+  var w = entityTabsEl();
+  var wrap = document.getElementById('bk-calls-wrap');
+  var panel = w && w.querySelector('.ent-tabpanel[data-tab="'+tab+'"]');
+  if(wrap && panel && wrap.parentNode !== panel) panel.appendChild(wrap);
   bkRerenderCalls(bookingId);
 }
+
 function bkPickSource(bookingId, callId){
   _bkFeedSrc = callId;
   _bkFeedSel = {};
@@ -24752,7 +25054,8 @@ async function bkFeedSave(bookingId, confirmOverride){
       return;
     }
 
-    _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
+    // Reopen on the same tab (§3.3 rule 1): the mode follows the tab, and the
+    // render clears the selection so the saved chips show.
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
   }catch(e){
@@ -24901,18 +25204,6 @@ function bkSupChildList(bookingId, c, smaps){
   return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 0 26px">'+items+'</div>';
 }
 
-function bkToggleSupMode(bookingId){
-  _bkSupMode = !_bkSupMode;
-  _bkSupBoss = null;
-  _bkSupSel  = {};
-  // Mutually exclusive with the feeds editor — both rewrite the same rows, and
-  // a row cannot be a feed picker and a boss picker at once.
-  if(_bkSupMode){
-    _bkFeedMode = false; _bkFeedSrc = null; _bkFeedSel = {}; _bkFeedRecommended = false;
-  }
-  bkRerenderCalls(bookingId);
-}
-
 function bkPickBoss(bookingId, callId){
   _bkSupBoss = callId;
   _bkSupSel  = {};
@@ -24983,7 +25274,7 @@ async function bkSupSave(bookingId, confirmOverride){
       return;
     }
 
-    _bkSupMode = false; _bkSupBoss = null; _bkSupSel = {};
+    // Reopen on the same tab (§3.3 rule 1), as bkFeedSave does.
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
   }catch(e){
@@ -25020,6 +25311,20 @@ function renderBookingDialog(bookingId, d, cached){
   var name = (d && d.name) || (cached && cached.name) || 'Booking';
   document.getElementById('entity-modal-title').textContent = name;
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
+  // ── TABS (5.79.0) ─────────────────────────────────────────────────────────
+  // Details · Calls · Crew Notes · Call feeds · Crew bosses. The two edit-mode
+  // tabs go last, after the views (P8), and appear only when the booking loaded
+  // and has calls (the old toggles' condition). Crew bosses is Admin only; Call
+  // feeds stays ungated in the UI, as it always was (the route enforces Admin).
+  var _tabsKey = 'booking:'+bookingId;
+  var _pick = entityTabsPick(_tabsKey);
+  var _calls = d ? (d.calls || []) : ((cached && cached.calls) || []);
+  var _hasModes = !!(d && _calls.length);
+  var _notesOk = (window._cohort === 'admin' || window.isReadOnlyCohort());
+  var tab = _pick.tab;
+  if(tab === 'feeds' && !_hasModes) tab = 'calls';
+  if(tab === 'bosses' && !(_hasModes && window._cohort === 'admin')) tab = 'calls';
+  bkModeForTab(tab);   // the tab is the mode; the selection always starts clear
   var rows;
   if(d){
     rows = entityRow('Date',     escapeHtml(d.date_str||'—'))
@@ -25042,29 +25347,47 @@ function renderBookingDialog(bookingId, d, cached){
     var cachedList = calls.length
       ? calls.map(function(c){ return '<div onclick="entityOpenCall(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;background:var(--surface2)"><span style="font-size:12px;color:var(--text)">'+escapeHtml(c.call_name||'Call')+'</span><span style="font-size:10px;color:var(--accent)">view →</span></div>'; }).join('')
       : '<div style="color:var(--muted);font-size:12px">No calls cached — open from the Schedule or Crew Finder to list calls.</div>';
-    callsSection = '<div style="margin-top:14px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>' + cachedList;
+    callsSection = '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Calls</div>' + cachedList;
   }
-  document.getElementById('entity-modal-body').innerHTML =
-      rows
-    + '<div id="bk-calls-wrap">' + callsSection + '</div>'
-    + '<div id="bk-gsheet-wrap"></div>'
+  var callsWrap = '<div id="bk-calls-wrap">' + callsSection + '</div>';
+  var detailsHtml = rows
     + '<div id="bk-ratecard-wrap"></div>'
+    + '<div id="bk-gsheet-wrap"></div>'
     + '<div id="bk-checkin-wrap"></div>';
+  var tabs = [
+    { id: 'details', label: 'Details', html: detailsHtml },
+    { id: 'calls',   label: 'Calls', count: d ? _calls.length : null, html: tab === 'calls' || tab === 'details' || tab === 'notes' ? callsWrap : '' }
+  ];
+  if(_notesOk) tabs.push({ id: 'notes', label: 'Crew Notes', html: '<div id="crew-notes-host" data-key="'+_tabsKey+'"></div>' });
+  if(_hasModes){
+    tabs.push({ id: 'feeds', label: 'Call feeds', html: tab === 'feeds' ? callsWrap : '' });
+    if(window._cohort === 'admin') tabs.push({ id: 'bosses', label: 'Crew bosses', html: tab === 'bosses' ? callsWrap : '' });
+  }
+  document.getElementById('entity-modal-body').innerHTML = entityTabs(_tabsKey, tabs, tab);
+  window._entityTabOnShow = function(id, prev){
+    if(!d) return;   // the cached list has no modes, and bkCallsSection(null) would blank it
+    if(BK_CALL_TABS[id]) bkShowCallsTab(bookingId, id);
+    else if(BK_CALL_TABS[prev] && prev !== 'calls') bkShowCallsTab(bookingId, 'calls');   // leaving a mode is Done
+  };
   bkLoadRateCard(bookingId, 'bk-ratecard-wrap', d && d.customer ? d.customer.id : null);   // async, never awaited
   bkLoadCheckinMode(bookingId, 'bk-checkin-wrap');   // async, never awaited
   gsheetLoadStatus(bookingId);                        // async, never awaited
   if(d) bkLoadCrewlistStatus(bookingId);              // async, never awaited
   if(d) bkLoadCallTypes(bookingId, d);                // async, never awaited
+  if(_notesOk) crewNotesInit({ key: _tabsKey, bookingId: bookingId,
+    callIds: _calls.map(function(c){ return c.call_id; }),
+    callOrder: _calls.map(function(c){ return { id: c.call_id, name: c.call_name }; }) }, _pick.fromCarry);
   entityRestoreScroll();   // stepped back into this view -- put it where it was
+  // Actions only (5.79.0): Crew Notes is a tab now. SmartStaff keeps its
+  // primary styling (P5); only the order changed.
   document.getElementById('entity-modal-actions').innerHTML =
-      entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
-    + (d
+      (d
         ? entityBtn('✎ Edit', "openBookingEditForm('"+bookingId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))
     + entityBtn('📋 Crew Lists', "openCrewLists('"+bookingId+"')")
-    + entityBtn('💬 Crew Notes', "openCrewNotes('"+bookingId+"')", {title:'Post notes for crew in the Crew Hub'})
     + entityBtn('📥 Import Times', "openTimesImport('"+bookingId+"')")
     + entityBtn('📊 Generate Google Sheet', "generateGoogleSheet('"+bookingId+"')", {id:'bk-gsheet-btn'})
+    + entityBtn('↗ SmartStaff', "openSmartStaffBooking('"+bookingId+"')", {primary:true})
     + entityBtn('Close', 'closeEntityModal()');
 }
 
@@ -33562,6 +33885,150 @@ function openCrewNotes(bookingId, callId){
   var path = '/leadership/schedule?booking=' + encodeURIComponent(bookingId);
   if(callId) path += '&call=' + encodeURIComponent(callId) + '#call-' + encodeURIComponent(callId);
   window.open(hubUrl(path), '_blank');
+}
+
+// ── CREW NOTES TAB (call and booking dialogs, 5.79.0, §6.4) ─────────────────
+// The notes crew see in Crew Hub, read only, through /api/booking/<b>/crew-notes
+// (goat-crew-notes). Posting stays in Crew Hub: the tab's link runs
+// openCrewNotes() exactly as the old button did.
+//
+// Loaded when the dialog renders, async and never awaited, so the tab label can
+// carry the count. A failed load shows NO count, never a zero: a zero would
+// claim there are no notes. A re-render of the same view (§3.3 rule 1) keeps
+// the notes already loaded rather than refetching on a crew status change.
+//
+// ctx: {key, bookingId, callId (call dialog only), callIds, callOrder
+//       (booking dialog: [{id, name}] in the Calls tab's order)}
+var _crewNotes = null;   // {key, ctx, notes, error, loading, token}
+
+function crewNotesInit(ctx, reuse){
+  ctx.callIds = (ctx.callIds || []).map(String).filter(function(x){ return /^\d+$/.test(x); });
+  if(reuse && _crewNotes && _crewNotes.key === ctx.key && _crewNotes.notes){
+    _crewNotes.ctx = ctx;
+    crewNotesRender();
+    return;
+  }
+  _crewNotes = { key: ctx.key, ctx: ctx, notes: null, error: null, loading: false, token: 0 };
+  crewNotesFetch();
+}
+
+async function crewNotesFetch(){
+  var st = _crewNotes;
+  if(!st) return;
+  var token = ++st.token;
+  st.loading = true;
+  crewNotesRender();
+  try{
+    var q = st.ctx.callIds.length ? ('?call_ids=' + st.ctx.callIds.join(',')) : '';
+    var r = await fetch('/api/booking/' + encodeURIComponent(st.ctx.bookingId) + '/crew-notes' + q,
+                        { headers: { 'Accept': 'application/json' } });
+    var j = null;
+    try{ j = await r.json(); }catch(e){ j = null; }
+    if(_crewNotes !== st || st.token !== token) return;   // superseded
+    if(!r.ok || !j || j.error || !Array.isArray(j.notes)) throw new Error((j && j.error) || ('HTTP ' + r.status));
+    st.notes = j.notes;
+    st.error = null;
+  }catch(e){
+    if(_crewNotes !== st || st.token !== token) return;
+    st.notes = null;
+    st.error = e.message || String(e);
+  }
+  st.loading = false;
+  crewNotesRender();
+}
+
+function crewNotesPost(){
+  var st = _crewNotes;
+  if(!st) return;
+  if(st.ctx.callId) openCrewNotes(st.ctx.bookingId, st.ctx.callId);
+  else openCrewNotes(st.ctx.bookingId);
+}
+
+// created_at is ISO UTC; shown in local time in the same format Responses uses.
+function crewNotesStamp(iso){
+  var d = new Date(iso);
+  if(isNaN(d)) return '';
+  var p2 = function(n){ return String(n).padStart(2, '0'); };
+  return goatFmtStamp(d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())
+                      + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()));
+}
+
+// User text (body, posted_by_name): decodeEntities then escapeHtml, the house
+// rule. Nothing from a note reaches innerHTML any other way.
+function crewNotesNoteHtml(n){
+  var who  = escapeHtml(decodeEntities(n.posted_by_name || 'Unknown'));
+  var when = escapeHtml(crewNotesStamp(n.created_at));
+  var chips = '';
+  if(n.requires_ack) chips += '<span class="cn-chip ack">Needs acknowledging · ' + (Number(n.ack_count) || 0) + ' acked</span>';
+  if(n.notified_count !== null && n.notified_count !== undefined)
+    chips += '<span class="cn-chip">sent to ' + (Number(n.notified_count) || 0) + '</span>';
+  if(n.has_attachment) chips += '<span class="cn-chip" title="Open it in Crew Hub">📎 attachment</span>';
+  return '<div class="cn-note">'
+    + '<div class="cn-body">' + escapeHtml(decodeEntities(n.body || '')) + '</div>'
+    + '<div class="cn-meta"><span>' + who + (when ? ' · ' + when : '') + '</span>' + chips + '</div>'
+    + '</div>';
+}
+
+function crewNotesGroupHtml(title, sub, notes){
+  if(!notes.length) return '';
+  return '<div class="cn-group"><div class="cn-group-h">' + title + '</div>'
+    + (sub ? '<div class="cn-group-sub">' + sub + '</div>' : '')
+    + notes.map(crewNotesNoteHtml).join('') + '</div>';
+}
+
+function crewNotesRender(){
+  var st = _crewNotes;
+  var host = document.getElementById('crew-notes-host');
+  if(!st || !host || host.getAttribute('data-key') !== st.key) return;
+  var ctx = st.ctx;
+  var top = '<div class="cn-top">'
+    + '<button type="button" class="cn-link" onclick="crewNotesPost()">💬 Post in Crew Hub ↗</button>'
+    + '<button type="button" class="cn-link mut" onclick="crewNotesFetch()"' + (st.loading ? ' disabled' : '') + '>'
+    +   (st.loading ? '↻ Refreshing…' : '↻ Refresh') + '</button>'
+    + '</div>';
+  if(st.error){
+    entityTabCount('notes', null);
+    host.innerHTML = top + '<div style="font-size:12px;color:var(--conflict)">Couldn\'t load crew notes: '
+      + escapeHtml(st.error)
+      + ' <button type="button" class="cn-link" style="margin-left:8px" onclick="crewNotesFetch()">↻ Try again</button></div>';
+    return;
+  }
+  if(!st.notes){
+    entityTabCount('notes', null);
+    host.innerHTML = top + '<div style="color:var(--muted);font-size:12px;padding:4px 0">Loading crew notes…</div>';
+    return;
+  }
+  var notes = st.notes.slice().sort(function(a, b){
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  });
+  entityTabCount('notes', notes.length);
+  if(!notes.length){
+    host.innerHTML = top + '<div style="color:var(--muted);font-size:12px">No crew notes yet.</div>';
+    return;
+  }
+  var booking = notes.filter(function(n){ return n.scope === 'booking'; });
+  var calls   = notes.filter(function(n){ return n.scope === 'call'; });
+  var BOOKING_SUB = 'Everyone on the booking sees these';
+  var html;
+  if(ctx.callId){
+    // Call dialog (P7): this call's notes, then the booking's, which reach
+    // everyone on the job — what a crew member on this call sees in Crew Hub.
+    html = crewNotesGroupHtml('This call', '', calls.filter(function(n){ return String(n.scope_id) === String(ctx.callId); }))
+         + crewNotesGroupHtml('Whole booking', BOOKING_SUB, booking);
+  } else {
+    // Booking dialog: the booking's notes, then one group per call in the
+    // Calls tab's order. A note on a call no longer on the booking goes under
+    // Other calls, so the count and the list always agree.
+    var seen = {};
+    html = crewNotesGroupHtml('Whole booking', BOOKING_SUB, booking)
+         + (ctx.callOrder || []).map(function(c){
+             seen[String(c.id)] = true;
+             return crewNotesGroupHtml(escapeHtml(decodeEntities(c.name || ('Call #' + c.id))), '',
+               calls.filter(function(n){ return String(n.scope_id) === String(c.id); }));
+           }).join('')
+         + crewNotesGroupHtml('Other calls', '', calls.filter(function(n){ return !seen[String(n.scope_id)]; }));
+  }
+  host.innerHTML = top + html;
 }
 
 function openSmartStaffBooking(bookingId){
