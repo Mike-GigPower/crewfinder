@@ -21280,10 +21280,25 @@ async function callToggleFlag(bookingId, callId, which){
   }
 }
 
-// From a call to its own booking (the "Set…" travel link): Back returns here.
+// From a call to its own booking (the "Set…" travel link). It opens on
+// Details with the travel editor open, whatever tab the booking was last on:
+// the stack hands back that tab (Calls, when the call was opened from it), so
+// a one-shot intent overrides it. renderBookingDialog takes the tab from it;
+// bkLoadPricingContext opens the editor and clears it.
 function entityOpenBookingFromCall(bookingId, callId){
   entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
+  window._bkOpenIntent = { bookingId: String(bookingId), tab: 'details', travelEditor: true };
   openBookingDialog(bookingId);
+}
+
+// The tab a booking render opens on: an open intent's for that booking, else
+// the picked one. An intent for another booking, or a booking that didn't
+// load (no pricing context will follow to finish it), is dropped.
+function bkIntentTab(bookingId, tab, d){
+  var it = window._bkOpenIntent;
+  if(!it || it.bookingId !== String(bookingId)){ window._bkOpenIntent = null; return tab; }
+  if(!d) window._bkOpenIntent = null;
+  return it.tab || tab;
 }
 
 async function openCallDialog(bookingId, callId){
@@ -25099,6 +25114,11 @@ async function bkLoadPricingContext(bookingId, d, msg){
   bkRenderTravel(bookingId, msg && msg.travel);
   bkRenderEvent(bookingId, msg && msg.event);
   if(data && Object.keys(data.call_flags || {}).length) bkRerenderCalls(bookingId);
+  var it = window._bkOpenIntent;
+  if(it && it.bookingId === String(bookingId)){
+    window._bkOpenIntent = null;
+    if(it.travelEditor && data && data.travel_allowed && data.can_change && _bkPctx.venue) bkEditTravel(bookingId);
+  }
 }
 
 function bkPctxReload(bookingId, msg){
@@ -25974,7 +25994,7 @@ function renderBookingDialog(bookingId, d, cached){
   var _calls = d ? (d.calls || []) : ((cached && cached.calls) || []);
   var _hasModes = !!(d && _calls.length);
   var _notesOk = (window._cohort === 'admin' || window.isReadOnlyCohort());
-  var tab = _pick.tab;
+  var tab = bkIntentTab(bookingId, _pick.tab, d);
   if(tab === 'feeds' && !_hasModes) tab = 'calls';
   if(tab === 'bosses' && !(_hasModes && window._cohort === 'admin')) tab = 'calls';
   bkModeForTab(tab);   // the tab is the mode; the selection always starts clear
