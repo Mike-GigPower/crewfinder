@@ -550,6 +550,33 @@
 
 
 		/*
+		/* The hours that COUNT TOWARD PROBATION TODAY — the current run's total
+		/* while that run is live, else 0.0 (BRIEF staffing-plans-a §2.1).
+		/*
+		/*   nothing recorded        0.0
+		/*   current run dormant     0.0  — the next shift starts a new run at
+		/*                                  zero; the same live-run test as
+		/*                                  goat_crew_hours_lane_group()
+		/*   otherwise               runs[current_run].total_h, full precision
+		/*
+		/* "New" in the staffing planner is this < GOAT_PROBATION_HOURS, decided
+		/* in PHP (list-crew-experience.php). Python never compares against 144.
+		*/
+		function goat_crew_hours_live_current_h($built, $today_iso)
+		{
+			if ($built['current_run'] === null)
+				return 0.0;
+
+			$run = $built['runs'][$built['current_run']];
+
+			if ($today_iso >= goat_add_months_clamped($run['end_date_iso'], GOAT_PROBATION_GAP_MONTHS))
+				return 0.0;                        /* dormant */
+
+			return (double) $run['total_h'];
+		}
+
+
+		/*
 		/* The constants block every response carries, so the client labels its
 		/* thresholds from the server rather than from a second copy.
 		*/
