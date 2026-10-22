@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.84.0"
+APP_VERSION    = "5.85.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -5839,6 +5839,21 @@ def api_call_details(booking_id, call_id):
     if err:
         return jsonify({"error": err}), 500
     return jsonify(details)
+
+@app.route("/api/lookup-id/<n>")
+@require_cohort("admin")
+def api_lookup_id(n):
+    """Open-by-number (5.85.0): which call and/or booking a number names.
+    Admin only, like the call dialog it feeds."""
+    if not re.fullmatch(r"#?\d{1,9}", str(n or "").strip()):
+        return jsonify({"error": "Give a call or booking number"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    out, err = ss_lookup_id(ss, n)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(out)
 
 @app.route("/api/booking/<booking_id>")
 @require_cohort(*READ_ALL_COHORTS)
@@ -13684,6 +13699,17 @@ GOAT_TOOLS = [
             },
             "required": ["call_id", "objective"]
         }
+    },
+    {
+        "name": "open_record",
+        "description": "Give the operator a button that opens a call or booking dialog by its NUMBER - filled or unfilled, any date. Use when asked to open, show, pull up or go to call/booking N. One number can be both a call and a booking; the tool returns whichever exist and the drawer shows a button for each. It never opens anything itself - the operator clicks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "The call or booking number, e.g. 38965"}
+            },
+            "required": ["id"]
+        }
     }
 ]
 
@@ -13715,6 +13741,8 @@ RECRUITMENT (get_recruitment_metrics, get_recruitment_exceptions — aggregate i
 - When you report a RATIO, state the definitions_version. The definitions were signed off with the right to revise them once there's more data.
 - Relay any note field on a figure, don't strip it. registration_rate and ci_cards carry coverage caveats — e.g. the registration rate currently reads low purely because the Booked status isn't in use yet, which is an artefact, not a failure. Quoting the bare number without its note is misleading.
 - The pile names ops use, in order: New (applied), Invited (invited to induction), Booked, Attended, Details in (details submitted), With EH (sent to EH), Ready to convert (all docs received), Crew (active crew). The eight exception keys, with the meaning you must use — do NOT infer any other meaning from the key's name: aged (has sat in its current stage past that stage's age-in-stage threshold — this is about time waiting, NOT the candidate's age; never gloss it as an age, birthday or over-18 issue), no_contact (no email AND no phone on file — not merely one of the two missing), session_passed (their booked induction date has passed and they never attended), awaiting_conversion (every document is in; nobody has pressed Convert yet). The other four say what they mean: details_overdue, visa_unverified, eh_incomplete, contract_unsigned.
+
+OPENING RECORDS (open_record — admin only, enforced server-side): when the operator asks to open, show, pull up or go to a call or booking by number, call open_record. Say what was found — call number, call name, booking name and date, or booking number and name — and that the button under your answer opens it. Never say you opened it. If both a call and a booking have that number, name both and let the operator pick. If neither exists, say so plainly.
 
 Keep responses concise but warm. Occasional GOAT pun or dry humour is encouraged — never at the expense of being useful."""
 
@@ -13855,9 +13883,17 @@ def _goat_licence_rows_for(by_uid, uid):
 
 
 def _goat_booking_for_call(ss, call_id):
-    """booking_id for a call number, or None. Three 62-day calendar windows:
-    around today first (where nearly every question lands), then before, then
-    after."""
+    """booking_id for a call number, or None. lookup-id.php first (5.85.0: one
+    query, any age); if that fails, the old route -- three 62-day calendar
+    windows, around today first (where nearly every question lands), then
+    before, then after."""
+    try:
+        out, err = ss_lookup_id(ss, call_id)
+        if not err:
+            c = out.get("call")
+            return int(c["booking_id"]) if c else None
+    except Exception:
+        pass
     today = datetime.now().date()
     for a, b in ((-7, 54), (-69, -8), (55, 116)):
         r = _goat_find_calls(ss, {"call_id": call_id,
@@ -14556,6 +14592,25 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
         except Exception as e:
             return f"Error checking call licences: {e}"
 
+    elif tool_name == "open_record":
+        # ADMIN-ONLY, like the call dialog the button opens.
+        if cohort != "admin":
+            return ("That's above your access level — opening calls and bookings is admin-only in THE GOAT. "
+                    "Relay this as given; it is not a SmartStaff setting.")
+        try:
+            out, err = ss_lookup_id(ss, tool_input.get("id"))
+            if err:
+                return f"Error looking up that number: {err}"
+            if not out["call"] and not out["booking"]:
+                return _json.dumps({"id": out["id"], "found": False,
+                                    "note": "No call or booking has that number."})
+            res = {"id": out["id"], "found": True, "call": out["call"], "booking": out["booking"],
+                   "note": "A button under your answer opens it. You have not opened anything."}
+            res["open_dialog"] = {"id": out["id"], "call": out["call"], "booking": out["booking"]}
+            return _json.dumps(res)
+        except Exception as e:
+            return f"Error looking up that number: {e}"
+
     elif tool_name == "plan_staffing":
         # ADMIN-ONLY (D17). A plain string, before any network call: the
         # recruitment-tool pattern.
@@ -14853,6 +14908,8 @@ def api_goat():
                             yield f"data: {_json.dumps({'type':'confirm_request','payload':parsed})}\n\n"
                         if parsed.get("open_in_finder"):
                             yield f"data: {_json.dumps({'type':'plan_ready','payload':parsed['open_in_finder']})}\n\n"
+                        if parsed.get("open_dialog"):
+                            yield f"data: {_json.dumps({'type':'open_dialog','payload':parsed['open_dialog']})}\n\n"
                     except Exception:
                         pass
 
@@ -21315,6 +21372,51 @@ def ss_list_crew_photos(ss):
         # (object), but don't let a [] turn into a crash if it ever doesn't.
         photos = {}
     return {str(k): str(v or "") for k, v in photos.items()}, None
+
+
+_lookup_id_cache = {}   # {n: (out, datetime)} -- only hits are cached
+_LOOKUP_ID_TTL   = timedelta(minutes=10)
+
+
+def ss_lookup_id(ss, n):
+    """Resolve a bare number to the call and/or booking it names, via
+    lookup-id.php (DESIGN-open-by-id-v0_1.md §3), or (None, err).
+
+    out = {"id": n, "call": {...} | None, "booking": {...} | None}. Both None
+    is a legitimate answer ("no such number"), not a failure -- a failure is
+    always an err. Hits are cached for 10 minutes: an id never moves to a
+    different record. Misses are not cached, so a booking made a minute ago
+    is found straight away.
+
+    Works without a request context (Ask the GOAT's generate()): ss is passed
+    in, nothing here reads flask.request."""
+    try:
+        n = int(str(n).strip().lstrip("#"))
+    except Exception:
+        return None, "not a number"
+    if n <= 0 or n > 999999999:
+        return None, "not a number"
+    hit = _lookup_id_cache.get(n)
+    if hit and datetime.now() - hit[1] < _LOOKUP_ID_TTL:
+        return hit[0], None
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/lookup-id.php", params={"id": n}, timeout=15)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not isinstance(out, dict) or out.get("error") or "id" not in out:
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    out = {"id": n,
+           "call": out.get("call") if isinstance(out.get("call"), dict) else None,
+           "booking": out.get("booking") if isinstance(out.get("booking"), dict) else None}
+    if out["call"] or out["booking"]:
+        _lookup_id_cache[n] = (out, datetime.now())
+    return out, None
 
 
 def ss_list_visa_workers(ss):

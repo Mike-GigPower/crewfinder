@@ -566,6 +566,8 @@ body.cf-sb-collapsed #tab-crew-finder > .sidebar{width:0;min-width:0;border-righ
 .cmd-palette-row .cmd-sep{color:var(--muted);opacity:.6}
 .cmd-palette-row.sel{background:var(--accent);color:#000}
 .cmd-palette-row.sel .cmd-grp,.cmd-palette-row.sel .cmd-sep{color:#000;opacity:.75}
+.obi-hint{background:transparent;border:1px dashed var(--border-gold);color:var(--accent);border-radius:4px;padding:3px 8px;margin:4px 0 0 6px;font-family:'Share Tech Mono',monospace;font-size:11px;cursor:pointer;white-space:nowrap}
+.obi-hint:hover{background:var(--surface2)}
 .cmd-palette-empty{padding:16px 18px;color:var(--muted);font-size:12px;font-family:'Share Tech Mono',monospace}
 .tab-panel{display:none;flex:1;overflow:hidden;flex-direction:row;min-height:0}
 .tab-panel.active{display:flex}
@@ -11484,6 +11486,7 @@ function filterCalls(query){
        undone on clear — the collapse was for a list they are no longer looking at. */
     if(callHit) grp.classList.remove('collapsed');
   });
+  obiSearchHint(document.getElementById('calls-search-input'), idq, idHit);
 }
 
 function toggleBookingGroup(el){
@@ -20704,8 +20707,12 @@ function openPalette(){
   if(!p) return;
   p.style.display = 'flex';
   const inp = document.getElementById('cmd-palette-input');
-  if(inp) inp.value = '';
+  if(inp){
+    inp.value = '';
+    inp.placeholder = obiAllowed() ? 'Jump to\u2026 or type a call / booking number' : 'Jump to\u2026';
+  }
   _paletteSel = 0;
+  _obiState = null;
   renderPalette();
   if(inp) setTimeout(()=>inp.focus(), 20);
 }
@@ -20722,6 +20729,8 @@ function renderPalette(){
   _paletteRows = q ? all.filter(r =>
     (r.label + ' ' + r.group + ' ' + r.aliases.join(' ')).toLowerCase().includes(q)
   ) : all;
+  // Open-by-number (5.85.0, admin only): a number gets its own rows on top.
+  _paletteRows = obiPaletteRows(q).concat(_paletteRows);
   if(_paletteSel >= _paletteRows.length) _paletteSel = Math.max(0, _paletteRows.length - 1);
   const list = document.getElementById('cmd-palette-list');
   if(!list) return;
@@ -20734,7 +20743,8 @@ function renderPalette(){
       ? '<span class="cmd-grp">' + escapeHtml(r.group) + '</span><span class="cmd-sep">&rsaquo;</span>'
       : '';
     return '<div class="cmd-palette-row' + (i===_paletteSel ? ' sel' : '') + '" '
-      + 'onmouseenter="paletteHover(' + i + ')" onclick="paletteChoose(' + i + ')">'
+      + 'onmouseenter="paletteHover(' + i + ')" onclick="paletteChoose(' + i + ')"'
+      + (r.inert ? ' style="cursor:default;opacity:.75"' : '') + '>'
       + head + '<span>' + escapeHtml(r.label) + '</span></div>';
   }).join('');
 }
@@ -20750,8 +20760,144 @@ function scrollPaletteSel(){
 function paletteChoose(i){
   const r = _paletteRows[i];
   if(!r) return;
+  if(r.obi){ obiPaletteChoose(r); return; }
   closePalette();
   switchTab(r.key);
+}
+
+// ── OPEN BY NUMBER (5.85.0) ──────────────────────────────────────────────────
+// DESIGN-open-by-id-v0_1.md. Opening a call needs its booking number too; the
+// server's /api/lookup-id/<n> (lookup-id.php) supplies it, for calls of any age
+// and filled or not. One number can be both a call and a booking, so a lookup
+// returns up to two choices. Admin only, like the call dialog.
+//
+// Three ways in, one path: the ⌘K palette (type a number), the "look up" link
+// under the Crew Finder / Schedule searches, and Ask the GOAT's open_record
+// card. The first two land in the palette so a two-way answer has somewhere
+// to be picked from; the GOAT card already carries the answer.
+
+let _obiState = null;   // {n, status:'loading'|'done'|'error', choices:[], error}
+
+function obiAllowed(){ return window._cohort === 'admin'; }
+
+/** "38965" / "#38965" -> "38965"; anything else -> null. */
+function obiNumber(q){
+  const m = String(q || '').trim().replace(/^#/, '');
+  return /^\d{1,9}$/.test(m) ? String(parseInt(m, 10)) : null;
+}
+
+/** 'YYYY-MM-DD' -> 'Sun 25 Oct 2026'. Built from the parts, never new Date(iso),
+    which would read it as UTC midnight. */
+function obiFmtDate(iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if(!m) return '';
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const mons = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return days[d.getDay()] + ' ' + String(d.getDate()).padStart(2,'0') + ' ' + mons[d.getMonth()] + ' ' + d.getFullYear();
+}
+
+/** {call, booking} from the server -> choices, call first (Q2). */
+function obiChoices(data){
+  const out = [];
+  if(data && data.call){
+    const c = data.call;
+    const bits = ['Call #' + c.call_id];
+    if(c.call_name) bits.push(c.call_name);
+    if(c.booking_name) bits.push(c.booking_name);
+    const dt = obiFmtDate(c.date_iso);
+    if(dt) bits.push(dt);
+    if(c.cancelled) bits.push('cancelled');
+    out.push({kind:'call', booking_id:String(c.booking_id), call_id:String(c.call_id), label:bits.join(' \u00b7 ')});
+  }
+  if(data && data.booking){
+    const b = data.booking;
+    out.push({kind:'booking', booking_id:String(b.booking_id),
+              label:'Booking #' + b.booking_id + (b.booking_name ? ' \u00b7 ' + b.booking_name : '')});
+  }
+  return out;
+}
+
+async function obiFetch(n){
+  const r = await fetch('/api/lookup-id/' + encodeURIComponent(n));
+  let d = null;
+  try{ d = await r.json(); }catch(e){}
+  if(!r.ok || !d || d.error) throw new Error((d && d.error) || ('HTTP ' + r.status));
+  return d;
+}
+
+/** Open one choice. A fresh open, not a step in a trail (Q3): same as Schedule. */
+function obiOpen(ch){
+  if(!ch) return;
+  closePalette();
+  if(ch.kind === 'call') openCallDialog(ch.booking_id, ch.call_id);
+  else openBookingDialog(ch.booking_id);
+}
+
+/** Rows the palette shows for query q (empty unless q is a number and admin). */
+function obiPaletteRows(q){
+  const n = obiAllowed() ? obiNumber(q) : null;
+  if(!n) return [];
+  const g = 'Open';
+  const st = (_obiState && _obiState.n === n) ? _obiState : null;
+  if(!st) return [{obi:'lookup', n, group:g, label:'Call or booking #' + n}];
+  if(st.status === 'loading') return [{obi:'inert', inert:true, n, group:g, label:'Looking up #' + n + '\u2026'}];
+  if(st.status === 'error') return [{obi:'lookup', n, group:g, label:'Lookup failed (' + st.error + ') \u2014 Enter to retry'}];
+  if(!st.choices.length) return [{obi:'inert', inert:true, n, group:g, label:'No call or booking #' + n}];
+  return st.choices.map(ch => ({obi:'open', n, choice:ch, group:g, label:ch.label}));
+}
+
+async function obiPaletteChoose(r){
+  if(r.obi === 'open'){ obiOpen(r.choice); return; }
+  if(r.obi !== 'lookup') return;
+  const n = r.n;
+  _obiState = {n, status:'loading', choices:[]};
+  _paletteSel = 0; renderPalette();
+  try{
+    const d = await obiFetch(n);
+    if(!_obiState || _obiState.n !== n) return;            // typed something else meanwhile
+    const choices = obiChoices(d);
+    _obiState = {n, status:'done', choices};
+    if(choices.length === 1 && paletteIsOpen()){ obiOpen(choices[0]); return; }
+  }catch(e){
+    if(!_obiState || _obiState.n !== n) return;
+    _obiState = {n, status:'error', choices:[], error:e.message};
+  }
+  _paletteSel = 0;
+  if(paletteIsOpen()) renderPalette();
+}
+
+/** From a search box's "look up" link: the palette, prefilled and already
+    looking. A single match opens straight away; two are picked there. */
+function obiGo(n){
+  n = obiNumber(n);
+  if(!n || !obiAllowed()) return;
+  const em = document.getElementById('entity-modal');
+  if(em && em.style.display === 'flex') return;            // the palette never stacks on a dialog
+  openPalette();
+  const inp = document.getElementById('cmd-palette-input');
+  if(inp) inp.value = '#' + n;
+  obiPaletteChoose({obi:'lookup', n});
+}
+
+/** The small "look up" link after a search input. Shown only for an admin, a
+    number, and no booking in the loaded list with that id. Typing never fires a
+    request on its own -- the link does. */
+function obiSearchHint(input, idq, hit){
+  if(!input) return;
+  const hid = input.id + '-obi';
+  let el = document.getElementById(hid);
+  const n = (!hit && obiAllowed()) ? obiNumber(idq) : null;
+  if(!n){ if(el) el.remove(); return; }
+  if(!el){
+    el = document.createElement('button');
+    el.type = 'button';
+    el.id = hid;
+    el.className = 'obi-hint';
+    input.insertAdjacentElement('afterend', el);
+  }
+  el.textContent = 'Not in this list \u2014 look up #' + n;
+  el.onclick = function(){ obiGo(n); };
 }
 function paletteKeydown(e){
   if(e.key === 'ArrowDown'){
@@ -28227,6 +28373,9 @@ async function goatSend(){
       const decoder = new TextDecoder();
       let msgEl = null;
       let full  = '';
+      // open_record cards wait for the answer, so the button sits UNDER it as
+      // the GOAT says (5.85.0 test: it was landing above).
+      const openCards = [];
 
       while(true){
         const {done, value} = await reader.read();
@@ -28246,6 +28395,9 @@ async function goatSend(){
             else if(ev.type === 'plan_ready'){
               renderGoatPlanCard(ev.payload);
             }
+            else if(ev.type === 'open_dialog'){
+              openCards.push(ev.payload);
+            }
             else if(ev.type === 'text'){
               if(!msgEl){
                 msgEl = appendGoatStreamingMessage();
@@ -28257,6 +28409,7 @@ async function goatSend(){
             else if(ev.type === 'done'){
               if(msgEl) finaliseGoatStreamingMessage(msgEl, full);
               if(full) _goatHistory.push({role:'assistant', content: full});
+              openCards.splice(0).forEach(renderGoatOpenCard);
             }
             else if(ev.type === 'error'){
               appendGoatMessage('goat', `Error: ${ev.error}`, true);
@@ -28264,6 +28417,8 @@ async function goatSend(){
           }catch(e){}
         }
       }
+      // A stream that ended without 'done' still gets its buttons.
+      openCards.splice(0).forEach(renderGoatOpenCard);
     }
   } catch(e){
     removeGoatTyping(typingId);
@@ -28406,6 +28561,29 @@ function renderGoatPlanCard(payload){
       <span>🧩 Staffing plan for call #${escapeHtml(String(payload.call_id))}</span>
       <button type="button" class="btn" onclick="goatOpenPlanInFinder(_goatPlanPayloads['${id}'])">Open in Crew Finder</button>
     </div>`;
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// open_record card (5.85.0): one button per match. Clicking is the only thing
+// that opens anything -- the GOAT never does it itself.
+const _goatOpenChoices = {};
+function renderGoatOpenCard(payload){
+  const choices = obiChoices(payload);
+  if(!choices.length) return;
+  const wrap = document.getElementById('goat-messages');
+  const id   = 'gopen-' + Date.now() + '-' + Math.floor(Math.random()*1e6);
+  _goatOpenChoices[id] = choices;
+  const btns = choices.map((ch, i) =>
+    '<button type="button" class="btn" onclick="obiOpen(_goatOpenChoices[\'' + id + '\'][' + i + '])">'
+    + 'Open ' + (ch.kind === 'call' ? 'call #' + escapeHtml(ch.call_id) : 'booking #' + escapeHtml(ch.booking_id))
+    + '</button>').join('');
+  const el = document.createElement('div');
+  el.className = 'gm gm-goat';
+  el.innerHTML = `
+    <div class="gm-label">GOAT</div>
+    <div class="gm-bubble" style="background:rgba(212,175,55,0.06);border-left-color:rgba(212,175,55,0.6);
+         display:flex;align-items:center;gap:10px;flex-wrap:wrap">${btns}</div>`;
   wrap.appendChild(el);
   wrap.scrollTop = wrap.scrollHeight;
 }
@@ -34869,6 +35047,7 @@ function renderSchedule(){
   // we fall through to name/venue rather than showing nothing.
   const idq   = bookingIdQuery(search);
   const idHit = idq && _schedData.bookings.some(b => String(b.booking_id) === idq);
+  obiSearchHint(document.getElementById('sched-search'), idq, idHit);
 
   let bookings = _schedData.bookings.filter(b => {
     if(idHit){
