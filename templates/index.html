@@ -26210,7 +26210,7 @@ async function bkSaveRateCard(bookingId, hostId){
   }
   if(!confirm('This changes the rates for every call on this booking.')) return;
   _bkRateCardBusy[hostId] = true;
-  var msg = '';
+  var msg = '', changed = false;
   try{
     var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/rate-card', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -26218,6 +26218,7 @@ async function bkSaveRateCard(bookingId, hostId){
     });
     var j = {};
     try{ j = await r.json(); }catch(_){}
+    changed = r.ok;
     if(!r.ok) msg = (j && j.error) || "Couldn't change the rate card.";
     else if(j.warning) msg = j.warning;
     else showFeedback('Rate card: ' + (j.label || 'saved'));
@@ -26226,6 +26227,9 @@ async function bkSaveRateCard(bookingId, hostId){
   }
   try{
     await bkLoadRateCard(bookingId, hostId, undefined, msg);   // show what it IS now
+    // The card decides whether the Travel row shows (T3: none on M&OP), so
+    // re-read the pricing context: it hides on M&OP and comes back off it.
+    if(changed) await bkPctxReload(bookingId);
   } finally {
     delete _bkRateCardBusy[hostId];
   }
