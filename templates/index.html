@@ -2037,6 +2037,10 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         <div class="spinner" id="search-spinner"></div>
         <span id="search-btn-text">Select a call first</span>
       </button>
+      <button class="btn-search" id="plan-btn" onclick="openPlanForm()" style="margin-top:8px;display:none" disabled
+              title="Select one call to plan.">
+        <span id="plan-btn-text">Plan&hellip;</span>
+      </button>
     </div>
     <div class="sidebar-calls">
     <div class="calls-header">
@@ -2124,6 +2128,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
               title="Hide the top bars to fit more crew on screen (Esc to exit)">&#10530; Focus</button>
     </div>
     <div class="cf-chips" id="cf-chips"></div>
+    <div id="plan-strip" style="display:none"></div>
     <div class="results-header" id="results-header" style="display:none">
       <div class="stat"><span class="stat-num green" id="cnt-avail">0</span><span class="stat-label">available</span></div>
       <div class="stat"><span class="stat-num red" id="cnt-conf">0</span><span class="stat-label">conflicts</span></div>
@@ -3007,6 +3012,7 @@ let _sortBy=null, _sortDir='asc';       // clickable-header sort (asc → desc �
 let _cfRoster=[];                       // {id,name,ein} roster for the spot-check autocomplete
 let _cfNameFilter='';                   // result-list name filter (substring, case-insensitive)
 let _cfHideBooked=true, _cfHideDeclined=true;   // session-scoped, default hidden
+let _activePlan=null;                   // staffing plan on screen: {plan, opts, dropped:Set(user_id)}
 
 // ── TIMELINE CONFIG ──
 const TL_START_H=0,TL_END_H=30,TL_TOTAL_H=30,TL_TICKS=[0,4,8,12,16,20,24,28];
@@ -3877,6 +3883,19 @@ function updateCallSelectionUI(){
   const searchBtn = document.getElementById('search-btn');
   const searchText = document.getElementById('search-btn-text');
 
+  // Plan… — one call only (stage A). Admin-only, like the Finder itself; the
+  // server enforces it (D17), this is presentation.
+  const planBtn = document.getElementById('plan-btn');
+  if(planBtn){
+    planBtn.style.display = (window._cohort === 'admin') ? '' : 'none';
+    planBtn.disabled = (n !== 1);
+    planBtn.title = (n === 1) ? 'Build a staffing plan for this call' : 'Select one call to plan.';
+  }
+  // A plan belongs to one call: changing the selection away from it hides it.
+  if(_activePlan && !(n === 1 && [...selectedCalls.keys()].some(k => String(k) === String(_activePlan.plan.call_id)))){
+    planStripHide();
+  }
+
   if(n===0){
     bar.style.display='none';
     hint.style.display='';
@@ -3936,40 +3955,65 @@ function restoreResults(){
 }
 
 // ── SEARCH ──
-async function runSearch(){
-  if(!selectedCalls.size)return;
-
-  // Distance filter (optional) — read + validate before showing the overlay.
+// Distance filter (optional) — read + validate. {} when off, null (after an
+// alert) when the postcode is bad. Shared by runSearch and runPlan.
+function _finderGeoFields(){
   let geoFields = {};
   if(document.getElementById('geo-enable').checked){
     const radius = parseInt(document.getElementById('radius-slider').value);
     if(geoMode==='postcode'){
       const pc=(document.getElementById('geo-postcode').value||'').trim();
-      if(!/^\d{4}$/.test(pc)){alert('Enter a 4-digit postcode for the distance filter, or switch the origin to Venue.');return;}
+      if(!/^\d{4}$/.test(pc)){alert('Enter a 4-digit postcode for the distance filter, or switch the origin to Venue.');return null;}
       geoFields={radius_km:radius, origin:{mode:'postcode',postcode:pc}};
     } else {
       geoFields={radius_km:radius, origin:{mode:'venue'}};
     }
   }
+  return geoFields;
+}
+
+// The /api/availability body from the Finder's current filters. ONE builder,
+// so a plan (/api/staffing/plan) searches with exactly what Search would.
+function _finderSearchBody(built, geoFields){
+  return {
+    calls: built.callPayload,
+    soft_call_ids: built.softIds,
+    required_groups: [...activeGroups],
+    required_licences: [...activeLicences],
+    licences_valid_only: !!(document.getElementById('lic-valid-only') && document.getElementById('lic-valid-only').checked),
+    min_rating:parseInt(document.getElementById('rating-slider').value),
+    exclude_pt: !!(document.getElementById('exclude-pt') && document.getElementById('exclude-pt').checked),
+    ...geoFields
+  };
+}
+
+async function runSearch(){
+  if(!selectedCalls.size)return;
+  planStripHide();                        // a fresh search drops any plan
+
+  const geoFields = _finderGeoFields();
+  if(geoFields === null) return;
 
   showOverlay('Checking Availability...', 'This may take a minute');
   try{
     const built=await buildCallPayload();
     if(!built) return;
-    const {calls, detailsArr, callPayload}=built;
 
     const resp=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        calls: callPayload,
-        soft_call_ids: built.softIds,
-        required_groups: [...activeGroups],
-        required_licences: [...activeLicences],
-        licences_valid_only: !!(document.getElementById('lic-valid-only') && document.getElementById('lic-valid-only').checked),
-        min_rating:parseInt(document.getElementById('rating-slider').value),
-        exclude_pt: !!(document.getElementById('exclude-pt') && document.getElementById('exclude-pt').checked),
-        ...geoFields
-      })});
+      body:JSON.stringify(_finderSearchBody(built, geoFields))});
     const result=await resp.json();
+    await _applyFinderResult(result, built);
+  }catch(e){alert('Search error: '+e)}
+  finally{
+    hideOverlay();
+    restoreResults();
+  }
+}
+
+// Everything runSearch did with a result once it arrived. Shared with runPlan:
+// /api/staffing/plan answers a superset of /api/availability.
+async function _applyFinderResult(result, built){
+    const {calls, detailsArr}=built;
     if(result.error){alert(result.error);return;}
 
     // Fetch already-booked crew for the first call (single HARD call only —
@@ -3992,12 +4036,238 @@ async function runSearch(){
     _cfNameFilter=''; const nf=document.getElementById('cf-name-filter'); if(nf) nf.value='';
     currentResult={...result, details:detailsArr[0], calls:calls};
     renderResults(result, detailsArr[0], result.targets);
-  }catch(e){alert('Search error: '+e)}
-  finally{
-    hideOverlay();
-    restoreResults();
-  }
 }
+// ── STAFFING PLAN (stage A: one call) ──
+// BRIEF-staffing-plans-a §4. A plan is built server-side on top of the same
+// Finder search (/api/staffing/plan answers a superset of /api/availability)
+// and then TICKS ROWS in the normal results table. It never sends anything:
+// the operator checks the ticks and uses the existing Add / Add & Confirm, so
+// the boss-call confirm and the downstream-over 409 apply unchanged (D8).
+
+function _planEsc(s){ return escapeHtml(decodeEntities(String(s==null?'':s))); }
+
+// Untick rows only. clearAll() unticks EVERY checkbox on the page, filter
+// toggles included (valid-only, PT-only, distance), which would quietly change
+// what the next search runs with.
+function _planClearTicks(){
+  document.querySelectorAll('[data-crew-id] input[type=checkbox]').forEach(cb=>{
+    cb.checked=false; cb.closest('tr')?.classList.remove('row-selected');
+  });
+  selected.clear(); updateSelCount();
+}
+
+// A pick the operator unticks by hand stays unticked when the table is
+// re-rendered (view switch, header sort, name filter). Ticks set by the plan
+// itself dispatch the same change event, which takes them back off the list.
+document.addEventListener('change', function(e){
+  if(!_activePlan) return;
+  const t=e.target; if(!t || t.type!=='checkbox') return;
+  const row=t.closest && t.closest('[data-crew-id]'); if(!row) return;
+  const uid=row.dataset.crewId;
+  if(!_activePlan.plan.picks.some(p=>String(p.user_id)===uid)) return;
+  if(t.checked) _activePlan.dropped.delete(uid); else _activePlan.dropped.add(uid);
+});
+
+function planStripHide(){
+  _activePlan=null;
+  const el=document.getElementById('plan-strip');
+  if(el){ el.style.display='none'; el.innerHTML=''; }
+}
+
+function planClear(){ _planClearTicks(); planStripHide(); }
+
+// The Finder's CURRENT filters as one read-only line (D21).
+function _planFiltersLine(){
+  const rs=document.getElementById('rating-slider');
+  const parts=['Min rating '+(rs?(parseInt(rs.value)||1):1)];
+  parts.push(activeGroups.size ? 'groups: '+[...activeGroups].map(escapeHtml).join(', ') : 'any group');
+  if(activeLicences.size) parts.push('everyone needs: '+[...activeLicences].map(c=>escapeHtml(licChipLabel(c))).join(', '));
+  const gx=document.getElementById('geo-enable');
+  if(gx&&gx.checked){
+    const km=(document.getElementById('radius-slider')||{value:25}).value;
+    parts.push('within '+escapeHtml(km)+' km of '+(geoMode==='postcode'?'postcode '+escapeHtml((document.getElementById('geo-postcode').value||'').trim()):'the venue'));
+  } else parts.push('no distance limit');
+  const px=document.getElementById('exclude-pt'); if(px&&px.checked) parts.push('PT-only excluded');
+  return parts.join(' · ');
+}
+
+// The Plan… form. `prefill` reopens it with a spec (the Notes hint's button).
+async function openPlanForm(prefill){
+  if(selectedCalls.size!==1){ alert('Select one call to plan.'); return; }
+  const cat=await _ensureLicCatalogue();
+  const pf=prefill||{objective:'mix', new_pct:80, licence_mins:[]};
+  const call=[...selectedCalls.values()][0];
+  const softN=[...consideredCalls.keys()].filter(k=>!selectedCalls.has(k)).length;
+  const opt=function(code){
+    return '<option value="">Licence…</option>'+cat.map(e=>
+      '<option value="'+escapeHtml(e.code)+'"'+(e.code===code?' selected':'')+'>'+escapeHtml(e.code+' — '+e.name)+'</option>').join('');
+  };
+  const rowHtml=function(code,n){
+    return '<div class="pf-lic-row" style="display:flex;gap:6px;align-items:center;margin-top:4px">'
+      +'<select class="pf-lic-code" style="flex:1;min-width:0">'+opt(code||'')+'</select>'
+      +'<span>×</span><input type="number" class="pf-lic-n" min="1" max="99" value="'+(n||1)+'" style="width:56px">'
+      +'<button type="button" class="pf-lic-del" title="Remove">−</button></div>';
+  };
+  const obj=pf.objective||'mix';
+  const radio=function(v,label){
+    return '<label style="margin-right:12px;cursor:pointer"><input type="radio" name="pf-obj" value="'+v+'"'+(obj===v?' checked':'')+'> '+label+'</label>';
+  };
+  const html=
+      '<div style="margin-bottom:8px;color:var(--muted)">Call #'+escapeHtml(call.call_num)+' '+_planEsc(call.call_name)+'</div>'
+    + '<div style="margin-bottom:8px"><b>Objective</b><br>'+radio('mix','Mix')+radio('rating','Best rated')+radio('experience','Most experienced')+'</div>'
+    + '<div id="pf-mix" style="margin-bottom:8px;'+(obj==='mix'?'':'display:none')+'"><b>New crew</b> '
+    +   '<input type="number" id="pf-new-pct" min="0" max="100" value="'+(pf.new_pct==null?80:pf.new_pct)+'" style="width:60px"> % '
+    +   '<span id="pf-mix-text" style="color:var(--muted);margin-left:6px"></span>'
+    +   '<div style="font-size:11px;color:var(--muted)">New = under 144 hours in the current probation run.</div></div>'
+    + '<div style="margin-bottom:8px"><b>Licence minimums</b> <button type="button" id="pf-lic-add" title="Add a licence minimum">+</button>'
+    +   '<div id="pf-lic-rows">'+(pf.licence_mins||[]).map(m=>rowHtml(m.code,m.min)).join('')+'</div></div>'
+    + '<div style="font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:8px">'
+    +   '<b>Filters:</b> '+_planFiltersLine()+'. Change them on the left before planning.'
+    +   (softN ? '<br>'+softN+' considered call'+(softN===1?' is':'s are')+' ignored for a plan.' : '')
+    + '</div><div id="pf-err" style="color:var(--conflict);margin-top:6px"></div>';
+
+  const answer=goatChoice({title:'Plan a team', html:html,
+    buttons:[{label:'Cancel', value:null},{label:'Plan', value:'plan', primary:true}]});
+  // goatChoice appends its overlay synchronously, so the form is in the DOM
+  // now. Keep references: the overlay is removed before `answer` resolves.
+  const pct=document.getElementById('pf-new-pct');
+  const mixBox=document.getElementById('pf-mix');
+  const mixText=document.getElementById('pf-mix-text');
+  const rows=document.getElementById('pf-lic-rows');
+  const radios=[...document.querySelectorAll('input[name="pf-obj"]')];
+  const syncMix=function(){
+    const v=Math.max(0,Math.min(100,parseInt(pct.value,10)||0));
+    mixText.textContent=v+'% new · '+(100-v)+'% experienced';
+  };
+  pct.addEventListener('input',syncMix); syncMix();
+  radios.forEach(r=>r.addEventListener('change',()=>{ mixBox.style.display=((radios.find(x=>x.checked)||{}).value==='mix')?'':'none'; }));
+  document.getElementById('pf-lic-add').addEventListener('click',()=>rows.insertAdjacentHTML('beforeend',rowHtml('',1)));
+  rows.addEventListener('click',e=>{ if(e.target.classList.contains('pf-lic-del')) e.target.closest('.pf-lic-row').remove(); });
+
+  if(await answer!=='plan') return;
+  const objective=(radios.find(x=>x.checked)||{value:'mix'}).value;
+  const opts={objective:objective, licence_mins:[]};
+  if(objective==='mix'){
+    const v=parseInt(pct.value,10);
+    if(isNaN(v)||v<0||v>100){ alert('New crew must be a whole number from 0 to 100.'); return openPlanForm(pf); }
+    opts.new_pct=v;
+  }
+  for(const r of rows.querySelectorAll('.pf-lic-row')){
+    const code=r.querySelector('.pf-lic-code').value;
+    const n=parseInt(r.querySelector('.pf-lic-n').value,10);
+    if(!code) continue;
+    if(isNaN(n)||n<1){ alert('Each licence minimum needs a count of 1 or more.'); return openPlanForm(pf); }
+    opts.licence_mins.push({code:code, min:n});
+  }
+  return runPlan(opts);
+}
+
+// Same body runSearch builds, plus `plan`. Soft (considered) calls are left
+// out: a plan works on one call (the form says so).
+async function runPlan(opts){
+  if(selectedCalls.size!==1){ alert('Select one call to plan.'); return; }
+  const geoFields=_finderGeoFields();
+  if(geoFields===null) return;
+  showOverlay('Building plan…', 'First plan of the day can take a little longer');
+  try{
+    const built=await buildCallPayload();
+    if(!built) return;
+    const hard=built.hardCount;
+    const planBuilt={...built, calls:built.calls.slice(0,hard), detailsArr:built.detailsArr.slice(0,hard),
+                     callPayload:built.callPayload.slice(0,hard), softIds:[]};
+    const body={..._finderSearchBody(planBuilt, geoFields), plan:opts};
+    const resp=await fetch('/api/staffing/plan',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)});
+    const result=await resp.json();
+    if(result.error){ alert(result.error); return; }
+    planStripHide();
+    await _applyFinderResult(result, planBuilt);
+    applyPlan(result.plan, opts);
+  }catch(e){ alert('Plan error: '+e); }
+  finally{ hideOverlay(); restoreResults(); }
+}
+
+function applyPlan(plan, opts){
+  _activePlan={plan:plan, opts:opts||{}, dropped:new Set()};
+  _planTick();
+}
+
+// Tick the picks (the path a hand tick takes, so `selected` stays right) and
+// draw the strip. Re-run after every re-render while the plan is up.
+function _planTick(){
+  if(!_activePlan) return;
+  const plan=_activePlan.plan;
+  _planClearTicks();
+  const missing=[];
+  plan.picks.forEach(p=>{
+    const uid=String(p.user_id);
+    if(_activePlan.dropped.has(uid)) return;
+    const cb=document.querySelector('[data-crew-id="'+uid+'"] input[type=checkbox]');
+    if(!cb){ missing.push(p); return; }
+    if(!cb.checked){ cb.checked=true; cb.dispatchEvent(new Event('change')); }
+  });
+  _planRenderStrip(missing);
+}
+
+function _planRenderStrip(missing){
+  const el=document.getElementById('plan-strip'); if(!el||!_activePlan) return;
+  const plan=_activePlan.plan;
+  const amber='var(--warn)', red='var(--conflict)';
+  const chip=function(t,c){ return '<span style="display:inline-block;border:1px solid '+(c||'var(--border)')+';color:'+(c||'var(--muted)')
+    +';border-radius:3px;padding:0 5px;margin-left:4px;font-size:10px">'+_planEsc(t)+'</span>'; };
+  const h=[];
+  h.push('<div style="font-weight:700;color:var(--accent);margin-bottom:4px">🧩 '+_planEsc(plan.read_back)+'</div>');
+  // outcome
+  if(plan.is_boss_call){
+    const b=plan.picks[0];
+    h.push('<div>'+(b ? 'Boss: <b>'+_planEsc(b.name)+'</b> — '+b.past_boss_3y+' boss call'+(b.past_boss_3y===1?'':'s')+' in 3 years'
+                      : '<span style="color:'+amber+'">Boss place left empty</span>')+'</div>');
+  } else {
+    const nNew=plan.picks.filter(p=>p.group==='new').length, nExp=plan.picks.length-nNew;
+    let o=plan.picks.length+' of '+plan.places+' place'+(plan.places===1?'':'s')+' · '+nNew+' new / '+nExp+' experienced';
+    if(plan.mix) o+=' · team after: '+plan.mix.team_after.new+' new / '+plan.mix.team_after.experienced+' experienced';
+    h.push('<div>'+o+'</div>');
+  }
+  if(missing.length){
+    h.push('<div style="color:'+red+';font-weight:600">'+missing.length+' planned crew '+(missing.length===1?'isn\'t':'aren\'t')
+      +' showing — check the Hide filter and the name filter: '+missing.map(p=>_planEsc(p.name)).join(', ')+'</div>');
+  }
+  if(_activePlan.dropped.size){
+    h.push('<div style="color:var(--muted)">'+_activePlan.dropped.size+' pick'+(_activePlan.dropped.size===1?'':'s')+' unticked by hand.</div>');
+  }
+  if(plan.picks.length){
+    h.push('<div style="margin-top:4px">'+plan.picks.map(p=>
+      '<div>'+_planEsc(p.name)+' <span style="color:var(--muted)">'+_planEsc(p.why)+'</span>'
+      +(p.flags||[]).map(f=>chip(f,amber)).join('')+'</div>').join('')+'</div>');
+  }
+  (plan.notes||[]).forEach(n=>{
+    const short=/^Asked for|left empty|couldn't be checked|^No .* hold|not enough/i.test(n);
+    h.push('<div style="color:'+(short?amber:'var(--muted)')+'">'+_planEsc(n)+'</div>');
+  });
+  if((plan.could_fill_warned||[]).length){
+    h.push('<div style="margin-top:4px">Could fill with a warning (not ticked): '+plan.could_fill_warned.map(w=>
+      '<span title="'+_planEsc(w.warning)+'" style="border-bottom:1px dotted '+amber+';cursor:help">'+_planEsc(w.name)+'</span>').join(', ')+'</div>');
+  }
+  (plan.notes_licence_hints||[]).forEach((hn,i)=>{
+    h.push('<div style="margin-top:4px">Notes mention <i>'+_planEsc(hn.name)+'</i>. Add it as a minimum? '
+      +'<button type="button" class="btn" onclick="planAddHint('+i+')">Add '+_planEsc(hn.code)+'…</button></div>');
+  });
+  h.push('<div style="margin-top:6px;display:flex;gap:8px;align-items:center">'
+    +'<button type="button" class="btn" onclick="planClear()">Clear plan</button>'
+    +'<span style="font-size:10px;color:var(--muted)">Hours as at '+_planEsc(plan.experience_as_at||'')+'. Check the ticks, then Add or Add &amp; Confirm.</span></div>');
+  el.innerHTML=h.join('');
+  el.style.cssText='display:block;padding:10px 16px;border-bottom:1px solid var(--border-gold);background:var(--surface2);font-size:12px;line-height:1.5';
+}
+
+// The Notes hint never applies itself: it reopens the form with the row added.
+function planAddHint(i){
+  if(!_activePlan) return;
+  const hn=(_activePlan.plan.notes_licence_hints||[])[i]; if(!hn) return;
+  const o=_activePlan.opts||{};
+  const mins=(o.licence_mins||[]).filter(m=>m.code!==hn.code).concat([{code:hn.code, min:1}]);
+  openPlanForm({objective:o.objective||'mix', new_pct:(o.new_pct==null?80:o.new_pct), licence_mins:mins});
+}
+
 // Build the /api/availability call payload for the currently-selected calls.
 // Returns {calls, detailsArr, callPayload, softIds, hardCount}, or null if a
 // call detail errored (the alert is raised here). Shared by runSearch and
@@ -4425,6 +4695,8 @@ function renderResults(result,details,targets){
     const resultsWrap = document.getElementById('results-wrap');
     if(resultsWrap) resultsWrap.before(bookedSection);
   }
+  // A re-render (view, sort, name filter) drops every tick; put a plan's back.
+  if(_activePlan) _planTick();
 }
 
 function toggleBookedSection(){
@@ -5169,6 +5441,7 @@ function addTableRow(tbody,crew,status,targets){
   const isSelectable=status==='available'||status==='partial';
   const isGoat = crew._isGoat === true;
   const tr=document.createElement('tr');
+  tr.dataset.crewId = String(crew.id);   // the staffing plan ticks rows by user id
   const isWarned=!!(crew.conflict_warnings&&crew.conflict_warnings.length);
   tr.className=(status==='partial'?'partial available':status)+(isWarned?' warned':'');
   if(isGoat) tr.style.cssText='background:rgba(212,175,55,0.08);box-shadow:inset 0 0 0 1px rgba(212,175,55,0.3)';
@@ -5472,6 +5745,7 @@ function renderTimeline(result,details,targets){
     const isSelectable=status==='available'||status==='partial';
     const isWarned=!!(crew.conflict_warnings&&crew.conflict_warnings.length);
     const tr=document.createElement('tr');tr.className=(status==='partial'?'partial available':status)+(isWarned?' warned':'');
+    tr.dataset.crewId = String(crew.id);   // the staffing plan ticks rows by user id
     const cbTd=document.createElement('td');cbTd.className='cb-cell';cbTd.dataset.col='cb';
     if(isSelectable){
       const cb=document.createElement('input');cb.type='checkbox';
@@ -27508,6 +27782,9 @@ async function goatSend(){
             else if(ev.type === 'confirm_request'){
               renderGoatConfirmCard(ev.payload);
             }
+            else if(ev.type === 'plan_ready'){
+              renderGoatPlanCard(ev.payload);
+            }
             else if(ev.type === 'text'){
               if(!msgEl){
                 msgEl = appendGoatStreamingMessage();
@@ -27632,6 +27909,7 @@ const TOOL_LABELS = {
   delete_unavailability:'🗑 Preparing removal...',
   get_recruitment_metrics:    '📈 Pulling recruitment metrics...',
   get_recruitment_exceptions: '🚩 Checking who needs chasing...',
+  plan_staffing:       '🧩 Building a staffing plan...',
 };
 
 function showGoatToolBadge(toolName){
@@ -27648,6 +27926,48 @@ function showGoatToolBadge(toolName){
     </div>`;
   wrap.appendChild(el);
   wrap.scrollTop = wrap.scrollHeight;
+}
+
+// Staffing plan card (plan_staffing). Read-only: its one button opens the plan
+// in Crew Finder, where the operator checks the ticks and sends (D4, D8).
+const _goatPlanPayloads = {};
+
+function renderGoatPlanCard(payload){
+  const wrap = document.getElementById('goat-messages');
+  const id   = 'gplan-' + Date.now() + '-' + Math.floor(Math.random()*1e6);
+  _goatPlanPayloads[id] = payload;
+  const el = document.createElement('div');
+  el.className = 'gm gm-goat';
+  el.innerHTML = `
+    <div class="gm-label">GOAT</div>
+    <div class="gm-bubble" style="background:rgba(212,175,55,0.06);border-left-color:rgba(212,175,55,0.6);
+         display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>🧩 Staffing plan for call #${escapeHtml(String(payload.call_id))}</span>
+      <button type="button" class="btn" onclick="goatOpenPlanInFinder(_goatPlanPayloads['${id}'])">Open in Crew Finder</button>
+    </div>`;
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// Re-runs the plan in the Finder with the same spec (no server-side plan
+// store: the planner is deterministic). The Finder's OWN filters apply; the
+// strip's read-back shows them if they differ from what the drawer used.
+function goatOpenPlanInFinder(p){
+  if(!p) return;
+  switchTab('crew-finder');
+  const card = document.querySelector('.call-card[data-call-id="'+p.call_id+'"]');
+  if(!card){
+    alert('Call #'+p.call_id+' isn\'t in Unfilled Calls, so it can\'t be planned in the Finder. '
+      + 'It may be full, or outside the list\'s dates.');
+    return;
+  }
+  clearCallSelection();
+  card.click();                           // select it the way a click does
+  if(selectedCalls.size !== 1){
+    alert('Call #'+p.call_id+' carries other calls with it when selected, so it can\'t be planned on its own yet.');
+    return;
+  }
+  runPlan(p.plan);
 }
 
 // Confirmation card for write actions
