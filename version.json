@@ -1,6 +1,6 @@
 {
-  "version": "5.83.0",
-  "release_date": "2026-10-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.83.0/TheGOAT.dmg",
-  "release_notes": "A backup who has been promoted but hasn't accepted yet now shows as Pending, in the call dialog and in Crew Finder. They still hold the place."
+  "version": "5.84.0",
+  "release_date": "2026-10-23",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.84.0/TheGOAT.dmg",
+  "release_notes": "Admins can now update a crew member's photo: choose an image, crop it passport-style and save. Crew Records has a new Photo column showing who needs a new photo."
 }
