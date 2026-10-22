@@ -1,6 +1,6 @@
 {
-  "version": "5.80.2",
+  "version": "5.81.0",
   "release_date": "2026-10-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.80.2/TheGOAT.dmg",
-  "release_notes": "Dates that start on today, such as Booking Date on Create Booking, now use Melbourne time instead of showing yesterday before 11am."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.81.0/TheGOAT.dmg",
+  "release_notes": "Admins can mark calls for Broadcast and Travel, set travel times per venue, and group bookings into events. Nothing is priced from these yet."
 }
