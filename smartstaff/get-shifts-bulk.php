@@ -6,6 +6,7 @@
 	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
+	include(dirname(__FILE__) . '/goat-db.php');
 
 	/*
 	/* JSON response */
@@ -59,8 +60,25 @@
 		die('{"error":"window exceeds 120 days"}');
 	}
 
-	$start_sql = $db->sc(date('Y-m-d 00:00:00', $start_ts));
-	$end_sql   = $db->sc(date('Y-m-d 00:00:00', $end_ts));
+	$start_sql = date('Y-m-d 00:00:00', $start_ts);
+	$end_sql   = date('Y-m-d 00:00:00', $end_ts);
+
+	/*
+	/* PDO via goat_pdo() (5.83.0). This endpoint used the legacy functions; it moved to the
+	/* house PDO handle when it gained promo_pending. The OUTPUT IS UNCHANGED
+	/* apart from that one added key: same keys, same order, same (int) casts.
+	/* Session and cohort still come from the legacy connection global.php
+	/* opens -- this is a second, read-only connection. Every Crew Finder search
+	/* and the schedule lane read this, so a change of shape breaks them all.
+	*/
+
+	$pdo = goat_pdo();
+
+	if ($pdo === null)
+	{
+		http_response_code(503);
+		die('{"error":"Database handle unavailable"}');
+	}
 
 	/*
 	/* process the request
@@ -81,6 +99,12 @@
 	/*
 	/* Rows with type=2 but no matching call row (orphans from deleted calls)
 	/* are filtered out by the inner conditional on the SELECT.
+	/*
+	/* call_promo_ack (5.83.0): a row with acked_at NULL on a status-5
+	/* assignment is a promotion off backup the crew member has not answered.
+	/* Reported as promo_pending so THE GOAT can show them as PENDING. status is
+	/* left at 5 -- they hold the place, and the client's conflict rules still
+	/* treat them as confirmed. Same test as get-booking.php/get-crew-shifts.php.
 	*/
 
 	$sql = "
@@ -98,32 +122,39 @@
 			c.call_name     AS call_name,
 			b.name          AS booking_name,
 			v.venue         AS venue_name,
-			ccm.status      AS ccm_status
+			ccm.status      AS ccm_status,
+			cpa.id          AS promo_id,
+			cpa.acked_at    AS promo_acked_at
 		FROM calendars cal
 		LEFT JOIN users         u   ON u.id      = cal.user
 		LEFT JOIN calls         c   ON c.id      = cal.call
 		LEFT JOIN bookings      b   ON b.id      = c.bookingID
 		LEFT JOIN venues        v   ON v.id      = b.venueID
 		LEFT JOIN call_crew_map ccm ON ccm.callID = cal.call AND ccm.userID = cal.user
-		WHERE cal.start < $end_sql
-		  AND cal.end   > $start_sql
+		LEFT JOIN call_promo_ack cpa ON cpa.callID = ccm.callID AND cpa.userID = ccm.userID
+		WHERE cal.start < :end_dt
+		  AND cal.end   > :start_dt
 		  AND cal.type IN (1, 2)
 		  AND (cal.type = 1 OR c.id IS NOT NULL)
 		ORDER BY cal.user ASC, cal.start ASC
 	";
 
-	$result = mysql_query($sql);
-
-	if ($result === false)
-	{
-		http_response_code(500);
-		die('{"error":"query failed: ' . addslashes(mysql_error()) . '"}');
-	}
-
 	$shifts        = array();
 	$unavails      = array();
 
-	while ($row = mysql_fetch_object($result))
+	try
+	{
+		$stmt = $pdo->prepare($sql);
+		$stmt->execute(array(':start_dt' => $start_sql, ':end_dt' => $end_sql));
+		$rows = $stmt->fetchAll(PDO::FETCH_OBJ);
+	}
+	catch (PDOException $e)
+	{
+		http_response_code(500);
+		die('{"error":"query failed: ' . addslashes($e->getMessage()) . '"}');
+	}
+
+	foreach ($rows as $row)
 	{
 		/* "Lastname, Firstname" — matches the scraper + list-crew-bulk.php */
 		$display_name = trim($row->lastname);
@@ -155,6 +186,9 @@
 			/* 5 here painted every "for information" shift as a red conflict. */
 			$entry['status'] = ($row->ccm_status === null || $row->ccm_status === '')
 			                   ? 0 : (int) $row->ccm_status;
+			$entry['promo_pending'] = ($entry['status'] === 5
+			                           && $row->promo_id !== null
+			                           && $row->promo_acked_at === null) ? 1 : 0;
 			$shifts[] = $entry;
 		}
 		else

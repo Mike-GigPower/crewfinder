@@ -4643,13 +4643,19 @@ function renderResults(result,details,targets){
   if(bookedCrew.length > 0){
     const statusConfig = {
       confirmed:   {label:'Confirmed',   color:'#22c55e', bg:'rgba(34,197,94,0.08)'},
+      // Promoted off backup, not yet accepted (5.83.0): still Confirmed on the
+      // server, listed as Pending here, the same as the call dialog.
+      pending:     {label:'Pending',     color:'var(--warn)', bg:'rgba(245,158,11,0.08)'},
       backup:      {label:'Backup',      color:'#14b8a6', bg:'rgba(20,184,166,0.08)'},
       unconfirmed: {label:'Unconfirmed', color:'var(--warn)', bg:'rgba(245,158,11,0.08)'},
       waiting:     {label:'Waiting',     color:'var(--warn)', bg:'rgba(245,158,11,0.08)'},
       declined:    {label:'Declined',    color:'var(--accent2)', bg:'rgba(227,30,36,0.08)'},
     };
-    const grouped = {confirmed:[], backup:[], unconfirmed:[], waiting:[], declined:[]};
-    bookedCrew.forEach(c => (grouped[c.status]||grouped.waiting).push(c.name));
+    const grouped = {confirmed:[], pending:[], backup:[], unconfirmed:[], waiting:[], declined:[]};
+    bookedCrew.forEach(c => {
+      const g = (c.status==='confirmed' && c.promo_pending) ? 'pending' : c.status;
+      (grouped[g]||grouped.waiting).push(c.name);
+    });
 
     const chips = Object.entries(grouped)
       .filter(([,names]) => names.length > 0)
@@ -4714,7 +4720,7 @@ function toggleBookedSection(){
 // shift row. We match booked-crew (names "First Last") to rows ("Last, First")
 // via an order-independent normalised key. Falls back to the crew's own shift on
 // a target call for multi-call searches (where booked-crew isn't fetched).
-let _bookedRel=new Map();   // normalised name -> 'booked'|'backup'|'waiting'|'declined'
+let _bookedRel=new Map();   // normalised name -> 'booked'|'promo'|'backup'|'waiting'|'declined'
 function _normName(n){return String(n||'').toLowerCase().replace(/,/g,' ').split(/\s+/).filter(Boolean).sort().join(' ');}
 // Status word from get-booking.php -> the Finder's relationship vocabulary.
 // ONE mapping, used by buildBookedRel (ALREADY BOOKED panel) and by
@@ -4728,10 +4734,15 @@ function relFromStatusWord(s){
        : 'waiting';   // unconfirmed / waiting / sent / noshow / cancelled
 }
 
+// 'promo' (5.83.0): Confirmed on the server but an unanswered promotion off
+// backup. Shown as PENDING. relFromStatusWord is deliberately NOT changed: the
+// hide filter reads it, and a promoted person holds the place, so they stay
+// hidden with the booked ones (design D2).
 function buildBookedRel(bookedCrew){
   const m=new Map();
   (bookedCrew||[]).forEach(c=>{
-    m.set(_normName(c.name), relFromStatusWord(c.status));
+    const rel = relFromStatusWord(c.status);
+    m.set(_normName(c.name), (rel==='booked' && c.promo_pending) ? 'promo' : rel);
   });
   return m;
 }
@@ -4740,7 +4751,8 @@ function targetRelationship(crew){
   if(r) return r;
   const ts=(crew.shifts||[]).filter(s=>s.is_target);
   if(!ts.length) return null;
-  if(ts.some(s=>s.status===5)) return 'booked';
+  if(ts.some(s=>s.status===5 && !s.promo_pending)) return 'booked';
+  if(ts.some(s=>s.status===5)) return 'promo';
   if(ts.some(s=>s.status===6)) return 'declined';
   if(ts.some(s=>s.status===7)) return 'backup';
   return 'waiting';
@@ -4756,12 +4768,16 @@ function targetRelationship(crew){
 function shiftBarState(s, rel){
   let barClass, state;
   if(s.is_target){
-    if(s.status===5){ barClass='bar-booked';   state='Booked — confirmed on this call'; }
+    if(s.status===5 && s.promo_pending){ barClass='bar-assigned'; state='Promoted from backup — awaiting reply'; }
+    else if(s.status===5){ barClass='bar-booked';   state='Booked — confirmed on this call'; }
     else if(s.status===6){ barClass='bar-conflict'; state='Declined this call'; }
     else if(s.status===7){ barClass='bar-backup'; state='Backup — accepted, call was full'; }
     else { barClass='bar-assigned'; state='Assigned — awaiting confirmation'; }
   } else if(s.status===5 && s.conflicts_target){
-    barClass='bar-conflict'; state='Confirmed — conflicts with requested shift';
+    // Still red for an unanswered promotion: the place is held (design D2).
+    barClass='bar-conflict';
+    state=s.promo_pending ? 'Promoted, awaiting reply — conflicts with requested shift'
+                          : 'Confirmed — conflicts with requested shift';
   } else if(s.is_offer){
     // Open offers arrive at status 0/1 and would otherwise fall into bar-warn or
     // bar-info. They get their own hollow bar: nobody has answered them, so the
@@ -4778,7 +4794,8 @@ function shiftBarState(s, rel){
     barClass='bar-backup'; state='Backup — accepted, call was full';
   } else {
     barClass='bar-info';
-    state=(s.status===5)?'Confirmed':(s.status===6)?'Declined':(s.status===1)?'Pending':(s.status===8)?'No Show':'Unconfirmed';
+    state=(s.status===5 && s.promo_pending)?'Promoted — awaiting reply'
+         :(s.status===5)?'Confirmed':(s.status===6)?'Declined':(s.status===1)?'Pending':(s.status===8)?'No Show':'Unconfirmed';
   }
   return {barClass, state};
 }
@@ -4787,8 +4804,9 @@ function shiftBarState(s, rel){
 // This is what covers waiting and declined crew who have NO calendar row at all —
 // without it they render as an empty timeline, which reads as "free".
 function targetBarState(rel){
-  const cls   = rel==='booked'?'bar-booked':rel==='backup'?'bar-backup':rel==='declined'?'bar-conflict':'bar-assigned';
+  const cls   = rel==='booked'?'bar-booked':rel==='backup'?'bar-backup':rel==='declined'?'bar-conflict':'bar-assigned';   // 'promo' → bar-assigned
   const state = rel==='booked'?'Booked — confirmed on this call'
+              : rel==='promo'?'Promoted from backup — awaiting reply'
               : rel==='backup'?'Backup — accepted, call was full'
               : rel==='declined'?'Declined this call'
               : 'Assigned — awaiting confirmation';
@@ -4845,6 +4863,7 @@ function statusLabel(crew, targets, rowStatus){
   // most relevant signal when filling it.
   const rel=targetRelationship(crew);
   if(rel==='booked')   return '<span class="status-booked">BOOKED</span>';
+  if(rel==='promo')    return '<span class="status-waiting" title="Promoted from backup — has not accepted yet">PENDING</span>';
   if(rel==='backup')   return '<span class="status-backup">BACKUP</span>';
   if(rel==='declined') return '<span class="status-declined">DECLINED</span>';
   if(rel==='waiting')  return '<span class="status-waiting">WAITING</span>';
@@ -5012,7 +5031,7 @@ function shiftTagTone(s, barClass){
   const st = Number(s.status);
   let tag;
   if(s.is_target){
-    tag = st===5?'BOOKED' : st===6?'DECLINED' : st===7?'BACKUP' : 'WAITING';   // 1/0/missing → WAITING
+    tag = (st===5 && s.promo_pending)?'PENDING' : st===5?'BOOKED' : st===6?'DECLINED' : st===7?'BACKUP' : 'WAITING';   // 1/0/missing → WAITING
   } else if(s.is_offer){
     // Offers arrive at status 0/1, so without this they would read PENDING or
     // UNSET — the one thing they are not. Toned from barClass like the rest.
@@ -5022,7 +5041,7 @@ function shiftTagTone(s, barClass){
   } else if(s.overlaps_target && (st===5 || st===1)){
     tag = 'OVERLAP';
   } else {
-    tag = st===5?'BOOKED' : st===1?'PENDING' : st===6?'DECLINED' : st===8?'NO-SHOW' : st===7?'BACKUP' : 'UNSET';   // 0/missing → UNSET
+    tag = (st===5 && s.promo_pending)?'PENDING' : st===5?'BOOKED' : st===1?'PENDING' : st===6?'DECLINED' : st===8?'NO-SHOW' : st===7?'BACKUP' : 'UNSET';   // 0/missing → UNSET
   }
   let tone;
   if(barClass==='bar-conflict')          tone='bad';
@@ -5030,7 +5049,7 @@ function shiftTagTone(s, barClass){
   else if(barClass==='bar-offer-clash')  tone='warn';
   else if(barClass==='bar-offer')        tone='muted';
   else if(barClass==='bar-booked')       tone='ok';
-  else if(barClass==='bar-info')         tone=(st===5)?'ok':'muted';
+  else if(barClass==='bar-info')         tone=(st===5 && !s.promo_pending)?'ok':'muted';
   else                                   tone='muted';   // bar-backup, bar-assigned
   return {tag, tone};
 }
@@ -5097,7 +5116,7 @@ function crewGanttHtml(crew){
   if(rel && !rows.some(r=>r.is_target)){
     const tb = targetBarState(rel);
     const a = Math.min.apply(null, tStarts), b = Math.max.apply(null, tEnds);
-    const tag  = rel==='booked'?'BOOKED' : rel==='declined'?'DECLINED' : rel==='backup'?'BACKUP' : 'WAITING';
+    const tag  = rel==='booked'?'BOOKED' : rel==='promo'?'PENDING' : rel==='declined'?'DECLINED' : rel==='backup'?'BACKUP' : 'WAITING';
     const tone = tb.barClass==='bar-conflict'?'bad' : tb.barClass==='bar-booked'?'ok' : 'muted';
     rows.push({start:a, end:b, iso:targets[tStarts.indexOf(a)].start_dt, isoEnd:targets[tEnds.indexOf(b)].end_dt,
                barClass:tb.barClass, tag, tone, is_target:true, l2:['Requested call'],
@@ -20413,7 +20432,7 @@ function crewStatusBadge(status){
   if(s==='confirmed'){ color='var(--available)'; bg='var(--avail-bg)'; }
   else if(s==='backup'){ color='#14b8a6'; bg='rgba(20,184,166,0.12)'; }
   else if(s==='declined'||s==='noshow'){ color='var(--conflict)'; bg='var(--conf-bg)'; }
-  else if(s==='unconfirmed'||s==='sent'||s==='waiting'){ color='#f59e0b'; bg='rgba(245,158,11,0.12)'; }
+  else if(s==='unconfirmed'||s==='sent'||s==='waiting'||s==='pending'){ color='#f59e0b'; bg='rgba(245,158,11,0.12)'; }
   // Slate, and EXPLICIT rather than left to fall through to the default below.
   // The default is also what an unrecognised status gets, and "cancelled" must
   // not be indistinguishable from "this UI does not know what this value is".
@@ -20474,8 +20493,18 @@ function crewStatusColors(v){
 // Admins with a resolved user id get an editable select; leadership/operations,
 // and crew that arrived via the name-only scrape fallback (no id), get the
 // read-only badge.
+// An unanswered promotion (get-booking.php promo_pending, guarded to status 5).
+// The server holds them at Confirmed -- the place is held, the calendar row
+// exists -- but nobody knows yet that they are coming, so the badge reads
+// PENDING, the same as a called-out backup (Joe, 22 Oct 2026; design D1/D2).
+// DISPLAY ONLY: nothing here changes what is written.
+function crewIsPromoPending(c){
+  return !!(c && c.promo_pending) && crewStatusInt(c.status) === 5;
+}
+
 function crewStatusControl(c, bookingId, callId){
-  if(window._cohort !== 'admin' || !c.id) return crewStatusBadge(c.status);
+  var promo = crewIsPromoPending(c);
+  if(window._cohort !== 'admin' || !c.id) return crewStatusBadge(promo ? 'pending' : c.status);
   var cur  = crewStatusInt(c.status);
   // A CANCELLED ROW IS EVIDENCE, NOT A SETTING. Two reasons this is an early
   // return and not an extra option:
@@ -20486,14 +20515,19 @@ function crewStatusControl(c, bookingId, callId){
   //      crew member "Confirmed".
   // To reverse a cancellation, un-cancel the CALL (DESIGN section 8.5).
   if(cur === 9) return crewStatusBadge(c.status);
-  var cols = crewStatusColors(cur);
+  // A promo-pending row shows a synthetic value "promo", labelled Pending, IN
+  // PLACE OF the ordinary Pending (1) option -- two "Pending" entries in one
+  // list would be ambiguous. Picking Confirmed from here is ops confirming the
+  // promotion (changeCrewStatus -> dismissPromoAck), not a status write.
+  var cols = crewStatusColors(promo ? 1 : cur);
   var opts = CREW_STATUS_OPTS.map(function(o){
-    return '<option value="'+o[0]+'"'+(o[0]===cur?' selected':'')+'>'+o[1]+'</option>';
+    if(promo && o[0] === 1) return '<option value="promo" selected>Pending</option>';
+    return '<option value="'+o[0]+'"'+((!promo && o[0]===cur)?' selected':'')+'>'+o[1]+'</option>';
   }).join('');
   // data-promo-pending: refreshCallCrewSummary() must not count an unanswered
   // promotion as booked, or any status change elsewhere in the dialog would
   // silently put them back in the count (promotion brief §3.4).
-  return '<select id="crew-status-'+callId+'-'+c.id+'" data-prev="'+cur+'"'
+  return '<select id="crew-status-'+callId+'-'+c.id+'" data-prev="'+(promo ? 'promo' : cur)+'"'
     + (c.promo_pending ? ' data-promo-pending="1"' : '')
     + ' onchange="changeCrewStatus(\''+bookingId+'\',\''+callId+'\','+c.id+',this)"'
     + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+cols[0]+';background:'+cols[1]
@@ -20503,8 +20537,22 @@ function crewStatusControl(c, bookingId, callId){
 
 async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
   var next = parseInt(sel.value,10);
-  var prev = parseInt(sel.getAttribute('data-prev'),10);
-  if(next === prev) return;
+  // prevRaw is 'promo' for an unanswered promotion (crewStatusControl). The
+  // server has that row at 5, so it is 5 for the write; every revert below
+  // restores prevRaw, so a failed change puts the select back on Pending.
+  var prevRaw = sel.getAttribute('data-prev');
+  var promoPrev = (prevRaw === 'promo');
+  var prev = promoPrev ? 5 : parseInt(prevRaw,10);
+  // Confirmed picked on a promo-pending row = ops confirming the promotion.
+  // Same assertion, endpoint and confirm as clicking the amber pill (D3).
+  // dismissPromoAck reloads the dialog on success; on cancel or failure the
+  // select goes back to Pending.
+  if(promoPrev && next === 5){
+    var ok = await dismissPromoAck(bookingId, callId, userId, null);
+    if(!ok) sel.value = prevRaw;
+    return;
+  }
+  if(!promoPrev && next === prev) return;
   sel.disabled = true;
   try{
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {
@@ -20514,13 +20562,13 @@ async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
     });
     var j = await r.json();
     if(r.status === 409 && j.error === 'downstream_not_held'){
-      sel.value = String(prev);
+      sel.value = prevRaw;
       alert(promoteRefusalText(j));
       return;
     }
     // Over-check (a 7 -> 5 here is a Promote): nothing written yet.
     if(r.status === 409 && j.needs_confirm){
-      if(!(await goatOverConfirm(j.warnings))){ sel.value = String(prev); return; }
+      if(!(await goatOverConfirm(j.warnings))){ sel.value = prevRaw; return; }
       return await changeCrewStatus(bookingId, callId, userId, sel, true);
     }
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
@@ -20536,6 +20584,8 @@ async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
     sel.style.background = cols[1];
     sel.style.borderColor = cols[0];
     sel.setAttribute('data-prev', next);
+    // Off Confirmed, the row is no longer an unanswered promotion.
+    sel.removeAttribute('data-promo-pending');
     // The item's status and the chip counts update now; the row itself stays
     // where it is until the next chip / order click or re-render (§4.2).
     var _item = sel.closest ? sel.closest('.call-crew-item') : null;
@@ -20543,7 +20593,7 @@ async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
     callCrewChipsRender(callId);
     refreshCallCrewSummary(callId);
   }catch(e){
-    sel.value = String(prev);
+    sel.value = prevRaw;
     alert('Couldn\'t update status: '+(e.message||e));
   }finally{
     sel.disabled = false;
@@ -20560,6 +20610,7 @@ function refreshCallCrewSummary(callId){
   if(!el) return;
   var confirmed = 0, pending = 0;
   document.querySelectorAll('[id^="crew-status-'+callId+'-"]').forEach(function(s){
+    if(s.value === 'promo'){ pending++; return; }   // shown as Pending (5.83.0)
     if(parseInt(s.value,10)!==5) return;
     if(s.getAttribute('data-promo-pending')==='1') pending++; else confirmed++;
   });
@@ -20801,8 +20852,11 @@ function crewPromoAckPill(c, bookingId, callId){
 // crew member and they agreed. A stray click silently removes someone from the
 // chase list, which defeats the entire point of the flag — the person nobody
 // spoke to is exactly the one it exists to surface.
+// Returns true once the flag is cleared (the dialog then reloads), false if
+// ops cancelled or the call failed -- changeCrewStatus uses that to put the
+// status select back on Pending.
 async function dismissPromoAck(bookingId, callId, userId, el){
-  if(!confirm('Dismiss the promotion flag for this crew member?\n\nOnly do this if you have SPOKEN to them and they confirmed they can still work this call.\n\nThis is recorded as an ops confirmation.')) return;
+  if(!confirm('Dismiss the promotion flag for this crew member?\n\nOnly do this if you have SPOKEN to them and they confirmed they can still work this call.\n\nThis is recorded as an ops confirmation.')) return false;
   if(el) el.style.opacity = '0.4';
   try{
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/promo-ack', {
@@ -20811,9 +20865,11 @@ async function dismissPromoAck(bookingId, callId, userId, el){
     var j = await r.json();
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
     openCallDialog(bookingId, callId);
+    return true;
   }catch(e){
     if(el) el.style.opacity = '1';
     alert('Could not dismiss: '+(e.message||e));
+    return false;
   }
 }
 // ── BACKUP CALL-OUT (brief E2) ──────────────────────────────────────────────
@@ -21764,7 +21820,9 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // One item per person, the row AND its ct-edit line, so filtering and
         // sorting (callCrewViewApply) move them together. data-idx is the
         // position as received, kept for a stable sort.
-        return '<div class="call-crew-item" data-status="'+crewStatusInt(c.status)+'" data-name="'+escapeHtml(decodeEntities(c.name||'').toLowerCase())+'" data-idx="'+_ci+'">'
+        // An unanswered promotion files under Pending (1) for the chips and
+        // the status sort, matching its badge (design D4).
+        return '<div class="call-crew-item" data-status="'+(crewIsPromoPending(c) ? 1 : crewStatusInt(c.status))+'" data-name="'+escapeHtml(decodeEntities(c.name||'').toLowerCase())+'" data-idx="'+_ci+'">'
           + '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+ctTag+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId, isCancelled)+ctCtl+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'+ctEdit
           + '</div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';

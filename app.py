@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.82.0"
+APP_VERSION    = "5.83.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -3628,6 +3628,11 @@ def fetch_shifts_bulk(ss, start_dt, end_dt):
             "call_name":    s.get("call_name", ""),
             "booking_name": s.get("booking_name", ""),
             "status":       _coerce_status(s.get("status")),   # 5=confirmed, 1=pending, 6=declined, 8=noshow, 0=unset, None=orphan (coerced "5"->5)
+            # Promoted off backup, not yet accepted (5.83.0). DISPLAY ONLY: status
+            # stays 5, so every ==5 conflict / utilisation / forecast check still
+            # treats them as confirmed -- they hold the place. Absent from an older
+            # get-shifts-bulk.php, which degrades to False.
+            "promo_pending": bool(s.get("promo_pending")),
         })
 
     unavails_by_user_id = {}
@@ -12765,9 +12770,12 @@ def api_booked_crew(booking_id, call_id):
     if err is None and isinstance(data, dict):
         for c in (data.get("calls") or []):
             if str(c.get("call_id")) == str(call_id):
+                # promo_pending (5.83.0): the Finder's ALREADY BOOKED panel
+                # and target tag show an unanswered promotion as Pending.
                 roster = [{"id":     m.get("id"),
                            "name":   m.get("name", ""),
-                           "status": m.get("status", "")}
+                           "status": m.get("status", ""),
+                           "promo_pending": bool(m.get("promo_pending"))}
                           for m in (c.get("crew") or [])]
                 return jsonify({"crew": roster, "total": len(roster)})
         return jsonify({"crew": [], "total": 0})
