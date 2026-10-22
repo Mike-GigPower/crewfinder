@@ -9812,12 +9812,6 @@ def build_staffing_plan(ss, data):
             new_target = required - exp_target
             need = {"experienced": max(0, exp_target - existing["experienced"]),
                     "new":         max(0, new_target - existing["new"])}
-            if existing["experienced"] > exp_target:
-                notes.append("The call already has %d experienced, more than the mix's %d — "
-                             "the plan adds new crew only." % (existing["experienced"], exp_target))
-            if existing["new"] > new_target:
-                notes.append("The call already has %d new, more than the mix's %d — "
-                             "the plan adds experienced crew only." % (existing["new"], new_target))
 
         # ── 8. licence minimums first ───────────────────────────────────────
         for code, want in licence_mins:
@@ -9881,14 +9875,15 @@ def build_staffing_plan(ss, data):
             want_new = min(need["new"], places - len(picks))
             got_new  = _fill("new", want_new)
             # A group that runs dry hands its places to the other (D18).
+            short_notes = []
             if got_new < want_new:
                 k = _fill("experienced", want_new - got_new)
-                notes.append("Asked for %d new, found %d; %d place%s given to experienced crew"
-                             % (want_new, got_new, k, "" if k == 1 else "s"))
+                short_notes.append("Asked for %d new, found %d; %d place%s given to experienced crew"
+                                   % (want_new, got_new, k, "" if k == 1 else "s"))
             if got_exp < want_exp:
                 k = _fill("new", want_exp - got_exp)
-                notes.append("Asked for %d experienced, found %d; %d place%s given to new crew"
-                             % (want_exp, got_exp, k, "" if k == 1 else "s"))
+                short_notes.append("Asked for %d experienced, found %d; %d place%s given to new crew"
+                                   % (want_exp, got_exp, k, "" if k == 1 else "s"))
             if len(picks) < places:
                 for c in sorted(_rest(), key=key)[:places - len(picks)]:
                     _take(c)
@@ -9896,6 +9891,17 @@ def build_staffing_plan(ss, data):
             planned = {"new": 0, "experienced": 0}
             for c in picks:
                 planned[c["group"]] += 1
+            # "Already has" only when the plan really added nobody from that
+            # group. If it did, a shortfall put them there and the shortfall
+            # note says so; both together read as a contradiction (T7).
+            # Order: already-has, then shortfalls, then left-empty below.
+            if existing["experienced"] > exp_target and planned["experienced"] == 0:
+                notes.append("The call already has %d experienced, more than the mix's %d — "
+                             "the plan adds new crew only." % (existing["experienced"], exp_target))
+            if existing["new"] > new_target and planned["new"] == 0:
+                notes.append("The call already has %d new, more than the mix's %d — "
+                             "the plan adds experienced crew only." % (existing["new"], new_target))
+            notes.extend(short_notes)
             mix = {
                 "target":     {"new": new_target, "experienced": exp_target},
                 "existing":   dict(existing),
@@ -9918,7 +9924,9 @@ def build_staffing_plan(ss, data):
             parts = ["Experienced · %s h" % _plan_h(c["all_h"]),
                      ("Boss ×%d in 3 years" % c["boss"]) if c["boss"] else "Never boss"]
         elif c["group"] == "new":
-            parts = ["New · %s h" % _plan_h(c["cur_h"])]
+            # One decimal, rounded DOWN, so nobody under 144 ever reads "144"
+            # (143.75 -> 143.7). The 1e-9 absorbs float noise in h * 10.
+            parts = ["New · {:,.1f} h".format(math.floor(c["cur_h"] * 10 + 1e-9) / 10)]
         else:
             parts = ["Experienced · %s h" % _plan_h(c["all_h"])]
         parts.append("★%d" % c["rating"])
@@ -14354,7 +14362,8 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
         # ADMIN-ONLY (D17). A plain string, before any network call: the
         # recruitment-tool pattern.
         if cohort != "admin":
-            return "That's above your access level — staffing plans are admin-only."
+            return ("That's above your access level — staffing plans are admin-only in THE GOAT. "
+                    "Relay this as given; it is not a SmartStaff setting.")
         try:
             res = _goat_plan_staffing(ss, tool_input)
             if res.get("error"):
