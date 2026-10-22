@@ -1,6 +1,6 @@
 {
-  "version": "5.81.0",
+  "version": "5.82.0",
   "release_date": "2026-10-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.81.0/TheGOAT.dmg",
-  "release_notes": "Admins can mark calls for Broadcast and Travel, set travel times per venue, and group bookings into events. Nothing is priced from these yet."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.82.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder can now suggest a team for a call: press Plan..., choose a mix of new and experienced crew or best rated, and THE GOAT ticks a team for you to check and send. Admin only."
 }
