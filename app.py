@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.83.0"
+APP_VERSION    = "5.84.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -632,6 +632,11 @@ RECRUITMENT_CANDIDATE_DETAIL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/fun
 # user ids -> {photos: {"<id>": {url, taken_at}}}. Signed URLs only, no names.
 # Used by the accreditation photo export (BRIEF-accreditation-photo-export.md).
 CREW_HEADSHOTS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat-crew-headshots"
+# Same base URL and key: the crew photo store (passport style 35:45) that admins
+# write from the Update photo dialog. mode "upload" stores one JPEG, mode "status"
+# returns the newest full-size photo date per user id (crew_photos OR the
+# onboarding headshot). DESIGN-admin-crew-photo-update-v0_3.md §5.4.
+CREW_PHOTO_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat-crew-photo"
 # Same base URL: the SEALED health answers for ONE candidate — the single most
 # sensitive thing we hold. Its proxy route is gated to the ADMIN cohort ONLY
 # (never operations); the edge function returns just { reference, name, health }.
@@ -12984,6 +12989,191 @@ def api_crew_photo(crew_id):
                               headers={"Cache-Control": "private, max-age=600"})
 
 
+# ─── ADMIN CREW PHOTO UPDATE ─────────────────────────────────────────────────
+# BRIEF-admin-crew-photo-update.md / DESIGN-admin-crew-photo-update-v0_3.md.
+# Admin only. The browser crops one source image twice: a 35:45 passport JPEG
+# for Supabase (goat-crew-photo -> crew_photos + bucket crew-photos) and a
+# 125:138 JPEG for SmartStaff's thumbnail (admin-set-crew-photo.php, which backs
+# up the old file). No delete or revert, and the uncropped original is not kept.
+
+CREW_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+CREW_PHOTO_MIN_W     = 200
+CREW_PHOTO_RATIO     = 35 / 45     # passport
+CREW_THUMB_RATIO     = 125 / 138   # SmartStaff crewimg_<id>.jpg
+CREW_PHOTO_RATIO_TOL = 0.02
+
+
+def _jpeg_size(b):
+    """(width, height) from a JPEG's first SOF marker, or None if the bytes are
+    not a well-formed JPEG header. Pure Python (Pillow is not a dependency); the
+    same walk as jpegSize in the goat-crew-photo edge function, so the two never
+    disagree about what counts as a JPEG."""
+    if not b or len(b) < 4 or b[0] != 0xFF or b[1] != 0xD8:
+        return None
+    i = 2
+    while i + 9 < len(b):
+        if b[i] != 0xFF:
+            return None
+        marker = b[i + 1]
+        if marker == 0xFF:                       # fill byte
+            i += 1
+            continue
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            i += 2                               # markers without a length
+            continue
+        length = (b[i + 2] << 8) | b[i + 3]
+        if length < 2:
+            return None
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            h = (b[i + 5] << 8) | b[i + 6]
+            w = (b[i + 7] << 8) | b[i + 8]
+            return (w, h) if w > 0 and h > 0 else None
+        i += 2 + length
+    return None
+
+
+def _crew_photo_upload(user_id, uploaded_by, jpeg_bytes):
+    """Store one passport JPEG via goat-crew-photo (mode "upload"). Returns
+    ({id, uploaded_at, width, height, bytes}, None) or (None, err); never raises."""
+    if not GOAT_RECRUITMENT_KEY:
+        return None, "Supabase key not configured"
+    import base64
+    try:
+        r = http.post(CREW_PHOTO_URL,
+                      headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                      json={"mode": "upload", "user_id": int(user_id),
+                            "uploaded_by": int(uploaded_by) if uploaded_by else None,
+                            "image_b64": base64.b64encode(jpeg_bytes).decode("ascii")},
+                      timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = r.json()
+    except Exception:
+        return None, f"HTTP {r.status_code}"
+    if r.status_code != 200 or not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {r.status_code}"
+    return out, None
+
+
+def _crew_photo_status(user_ids):
+    """Newest full-size photo per user via goat-crew-photo (mode "status"):
+    ({str(id): {uploaded_at, source}}, None) or (None, err); never raises. A
+    person with no full-size photo is simply absent."""
+    if not GOAT_RECRUITMENT_KEY:
+        return None, "Supabase key not configured"
+    ids = []
+    for u in (user_ids or []):
+        try:
+            ids.append(int(u))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}, None
+    try:
+        r = http.post(CREW_PHOTO_URL,
+                      headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+                      json={"mode": "status", "user_ids": ids},
+                      timeout=20)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = r.json()
+    except Exception:
+        return None, f"HTTP {r.status_code}"
+    if r.status_code != 200 or not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {r.status_code}"
+    photos = out.get("photos")
+    if not isinstance(photos, dict):
+        photos = {}
+    return {str(k): (v or {}) for k, v in photos.items()}, None
+
+
+def _crew_photo_check(name, data, ratio, min_w=0):
+    """(w, h, None) when `data` is a usable JPEG of the right shape, else
+    (None, None, plain-English error)."""
+    if not data:
+        return None, None, f"The {name} image is missing."
+    if len(data) > CREW_PHOTO_MAX_BYTES:
+        return None, None, f"The {name} image is over 5 MB."
+    if data[:3] != b"\xff\xd8\xff":
+        return None, None, f"The {name} image isn't a JPEG."
+    size = _jpeg_size(data)
+    if size is None:
+        return None, None, f"The {name} image isn't a readable JPEG."
+    w, h = size
+    if w < min_w:
+        return None, None, "This image is too small for accreditation."
+    if abs((w / h) - ratio) / ratio > CREW_PHOTO_RATIO_TOL:
+        return None, None, f"The {name} image is the wrong shape."
+    return w, h, None
+
+
+@app.route("/api/crew/<int:user_id>/photo", methods=["POST"])
+@require_cohort("admin")
+def api_crew_photo_update(user_id):
+    """Save a crew member's photo. Multipart parts `photo` (35:45 passport JPEG)
+    and `thumb` (125:138 JPEG). ?only=thumb re-sends just the SmartStaff
+    thumbnail (Retry thumbnail) and writes no Supabase row.
+
+    Supabase first: if that fails nothing else is written (502). A SmartStaff
+    failure after it does NOT fail the request — the full-size photo is saved, and
+    the response says thumbnail:false with the error so the dialog can offer Retry.
+    Who clicked comes from the server session (as _write_audit resolves it), never
+    from the request."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
+    only_thumb = request.args.get("only") == "thumb"
+
+    def _part(name):
+        f = request.files.get(name)
+        return f.read(CREW_PHOTO_MAX_BYTES + 1) if f is not None else b""
+
+    thumb = _part("thumb")
+    _tw, _th, err = _crew_photo_check("thumbnail", thumb, CREW_THUMB_RATIO)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    photo, w, h = b"", None, None
+    if not only_thumb:
+        photo = _part("photo")
+        w, h, err = _crew_photo_check("passport", photo, CREW_PHOTO_RATIO, CREW_PHOTO_MIN_W)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+
+    # Who clicked — the same two lines _write_audit uses (pre-elevation identity
+    # during an admin step-up, else the session identity).
+    human = (_pre_elevation.get(session.get("sid")) or {}).get("ident") or current_identity() or {}
+    human_id = human.get("user_id")
+
+    uploaded_at = None
+    if not only_thumb:
+        up, uerr = _crew_photo_upload(user_id, human_id, photo)
+        if uerr:
+            print(f"[crew-photo] Supabase upload failed for {user_id}: {uerr}")
+            return jsonify({"ok": False,
+                            "error": f"Couldn't save the photo: {uerr}"}), 502
+        uploaded_at = up.get("uploaded_at")
+
+    res, terr = ss_set_crew_photo(ss, user_id, types.SimpleNamespace(
+        filename="crew.jpg", stream=io.BytesIO(thumb), mimetype="image/jpeg"))
+    if terr:
+        print(f"[crew-photo] SmartStaff thumbnail failed for {user_id}: {terr}")
+    with _crew_card_lock:
+        _crew_card_cache.pop(str(user_id), None)
+
+    _write_audit("crew_photo_update", "crew", user_id, {
+        "full_size": not only_thumb, "thumbnail": terr is None,
+        "w": w, "h": h, "bytes": len(photo) if photo else None,
+        "backup": (res or {}).get("backup"), "only_thumb": only_thumb})
+
+    out = {"ok": True, "full_size": not only_thumb, "thumbnail": terr is None,
+           "uploaded_at": uploaded_at, "v": int(time.time())}
+    if terr:
+        out["error"] = terr
+    return jsonify(out)
+
+
 # ─── GOAT DOMAIN GLOSSARY ─────────────────────────────────────────────────────
 # Abbreviations that appear in call names/descriptions, mapped to the role/skill
 # words used elsewhere (e.g. crew group names like "Video"/"Audio"/"Lights").
@@ -15920,7 +16110,8 @@ def api_admin_crew_lookups():
 @require_cohort("admin")
 def api_admin_crew_list():
     """Crew list for Crew > Records: {id, name, ein, phone, active, groups,
-    licences?, contract?} plus top-level licences_ok and contracts_ok.
+    licences?, contract?, photo?} plus top-level licences_ok, contracts_ok and
+    photos_ok.
 
     ?active=0 returns inactive crew; default (or ?active=1) returns active.
     id is the internal SmartStaff userId — the same one /crew/manage and
@@ -15942,6 +16133,14 @@ def api_admin_crew_list():
     failed. `contracts_ok` is that same distinction as one flag, so the
     "No contract" chip refuses instead of matching nobody (or everybody). A
     failed lookup is logged and the list still goes out.
+
+    `photo` follows the same rule again, from TWO lookups made after the
+    contracts call: admin-list-crew-photos.php (SmartStaff thumbnail dates) then
+    goat-crew-photo status (full-size photos in Supabase). Both succeed ->
+    {kind:"full", date, source} when a full-size photo exists, else
+    {kind:"low", date} when only the SmartStaff thumbnail does, else
+    {kind:"none"}. Either fails -> the key is ABSENT on every row and
+    photos_ok is false, so the column shows unknown rather than a wrong "None".
     """
     ss = get_ss_session()
     if not ss:
@@ -15955,6 +16154,14 @@ def api_admin_crew_list():
     contracts, c_err = ss_list_contracts_bulk(ss)
     if c_err:
         print(f"[crew-list] WARNING: contract lookup failed, column will show unknown: {c_err}")
+    # Photo column: SmartStaff thumbnails (same sequential rule), then Supabase.
+    ss_photos, p_err = ss_list_crew_photos(ss)
+    full_photos = None
+    if not p_err:
+        full_photos, p_err = _crew_photo_status([c["id"] for c in (crew or [])])
+    if p_err:
+        print(f"[crew-list] WARNING: photo lookup failed, column will show unknown: {p_err}")
+    photos_ok = ss_photos is not None and full_photos is not None
     # push_ok is read from the crew cache, which the refresh stamps from Crew Hub.
     # Anything but a real bool (never stamped, Hub down at refresh, inactive crew
     # not in the cache) goes out as None, so the page shows "unknown", not "Off".
@@ -15984,6 +16191,16 @@ def api_admin_crew_list():
                 "version":   k.get("version"),
                 "has_pdf":   bool(k.get("has_pdf")),
             }
+        if photos_ok:
+            f = full_photos.get(str(c["id"]))
+            if f and f.get("uploaded_at"):
+                row["photo"] = {"kind": "full",
+                                "date": _accred_melb_date(f.get("uploaded_at")),
+                                "source": f.get("source")}
+            elif ss_photos.get(str(c["id"])):
+                row["photo"] = {"kind": "low", "date": ss_photos[str(c["id"])]}
+            else:
+                row["photo"] = {"kind": "none"}
         rows.append(row)
     rows.sort(key=lambda r: (r["name"] or "").lower())
     # Judged on the WHOLE fetch, not the filtered rows: every crew member from
@@ -15993,7 +16210,8 @@ def api_admin_crew_list():
     # guard, so the two surfaces refuse under exactly the same conditions.
     lic_ok = (not crew) or any("licences" in c for c in crew)
     return jsonify({"crew": rows, "licences_ok": lic_ok,
-                    "contracts_ok": contracts is not None})
+                    "contracts_ok": contracts is not None,
+                    "photos_ok": photos_ok})
 
 
 @app.route("/api/crew-cards")
@@ -18060,10 +18278,10 @@ def api_booking_accreditation_photos(booking_id):
                 counts["full"] += 1
             elif source == "low-res":
                 counts["low_res"] += 1
-                low_res.append({"name": p["name"], "ein": p["ein"]})
+                low_res.append({"id": p["id"], "name": p["name"], "ein": p["ein"]})
             else:
                 counts["missing"] += 1
-                missing.append({"name": p["name"], "ein": p["ein"]})
+                missing.append({"id": p["id"], "name": p["name"], "ein": p["ein"]})
             if p["clash"] and fname:
                 counts["clashes"] += 1
                 clashes.append({"name": p["name"], "ein": p["ein"], "file": fname})
@@ -21069,6 +21287,34 @@ def ss_list_contracts_bulk(ss):
         # (object), but don't let a [] turn into a crash if it ever doesn't.
         contracts = {}
     return {str(k): (v or {}) for k, v in contracts.items()}, None
+
+
+def ss_list_crew_photos(ss):
+    """Everyone's SmartStaff thumbnail date via admin-list-crew-photos.php in one
+    directory listing, or (None, err): {user_id_str: "YYYY-MM-DD"} (Melbourne,
+    the file's last-write date). A crew member with no crewimg_<id>.jpg is simply
+    absent — the bulk form of /api/crew-photo, for Crew > Records' Photo column.
+
+    Keys are coerced to str so they line up with str(c["id"]) everywhere else.
+    An empty map is a legitimate answer, not a failure."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-list-crew-photos.php", timeout=20)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    photos = out.get("photos")
+    if not isinstance(photos, dict):
+        # PHP's json_encode of an empty array is [] — the endpoint casts to
+        # (object), but don't let a [] turn into a crash if it ever doesn't.
+        photos = {}
+    return {str(k): str(v or "") for k, v in photos.items()}, None
 
 
 def ss_list_visa_workers(ss):

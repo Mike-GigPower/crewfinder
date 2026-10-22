@@ -618,6 +618,18 @@ body.cf-sb-collapsed #tab-crew-finder > .sidebar{width:0;min-width:0;border-righ
 .crew-rec-table .rec-lic:hover{text-decoration:underline}
 .crew-rec-table .rec-contract{cursor:pointer}
 .crew-rec-table .rec-contract:hover{text-decoration:underline}
+.crew-rec-table .rec-photo{cursor:pointer;white-space:nowrap}
+.crew-rec-table .rec-photo:hover{text-decoration:underline}
+/* Admin crew photo update (5.84.0): header photo button + the dialog. */
+.ce-photo-btn{position:relative;display:block;padding:0;border:none;background:none;cursor:pointer;border-radius:6px}
+.ce-photo-ovl{position:absolute;left:0;right:0;bottom:0;padding:4px 0;background:rgba(0,0,0,.72);color:var(--accent);font-family:'Share Tech Mono',monospace;font-size:11px;text-align:center;border-radius:0 0 6px 6px;opacity:0;transition:opacity .15s;pointer-events:none}
+.ce-photo-btn:hover .ce-photo-ovl,.ce-photo-btn:focus-visible .ce-photo-ovl{opacity:1}
+#cp-drop{border:1px dashed var(--border);border-radius:6px;padding:28px 12px;text-align:center;color:var(--muted);font-size:12px}
+#cp-drop.over{border-color:var(--accent);color:var(--accent)}
+#cp-crop{display:block;cursor:grab;touch-action:none;border:1px solid var(--border-gold);background:#fff}
+#cp-crop.dragging{cursor:grabbing}
+.cp-prev-label{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);margin:0 0 3px}
+.cp-prev canvas{display:block;border:1px solid var(--border);background:#fff}
 #crew-card .cc-hint{margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:10px;color:var(--muted);font-style:italic}
 /* Crew views share one filter layout (Mike, 24 Sep 2026): search first in the
    toolbar; a row beneath with Utilization-style group chips and MIN star at its right. */
@@ -5058,7 +5070,7 @@ function shiftTagTone(s, barClass){
 // openCrewDetail. No notes — the hover card carries those and they'd dwarf the Gantt.
 function crewDetailBody(crew){
   const photo = crew.id
-    ? '<img class="ce-hdr-photo" src="/api/crew-photo/'+encodeURIComponent(crew.id)+'" alt="" '
+    ? '<img class="ce-hdr-photo" src="'+crewPhotoSrc(crew.id)+'" alt="" '
       + 'onerror="this.outerHTML=\'<div class=&quot;ce-hdr-photo-ph&quot;>No photo</div>\'">'
     : '<div class="ce-hdr-photo-ph">No photo</div>';
   const header =
@@ -5190,7 +5202,7 @@ function showCrewCard(anchor,crew){
   if(!crew) return;
   const el=_ensureCrewCardEl();
   const photo=(crew.id!=null)
-    ? `<img class="cc-photo" src="/api/crew-photo/${encodeURIComponent(crew.id)}" alt="" onerror="this.outerHTML='<div class=&quot;cc-photo-ph&quot;>No photo on file</div>'">`
+    ? `<img class="cc-photo" src="${crewPhotoSrc(crew.id)}" alt="" onerror="this.outerHTML='<div class=&quot;cc-photo-ph&quot;>No photo on file</div>'">`
     : `<div class="cc-photo-ph">No photo on file</div>`;
   const hasNotes=crew.notes&&String(crew.notes).trim();
   const notes=hasNotes
@@ -12943,6 +12955,7 @@ let _crewListLicOk   = true;        // did the payload's licence query actually 
 // Records is the only view carrying contract data.
 let _crewRecNoContract   = false;   // chip on: keep only c.contract === null
 let _crewListContractOk  = true;    // did the payload's contract lookup actually run
+let _crewListPhotoOk     = true;    // did both photo lookups run (5.84.0)
 
 function crewNoContractToggle(){
   _crewRecNoContract = !_crewRecNoContract;
@@ -13076,6 +13089,7 @@ async function _loadCrewList(){
     // default; only an explicit false disables the filter.
     _crewListLicOk = (d.licences_ok !== false);
     _crewListContractOk = (d.contracts_ok !== false);   // same reading as licences
+    _crewListPhotoOk = (d.photos_ok !== false);          // and again for photos
   }catch(e){
     const rows = document.getElementById('crew-list-rows');
     if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load crew: '+escapeHtml(e.message)+'</div>';
@@ -13195,6 +13209,326 @@ function openCrewUnavail(id){
   openUnavailManager(id, window._crewEditNameLF || window._crewEditName || '');
 }
 
+// ── ADMIN: UPDATE CREW PHOTO (BRIEF-admin-crew-photo-update.md, 5.84.0) ──────
+// One source image, cropped in a fixed 35:45 passport frame, saved twice: the
+// passport JPEG (≤1050×1350) to Supabase and a 125:138 JPEG (500×552, the frame's
+// same top and bottom widened with the source either side, white where it runs
+// out) to SmartStaff's thumbnail. Own overlay (#crew-photo-modal, z 99993) so the
+// crew record / accreditation results underneath in entity-modal survive.
+
+// Cache-buster per crew id after a save: /api/crew-photo is served with a
+// 10-minute private cache, so every view builds its URL here.
+var _crewPhotoV = {};
+function crewPhotoSrc(id){
+  const v = _crewPhotoV[String(id)];
+  return '/api/crew-photo/' + encodeURIComponent(id) + (v ? '?v=' + encodeURIComponent(v) : '');
+}
+function _cePhotoImgHtml(id){
+  return (id != null)
+    ? '<img class="ce-hdr-photo" src="'+crewPhotoSrc(id)+'" alt="" '
+      + 'onerror="this.outerHTML=\'<div class=&quot;ce-hdr-photo-ph&quot;>No photo</div>\'">'
+    : '<div class="ce-hdr-photo-ph">No photo</div>';
+}
+function ceUpdatePhoto(){
+  const p = window._ceHdrPhoto;
+  if(!p || p.id == null) return;
+  openCrewPhoto(p.id, p.name, p.ein, function(){
+    if(String(window._ceEditId) !== String(p.id)) return;   // a different record is open now
+    const btn = document.querySelector('#entity-modal-body .ce-photo-btn');
+    if(btn) btn.innerHTML = _cePhotoImgHtml(p.id) + '<span class="ce-photo-ovl">📷 Update</span>';
+  });
+}
+
+const CP_FW = 280, CP_FH = 360;                 // on-screen 35:45 frame
+const CP_MAX_W = 1050, CP_MIN_W = 200;          // passport output limits
+const CP_THUMB_W = 500, CP_THUMB_H = 552;       // 125:138 SmartStaff shape
+const CP_MAX_SRC = 15 * 1024 * 1024;
+let _cp = null;                                  // the open dialog's state
+
+function openCrewPhoto(id, name, ein, onSaved){
+  if(window._cohort !== 'admin' || id == null) return;
+  if(_cp && _cp.url) URL.revokeObjectURL(_cp.url);
+  _cp = {id: String(id), onSaved: onSaved || null, img: null, url: null,
+         s: 1, smin: 1, ox: 0, oy: 0, drag: null, thumbBlob: null, busy: false};
+  const nm = decodeEntities(name || '');
+  document.getElementById('crew-photo-head').innerHTML =
+      '<img src="'+crewPhotoSrc(id)+'" alt="" style="width:46px;height:51px;object-fit:cover;border-radius:4px;border:1px solid var(--border);background:var(--surface)" '
+    +   'onerror="this.outerHTML=\'<div style=&quot;width:46px;height:51px;border:1px dashed var(--border);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--muted)&quot;>None</div>\'">'
+    + '<div style="min-width:0"><div style="font-family:\'Bebas Neue\',sans-serif;font-size:18px;letter-spacing:.06em;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+    +   escapeHtml(nm || 'Crew member') + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">Update photo'
+    +   (ein ? ' · EIN '+escapeHtml(String(ein)) : '') + '</div></div>';
+  document.getElementById('crew-photo-body').innerHTML =
+      '<div id="cp-pick">'
+    +   '<div id="cp-drop">Drop a JPEG or PNG here, or '
+    +     '<button type="button" class="btn-logout" onclick="document.getElementById(\'cp-file\').click()">Choose file…</button>'
+    +   '</div>'
+    + '</div>'
+    + '<div id="cp-edit" style="display:none">'
+    +   '<div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">'
+    +     '<canvas id="cp-crop" width="'+CP_FW+'" height="'+CP_FH+'" title="Drag to move"></canvas>'
+    +     '<div class="cp-prev" style="display:flex;flex-direction:column;gap:12px">'
+    +       '<div><div class="cp-prev-label">Passport (full-size)</div><canvas id="cp-prev-photo" width="105" height="135"></canvas></div>'
+    +       '<div><div class="cp-prev-label">SmartStaff thumbnail</div><canvas id="cp-prev-thumb" width="125" height="138"></canvas></div>'
+    +       '<button type="button" class="btn-logout" onclick="document.getElementById(\'cp-file\').click()">Choose another…</button>'
+    +     '</div>'
+    +   '</div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:11px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">Zoom'
+    +     '<input type="range" id="cp-zoom" min="0" max="1000" value="0" style="flex:1;accent-color:var(--accent)" oninput="crewPhotoZoom(this.value)"></label>'
+    +   '<div style="font-size:10px;color:var(--muted);margin-top:4px">Drag to position. The oval is a guide for the head; the whole frame is saved.</div>'
+    + '</div>'
+    + '<input type="file" id="cp-file" accept="image/jpeg,image/png" style="display:none" onchange="_cpTakeFile(this.files && this.files[0]); this.value=\'\'">'
+    + '<div id="cp-msg" style="font-size:12px;margin-top:10px;min-height:16px;font-family:\'Share Tech Mono\',monospace"></div>';
+  document.getElementById('crew-photo-actions').innerHTML =
+      '<button class="btn-logout" onclick="closeCrewPhoto()">Cancel</button>'
+    + '<button class="btn-logout" id="cp-retry" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="crewPhotoRetryThumb()">Retry thumbnail</button>'
+    + '<button class="btn-logout" id="cp-save" disabled style="border-color:var(--accent);color:var(--accent)" onclick="crewPhotoSave()">Save</button>';
+
+  const drop = document.getElementById('cp-drop');
+  ['dragenter','dragover'].forEach(function(t){ drop.addEventListener(t, function(e){ e.preventDefault(); drop.classList.add('over'); }); });
+  ['dragleave','drop'].forEach(function(t){ drop.addEventListener(t, function(){ drop.classList.remove('over'); }); });
+  const panel = document.getElementById('crew-photo-panel');
+  panel.ondragover = function(e){ e.preventDefault(); };
+  panel.ondrop = function(e){
+    e.preventDefault();
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) _cpTakeFile(f);
+  };
+  _cpBindCrop();
+  document.getElementById('crew-photo-modal').style.display = 'flex';
+}
+
+function closeCrewPhoto(){
+  const m = document.getElementById('crew-photo-modal');
+  if(m) m.style.display = 'none';
+  if(_cp && _cp.url) URL.revokeObjectURL(_cp.url);
+  _cp = null;
+}
+
+function _cpSay(msg, tone){
+  const el = document.getElementById('cp-msg');
+  if(!el) return;
+  el.style.color = tone === 'bad' ? 'var(--conflict)' : tone === 'warn' ? 'var(--warn)'
+                 : tone === 'ok' ? 'var(--ok,#10b981)' : 'var(--muted)';
+  el.textContent = msg || '';
+}
+
+// JPEG/PNG only, ≤15 MB. Anything else (HEIC, PDF…) is refused here and nothing
+// is sent.
+function _cpTakeFile(f){
+  if(!_cp || !f) return;
+  if(['image/jpeg','image/png'].indexOf(f.type) < 0){
+    _cpSay('Choose a JPEG or PNG image' + (f.name ? ' (' + f.name + ' isn’t one)' : '') + '.', 'bad');
+    return;
+  }
+  if(f.size > CP_MAX_SRC){ _cpSay('That image is over 15 MB.', 'bad'); return; }
+  const mine = _cp;
+  const url = URL.createObjectURL(f);
+  const img = new Image();
+  img.onload = function(){
+    if(_cp !== mine){ URL.revokeObjectURL(url); return; }
+    if(mine.url) URL.revokeObjectURL(mine.url);
+    mine.url = url; mine.img = img;
+    mine.smin = Math.max(CP_FW / img.naturalWidth, CP_FH / img.naturalHeight);
+    mine.s = mine.smin;
+    mine.ox = (CP_FW - img.naturalWidth * mine.s) / 2;
+    mine.oy = (CP_FH - img.naturalHeight * mine.s) / 2;
+    document.getElementById('cp-zoom').value = 0;
+    document.getElementById('cp-pick').style.display = 'none';
+    document.getElementById('cp-edit').style.display = '';
+    document.getElementById('cp-save').disabled = false;
+    document.getElementById('cp-save').style.display = '';
+    document.getElementById('cp-retry').style.display = 'none';
+    mine.thumbBlob = null;
+    _cpSay('');
+    _cpDraw();
+  };
+  img.onerror = function(){ URL.revokeObjectURL(url); _cpSay('Couldn’t read that image.', 'bad'); };
+  img.src = url;
+}
+
+// The image always covers the frame: no gap is ever possible inside it.
+function _cpClamp(){
+  const w = _cp.img.naturalWidth * _cp.s, h = _cp.img.naturalHeight * _cp.s;
+  _cp.ox = Math.min(0, Math.max(CP_FW - w, _cp.ox));
+  _cp.oy = Math.min(0, Math.max(CP_FH - h, _cp.oy));
+}
+
+// Zoom 0..1000 -> 1x..4x of the cover scale, about the frame's centre.
+function crewPhotoZoom(v){
+  if(!_cp || !_cp.img) return;
+  const s = _cp.smin * (1 + 3 * (Number(v) || 0) / 1000);
+  const cx = (CP_FW / 2 - _cp.ox) / _cp.s, cy = (CP_FH / 2 - _cp.oy) / _cp.s;
+  _cp.s = s;
+  _cp.ox = CP_FW / 2 - cx * s;
+  _cp.oy = CP_FH / 2 - cy * s;
+  _cpClamp();
+  _cpDraw();
+}
+
+function _cpBindCrop(){
+  const cv = document.getElementById('cp-crop');
+  cv.addEventListener('pointerdown', function(e){
+    if(!_cp || !_cp.img) return;
+    cv.setPointerCapture(e.pointerId);
+    _cp.drag = {x: e.clientX, y: e.clientY, ox: _cp.ox, oy: _cp.oy};
+    cv.classList.add('dragging');
+  });
+  cv.addEventListener('pointermove', function(e){
+    if(!_cp || !_cp.drag) return;
+    _cp.ox = _cp.drag.ox + (e.clientX - _cp.drag.x);
+    _cp.oy = _cp.drag.oy + (e.clientY - _cp.drag.y);
+    _cpClamp();
+    _cpDraw();
+  });
+  const end = function(){ if(_cp) _cp.drag = null; cv.classList.remove('dragging'); };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
+  cv.addEventListener('wheel', function(e){
+    if(!_cp || !_cp.img) return;
+    e.preventDefault();
+    const z = document.getElementById('cp-zoom');
+    z.value = Math.max(0, Math.min(1000, Number(z.value) - Math.sign(e.deltaY) * 50));
+    crewPhotoZoom(z.value);
+  }, {passive: false});
+}
+
+// The frame in source pixels.
+function _cpRect(){
+  return {sx: -_cp.ox / _cp.s, sy: -_cp.oy / _cp.s, sw: CP_FW / _cp.s, sh: CP_FH / _cp.s};
+}
+
+// kind "photo": the frame itself. kind "thumb": the frame's top and bottom,
+// widened to 125:138 about its centre, white where the source runs out.
+function _cpRender(kind, outW, outH, cv){
+  cv = cv || document.createElement('canvas');
+  cv.width = outW; cv.height = outH;
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, outW, outH);
+  const r = _cpRect(), img = _cp.img;
+  if(kind === 'photo'){
+    ctx.drawImage(img, r.sx, r.sy, r.sw, r.sh, 0, 0, outW, outH);
+    return cv;
+  }
+  const tw = r.sh * 125 / 138, tx = r.sx + r.sw / 2 - tw / 2, k = outH / r.sh;
+  const x0 = Math.max(0, tx), x1 = Math.min(img.naturalWidth, tx + tw);
+  if(x1 > x0) ctx.drawImage(img, x0, r.sy, x1 - x0, r.sh, (x0 - tx) * k, 0, (x1 - x0) * k, outH);
+  return cv;
+}
+
+function _cpDraw(){
+  if(!_cp || !_cp.img) return;
+  const cv = document.getElementById('cp-crop');
+  if(!cv) return;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, CP_FW, CP_FH);
+  ctx.drawImage(_cp.img, _cp.ox, _cp.oy, _cp.img.naturalWidth * _cp.s, _cp.img.naturalHeight * _cp.s);
+  // Head guide: framing aid only, nothing is enforced.
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 5]);
+  ctx.beginPath();
+  ctx.ellipse(CP_FW / 2, CP_FH * 0.44, CP_FW * 0.30, CP_FH * 0.32, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.setLineDash([6, 5]);
+  ctx.lineDashOffset = 5.5;
+  ctx.stroke();
+  ctx.restore();
+  _cpRender('photo', 105, 135, document.getElementById('cp-prev-photo'));
+  _cpRender('thumb', 125, 138, document.getElementById('cp-prev-thumb'));
+}
+
+function _cpBlob(cv){
+  return new Promise(function(resolve, reject){
+    cv.toBlob(function(b){ b ? resolve(b) : reject(new Error('couldn’t encode the JPEG')); }, 'image/jpeg', 0.9);
+  });
+}
+
+async function crewPhotoSave(){
+  if(!_cp || !_cp.img || _cp.busy) return;
+  const r = _cpRect();
+  const outW = Math.min(CP_MAX_W, Math.round(r.sw));   // never scale up
+  if(outW < CP_MIN_W){ _cpSay('This image is too small for accreditation.', 'bad'); return; }
+  const outH = Math.round(outW * 45 / 35);
+  const mine = _cp;
+  mine.busy = true;
+  const btn = document.getElementById('cp-save');
+  if(btn) btn.disabled = true;
+  _cpSay('Saving…');
+  try{
+    const photo = await _cpBlob(_cpRender('photo', outW, outH));
+    const thumb = await _cpBlob(_cpRender('thumb', CP_THUMB_W, CP_THUMB_H));
+    mine.thumbBlob = thumb;
+    await _cpSend(mine, photo, thumb);
+  }catch(e){
+    if(_cp === mine) _cpSay('Couldn’t save: ' + e.message, 'bad');
+  }finally{
+    mine.busy = false;
+    if(_cp === mine && btn && btn.style.display !== 'none') btn.disabled = false;
+  }
+}
+
+// Re-sends the SAME thumbnail blob with ?only=thumb: no second Supabase row.
+async function crewPhotoRetryThumb(){
+  if(!_cp || !_cp.thumbBlob || _cp.busy) return;
+  const mine = _cp;
+  mine.busy = true;
+  const btn = document.getElementById('cp-retry');
+  if(btn) btn.disabled = true;
+  _cpSay('Retrying the SmartStaff thumbnail…');
+  try{
+    await _cpSend(mine, null, mine.thumbBlob);
+  }catch(e){
+    if(_cp === mine) _cpSay('Couldn’t save: ' + e.message, 'bad');
+  }finally{
+    mine.busy = false;
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function _cpSend(mine, photo, thumb){
+  const fd = new FormData();
+  if(photo) fd.append('photo', photo, 'photo.jpg');
+  fd.append('thumb', thumb, 'thumb.jpg');
+  const r = await fetch('/api/crew/' + encodeURIComponent(mine.id) + '/photo' + (photo ? '' : '?only=thumb'),
+                        {method: 'POST', body: fd});
+  let j = null;
+  try{ j = await r.json(); }catch(e){ j = null; }
+  if(_cp !== mine) return;
+  if(!r.ok || !j || !j.ok){
+    _cpSay((j && j.error) || ('Couldn’t save (HTTP ' + r.status + ').'), 'bad');
+    return;
+  }
+  _crewPhotoV[mine.id] = j.v;
+  if(typeof crewViewCardInvalidate === 'function') crewViewCardInvalidate();
+  if(mine.onSaved){ try{ mine.onSaved(j.v); }catch(e){ console.error(e); } }
+  // The full-size photo is saved now; another Save would add a second row.
+  const save = document.getElementById('cp-save');
+  if(save) save.style.display = 'none';
+  const retry = document.getElementById('cp-retry');
+  if(j.thumbnail){
+    if(retry) retry.style.display = 'none';
+    _cpSay('Saved.', 'ok');
+    setTimeout(function(){ if(_cp === mine) closeCrewPhoto(); }, 1000);
+  } else {
+    if(retry) retry.style.display = '';
+    _cpSay('Saved full-size; the SmartStaff thumbnail didn’t update (' + (j.error || 'unknown error') + ').', 'warn');
+  }
+}
+
+// The photo dialog owns Esc while open. Capture phase + stopPropagation, like
+// the palette, so one press never also closes the entity-modal underneath.
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  const m = document.getElementById('crew-photo-modal');
+  if(m && m.style.display === 'flex'){ e.stopPropagation(); e.preventDefault(); closeCrewPhoto(); }
+}, true);
+
 async function openCrewEdit(id, opts){
   opts = opts || {};
   entityStackTrim('crew:'+id);       // Crew A -> call -> Crew A collapses the trail
@@ -13249,10 +13583,13 @@ async function openCrewEdit(id, opts){
   ceMarkEmergency(c.id);
 
   // \u2500\u2500 header banner: reliability + Work Visa flag (left), photo (right) \u2500\u2500
-  const _cePhoto = (c.id != null)
-    ? '<img class="ce-hdr-photo" src="/api/crew-photo/'+encodeURIComponent(c.id)+'" alt="" '
-      + 'onerror="this.outerHTML=\'<div class=&quot;ce-hdr-photo-ph&quot;>No photo</div>\'">'
-    : '<div class="ce-hdr-photo-ph">No photo</div>';
+  // Admins get the photo as a button: hover shows "📷 Update", click opens the
+  // crew photo dialog (5.84.0). Everyone else sees the plain photo.
+  window._ceHdrPhoto = {id: c.id, name: window._crewEditName, ein: c.ein};
+  const _cePhoto = (c.id != null && window._cohort === 'admin')
+    ? '<button type="button" class="ce-photo-btn" title="Update photo" onclick="ceUpdatePhoto()">'
+      + _cePhotoImgHtml(c.id) + '<span class="ce-photo-ovl">\ud83d\udcf7 Update</span></button>'
+    : _cePhotoImgHtml(c.id);
   const ceHeader =
       '<div class="ce-hdr">'
     +   '<div class="ce-hdr-left">' + crewStatsHtml({stats: c.stats}) + _ceVisaBadge(c) + '</div>'
@@ -16520,7 +16857,7 @@ async function ceUnavailDelete(id, eventId){
 // Sorting is shared by the three Crew views (crewSort, beside crewFilter).
 // First click on a column: names and EINs A-Z; stars, hours, licences and
 // reliability worst-or-highest first; push "Off" first. A second click reverses.
-const CREW_REC_SORT_FIRST_DIR = { name: 1, ein: 1, rating: -1, hours: -1, lic: -1, rel: -1, push: 1, contract: -1 };
+const CREW_REC_SORT_FIRST_DIR = { name: 1, ein: 1, rating: -1, hours: -1, lic: -1, rel: -1, push: 1, contract: -1, photo: 1 };
 let _crewRecLastRows = [];   // what Records last drew, in order, for Export CSV
 function crewRecSortBy(key){ crewSortBy(key); }
 
@@ -16565,6 +16902,10 @@ function crewRecSortVal(c, key, ctx){
     case 'contract':
       if(!_crewListContractOk || !('contract' in c)) return -1;
       return c.contract === null ? 2 : 1;
+    // None first, then oldest to newest (either kind), unknown last.
+    case 'photo':
+      if(!_crewListPhotoOk || !('photo' in c)) return '~';
+      return (c.photo && c.photo.kind !== 'none' && c.photo.date) ? c.photo.date : '0';
     default:     return decodeEntities(c.name || '').toLowerCase();
   }
 }
@@ -16639,6 +16980,40 @@ function crewRecContractHtml(c){
   }
   // _ceDocDate / _ceDocVersion return escaped HTML; tip goes into the attribute as-is.
   return '<span class="rec-contract" style="color:'+col+'" title="'+tip+'"'+open+'>'+text+'</span>';
+}
+
+// Photo column (5.84.0): "Full-size · Mar 2025", "Low-res · Feb 2017", None, or
+// a muted unknown when either lookup failed — unknown never reads as None.
+// Amber once the photo is more than 2 years old (D8). Every state opens the
+// crew photo dialog.
+function _crewPhotoMonth(d){
+  const m = /^(\d{4})-(\d{2})/.exec(String(d || ''));
+  if(!m) return escapeHtml(String(d || ''));
+  return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2]) - 1] + ' ' + m[1];
+}
+function crewRecPhotoHtml(c, today){
+  const open = ' onclick="crewRecPhotoOpen(event, '+Number(c.id)+')"';
+  if(!_crewListPhotoOk || !('photo' in c))
+    return '<span class="rec-photo" style="color:var(--muted)" title="Photo data unavailable \u2014 click to update"'+open+'>unknown</span>';
+  const p = c.photo || {};
+  if(p.kind === 'none' || !p.date)
+    return '<span class="rec-photo" style="color:var(--muted)" title="No photo on file \u2014 click to add one"'+open+'>None</span>';
+  const stale = p.date < (Number(today.slice(0, 4)) - 2) + today.slice(4);
+  const full = p.kind === 'full';
+  const tip = (full ? 'Full-size photo' + (p.source ? ' (' + p.source + ')' : '') : 'SmartStaff thumbnail only (125\u00d7138)')
+    + ', ' + p.date + (stale ? ' \u2014 over 2 years old' : '') + ' \u2014 click to update';
+  const col = stale ? 'var(--warn)' : (full ? 'var(--text)' : 'var(--muted)');
+  return '<span class="rec-photo" style="color:'+col+'" title="'+escapeHtml(tip)+'"'+open+'>'
+    + (full ? 'Full-size' : 'Low-res') + ' \u00b7 ' + _crewPhotoMonth(p.date) + '</span>';
+}
+function crewRecPhotoOpen(ev, crewId){
+  if(ev) ev.stopPropagation();          // the row underneath opens Details
+  const c = _crewListData.find(function(x){ return Number(x.id) === Number(crewId); });
+  if(!c) return;
+  openCrewPhoto(c.id, c.name, c.ein, function(){
+    if(_crewListPhotoOk) c.photo = {kind: 'full', date: _goatLocalISODate(new Date()), source: 'admin'};
+    _renderCrewList();
+  });
 }
 
 function crewContractOpen(ev, crewId){
@@ -16756,7 +17131,8 @@ function _renderCrewList(){
   // is ticked, and Status. Headers sort; see crewRecSortBy.
   const soon = _goatLocalISODate(new Date(Date.now() + 30*86400000));
   const ctx = { today: today, soon: soon };
-  const rs = crewSortFor(['name','rating','ein','lic','rel','push','contract']);
+  const photoCol = (window._cohort === 'admin');
+  const rs = crewSortFor(['name','rating','ein','lic','rel','push','contract'].concat(photoCol ? ['photo'] : []));
   const sk = rs.key, sd = rs.dir;
   const sorted = rows.slice().sort(function(a, b){
     const av = crewRecSortVal(a, sk, ctx), bv = crewRecSortVal(b, sk, ctx);
@@ -16781,6 +17157,7 @@ function _renderCrewList(){
       + th('Reliability 12 mo', 'rel', '', 'width:160px')
       + th('Push', 'push', '', 'width:70px')
       + th('Contract', 'contract', '', 'width:110px')
+      + (photoCol ? th('Photo', 'photo', '', 'width:130px') : '')
       + th(lic.length ? 'Matched' : '', '', '')
       + th('Status', '', '', 'width:70px') + th('', '', '', 'width:36px')
       + '</tr></thead><tbody>'
@@ -16797,6 +17174,7 @@ function _renderCrewList(){
           + '<td>'+crewRecRelHtml(c)+'</td>'
           + '<td>'+crewRecPushHtml(c)+'</td>'
           + '<td>'+crewRecContractHtml(c)+'</td>'
+          + (photoCol ? '<td>'+crewRecPhotoHtml(c, today)+'</td>' : '')
           + '<td>'+matchedLicHtml(c)+'</td>'
           + '<td>'+status+'</td>'
           + '<td style="color:var(--muted);font-size:14px;text-align:right;text-overflow:clip">\u203a</td>'
@@ -24114,6 +24492,16 @@ function _apList(title, items, fmt){
     + '<div style="padding:4px 0 0 14px">'+items.map(function(x){ return '<div>'+fmt(x)+'</div>'; }).join('')+'</div></details>';
 }
 
+function apReplacePhoto(ev, a){
+  if(ev) ev.preventDefault();
+  openCrewPhoto(a.dataset.id, a.dataset.name, a.dataset.ein, function(){
+    const s = document.createElement('span');
+    s.style.color = 'var(--ok,#10b981)';
+    s.textContent = '\u2713 Updated';
+    if(a.parentNode) a.replaceWith(s);
+  });
+}
+
 async function accredPhotosDownload(bookingId){
   const status = document.getElementById('ap-status');
   const say = function(msg, bad){ if(status){ status.style.color = bad ? 'var(--conflict)' : 'var(--muted)'; status.textContent = msg; } };
@@ -24149,13 +24537,21 @@ async function accredPhotosDownload(bookingId){
     const k = j.counts || {};
     const nPhotos = (k.full||0) + (k.low_res||0);
     const who = function(x){ return escapeHtml(decodeEntities(x.name||''))+' · '+escapeHtml(String(x.ein||'')); };
+    // Admin: Replace opens the crew photo dialog over these results (5.84.0).
+    const fix = function(x){
+      return who(x) + ((window._cohort === 'admin' && x.id)
+        ? ' · <a href="#" style="color:var(--accent)" data-id="'+escapeHtml(String(x.id))+'"'
+          + ' data-name="'+escapeHtml(decodeEntities(x.name||''))+'" data-ein="'+escapeHtml(String(x.ein||''))+'"'
+          + ' onclick="apReplacePhoto(event, this)">Replace</a>'
+        : '');
+    };
     if(status){
       status.style.color = 'var(--muted)';
       status.innerHTML = '<div style="color:var(--text)">Downloaded '+escapeHtml(j.filename||'')+' — '+nPhotos+' photo'+(nPhotos===1?'':'s')
         + ' ('+(k.full||0)+' full-size, '+(k.low_res||0)+' low-res)'
         + (k.missing ? ' · <span style="color:var(--warn)">'+k.missing+' missing</span>' : '')+'</div>'
-        + _apList('Missing photo', j.missing, who)
-        + _apList('Low-res (SmartStaff photo only)', j.low_res, who)
+        + _apList('Missing photo', j.missing, fix)
+        + _apList('Low-res (SmartStaff photo only)', j.low_res, fix)
         + _apList('Renamed to avoid a clash', j.clashes, function(x){ return who(x)+' → '+escapeHtml(x.file||''); });
     }
   }catch(e){
@@ -27404,6 +27800,13 @@ function exportCrewRecordsCSV(){
     const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(k.signed_at || ''));
     return (m ? m[1] : 'On file (no date)') + (k.has_pdf === false ? ' (no PDF)' : '');
   };
+  // full YYYY-MM-DD · low YYYY-MM-DD · none · unknown
+  const photoCell = function(c){
+    if(!_crewListPhotoOk || !('photo' in c)) return 'unknown';
+    const p = c.photo || {};
+    if(p.kind === 'none' || !p.date) return 'none';
+    return (p.kind === 'full' ? 'full ' : 'low ') + p.date;
+  };
   const rows = (_crewRecLastRows || []).map(function(c){
     const ls = crewRecLicState(c, today, soon);
     const s  = c.stats;
@@ -27414,13 +27817,13 @@ function exportCrewRecordsCSV(){
       ls ? ls.expired.join(' ') : 'Unknown', ls ? ls.expiring.join(' ') : 'Unknown',
       n(s && s.late_12mo), n(s && s.noshow_12mo), n(s && s.late_all), n(s && s.noshow_all),
       c.push_ok === true ? 'On' : (c.push_ok === false ? 'Off' : 'Unknown'),
-      contractCell(c),
+      contractCell(c), photoCell(c),
       (c.groups || []).join(' ')
     ];
   });
   goatExportCSV('crew-records-' + (crewFilter.active ? 'active' : 'inactive'),
     ['Name', 'EIN', 'Phone', 'Stars', 'Status', 'Licences expired', 'Licences expiring (30 days)',
-     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Crew Hub push', 'Contract signed', 'Groups'],
+     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Crew Hub push', 'Contract signed', 'Photo', 'Groups'],
     rows);
 }
 
@@ -27541,7 +27944,7 @@ function crewViewCardShow(t, tok){
   const anchor   = t.closest('td') || t;
   const el = _ensureCrewCardEl();
   const photo = id
-    ? '<img class="cc-photo" src="/api/crew-photo/'+encodeURIComponent(id)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;cc-photo-ph&quot;>No photo on file</div>\'">'
+    ? '<img class="cc-photo" src="'+crewPhotoSrc(id)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;cc-photo-ph&quot;>No photo on file</div>\'">'
     : '<div class="cc-photo-ph">No photo on file</div>';
   el.innerHTML = '<div class="cc-name">'+escapeHtml(decodeEntities(name))+'</div>' + photo
     + '<div class="cc-view-body">'+crewViewCardBody({loading: true})+'</div>'
@@ -35490,6 +35893,26 @@ function applyGoldRows(){
       <button class="btn-logout" onclick="closeElevateModal()">Cancel</button>
       <button class="btn-logout" id="elevate-go" style="border-color:var(--accent);color:var(--accent)" onclick="submitElevate()">Elevate</button>
     </div>
+  </div>
+</div>
+
+<!-- Crew photo dialog (5.84.0) — its own overlay at z-index 99993, above
+     entity-modal (99991) and elevate-modal (99992), so the crew record or the
+     accreditation results underneath are never replaced. Esc / backdrop close
+     only this. -->
+<div id="crew-photo-modal" style="display:none;position:fixed;inset:0;z-index:99993;
+     background:rgba(0,0,0,0.6);align-items:center;justify-content:center" onclick="if(event.target===this)closeCrewPhoto()">
+  <div id="crew-photo-panel" style="background:var(--surface);border:1px solid var(--border-gold);border-radius:6px;
+              width:520px;max-width:94vw;max-height:92vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 18px;
+                border-bottom:1px solid var(--border);background:#0a0a0a">
+      <div id="crew-photo-head" style="display:flex;align-items:center;gap:10px;min-width:0"></div>
+      <button onclick="closeCrewPhoto()" style="background:none;border:none;color:var(--muted);
+              font-size:20px;cursor:pointer;line-height:1;flex-shrink:0;margin-left:12px">✕</button>
+    </div>
+    <div id="crew-photo-body" style="padding:16px 18px"></div>
+    <div id="crew-photo-actions" style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;
+                border-top:1px solid var(--border);background:#0a0a0a"></div>
   </div>
 </div>
 
