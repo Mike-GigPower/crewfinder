@@ -23153,8 +23153,14 @@ async function abToggle(bookingId){
       return;
     }
     const calls = data.calls || [];
+    // The booking dialog's own doorway from this list. Calls open the call
+    // dialog and the calendar opens a booking from its bar, but a booking with
+    // no calls has no bar and no rows, so without this its Details (event,
+    // travel, rate card) couldn't be reached at all (booking 12215).
+    const openBtn = '<div onclick="openBookingDialog(\''+bookingId+'\')" title="Open the booking" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 8px;border:1px dashed var(--accent);border-radius:4px;cursor:pointer;color:var(--accent);font-size:11px;background:var(--surface2)">🗂 Open booking</div>';
     if(!calls.length){
-      body.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:4px">No calls on this booking.</div>';
+      body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+openBtn+'</div>'
+        + '<div style="color:var(--muted);font-size:11px;padding:4px">No calls on this booking.</div>';
       body.setAttribute('data-loaded','1');
       return;
     }
@@ -23167,7 +23173,7 @@ async function abToggle(bookingId){
     // would collide. Filled by the shared loader below — one implementation,
     // shown here and in the booking dialog.
     const checkinWrap = '<div id="ab-checkin-'+bookingId+'"></div>';
-    body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+genBtn+gsheetBtn+importBtn+'</div>' + checkinWrap + calls.map(function(c){
+    body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+openBtn+genBtn+gsheetBtn+importBtn+'</div>' + checkinWrap + calls.map(function(c){
       const when = _abCallWhen(c.start_date, c.start_time);
       // Greyed, struck through, and NO Enter Times doorway -- see the call
       // dialog for why that link is a trap on a cancelled call.
