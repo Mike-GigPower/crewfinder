@@ -299,6 +299,39 @@
 	t_ok('14g nothing recorded -> null, no runs',
 		goat_crew_hours_lane_group($b, $today) === null && $b['current_run'] === null && count($b['runs']) === 0, '');
 
+	/* 16. Live current-run hours — the staffing planner's "new" (staffing-plans-a §2.1) */
+	$today = '2026-10-07';
+
+	$b = goat_crew_hours_build(array());
+	t_ok('16a no rows -> 0',
+		goat_crew_hours_live_current_h($b, $today) === 0.0, goat_crew_hours_live_current_h($b, $today));
+
+	$b = goat_crew_hours_build(t_block('2026-09-01', 13, 10));         /* 130h, live */
+	t_ok('16b live run at 130h -> 130',
+		t_near(goat_crew_hours_live_current_h($b, $today), 130), goat_crew_hours_live_current_h($b, $today));
+
+	/* last shift 2025-04-06: + 18 months = 2026-10-06, so dormant on 2026-10-07 (18 months + 1 day) */
+	$b = goat_crew_hours_build(t_block('2025-03-27', 11, 10));         /* 110h, ends 2025-04-06 */
+	t_ok('16c last shift 18 months + 1 day ago -> 0 (dormant)',
+		$b['runs'][0]['end_date_iso'] === '2025-04-06'
+		&& goat_crew_hours_live_current_h($b, $today) === 0.0,
+		$b['runs'][0]['end_date_iso'] . ' ' . goat_crew_hours_live_current_h($b, $today));
+
+	/* same run, today = 18 months - 1 day after the last shift */
+	t_ok('16d the same run at 18 months - 1 day -> its total',
+		t_near(goat_crew_hours_live_current_h($b, '2026-10-05'), 110),
+		goat_crew_hours_live_current_h($b, '2026-10-05'));
+
+	$rows = t_block('2020-01-01', 30, 10);                              /* earlier run 300h */
+	$rows = array_merge($rows, t_block('2026-09-01', 2, 10));           /* current run 20h */
+	$b = goat_crew_hours_build($rows);
+	t_ok('16e returner: current run 20h after an earlier 300h run -> 20, recorded_h 320',
+		count($b['runs']) === 2
+		&& t_near(goat_crew_hours_live_current_h($b, $today), 20)
+		&& t_near($b['totals']['recorded_h'], 320),
+		goat_crew_hours_live_current_h($b, $today) . ' / ' . $b['totals']['recorded_h']);
+
+
 	/* 15. Output rounding is at the edge only */
 	$b = goat_crew_hours_round(goat_crew_hours_build(array(
 		t_row('2026-03-01', '08:00:00', '08:20:00', 0.3333333, array()))));
