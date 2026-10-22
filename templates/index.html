@@ -21167,6 +21167,125 @@ async function callMakeCrewBoss(bookingId, callId, uid){
   callLoadPricing(bookingId, callId, j.warning || '');
 }
 
+// ── ALLOWANCE FLAGS (call dialog, Stage 3 §4) ───────────────────────────────
+// Two per call: Broadcast and Travel. Facts for Stage 4's engine; nothing is
+// priced from them here. Everyone who opens the call sees the chips; only an
+// Admin can change them (the POST route enforces it). Travel is hidden on M&OP
+// (T3); one set before the card changed shows amber "not on M&OP" and is kept.
+var _callFlags = {};      // callId -> /flags payload
+var _callFlagsBusy = {};
+
+// 180 -> "3 h", 150 -> "2 h 30", 45 -> "45 min".
+function pcFmtMinutes(m){
+  m = Number(m) || 0;
+  var h = Math.floor(m / 60), r = m % 60;
+  if(!h) return r + ' min';
+  return h + ' h' + (r ? ' ' + (r < 10 ? '0' : '') + r : '');
+}
+
+function pcAmber(text, title){
+  return '<span' + (title ? ' title="' + escapeHtml(title) + '"' : '')
+    + ' style="font-size:9px;letter-spacing:.3px;color:#f59e0b;background:rgba(245,158,11,0.12);'
+    + 'border-radius:3px;padding:2px 6px;white-space:nowrap">' + text + '</span>';
+}
+
+async function callLoadFlags(bookingId, callId, msg){
+  var host = document.getElementById('call-af-wrap-' + callId);
+  if(!host) return;
+  var token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  var v = window._curCallVenue;
+  var p = null, err = '';
+  try{
+    var r = await fetch('/api/call/' + bookingId + '/' + callId + '/flags' + (v ? '?venue_id=' + v.id : ''));
+    var j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status); else p = j;
+  }catch(e){ err = e.message || String(e); }
+  if(host.__loadToken !== token || !host.isConnected) return;   // superseded / closed
+  if(!p){
+    delete _callFlags[callId];
+    host.innerHTML = entityRow('Allowances', '<span style="font-size:11px;color:var(--muted)">Unavailable (' + escapeHtml(err) + ')'
+      + '<span onclick="callLoadFlags(\'' + bookingId + '\',\'' + callId + '\')" style="color:var(--accent);cursor:pointer;margin-left:8px">Retry</span></span>');
+    return;
+  }
+  _callFlags[callId] = p;
+  callRenderFlags(bookingId, callId, msg);
+}
+
+function callRenderFlags(bookingId, callId, msg){
+  var host = document.getElementById('call-af-wrap-' + callId);
+  var p = _callFlags[callId];
+  if(!host || !p) return;
+  var admin = !!p.can_change;
+  var who = p.set_by_user_id ? ' Set by ' + ctWho(p) + (p.set_at ? ', ' + new Date(p.set_at).toLocaleString() : '') + '.' : '';
+  var toggle = function(which){ return "callToggleFlag('" + bookingId + "','" + callId + "','" + which + "')"; };
+  var bits = [];
+
+  // BROADCAST: the same flag on every card (D34 is Stage 5's choice).
+  if(p.attracts_broadcast){
+    bits.push(ctOnChip('Broadcast', admin ? toggle('b') : '',
+      'Attracts the Broadcast Allowance, once per person per event.' + who + (admin ? ' Click to turn off.' : '')));
+  } else if(admin){
+    bits.push(ctOffBtn('Broadcast', toggle('b'), 'This call attracts the Broadcast Allowance'));
+  }
+
+  // TRAVEL: hidden on M&OP unless it was set before the card changed.
+  var travelOk = p.travel_allowed;
+  if(p.travel_eligible){
+    bits.push(ctOnChip('Travel', admin ? toggle('t') : '',
+      'Travel eligible.' + who + (admin ? ' Click to turn off.' : '')));
+    if(p.card_ok && !travelOk){
+      bits.push(pcAmber('not on M&OP', 'This booking is now on the ' + (p.set_label || 'M&OP') + ' card, which has no travel. Nothing was changed; an Admin turns it off.'));
+    } else if(p.venue_travel && p.venue_travel.return_minutes == null){
+      bits.push(pcAmber('venue has no travel time', 'Set the venue\'s return travel time on the booking\'s Details tab')
+        + (admin ? '<span onclick="entityOpenBookingFromCall(\'' + bookingId + '\',\'' + callId + '\')" style="font-size:10px;color:var(--accent);cursor:pointer;margin-left:6px">Set…</span>' : ''));
+    }
+  } else if(admin && travelOk){
+    bits.push(ctOffBtn('Travel', toggle('t'), 'Crew on this call are eligible for travel time'));
+  } else if(admin && !p.card_ok){
+    bits.push(ctOffBtn('Travel', '', 'The rate card is unknown, so travel can\'t be set now', true));
+  }
+
+  var body = bits.length
+    ? '<span style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap">' + bits.join('') + '</span>'
+    : '<span style="color:var(--muted)">None</span>';
+  if(admin) body += '<div style="font-size:10px;color:var(--muted);margin-top:5px">' + escapeHtml(p.honesty || CT_HONESTY) + '</div>';
+  if(msg) body += '<div style="font-size:11px;color:var(--conflict);margin-top:4px">' + escapeHtml(msg) + '</div>';
+  host.innerHTML = entityRow('Allowances', body);
+}
+
+async function callToggleFlag(bookingId, callId, which){
+  var p = _callFlags[callId];
+  if(!p || !p.can_change || _callFlagsBusy[callId]) return;
+  var b = !!p.attracts_broadcast, t = !!p.travel_eligible;
+  if(which === 'b') b = !b; else t = !t;
+  _callFlagsBusy[callId] = true;
+  var msg = '';
+  try{
+    var r = await fetch('/api/call/' + bookingId + '/' + callId + '/flags', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attracts_broadcast: b, travel_eligible: t })
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok || j.error) msg = j.error || ('HTTP ' + r.status);
+    else if(j.warning) msg = j.warning;
+    else if(!j.unchanged) showFeedback((which === 'b' ? 'Broadcast ' : 'Travel ') + ((which === 'b' ? b : t) ? 'on' : 'off'));
+  }catch(e){
+    msg = "Couldn't reach the pricing context service.";
+  }
+  try{
+    await callLoadFlags(bookingId, callId, msg);   // show what it IS now
+  } finally {
+    delete _callFlagsBusy[callId];
+  }
+}
+
+// From a call to its own booking (the "Set…" travel link): Back returns here.
+function entityOpenBookingFromCall(bookingId, callId){
+  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
+  openBookingDialog(bookingId);
+}
+
 async function openCallDialog(bookingId, callId){
   entityTabsCarry('call:'+bookingId+':'+callId);   // a reload keeps its tab (§3.3 rule 1)
   openEntityModal();
@@ -21197,11 +21316,13 @@ async function openCallDialog(bookingId, callId){
     let bookingVenue = '';
     let editSrc = null;
     window._curCallBookingName = '';
+    window._curCallVenue = null;
     try{
       const bData = await bRes.json();
       if(bData){
         if(bData.name) window._curCallBookingName = decodeEntities(String(bData.name));
         if(bData.venue && bData.venue.name) bookingVenue = bData.venue.name;
+        if(bData.venue && Number(bData.venue.id) > 0) window._curCallVenue = { id: Number(bData.venue.id), name: decodeEntities(String(bData.venue.name || '')) };
         if(bData.calls){
           const match = bData.calls.find(function(c){ return String(c.call_id) === String(callId); });
           if(match){
@@ -21371,6 +21492,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   const _notesOk = (window._cohort === 'admin' || window.isReadOnlyCohort());
   const detailsHtml =
       '<div id="call-ct-wrap-'+callId+'"></div>'
+    + '<div id="call-af-wrap-'+callId+'"></div>'
     + entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
     + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
@@ -21416,6 +21538,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   if(_act && _act.getAttribute('data-active') === 'responses') callResponsesLoad(bookingId, callId);
   if(_notesOk) crewNotesInit({ key: _tabsKey, bookingId: bookingId, callId: callId, callIds: [callId] }, _pick.fromCarry);
   if(window._cohort === 'admin') callLoadPricing(bookingId, callId);   // async, never awaited
+  callLoadFlags(bookingId, callId);                                     // async, never awaited
   // FIND CREW AND ENTER TIMES ARE REMOVED ON A CANCELLED CALL.
   //
   // Find Crew is primary-styled, so on a cancelled call the brightest thing on
@@ -24953,8 +25076,322 @@ function bkCallTypeChip(bookingId, c){
   return chip;
 }
 
+// ── PRICING CONTEXT (booking dialog, Stage 3 §4–§6) ─────────────────────────
+// ONE GET per booking open: the calls' allowance flags (B / T markers on the
+// Calls tab), the booking's event and its other bookings, and the venue's
+// return travel time. Every change is Admin only (the POST routes enforce it).
+// A failure leaves the markers off and says "unavailable" on the two rows.
+var _bkPctx = { bookingId: null, data: null };
+var _bkPctxBusy = false;
+
+async function bkLoadPricingContext(bookingId, d, msg){
+  var venue = (d && d.venue && Number(d.venue.id) > 0) ? d.venue : null;
+  var data = null, err = '';
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/pricing-context'
+                        + (venue ? '?venue_id=' + Number(venue.id) : ''));
+    var j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status); else data = j;
+  }catch(e){ err = e.message || String(e); }
+  if(window._curBookingEdit !== d) return;   // another booking opened meanwhile
+  _bkPctx = { bookingId: String(bookingId), data: data, err: err, d: d,
+              venue: venue ? { id: Number(venue.id), name: decodeEntities(String(venue.name || '')) } : null };
+  bkRenderTravel(bookingId, msg && msg.travel);
+  bkRenderEvent(bookingId, msg && msg.event);
+  if(data && Object.keys(data.call_flags || {}).length) bkRerenderCalls(bookingId);
+}
+
+function bkPctxReload(bookingId, msg){
+  if(_bkPctx.bookingId !== String(bookingId)) return Promise.resolve();
+  return bkLoadPricingContext(bookingId, _bkPctx.d, msg);
+}
+
+// Calls tab: a small B / T per flagged call, so a glance shows the allowances.
+function bkFlagMarkers(bookingId, c){
+  if(_bkPctx.bookingId !== String(bookingId) || !_bkPctx.data) return '';
+  var f = (_bkPctx.data.call_flags || {})[String(c.call_id)];
+  if(!f) return '';
+  var m = function(letter, title){
+    return '<span title="' + escapeHtml(title) + '" style="font-size:9px;font-weight:bold;color:#0b0b0b;background:var(--accent);'
+      + 'border-radius:3px;padding:0 4px;margin-left:4px;vertical-align:middle">' + letter + '</span>';
+  };
+  return (f.attracts_broadcast ? m('B', 'Attracts Broadcast') : '')
+       + (f.travel_eligible ? m('T', 'Travel eligible') : '');
+}
+
+function bkPctxMsg(msg){
+  return msg ? '<div style="font-size:11px;color:var(--conflict);margin-top:4px">' + escapeHtml(msg) + '</div>' : '';
+}
+
+function bkPctxLink(label, onclick){
+  return '<span onclick="' + onclick + '" style="font-size:11px;color:var(--accent);cursor:pointer;margin-left:10px">' + label + '</span>';
+}
+
+// ── Travel time per venue (§5). One return figure per venue, the same for
+// every booking there (T9). Shown only when the booking isn't M&OP.
+function bkRenderTravel(bookingId, msg){
+  var host = document.getElementById('bk-travel-wrap');
+  if(!host || _bkPctx.bookingId !== String(bookingId)) return;
+  var p = _bkPctx.data, v = _bkPctx.venue;
+  if(!v){ host.innerHTML = ''; return; }
+  if(!p){
+    host.innerHTML = window._cohort === 'admin'
+      ? entityRow('Travel', '<span style="font-size:11px;color:var(--muted)">Unavailable (' + escapeHtml(_bkPctx.err || '') + ')</span>'
+          + bkPctxLink('Retry', "bkPctxReload('" + bookingId + "')"))
+      : '';
+    return;
+  }
+  if(!p.travel_allowed){ host.innerHTML = ''; return; }   // M&OP has no travel (T3)
+  var vt = p.venue_travel || {};
+  var set = vt.return_minutes != null;
+  var who = (set && vt.set_by_name) ? ' title="Set by ' + escapeHtml(vt.set_by_name)
+    + (vt.set_at ? ', ' + escapeHtml(new Date(vt.set_at).toLocaleString()) : '') + '"' : '';
+  var shown = set
+    ? '<span' + who + '>' + escapeHtml(pcFmtMinutes(vt.return_minutes)) + ' return</span>'
+    : '<span style="color:var(--muted)">not set</span>';
+  var link = p.can_change ? bkPctxLink(set ? 'Change…' : 'Set…', "bkEditTravel('" + bookingId + "')") : '';
+  host.innerHTML = entityRow('Travel', shown + link + bkPctxMsg(msg));
+}
+
+function bkEditTravel(bookingId){
+  var host = document.getElementById('bk-travel-wrap');
+  var p = _bkPctx.data, v = _bkPctx.venue;
+  if(!host || !p || !v) return;
+  var cur = (p.venue_travel || {}).return_minutes;
+  var h = cur != null ? Math.floor(cur / 60) : 0, m = cur != null ? cur % 60 : 0;
+  var opts = function(vals, sel, fmt){
+    return vals.map(function(x){ return '<option value="' + x + '"' + (x === sel ? ' selected' : '') + '>' + fmt(x) + '</option>'; }).join('');
+  };
+  var hours = []; for(var i = 0; i <= 24; i++) hours.push(i);
+  host.innerHTML = entityRow('Travel',
+      '<div style="border:1px solid var(--border);border-radius:4px;padding:8px 10px;background:var(--surface2)">'
+    + '<div style="font-size:10px;color:var(--muted);margin-bottom:5px">Return trip to ' + escapeHtml(v.name || 'this venue') + ', the same for everyone</div>'
+    + '<select id="bk-travel-h" style="' + EF_INPUT_STYLE + ';width:auto">' + opts(hours, h, function(x){ return x + ' h'; }) + '</select> '
+    + '<select id="bk-travel-m" style="' + EF_INPUT_STYLE + ';width:auto">' + opts([0, 15, 30, 45], m, function(x){ return (x < 10 ? '0' : '') + x + ' min'; }) + '</select>'
+    + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+    +   ctBtn('Save', "bkSaveTravel('" + bookingId + "', false)")
+    +   (cur != null ? ctBtn('Clear', "bkSaveTravel('" + bookingId + "', true)", 'Remove this venue\'s travel time') : '')
+    +   ctBtn('Cancel', "bkRenderTravel('" + bookingId + "')")
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">' + escapeHtml(p.honesty || CT_HONESTY) + '</div>'
+    + '</div>');
+}
+
+async function bkSaveTravel(bookingId, clear){
+  var v = _bkPctx.venue;
+  if(!v || _bkPctxBusy) return;
+  var minutes = null;
+  if(!clear){
+    minutes = Number(_efVal('bk-travel-h')) * 60 + Number(_efVal('bk-travel-m'));
+    if(!minutes) return bkRenderTravel(bookingId, 'Set a travel time above zero, or Clear it.');
+  }
+  var venueName = v.name || ('venue #' + v.id);
+  if(!confirm((clear ? 'This clears travel for every booking at ' : 'This sets travel for every booking at ')
+      + venueName + '.' + (clear ? '' : '\n\n' + pcFmtMinutes(minutes) + ' return.'))) return;
+  _bkPctxBusy = true;
+  var msg = '';
+  try{
+    var r = await fetch('/api/venue/' + v.id + '/travel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ venue_name: venueName, return_minutes: minutes })
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok || j.error) msg = j.error || ('HTTP ' + r.status);
+    else if(j.warning) msg = j.warning;
+    else if(!j.unchanged) showFeedback(clear ? 'Travel cleared' : 'Travel: ' + pcFmtMinutes(minutes) + ' return');
+  }catch(e){
+    msg = "Couldn't reach the pricing context service.";
+  }
+  try{ await bkPctxReload(bookingId, { travel: msg }); } finally { _bkPctxBusy = false; }
+}
+
+// ── Events (§6). A booking is in one event at most (E-1); Admins make them by
+// hand (E-2). An event is the whole festival or run (E-3).
+function bkBookingName(id){
+  var b = window._bookingIndex && window._bookingIndex[id];
+  return (b && b.name) ? decodeEntities(String(b.name)) : ('Booking #' + id);
+}
+
+function bkOpenSiblingBooking(fromId, toId){
+  entityStackPush('booking:'+fromId, 'booking', function(){ openBookingDialog(fromId); });
+  openBookingDialog(String(toId));
+}
+
+function bkRenderEvent(bookingId, msg){
+  var host = document.getElementById('bk-event-wrap');
+  if(!host || _bkPctx.bookingId !== String(bookingId)) return;
+  var p = _bkPctx.data;
+  if(!p){
+    host.innerHTML = entityRow('Event', '<span style="font-size:11px;color:var(--muted)">Unavailable (' + escapeHtml(_bkPctx.err || '') + ')</span>'
+      + bkPctxLink('Retry', "bkPctxReload('" + bookingId + "')"));
+    return;
+  }
+  var ev = p.event;
+  if(!ev){
+    host.innerHTML = entityRow('Event', '<span style="color:var(--muted)">Not in an event</span>'
+      + (p.can_change ? bkPctxLink('Add to event…', "bkOpenEventPicker('" + bookingId + "')") : '') + bkPctxMsg(msg));
+    return;
+  }
+  var others = ev.other_booking_ids || [];
+  var list = others.length
+    ? '<div style="font-size:11px;color:var(--muted);margin-top:3px">with ' + others.length + ' other booking' + (others.length === 1 ? '' : 's') + ': '
+      + others.map(function(id){
+          return '<button type="button" class="ce-call-link" title="Open booking #' + id + '" onclick="bkOpenSiblingBooking(\''
+            + bookingId + '\',' + Number(id) + ')">' + escapeHtml(bkBookingName(id)) + '</button>';
+        }).join(', ') + '</div>'
+    : '<div style="font-size:11px;color:var(--muted);margin-top:3px">the only booking in it so far</div>';
+  var notes = ev.notes ? '<div style="font-size:11px;color:var(--muted);margin-top:3px;white-space:pre-wrap">' + escapeHtml(ev.notes) + '</div>' : '';
+  var acts = p.can_change
+    ? bkPctxLink('Change…', "bkOpenEventPicker('" + bookingId + "')") + bkPctxLink('Remove', "bkRemoveFromEvent('" + bookingId + "')")
+    : '';
+  host.innerHTML = entityRow('Event', '<span>' + escapeHtml(ev.name || '') + '</span>' + acts + list + notes + bkPctxMsg(msg));
+}
+
+function bkOpenEventPicker(bookingId, msg){
+  var host = document.getElementById('bk-event-wrap');
+  if(!host || !_bkPctx.data) return;
+  host.innerHTML = entityRow('Event',
+      '<div style="border:1px solid var(--border);border-radius:4px;padding:8px 10px;background:var(--surface2)">'
+    + '<input id="bk-ev-q" type="text" placeholder="Search events by name" style="' + EF_INPUT_STYLE + '" oninput="bkEventSearchSoon(\'' + bookingId + '\')">'
+    + '<div id="bk-ev-results" style="margin-top:6px;font-size:12px;color:var(--muted)">Searching…</div>'
+    + '<div id="bk-ev-new" style="margin-top:8px"></div>'
+    + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+    +   ctBtn('+ New event', "bkNewEventForm('" + bookingId + "')")
+    +   ctBtn('Cancel', "bkRenderEvent('" + bookingId + "')")
+    + '</div>'
+    + '<div id="bk-ev-msg">' + bkPctxMsg(msg) + '</div>'
+    + '</div>');
+  var q = document.getElementById('bk-ev-q');
+  if(q) q.focus();
+  bkEventSearch(bookingId);
+}
+
+var _bkEvSearchTimer = null, _bkEvSearchToken = 0, _bkEvResults = [];
+function bkEventSearchSoon(bookingId){
+  clearTimeout(_bkEvSearchTimer);
+  _bkEvSearchTimer = setTimeout(function(){ bkEventSearch(bookingId); }, 250);
+}
+
+async function bkEventSearch(bookingId){
+  var box = document.getElementById('bk-ev-results');
+  if(!box) return;
+  var token = ++_bkEvSearchToken;
+  var q = _efVal('bk-ev-q') || '';
+  var events = null, err = '';
+  try{
+    var r = await fetch('/api/events?q=' + encodeURIComponent(q));
+    var j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status); else events = j.events || [];
+  }catch(e){ err = e.message || String(e); }
+  if(token !== _bkEvSearchToken || !box.isConnected) return;
+  if(!events){ box.innerHTML = '<span style="color:var(--conflict)">' + escapeHtml(err) + '</span>'; return; }
+  _bkEvResults = events;
+  var curId = _bkPctx.data && _bkPctx.data.event ? _bkPctx.data.event.id : null;
+  if(!events.length){
+    box.textContent = q ? 'No live event matches. Make it with + New event.' : 'No events yet. Make one with + New event.';
+    return;
+  }
+  box.innerHTML = events.map(function(e, i){
+    var n = e.booking_count || 0;
+    var here = (e.id === curId);
+    return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">'
+      + '<span style="flex:1;color:var(--text)">' + escapeHtml(e.name || '') + '</span>'
+      + '<span style="font-size:10px;color:var(--muted)">' + n + ' booking' + (n === 1 ? '' : 's') + '</span>'
+      + (here ? '<span style="font-size:10px;color:var(--muted)">this booking\'s</span>'
+              : ctBtn('Add', "bkPickEvent('" + bookingId + "'," + i + ")"))
+      + ctBtn('Archive', "bkArchiveEvent('" + bookingId + "'," + i + ")", 'Hide it from this list. Only an event with no bookings can be archived.')
+      + '</div>';
+  }).join('');
+}
+
+function bkNewEventForm(bookingId){
+  var box = document.getElementById('bk-ev-new');
+  if(!box) return;
+  box.innerHTML = '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">New event: the whole festival or show run</div>'
+    + '<input id="bk-ev-name" type="text" maxlength="200" placeholder="Event name" style="' + EF_INPUT_STYLE + '" value="' + escapeHtml(_efVal('bk-ev-q') || '') + '">'
+    + '<textarea id="bk-ev-notes" rows="2" maxlength="2000" placeholder="Notes (optional)" style="' + EF_INPUT_STYLE + ';margin-top:4px"></textarea>'
+    + '<div style="margin-top:6px">' + ctBtn('Create and add', "bkCreateEvent('" + bookingId + "')") + '</div>';
+  var nm = document.getElementById('bk-ev-name');
+  if(nm) nm.focus();
+}
+
+function bkEventPickerFail(msg){
+  var el = document.getElementById('bk-ev-msg');
+  if(el) el.innerHTML = bkPctxMsg(msg);
+}
+
+async function bkEventPost(url, body){
+  try{
+    var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                               body: JSON.stringify(body) });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok || j.error) return { error: j.error || ('HTTP ' + r.status) };
+    return j;
+  }catch(e){
+    return { error: "Couldn't reach the pricing context service." };
+  }
+}
+
+// Put the booking in an event. In another one already: that's a move (E-1),
+// and the confirm names both.
+async function bkSetEvent(bookingId, ev){
+  var cur = _bkPctx.data && _bkPctx.data.event;
+  if(cur && cur.id === ev.id){ bkRenderEvent(bookingId); return true; }
+  if(cur && !confirm('Move this booking from "' + cur.name + '" to "' + ev.name + '"?\n\nA booking is in one event at most.')) return false;
+  if(_bkPctxBusy) return false;
+  _bkPctxBusy = true;
+  try{
+    var j = await bkEventPost('/api/booking/' + encodeURIComponent(bookingId) + '/event', { event_id: ev.id });
+    if(j.error){ bkEventPickerFail(j.error); return false; }
+    if(!j.warning) showFeedback((cur ? 'Moved to ' : 'Added to ') + ev.name);
+    await bkPctxReload(bookingId, { event: j.warning || '' });
+    return true;
+  } finally { _bkPctxBusy = false; }
+}
+
+function bkPickEvent(bookingId, i){
+  var ev = _bkEvResults[i];
+  if(ev) bkSetEvent(bookingId, ev);
+}
+
+async function bkCreateEvent(bookingId){
+  var name = (_efVal('bk-ev-name') || '').trim();
+  if(!name) return bkEventPickerFail('Give the event a name.');
+  if(_bkPctxBusy) return;
+  _bkPctxBusy = true;
+  var j;
+  try{
+    j = await bkEventPost('/api/events', { name: name, notes: _efVal('bk-ev-notes') || '' });
+  } finally { _bkPctxBusy = false; }
+  if(j.error) return bkEventPickerFail(j.error);
+  bkSetEvent(bookingId, j.event);
+}
+
+async function bkArchiveEvent(bookingId, i){
+  var ev = _bkEvResults[i];
+  if(!ev || !confirm('Archive "' + ev.name + '"? It stops showing in this list.')) return;
+  var j = await bkEventPost('/api/events/' + encodeURIComponent(ev.id), { archived: true });
+  if(j.error) return bkEventPickerFail(j.error);
+  showFeedback('Archived ' + ev.name);
+  bkEventSearch(bookingId);
+}
+
+async function bkRemoveFromEvent(bookingId){
+  var cur = _bkPctx.data && _bkPctx.data.event;
+  if(!cur || _bkPctxBusy || !confirm('Take this booking out of "' + cur.name + '"?')) return;
+  _bkPctxBusy = true;
+  try{
+    var j = await bkEventPost('/api/booking/' + encodeURIComponent(bookingId) + '/event', { event_id: null });
+    if(j.error) return bkRenderEvent(bookingId, j.error);
+    if(!j.warning) showFeedback('Taken out of ' + cur.name);
+    await bkPctxReload(bookingId, { event: j.warning || '' });
+  } finally { _bkPctxBusy = false; }
+}
+
 function bkCallRow(bookingId, c, maps, smaps){
-  var chips = bkCallTypeChip(bookingId, c) + bkFeedChips(c, maps) + bkSupChips(c, smaps);
+  var chips = bkCallTypeChip(bookingId, c) + bkFlagMarkers(bookingId, c) + bkFeedChips(c, maps) + bkSupChips(c, smaps);
   var name  = escapeHtml(decodeEntities(c.call_name || 'Call'));
   var when  = _abCallWhen(c.start_date, c.start_time);
   var whenLine = when
@@ -25549,6 +25986,8 @@ function renderBookingDialog(bookingId, d, cached){
          + entityRow('Contact',  escapeHtml((d.contact&&d.contact.name)||'—') + bkPhoneBits(d.contact))
          + entityRow('On-site',  escapeHtml((d.onsite&&d.onsite.name)||'—') + bkPhoneBits(d.onsite))
          + entityRow('Venue',    bkVenueLine(d.venue, cached&&cached.venue))
+         + '<div id="bk-travel-wrap"></div>'
+         + '<div id="bk-event-wrap"></div>'
          + entityRow('Reference',escapeHtml(d.reference||'—'))
          + entityRow('Notes',    entityNotesValue(d.notes));
   } else {
@@ -25590,6 +26029,7 @@ function renderBookingDialog(bookingId, d, cached){
   gsheetLoadStatus(bookingId);                        // async, never awaited
   if(d) bkLoadCrewlistStatus(bookingId);              // async, never awaited
   if(d) bkLoadCallTypes(bookingId, d);                // async, never awaited
+  if(d) bkLoadPricingContext(bookingId, d);           // async, never awaited
   if(_notesOk) crewNotesInit({ key: _tabsKey, bookingId: bookingId,
     callIds: _calls.map(function(c){ return c.call_id; }),
     callOrder: _calls.map(function(c){ return { id: c.call_id, name: c.call_name }; }) }, _pick.fromCarry);

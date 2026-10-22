@@ -1075,6 +1075,133 @@ def save_call_types_for_calls(booking_id, set_code, typed_calls, source, set_by)
     return ("Call Types: " + "; ".join(bits)
             + ". Those calls show a type from their call names; an Admin can set it on the call.")
 
+# ─── PRICING CONTEXT (Stage 3, BRIEF-goat-events-flags-stage3) ────────────────
+# Call allowance flags (Broadcast, Travel), one return travel time per venue,
+# and events grouping bookings, all in THE GOAT's Supabase (call_flags,
+# venue_travel, events, booking_event, pricing_context_log), reached only
+# through the pricing-context edge function. It reuses GOAT_RATE_CARD_KEY: same
+# trust boundary. The function checks shape only; Admin only and no travel on
+# M&OP are enforced HERE. Nothing is priced from any of it until Stage 4.
+PRICING_CONTEXT_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/pricing-context"
+PRICING_CONTEXT_GET_MAX = 200   # the edge function's own limit per GET, bookings and venues
+
+
+def _int_ids(raw):
+    ids = []
+    for b in raw or []:
+        try:
+            i = int(b)
+        except (TypeError, ValueError):
+            continue
+        if i > 0 and i not in ids:
+            ids.append(i)
+    return ids
+
+
+def fetch_pricing_context(booking_ids, venue_ids=None):
+    """({"call_flags": {call_id: row}, "booking_event": {booking_id: row},
+    "events": {event_id: row with booking_ids}, "venue_travel": {venue_id: row}},
+    error). Only stored rows come back: no flags row is both false, no
+    venue_travel row is "not set". Batched at the edge function's limit."""
+    bids, vids = _int_ids(booking_ids), _int_ids(venue_ids)
+    out = {"call_flags": {}, "booking_event": {}, "events": {}, "venue_travel": {}}
+    if not bids:
+        return out, None
+    if not GOAT_RATE_CARD_KEY:
+        return out, RATE_CARD_KEY_MISSING
+    cap = PRICING_CONTEXT_GET_MAX
+    for at in range(0, max(len(bids), len(vids)), cap):
+        # A venue-only batch still needs a booking ID; the first one is harmless.
+        chunk = bids[at:at + cap] or bids[:1]
+        params = {"booking_ids": ",".join(str(i) for i in chunk)}
+        vchunk = vids[at:at + cap]
+        if vchunk:
+            params["venue_ids"] = ",".join(str(i) for i in vchunk)
+        try:
+            r = http.get(PRICING_CONTEXT_URL, params=params,
+                         headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=10)
+        except Exception as e:
+            return out, f"request failed: {type(e).__name__}"
+        if r.status_code != 200:
+            return out, f"HTTP {r.status_code}"
+        try:
+            data = r.json() or {}
+        except Exception:
+            return out, "bad JSON"
+        for key, field in (("call_flags", "call_id"), ("booking_event", "booking_id"),
+                           ("venue_travel", "venue_id")):
+            for row in data.get(key) or []:
+                try:
+                    out[key][int(row.get(field))] = row
+                except (TypeError, ValueError):
+                    continue
+        for ev in data.get("events") or []:
+            if ev.get("id"):
+                out["events"][str(ev["id"])] = ev
+    return out, None
+
+
+def _pricing_context_request(method, path, what, body=None, params=None):
+    """(result, error, status) for one pricing-context call. A 500 with logged
+    false means the change DID take and its log row didn't; treated as saved,
+    and every caller warns on logged false. 409 (a live event with that name)
+    and 422 (archive with bookings, archived event) keep the function's words."""
+    if not GOAT_RATE_CARD_KEY:
+        return None, RATE_CARD_KEY_MISSING, 503
+    try:
+        if method == "GET":
+            r = http.get(PRICING_CONTEXT_URL + path, params=params,
+                         headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=10)
+        else:
+            r = http.post(PRICING_CONTEXT_URL + path, json=body,
+                          headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=10)
+    except Exception as e:
+        print(f"[pricing-context] {what} request failed: {type(e).__name__}")
+        return None, "pricing context service unavailable", 502
+    try:
+        data = r.json() or {}
+    except Exception:
+        data = {}
+    if r.status_code == 200:
+        return data, None, 200
+    if r.status_code == 500 and data.get("logged") is False:
+        print(f"[pricing-context] {what} saved but the log write failed")
+        return data, None, 200
+    if r.status_code in (400, 404, 409, 422):
+        return None, str(data.get("error") or f"The {what} was refused."), r.status_code
+    print(f"[pricing-context] {what} edge function returned {r.status_code}")
+    return None, f"pricing context service error (HTTP {r.status_code})", 502
+
+
+def _post_pricing_context(path, body, what, set_by):
+    if set_by is None:
+        return None, f"couldn't identify who is changing the {what} (no SmartStaff userID)", 502
+    return _pricing_context_request("POST", path, what, body=dict(body, set_by_user_id=int(set_by)))
+
+
+def travel_allowed(set_code):
+    """T3: no travel allowance on M&OP. An incomplete MOPT card (None) is
+    M&OP whichever way Australian Open is answered."""
+    return set_code == pricing_rules.STANDARD
+
+
+def same_flags(stored, attracts_broadcast, travel_eligible):
+    """True if a flags save would change nothing. No row is both false."""
+    return (bool((stored or {}).get("attracts_broadcast")) == bool(attracts_broadcast)
+            and bool((stored or {}).get("travel_eligible")) == bool(travel_eligible))
+
+
+def travel_minutes_error(minutes):
+    """None if return_minutes is storable (a positive multiple of 15, or None
+    to clear), else a plain-words reason."""
+    if minutes is None:
+        return None
+    if isinstance(minutes, bool) or not isinstance(minutes, int):
+        return "Travel time must be a whole number of minutes."
+    if minutes <= 0 or minutes % 15:
+        return "Travel time is set in 15-minute steps, more than zero."
+    return None
+
 # ─── BULK ENDPOINTS (SmartStaff /ajax/crew/*) ─────────────────────────────────
 # When True, the app will try the new bulk SmartStaff endpoints first and fall
 # back to HTML scraping on any failure. Safe to leave True even before the
@@ -18210,6 +18337,297 @@ def api_crew_row_crew_boss(booking_id, call_id, user_id):
     if err:
         return jsonify({"error": err}), 502
     return _override_result(res)
+
+
+# ─── PRICING CONTEXT (Stage 3 §4–§6) ──────────────────────────────────────────
+# Same doorway discipline as Call Types: every route proxies pricing-context
+# server-side with GOAT_RATE_CARD_KEY. Every write is Admin only, enforced HERE
+# (the key ships in the DMG); can_change in the reads is presentation. Nothing
+# here prices anything: the forward book never reads it.
+
+PRICING_CONTEXT_HONESTY = call_types.HONESTY_LINE
+_EVENT_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _booking_card_for_context(bid):
+    """(set_code, card_ok). A card that can't be read is NOT a reason to hide
+    the event or the flags: card_ok false says the M&OP rules are unknown."""
+    set_code, err = booking_set_code(bid)
+    if err:
+        print(f"[pricing-context] rate card read failed: {err}")
+        return None, False
+    return set_code, True
+
+
+def _flags_payload(row, names):
+    row = row or {}
+    return {
+        "attracts_broadcast": bool(row.get("attracts_broadcast")),
+        "travel_eligible":    bool(row.get("travel_eligible")),
+        "set_by_user_id":     row.get("set_by_user_id"),
+        "set_by_name":        names.get(call_types.as_call_id(row.get("set_by_user_id"))),
+        "set_at":             row.get("set_at"),
+    }
+
+
+def _venue_travel_payload(venue_id, row, names):
+    if venue_id is None:
+        return None
+    row = row or {}
+    return {
+        "venue_id":       venue_id,
+        "return_minutes": row.get("return_minutes"),
+        "set_by_name":    names.get(call_types.as_call_id(row.get("set_by_user_id"))),
+        "set_at":         row.get("set_at"),
+    }
+
+
+def _venue_arg():
+    raw = request.args.get("venue_id")
+    return call_types.as_call_id(raw) if raw not in (None, "", "0") else None
+
+
+@app.route("/api/booking/<booking_id>/pricing-context")
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_pricing_context(booking_id):
+    """The booking dialog's Event and Travel rows and the Calls tab's B / T
+    markers (§4–§6): ONE pricing-context GET per open. ?venue_id= adds that
+    venue's return travel time. A READ, open to everyone who sees bookings."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    vid = _venue_arg()
+    ctx, err = fetch_pricing_context([bid], [vid] if vid else [])
+    if err:
+        print(f"[pricing-context] read failed: {err}")
+        msg, status = rate_card_read_failure(err, "Pricing context service")
+        return jsonify({"error": msg}), status
+    set_code, card_ok = _booking_card_for_context(bid)
+    be = ctx["booking_event"].get(bid)
+    ev = ctx["events"].get(str(be.get("event_id"))) if be else None
+    vt = ctx["venue_travel"].get(vid) if vid else None
+    names = user_names_for([r.get("set_by_user_id") for r in ctx["call_flags"].values()]
+                           + [(vt or {}).get("set_by_user_id")])
+    return jsonify({
+        "booking_id":     bid,
+        "set_code":       set_code,
+        "set_label":      rate_card_label(set_code) if card_ok else None,
+        "card_ok":        card_ok,
+        "travel_allowed": card_ok and travel_allowed(set_code),
+        "call_flags":     {str(cid): _flags_payload(r, names) for cid, r in ctx["call_flags"].items()},
+        "event":          ({"id": ev.get("id"), "name": ev.get("name"), "notes": ev.get("notes"),
+                            "other_booking_ids": sorted(int(b) for b in ev.get("booking_ids") or []
+                                                        if int(b) != bid)}
+                           if ev else None),
+        "venue_travel":   _venue_travel_payload(vid, vt, names),
+        "can_change":     current_cohort() == "admin",
+        "honesty":        PRICING_CONTEXT_HONESTY,
+    })
+
+
+@app.route("/api/call/<booking_id>/<call_id>/flags")
+@require_cohort(*READ_ALL_COHORTS)
+def api_call_flags_get(booking_id, call_id):
+    """The call dialog's Allowances row (§4). Everyone who opens the call sees
+    the chips; only Admins get can_change. ?venue_id= says whether the venue
+    has a travel time, for the amber "venue has no travel time"."""
+    bid = _checkin_booking_id(booking_id)
+    cid = call_types.as_call_id(call_id)
+    if bid is None or cid is None:
+        return jsonify({"error": "booking_id and call_id must be integers"}), 400
+    vid = _venue_arg()
+    ctx, err = fetch_pricing_context([bid], [vid] if vid else [])
+    if err:
+        print(f"[pricing-context] read failed: {err}")
+        msg, status = rate_card_read_failure(err, "Pricing context service")
+        return jsonify({"error": msg}), status
+    set_code, card_ok = _booking_card_for_context(bid)
+    row = ctx["call_flags"].get(cid)
+    vt = ctx["venue_travel"].get(vid) if vid else None
+    names = user_names_for([(row or {}).get("set_by_user_id")])
+    return jsonify(dict(_flags_payload(row, names),
+        booking_id=bid, call_id=cid, set_code=set_code,
+        set_label=rate_card_label(set_code) if card_ok else None, card_ok=card_ok,
+        travel_allowed=card_ok and travel_allowed(set_code),
+        venue_travel=_venue_travel_payload(vid, vt, {}),
+        can_change=current_cohort() == "admin", honesty=PRICING_CONTEXT_HONESTY))
+
+
+@app.route("/api/call/<booking_id>/<call_id>/flags", methods=["POST"])
+@require_cohort("admin")
+def api_call_flags_set(booking_id, call_id):
+    """Set one call's Broadcast and Travel flags (§4). Admin only. Body
+    {attracts_broadcast, travel_eligible}. Travel can't be turned on for an
+    M&OP booking (T3); one already on stays as it is (the "not on M&OP" chip)
+    until an Admin turns it off. The booking is SmartStaff's, never the URL's."""
+    cid = call_types.as_call_id(call_id)
+    if cid is None:
+        return jsonify({"error": "call_id must be an integer"}), 400
+    body = request.get_json(silent=True) or {}
+    b, t = body.get("attracts_broadcast"), body.get("travel_eligible")
+    if not isinstance(b, bool) or not isinstance(t, bool):
+        return jsonify({"error": "attracts_broadcast and travel_eligible must be true or false"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    times, err = ss_get_call_times(ss, cid)
+    if err:
+        return jsonify({"error": err}), 502
+    bid = call_types.as_call_id(times.get("booking_id") or booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    set_code, err = booking_set_code(bid)
+    if err:
+        print(f"[pricing-context] rate card read failed: {err}")
+        msg, status = rate_card_read_failure(err)
+        return jsonify({"error": msg}), status
+    ctx, err = fetch_pricing_context([bid])
+    if err:
+        print(f"[pricing-context] read failed: {err}")
+        msg, status = rate_card_read_failure(err, "Pricing context service")
+        return jsonify({"error": msg}), status
+    stored = ctx["call_flags"].get(cid)
+    # The same flags again change nothing: no write, no log entry, and the
+    # original who/when stands (the 5.78.0 rule).
+    if same_flags(stored, b, t):
+        return jsonify({"ok": True, "unchanged": True, "attracts_broadcast": b, "travel_eligible": t})
+    if t and not travel_allowed(set_code) and not (stored or {}).get("travel_eligible"):
+        return jsonify({"error": "M&OP bookings don't have a travel allowance."}), 422
+    res, err, status = _post_pricing_context("/flags", {
+        "call_id": cid, "booking_id": bid, "attracts_broadcast": b, "travel_eligible": t,
+    }, "allowance flags", current_user_id())
+    if err:
+        return jsonify({"error": err}), (status if status in (400, 422) else 502)
+    out = {"ok": True, "attracts_broadcast": b, "travel_eligible": t}
+    if res.get("logged") is False and not res.get("unchanged"):
+        out["warning"] = "The flags changed, but the change wasn't logged."
+    return jsonify(out)
+
+
+@app.route("/api/venue/<venue_id>/travel", methods=["POST"])
+@require_cohort("admin")
+def api_venue_travel_set(venue_id):
+    """One return travel time for a venue, the same for everyone (§5, T1, T9).
+    Admin only. Body {venue_name, return_minutes|null}; null clears it.
+    venue_name is a snapshot for reading the table by eye."""
+    vid = call_types.as_call_id(venue_id)
+    if vid is None:
+        return jsonify({"error": "venue_id must be an integer"}), 400
+    body = request.get_json(silent=True) or {}
+    minutes = body.get("return_minutes")
+    err = travel_minutes_error(minutes)
+    if err:
+        return jsonify({"error": err}), 422
+    name = str(body.get("venue_name") or "").strip()[:200]
+    if minutes is not None and not name:
+        return jsonify({"error": "venue_name is required"}), 400
+    res, err, status = _post_pricing_context("/venue-travel", {
+        "venue_id": vid, "venue_name": name, "return_minutes": minutes,
+    }, "travel time", current_user_id())
+    if err:
+        return jsonify({"error": err}), (status if status in (400, 422) else 502)
+    out = {"ok": True, "venue_id": vid, "return_minutes": res.get("return_minutes"),
+           "unchanged": bool(res.get("unchanged"))}
+    if res.get("logged") is False and not res.get("unchanged"):
+        out["warning"] = "The travel time changed, but the change wasn't logged."
+    return jsonify(out)
+
+
+@app.route("/api/events")
+@require_cohort("admin")
+def api_events_search():
+    """The Add to event picker (§6): live events whose name contains ?q=,
+    newest first, each with its booking count. Admin only, like the picker."""
+    q = str(request.args.get("q") or "").strip()[:200]
+    res, err, status = _pricing_context_request("GET", "/events", "event search", params={"q": q})
+    if err:
+        if err == RATE_CARD_KEY_MISSING:
+            msg, status = rate_card_read_failure(err, "Pricing context service")
+            return jsonify({"error": msg}), status
+        return jsonify({"error": err}), 502
+    return jsonify({"events": [{k: e.get(k) for k in ("id", "name", "notes", "created_at", "booking_count")}
+                               for e in res.get("events") or []]})
+
+
+def _event_result(res):
+    out = {"ok": True, "event": {k: res.get(k) for k in ("id", "name", "notes", "archived")},
+           "unchanged": bool(res.get("unchanged"))}
+    if res.get("logged") is False and not res.get("unchanged"):
+        out["warning"] = "Saved, but the change wasn't logged."
+    return jsonify(out)
+
+
+@app.route("/api/events", methods=["POST"])
+@require_cohort("admin")
+def api_event_create():
+    """+ New event (§6). Admin only. Body {name, notes?}. A live event with
+    the same name, ignoring case, is refused with the function's 409."""
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()[:200]
+    if not name:
+        return jsonify({"error": "Give the event a name."}), 400
+    notes = str(body.get("notes") or "").strip()[:2000] or None
+    res, err, status = _post_pricing_context("/events", {"name": name, "notes": notes},
+                                             "event", current_user_id())
+    if err:
+        return jsonify({"error": err}), (status if status in (400, 409, 422) else 502)
+    return _event_result(res)
+
+
+@app.route("/api/events/<event_id>", methods=["POST"])
+@require_cohort("admin")
+def api_event_update(event_id):
+    """Rename, re-note or archive an event. Admin only. An event that still
+    has bookings can't be archived (the function's 422 says so)."""
+    if not _EVENT_ID_RE.match(str(event_id)):
+        return jsonify({"error": "event id must be a uuid"}), 400
+    body = request.get_json(silent=True) or {}
+    patch = {}
+    if "name" in body:
+        name = str(body.get("name") or "").strip()[:200]
+        if not name:
+            return jsonify({"error": "An event's name can't be empty."}), 400
+        patch["name"] = name
+    if "notes" in body:
+        patch["notes"] = str(body.get("notes") or "").strip()[:2000] or None
+    if "archived" in body:
+        if not isinstance(body.get("archived"), bool):
+            return jsonify({"error": "archived must be true or false"}), 400
+        patch["archived"] = body["archived"]
+    if not patch:
+        return jsonify({"error": "Nothing to change."}), 400
+    res, err, status = _post_pricing_context("/events/" + str(event_id).lower(), patch,
+                                             "event", current_user_id())
+    if err:
+        return jsonify({"error": err}), (status if status in (400, 404, 409, 422) else 502)
+    return _event_result(res)
+
+
+@app.route("/api/booking/<booking_id>/event", methods=["POST"])
+@require_cohort("admin")
+def api_booking_event_set(booking_id):
+    """Put a booking in an event, move it to another, or take it out (§6, E-1:
+    at most one event per booking). Admin only. Body {event_id|null}."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    body = request.get_json(silent=True) or {}
+    if "event_id" not in body:
+        return jsonify({"error": "event_id is required (null takes the booking out)"}), 400
+    eid = body.get("event_id")
+    if eid is not None and not _EVENT_ID_RE.match(str(eid)):
+        return jsonify({"error": "event_id must be a uuid or null"}), 400
+    res, err, status = _post_pricing_context("/booking-event", {
+        "booking_id": bid, "event_id": str(eid).lower() if eid else None,
+    }, "booking's event", current_user_id())
+    if err:
+        return jsonify({"error": err}), (status if status in (400, 404, 422) else 502)
+    out = {"ok": True, "booking_id": bid, "event_id": res.get("event_id"),
+           "previous_event_id": (res.get("previous") or {}).get("event_id"),
+           "unchanged": bool(res.get("unchanged"))}
+    if res.get("logged") is False and not res.get("unchanged"):
+        out["warning"] = "Saved, but the change wasn't logged."
+    return jsonify(out)
 
 
 # ─── PRICING RULES (Administration › Reference data) ──────────────────────────
