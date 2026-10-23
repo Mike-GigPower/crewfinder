@@ -1,6 +1,6 @@
 {
-  "version": "5.84.0",
+  "version": "5.86.0",
   "release_date": "2026-10-23",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.84.0/TheGOAT.dmg",
-  "release_notes": "Admins can now update a crew member's photo: choose an image, crop it passport-style and save. Crew Records has a new Photo column showing who needs a new photo."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.86.0/TheGOAT.dmg",
+  "release_notes": "Plan a whole booking in Crew Finder: select its calls and press Plan to fill every call with the same crew where possible, then review and send in one go. Also new since 5.84.0: open any call or booking by its number (⌘K)."
 }
