@@ -1,0 +1,141 @@
+{
+ "plan": {
+  "booking_id": 501,
+  "call_id": 1001,
+  "call_name": "Show",
+  "committed": 1,
+  "could_fill_warned": [],
+  "experience_as_at": "2027-03-01T00:00:00",
+  "filters": {
+   "exclude_pt": false,
+   "groups": [],
+   "licences_all": [],
+   "min_rating": 3,
+   "origin": null,
+   "radius_km": null
+  },
+  "is_boss_call": false,
+  "licence_mins": [],
+  "mix": {
+   "existing": {
+    "experienced": 0,
+    "new": 1
+   },
+   "planned": {
+    "experienced": 5,
+    "new": 2
+   },
+   "target": {
+    "experienced": 0,
+    "new": 8
+   },
+   "team_after": {
+    "experienced": 5,
+    "new": 3
+   }
+  },
+  "new_pct": 100,
+  "notes": [
+   "Asked for 7 new, found 2; 5 places given to experienced crew"
+  ],
+  "notes_licence_hints": [],
+  "objective": "mix",
+  "picks": [
+   {
+    "all_time_h": 140.31,
+    "current_run_h": 13.39,
+    "ein": "T0003",
+    "flags": [],
+    "group": "new",
+    "name": "Devon Testcrew03",
+    "past_boss_3y": 0,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9003,
+    "why": "New · 13.3 h · ★5"
+   },
+   {
+    "all_time_h": 96.83,
+    "current_run_h": 47.17,
+    "ein": "T0001",
+    "flags": [],
+    "group": "new",
+    "name": "Blake Testcrew01",
+    "past_boss_3y": 0,
+    "rating": 3,
+    "tier": 0,
+    "user_id": 9001,
+    "why": "New · 47.1 h · ★3"
+   },
+   {
+    "all_time_h": 4261.84,
+    "current_run_h": 497.01,
+    "ein": "T0005",
+    "flags": [],
+    "group": "experienced",
+    "name": "Finley Testcrew05",
+    "past_boss_3y": 1,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9005,
+    "why": "Experienced · 4,262 h · ★5"
+   },
+   {
+    "all_time_h": 1952.19,
+    "current_run_h": 583.8,
+    "ein": "T0000",
+    "flags": [],
+    "group": "experienced",
+    "name": "Avery Testcrew00",
+    "past_boss_3y": 0,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9000,
+    "why": "Experienced · 1,952 h · ★5"
+   },
+   {
+    "all_time_h": 946.4,
+    "current_run_h": 247.07,
+    "ein": "T0009",
+    "flags": [],
+    "group": "experienced",
+    "name": "Jules Testcrew09",
+    "past_boss_3y": 0,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9009,
+    "why": "Experienced · 946 h · ★5"
+   },
+   {
+    "all_time_h": 4447.71,
+    "current_run_h": 205.68,
+    "ein": "T0002",
+    "flags": [],
+    "group": "experienced",
+    "name": "Casey Testcrew02",
+    "past_boss_3y": 0,
+    "rating": 4,
+    "tier": 0,
+    "user_id": 9002,
+    "why": "Experienced · 4,448 h · ★4"
+   },
+   {
+    "all_time_h": 1723.47,
+    "current_run_h": 795.06,
+    "ein": "T0008",
+    "flags": [],
+    "group": "experienced",
+    "name": "Indy Testcrew08",
+    "past_boss_3y": 0,
+    "rating": 4,
+    "tier": 0,
+    "user_id": 9008,
+    "why": "Experienced · 1,723 h · ★4"
+   }
+  ],
+  "places": 7,
+  "read_back": "100% new (under 144 h), 0% experienced, best rated first within each group. Filters: min rating 3 · any group · no distance limit. Call #1001 Show, 7 places.",
+  "required": 8,
+  "unfilled": 0
+ }
+}

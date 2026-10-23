@@ -1,0 +1,413 @@
+{
+ "assessment": {
+  "available": [
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0000",
+    "id": "9000",
+    "licences": [],
+    "name": "Avery Testcrew00",
+    "rating": 3
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0001",
+    "id": "9001",
+    "licences": [],
+    "name": "Blake Testcrew01",
+    "rating": 5
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0002",
+    "id": "9002",
+    "licences": [
+     {
+      "code": "LF",
+      "expiry": "2030-01-01"
+     }
+    ],
+    "name": "Casey Testcrew02",
+    "rating": 5
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0003",
+    "id": "9003",
+    "licences": [],
+    "name": "Devon Testcrew03",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0004",
+    "id": "9004",
+    "licences": [],
+    "name": "Emery Testcrew04",
+    "rating": 5
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0005",
+    "id": "9005",
+    "licences": [],
+    "name": "Finley Testcrew05",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0006",
+    "id": "9006",
+    "licences": [
+     {
+      "code": "LF",
+      "expiry": null
+     }
+    ],
+    "name": "Gray Testcrew06",
+    "rating": 5
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0007",
+    "id": "9007",
+    "licences": [],
+    "name": "Harper Testcrew07",
+    "rating": 3
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0008",
+    "id": "9008",
+    "licences": [],
+    "name": "Indy Testcrew08",
+    "rating": 5
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0009",
+    "id": "9009",
+    "licences": [],
+    "name": "Jules Testcrew09",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0010",
+    "id": "9010",
+    "licences": [],
+    "name": "Kai Testcrew10",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0011",
+    "id": "9011",
+    "licences": [
+     {
+      "code": "LF",
+      "expiry": "2030-01-01"
+     }
+    ],
+    "name": "Lane Testcrew11",
+    "rating": 4
+   }
+  ],
+  "conflicts": [],
+  "location_unknown": [],
+  "skipped": [],
+  "targets": [
+   {
+    "booking_id": "501",
+    "call_id": "1001",
+    "call_name": "Show",
+    "end_dt": "2027-03-10T17:00:00",
+    "start_dt": "2027-03-10T09:00:00",
+    "venue": "Test Arena"
+   }
+  ]
+ },
+ "body": {
+  "calls": [
+   {
+    "booking_id": "501",
+    "call_id": "1001",
+    "call_name": "Show",
+    "end_dt": "2027-03-10T17:00:00",
+    "start_dt": "2027-03-10T09:00:00",
+    "venue": "Test Arena"
+   }
+  ],
+  "min_rating": 3,
+  "plan": {
+   "licence_mins": [
+    {
+     "code": "LF",
+     "min": 2
+    }
+   ],
+   "objective": "rating"
+  }
+ },
+ "booking": {
+  "calls": [
+   {
+    "call_id": 1001,
+    "call_name": "Show",
+    "cancelled_at": null,
+    "committed": 1,
+    "confirmed": 1,
+    "crew": [
+     {
+      "id": 9500,
+      "promo_pending": false,
+      "status": "confirmed"
+     }
+    ],
+    "feeds": [],
+    "feeds_recommended": [],
+    "notes": "",
+    "required": 6,
+    "start_date": 1800000000,
+    "start_time": "09:00:00"
+   }
+  ]
+ },
+ "experience": {
+  "as_at": "2027-03-01T00:00:00",
+  "cache": {},
+  "call": {
+   "is_boss_call": false
+  },
+  "constants": {
+   "probation_hours": 144
+  },
+  "elapsed_ms": 12,
+  "timing": {},
+  "users": {
+   "9000": {
+    "all_time_h": 101.65,
+    "current_run_h": 138.26,
+    "excluded": false,
+    "is_new": true,
+    "past_boss_3y": 0
+   },
+   "9001": {
+    "all_time_h": 4352.45,
+    "current_run_h": 473.79,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 1
+   },
+   "9002": {
+    "all_time_h": 4569.87,
+    "current_run_h": 514.9,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   },
+   "9003": {
+    "all_time_h": 2622.35,
+    "current_run_h": 481.51,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   },
+   "9004": {
+    "all_time_h": 5391.7,
+    "current_run_h": 604.59,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   },
+   "9005": {
+    "all_time_h": 52.17,
+    "current_run_h": 91.24,
+    "excluded": false,
+    "is_new": true,
+    "past_boss_3y": 0
+   },
+   "9006": {
+    "all_time_h": 1995.39,
+    "current_run_h": 486.74,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 1
+   },
+   "9007": {
+    "all_time_h": 1451.21,
+    "current_run_h": 561.42,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 1
+   },
+   "9008": {
+    "all_time_h": 4513.36,
+    "current_run_h": 314.57,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 1
+   },
+   "9009": {
+    "all_time_h": 57.88,
+    "current_run_h": 30.3,
+    "excluded": false,
+    "is_new": true,
+    "past_boss_3y": 0
+   },
+   "9010": {
+    "all_time_h": 3492.96,
+    "current_run_h": 685.96,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 3
+   },
+   "9011": {
+    "all_time_h": 5084.75,
+    "current_run_h": 682.51,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   },
+   "9500": {
+    "all_time_h": 128.95,
+    "current_run_h": 17.13,
+    "excluded": false,
+    "is_new": true,
+    "past_boss_3y": 0
+   }
+  }
+ }
+}

@@ -1,0 +1,109 @@
+{
+ "plan": {
+  "booking_id": 501,
+  "call_id": 1001,
+  "call_name": "Show",
+  "committed": 1,
+  "could_fill_warned": [],
+  "experience_as_at": "2027-03-01T00:00:00",
+  "filters": {
+   "exclude_pt": false,
+   "groups": [],
+   "licences_all": [],
+   "min_rating": 3,
+   "origin": null,
+   "radius_km": null
+  },
+  "is_boss_call": false,
+  "licence_mins": [
+   {
+    "already_met": 0,
+    "code": "LF",
+    "min": 2,
+    "name": "Forklift truck",
+    "picked": 2,
+    "short": 0
+   }
+  ],
+  "mix": null,
+  "new_pct": null,
+  "notes": [
+   "1 on the call couldn't be checked for Forklift truck; counted as not holding it."
+  ],
+  "notes_licence_hints": [],
+  "objective": "rating",
+  "picks": [
+   {
+    "all_time_h": 4569.87,
+    "current_run_h": 514.9,
+    "ein": "T0002",
+    "flags": [],
+    "group": "experienced",
+    "name": "Casey Testcrew02",
+    "past_boss_3y": 0,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9002,
+    "why": "Experienced · 4,570 h · ★5 · LF"
+   },
+   {
+    "all_time_h": 1995.39,
+    "current_run_h": 486.74,
+    "ein": "T0006",
+    "flags": [
+     "No expiry on file: LF"
+    ],
+    "group": "experienced",
+    "name": "Gray Testcrew06",
+    "past_boss_3y": 1,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9006,
+    "why": "Experienced · 1,995 h · ★5 · LF"
+   },
+   {
+    "all_time_h": 5391.7,
+    "current_run_h": 604.59,
+    "ein": "T0004",
+    "flags": [],
+    "group": "experienced",
+    "name": "Emery Testcrew04",
+    "past_boss_3y": 0,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9004,
+    "why": "Experienced · 5,392 h · ★5"
+   },
+   {
+    "all_time_h": 4513.36,
+    "current_run_h": 314.57,
+    "ein": "T0008",
+    "flags": [],
+    "group": "experienced",
+    "name": "Indy Testcrew08",
+    "past_boss_3y": 1,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9008,
+    "why": "Experienced · 4,513 h · ★5"
+   },
+   {
+    "all_time_h": 4352.45,
+    "current_run_h": 473.79,
+    "ein": "T0001",
+    "flags": [],
+    "group": "experienced",
+    "name": "Blake Testcrew01",
+    "past_boss_3y": 1,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9001,
+    "why": "Experienced · 4,352 h · ★5"
+   }
+  ],
+  "places": 5,
+  "read_back": "Best rated first. 2 with Forklift truck. Filters: min rating 3 · any group · no distance limit. Call #1001 Show, 5 places.",
+  "required": 6,
+  "unfilled": 0
+ }
+}

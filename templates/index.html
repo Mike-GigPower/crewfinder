@@ -3692,6 +3692,7 @@ async function loadCalls(force=false){
         +'<span class="booking-group-toggle">&#9660;</span>'
         +'<span class="booking-group-name" onclick="event.stopPropagation();openBookingDialog(\''+b.booking_id+'\')" style="cursor:pointer" title="View booking">'+b.booking_name+'</span>'
         +venueTag
+        +'<a href="#" class="booking-select-all" onclick="event.preventDefault();event.stopPropagation();finderSelectAllBooking(\''+b.booking_id+'\')" title="Select every call of this booking (again to clear)" style="margin-left:8px;font-size:10px;color:var(--accent);text-decoration:underline;text-underline-offset:2px">Select all</a>'
         +'</div>'
         +'<div class="booking-group-calls">'+callsHtml+'</div>'
         +'</div>';
@@ -3846,6 +3847,15 @@ function handleCallClick(event, call){
   }
   // Cmd+click on an already-selected call deselects; otherwise select.
   const makeSelected = !(multi && selectedCalls.has(call.call_id));
+  _finderApplyCall(call, makeSelected);
+  updateCallSelectionUI();
+  greyOutResults();
+}
+
+// Select (or deselect) one call the way a click does: the call, everything it
+// locked-feeds (carried), and its recommended targets (considered). Shared by
+// handleCallClick, Select all and Open in Crew Finder.
+function _finderApplyCall(call, makeSelected){
   _finderSetCall(call, makeSelected);
   // Downstream calls follow the same action: offering this call also offers
   // everything it feeds, and the availability check must intersect across all
@@ -3877,6 +3887,30 @@ function handleCallClick(event, call){
     if(card){ if(makeSelected) card.classList.add('considered');
               else card.classList.remove('considered'); }
   });
+}
+
+// Select all (stage B, D26): every listed call of one booking, replacing the
+// selection like a plain click. Pressed again with all of them selected, it
+// clears them.
+function finderSelectAllBooking(bookingId){
+  const byId = {};
+  (window._finderCalls || []).forEach(function(c){ byId[String(c.call_id)] = c; });
+  const calls = [...document.querySelectorAll('#bg-'+bookingId+' .call-card')]
+    .map(function(el){ return byId[String(el.dataset.callId)]; }).filter(Boolean);
+  if(!calls.length) return;
+  const allOn = calls.every(function(c){ return selectedCalls.has(c.call_id); });
+  clearCallSelection();
+  if(!allOn){
+    calls.forEach(function(c){ _finderApplyCall(c, true); });
+    // A call one of the others only recommends is selected here anyway:
+    // selected wins, the same rule as buildCallPayload.
+    [...consideredCalls.keys()].forEach(function(id){
+      if(!selectedCalls.has(id)) return;
+      consideredCalls.delete(id);
+      var card = document.querySelector('.call-card[data-call-id="'+id+'"]');
+      if(card) card.classList.remove('considered');
+    });
+  }
   updateCallSelectionUI();
   greyOutResults();
 }
@@ -3897,16 +3931,23 @@ function updateCallSelectionUI(){
   const searchBtn = document.getElementById('search-btn');
   const searchText = document.getElementById('search-btn-text');
 
-  // Plan… — one call only (stage A). Admin-only, like the Finder itself; the
-  // server enforces it (D17), this is presentation.
+  // Plan… — one call, or several calls of ONE booking (stage B, D30).
+  // Admin-only, like the Finder itself; the server enforces it (D17), this is
+  // presentation.
   const planBtn = document.getElementById('plan-btn');
   if(planBtn){
+    const nBookings = _planBookingIds().length;
     planBtn.style.display = (window._cohort === 'admin') ? '' : 'none';
-    planBtn.disabled = (n !== 1);
-    planBtn.title = (n === 1) ? 'Build a staffing plan for this call' : 'Select one call to plan.';
+    planBtn.disabled = !(n >= 1 && nBookings === 1);
+    planBtn.title = n === 0 ? 'Select a call to plan.'
+      : nBookings > 1 ? 'Plan works on one booking at a time.'
+      : n === 1 ? 'Build a staffing plan for this call' : 'Build a staffing plan for these '+n+' calls';
+    const pbt = document.getElementById('plan-btn-text');
+    if(pbt) pbt.textContent = n > 1 ? 'Plan '+n+' calls\u2026' : 'Plan\u2026';
   }
-  // A plan belongs to one call: changing the selection away from it hides it.
-  if(_activePlan && !(n === 1 && [...selectedCalls.keys()].some(k => String(k) === String(_activePlan.plan.call_id)))){
+  // A plan belongs to the calls it was built for: changing the selection away
+  // from them hides it.
+  if(_activePlan && _activePlan.callKey !== _planCallKey()){
     planStripHide();
   }
 
@@ -4074,7 +4115,7 @@ function _planClearTicks(){
 // re-rendered (view switch, header sort, name filter). Ticks set by the plan
 // itself dispatch the same change event, which takes them back off the list.
 document.addEventListener('change', function(e){
-  if(!_activePlan) return;
+  if(!_activePlan || _activePlan.kind==='booking') return;
   const t=e.target; if(!t || t.type!=='checkbox') return;
   const row=t.closest && t.closest('[data-crew-id]'); if(!row) return;
   const uid=row.dataset.crewId;
@@ -4089,6 +4130,31 @@ function planStripHide(){
 }
 
 function planClear(){ _planClearTicks(); planStripHide(); }
+
+// The selection as the plan sees it: hard calls only, as a sorted key.
+function _planCallKey(){
+  return [...selectedCalls.keys()].map(String).sort().join(',');
+}
+function _planBookingIds(){
+  return [...new Set([...selectedCalls.values()].map(c => String(c.booking_id)))];
+}
+
+// The places line (BRIEF-staffing-plans-b §3.5). Never shows a breakdown that
+// doesn't add up: the server sends places_breakdown null in that case.
+function _planPlacesText(places, b){
+  const pl = function(n, w){ return n+' '+w+(n === 1 ? '' : 's'); };
+  if(b && places === 0){
+    const parts = [];
+    if(b.confirmed) parts.push(b.confirmed+' confirmed');
+    if(b.awaiting)  parts.push(pl(b.awaiting, 'offer')+' awaiting reply');
+    let s = '0 places' + (parts.length ? ' \u2014 '+parts.join(', ') : '');
+    if(b.promo_pending) s += ' \u00b7 '+pl(b.promo_pending, 'promotion')+' pending';
+    return s;
+  }
+  if(b && places > 0 && b.awaiting > 0)
+    return pl(places, 'place')+' ('+b.awaiting+' held by offers awaiting reply)';
+  return pl(places, 'place');
+}
 
 // The Finder's CURRENT filters as one read-only line (D21).
 function _planFiltersLine(){
@@ -4107,10 +4173,12 @@ function _planFiltersLine(){
 
 // The Plan… form. `prefill` reopens it with a spec (the Notes hint's button).
 async function openPlanForm(prefill){
-  if(selectedCalls.size!==1){ alert('Select one call to plan.'); return; }
+  if(!selectedCalls.size){ alert('Select a call to plan.'); return; }
+  if(_planBookingIds().length!==1){ alert('Plan works on one booking at a time.'); return; }
   const cat=await _ensureLicCatalogue();
   const pf=prefill||{objective:'mix', new_pct:80, licence_mins:[]};
   const call=[...selectedCalls.values()][0];
+  const planCalls=[...selectedCalls.values()];
   const softN=[...consideredCalls.keys()].filter(k=>!selectedCalls.has(k)).length;
   const opt=function(code){
     return '<option value="">Licence…</option>'+cat.map(e=>
@@ -4127,7 +4195,10 @@ async function openPlanForm(prefill){
     return '<label style="margin-right:12px;cursor:pointer"><input type="radio" name="pf-obj" value="'+v+'"'+(obj===v?' checked':'')+'> '+label+'</label>';
   };
   const html=
-      '<div style="margin-bottom:8px;color:var(--muted)">Call #'+escapeHtml(call.call_num)+' '+_planEsc(call.call_name)+'</div>'
+      '<div style="margin-bottom:8px;color:var(--muted)">'+(planCalls.length===1
+        ? 'Call #'+escapeHtml(call.call_num)+' '+_planEsc(call.call_name)
+        : 'Calls '+planCalls.map(c=>'#'+escapeHtml(c.call_num)+' '+_planEsc(c.call_name)).join(', ')
+          +'<br>Licence minimums and the mix apply to each call.')+'</div>'
     + '<div style="margin-bottom:8px"><b>Objective</b><br>'+radio('mix','Mix')+radio('rating','Best rated')+radio('experience','Most experienced')+'</div>'
     + '<div id="pf-mix" style="margin-bottom:8px;'+(obj==='mix'?'':'display:none')+'"><b>New crew</b> '
     +   '<input type="number" id="pf-new-pct" min="0" max="100" value="'+(pf.new_pct==null?80:pf.new_pct)+'" style="width:60px"> % '
@@ -4177,9 +4248,10 @@ async function openPlanForm(prefill){
 }
 
 // Same body runSearch builds, plus `plan`. Soft (considered) calls are left
-// out: a plan works on one call (the form says so).
+// out (the form says so). Two or more hard calls make a booking plan.
 async function runPlan(opts){
-  if(selectedCalls.size!==1){ alert('Select one call to plan.'); return; }
+  if(!selectedCalls.size){ alert('Select a call to plan.'); return; }
+  if(_planBookingIds().length!==1){ alert('Plan works on one booking at a time.'); return; }
   const geoFields=_finderGeoFields();
   if(geoFields===null) return;
   showOverlay('Building plan…', 'First plan of the day can take a little longer');
@@ -4196,13 +4268,14 @@ async function runPlan(opts){
     if(result.error){ alert(result.error); return; }
     planStripHide();
     await _applyFinderResult(result, planBuilt);
-    applyPlan(result.plan, opts);
+    if(result.plan && result.plan.kind==='booking') renderBookingPlan(result, opts);
+    else applyPlan(result.plan, opts);
   }catch(e){ alert('Plan error: '+e); }
   finally{ hideOverlay(); restoreResults(); }
 }
 
 function applyPlan(plan, opts){
-  _activePlan={plan:plan, opts:opts||{}, dropped:new Set()};
+  _activePlan={plan:plan, opts:opts||{}, dropped:new Set(), callKey:_planCallKey()};
   _planTick();
 }
 
@@ -4210,6 +4283,9 @@ function applyPlan(plan, opts){
 // draw the strip. Re-run after every re-render while the plan is up.
 function _planTick(){
   if(!_activePlan) return;
+  // A booking plan never ticks: the table's ticks mean "these crew on every
+  // selected call", which isn't what a booking plan is.
+  if(_activePlan.kind==='booking'){ _planClearTicks(); return; }
   const plan=_activePlan.plan;
   _planClearTicks();
   const missing=[];
@@ -4238,7 +4314,8 @@ function _planRenderStrip(missing){
                       : '<span style="color:'+amber+'">Boss place left empty</span>')+'</div>');
   } else {
     const nNew=plan.picks.filter(p=>p.group==='new').length, nExp=plan.picks.length-nNew;
-    let o=plan.picks.length+' of '+plan.places+' place'+(plan.places===1?'':'s')+' · '+nNew+' new / '+nExp+' experienced';
+    const placesText=_planPlacesText(plan.places, plan.places_breakdown);
+    let o=(plan.places===0 ? placesText : plan.picks.length+' of '+placesText)+' · '+nNew+' new / '+nExp+' experienced';
     if(plan.mix) o+=' · team after: '+plan.mix.team_after.new+' new / '+plan.mix.team_after.experienced+' experienced';
     h.push('<div>'+o+'</div>');
   }
@@ -4271,6 +4348,198 @@ function _planRenderStrip(missing){
     +'<span style="font-size:10px;color:var(--muted)">Hours as at '+_planEsc(plan.experience_as_at||'')+'. Check the ticks, then Add or Add &amp; Confirm.</span></div>');
   el.innerHTML=h.join('');
   el.style.cssText='display:block;padding:10px 16px;border-bottom:1px solid var(--border-gold);background:var(--surface2);font-size:12px;line-height:1.5';
+}
+
+// ── STAFFING PLAN (stage B: a whole booking) ──
+// BRIEF-staffing-plans-b §3.4. A booking plan puts different people on
+// different calls, so it can't be expressed as ticks in the results table
+// (which means "these crew on every selected call"). It gets its own review
+// panel in #plan-strip and sends through the same /api/goat/add-crew body
+// addSelected uses, one request per set of root calls, so the over-check and
+// the server's locked-feed carry apply unchanged. × never re-plans.
+
+function renderBookingPlan(result, opts){
+  _activePlan={kind:'booking', plan:result.plan, opts:opts||{}, callKey:_planCallKey(),
+               removed:new Set(), notSent:new Set(), sending:false};
+  _planClearTicks();
+  _bookingPlanRender();
+}
+
+function _bpCall(cid){
+  return (_activePlan.plan.calls||[]).find(c => String(c.call_id)===String(cid));
+}
+
+// Each person's calls after the × removals, and the roots the server is sent
+// (calls no other of their calls carries; the server adds the carried ones).
+function _bookingPlanPeople(){
+  const plan=_activePlan.plan, removed=_activePlan.removed;
+  const order=(plan.calls||[]).map(c => String(c.call_id));
+  return (plan.people||[]).map(p => {
+    const calls=(p.calls||[]).map(String).filter(cid => !removed.has(p.user_id+':'+cid))
+      .sort((a,b) => order.indexOf(a)-order.indexOf(b));
+    const roots=[], covered=new Set();
+    calls.forEach(cid => {
+      if(covered.has(cid)) return;
+      roots.push(cid);
+      ((_bpCall(cid)||{}).carries||[]).forEach(t => covered.add(String(t)));
+    });
+    return {...p, calls:calls, root_calls:roots};
+  }).filter(p => p.calls.length);
+}
+
+// × on a pick: off this call and every call it carries. On a call that one of
+// their other calls carries, off that feeder too — the server would put them
+// straight back otherwise.
+function bookingPlanRemove(uid, cid){
+  if(!_activePlan || _activePlan.kind!=='booking' || _activePlan.sending) return;
+  const p=(_activePlan.plan.people||[]).find(x => String(x.user_id)===String(uid)); if(!p) return;
+  const mine=new Set((p.calls||[]).map(String));
+  const carries=function(k){ return ((_bpCall(k)||{}).carries||[]).map(String); };
+  const drop=new Set([String(cid)]);
+  let grew=true;
+  while(grew){
+    grew=false;
+    mine.forEach(k => {
+      if(drop.has(k)) return;
+      if([...drop].some(d => carries(d).includes(k) || carries(k).includes(d))){ drop.add(k); grew=true; }
+    });
+  }
+  drop.forEach(k => _activePlan.removed.add(String(uid)+':'+k));
+  _bookingPlanRender();
+}
+
+function _bookingPlanRender(){
+  const el=document.getElementById('plan-strip'); if(!el||!_activePlan) return;
+  const plan=_activePlan.plan, removed=_activePlan.removed;
+  const amber='var(--warn)';
+  const chip=function(t,c,title){ return '<span'+(title?' title="'+_planEsc(title)+'"':'')
+    +' style="display:inline-block;border:1px solid '+(c||'var(--border)')+';color:'+(c||'var(--muted)')
+    +';border-radius:3px;padding:0 5px;margin-left:4px;font-size:10px">'+_planEsc(t)+'</span>'; };
+  const nameOf={}; (plan.calls||[]).forEach(c => { nameOf[String(c.call_id)]=c.call_name||('#'+c.call_id); });
+  const people=_bookingPlanPeople();
+  const filled=people.reduce((n,p) => n+p.calls.length, 0);
+  const multi=people.filter(p => p.calls.length>=2).length;
+  const busy=_activePlan.sending ? ' disabled' : '';
+  const h=[];
+  h.push('<div style="font-weight:700;color:var(--accent);margin-bottom:4px">🧩 '+_planEsc(plan.read_back)+'</div>');
+  h.push('<div>'+filled+' of '+(plan.summary||{}).places_total+' places planned · '+multi+' of '+people.length
+    +' crew across 2+ calls'+(removed.size?' · <span style="color:var(--muted)">'+removed.size+' removed by hand</span>':'')+'</div>');
+  (plan.notes||[]).forEach(n => h.push('<div style="color:var(--muted)">'+_planEsc(n)+'</div>'));
+  h.push('<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<button type="button" class="btn" id="bp-add"'+busy+' onclick="bookingPlanSend(false)">Add plan</button>'
+    +'<button type="button" class="btn" id="bp-confirm"'+busy+' onclick="bookingPlanSend(true)">Add &amp; Confirm plan</button>'
+    +'<button type="button" class="btn"'+busy+' onclick="planClear()">Clear plan</button>'
+    +'<span style="font-size:10px;color:var(--muted)">Ticks aren’t used for booking plans — review and send below. Hours as at '
+    +_planEsc(plan.experience_as_at||'')+'.</span></div>');
+  if(_activePlan.notSent.size){
+    h.push('<div style="color:'+amber+';font-weight:600;margin-top:4px">Not sent: '+[..._activePlan.notSent].map(_planEsc).join('; ')+'</div>');
+  }
+  (plan.calls||[]).forEach(c => {
+    const d=new Date(c.start_dt);
+    const when=isNaN(d) ? '' : d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})
+      +' '+d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+    const picks=(c.picks||[]).filter(p => !removed.has(p.user_id+':'+c.call_id));
+    h.push('<div style="margin-top:10px;padding-top:6px;border-top:1px solid var(--border)">'
+      +'<b>#'+_planEsc(c.call_id)+' '+_planEsc(c.call_name)+'</b> <span style="color:var(--muted)">'+_planEsc(when)+'</span>'
+      +(c.carried?chip('carried','var(--accent)','Crew placed on the call that feeds it are booked here too'):'')
+      +(c.is_boss_call?chip('Crew Boss','var(--accent)'):'')+'</div>');
+    const pt=_planPlacesText(c.places, c.places_breakdown);
+    h.push('<div>'+(c.places===0 ? pt : picks.length+' of '+pt)+'</div>');
+    picks.forEach(p => {
+      const live=people.find(x => String(x.user_id)===String(p.user_id));
+      const also=(live ? live.calls : []).filter(k => k!==String(c.call_id)).map(k => nameOf[k]);
+      h.push('<div>'+_planEsc(p.name)+' <span style="color:var(--muted)">'+_planEsc(p.why)+'</span>'
+        +(p.flags||[]).map(f => chip(f,amber)).join('')
+        +(also.length?chip('also: '+also.join(', ')):'')
+        +' <button type="button" title="Take '+_planEsc(p.name)+' off this call"'+busy
+        +' onclick="bookingPlanRemove('+Number(p.user_id)+','+Number(c.call_id)+')" style="margin-left:4px;border:none;background:none;color:var(--muted);cursor:pointer">&#215;</button></div>');
+    });
+    (c.notes||[]).forEach(n => {
+      const short=/^Asked for|left empty|couldn't be checked|^No .* hold|not enough/i.test(n);
+      h.push('<div style="color:'+(short?amber:'var(--muted)')+'">'+_planEsc(n)+'</div>');
+    });
+    (c.notes_licence_hints||[]).forEach(hn => h.push('<div style="color:var(--muted)">Notes mention <i>'+_planEsc(hn.name)+'</i>.</div>'));
+    if((c.could_fill_warned||[]).length){
+      h.push('<div>Could fill with a warning: '+c.could_fill_warned.map(w =>
+        '<span title="'+_planEsc(w.warning)+'" style="border-bottom:1px dotted '+amber+';cursor:help">'+_planEsc(w.name)+'</span>').join(', ')+'</div>');
+    }
+  });
+  el.innerHTML=h.join('');
+  el.style.cssText='display:block;padding:10px 16px;border-bottom:1px solid var(--border-gold);background:var(--surface2);font-size:12px;line-height:1.5;max-height:60vh;overflow:auto';
+}
+
+// Add plan / Add & Confirm plan: one /api/goat/add-crew per set of root calls,
+// in a stable order. A 409 asks with the usual over-warning; Cancel stops and
+// the panel lists what wasn't sent.
+async function bookingPlanSend(confirm){
+  if(!_activePlan || _activePlan.kind!=='booking' || _activePlan.sending) return;
+  const plan=_activePlan.plan;
+  const groups={};
+  _bookingPlanPeople().forEach(p => {
+    const key=p.root_calls.slice().sort((a,b) => Number(a)-Number(b)).join(',');
+    (groups[key]=groups[key]||[]).push(p);
+  });
+  const keys=Object.keys(groups).sort((a,b) => {
+    const x=a.split(',').map(Number), y=b.split(',').map(Number);
+    for(let i=0;i<Math.min(x.length,y.length);i++) if(x[i]!==y[i]) return x[i]-y[i];
+    return x.length-y.length;
+  });
+  if(!keys.length){ alert('Nobody left in the plan to send.'); return; }
+  const label=function(key){ return key.split(',').map(k => '#'+k+' '+((_bpCall(k)||{}).call_name||'')).join(' + '); };
+  _activePlan.sending=true; _activePlan.notSent=new Set(); _bookingPlanRender();
+  const btn=document.getElementById(confirm?'bp-confirm':'bp-add');
+  if(btn) btn.textContent=confirm?'Confirming…':'Adding…';
+  const sendingText=(confirm?'Adding & confirming':'Adding')+' the plan…';
+  const results=[];
+  let stoppedAt=-1, cur=0;
+  try{
+    for(let i=0;i<keys.length;i++){
+      cur=i;
+      // The Finder's own overlay while each request is out: one quick request
+      // otherwise finishes before the disabled buttons are noticed. Lifted
+      // while the over-warning asks.
+      showOverlay(sendingText, keys.length>1 ? 'Group '+(i+1)+' of '+keys.length+': '+label(keys[i]) : label(keys[i]));
+      const key=keys[i], crew=groups[key].slice().sort((a,b) => (a.name||'').localeCompare(b.name||'') || a.user_id-b.user_id);
+      const calls=key.split(',').map(k => ({call_id:Number(k), booking_id:plan.booking_id, call_name:(_bpCall(k)||{}).call_name||''}));
+      // A boss call gets one person by construction; if a group ever carries
+      // more, ask the way addSelected does.
+      const boss=calls.filter(c => (_bpCall(c.call_id)||{}).is_boss_call);
+      if(boss.length && crew.length>1
+         && !window.confirm('You\'re adding '+crew.length+' crew to a Crew Boss call ('+boss.map(c=>c.call_name).join(', ')+').\n\nBoss calls should carry one resource — the crew booked on this job will see all of them as their contact.\n\nAdd anyway?')){
+        stoppedAt=i; break;
+      }
+      const body={crew:crew.map(p => ({name:p.name, crew_id:String(p.user_id)})), calls:calls, confirm:!!confirm};
+      let r=await fetch('/api/goat/add-crew',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      let j=await r.json();
+      if(r.status===409 && j && j.needs_confirm){
+        hideOverlay();
+        if(!(await goatOverConfirm(j.warnings))){ stoppedAt=i; break; }
+        showOverlay(sendingText, label(key));
+        r=await fetch('/api/goat/add-crew',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({...body, ack_over:true})});
+        j=await r.json();
+      }
+      if(!r.ok||j.error) throw new Error((j&&j.error)||('HTTP '+r.status));
+      (j.results||[]).forEach(x => results.push(x));
+    }
+  }catch(e){
+    alert((confirm?'Add & Confirm plan':'Add plan')+' failed: '+(e.message||e));
+    stoppedAt=cur;
+  }finally{
+    hideOverlay();
+    if(stoppedAt>=0) keys.slice(stoppedAt).forEach(k => _activePlan && _activePlan.notSent.add(label(k)));
+    if(_activePlan){ _activePlan.sending=false; _bookingPlanRender(); }
+  }
+  // Nothing went out (Cancel on the first group): the panel's "Not sent" line
+  // says so, and an empty results window would read as a clean run.
+  if(!results.length) return;
+  const t=showOfferResults(confirm?'Add & Confirm plan - results':'Add plan - results', results, true);
+  const b2=document.getElementById(confirm?'bp-confirm':'bp-add');
+  if(b2){
+    b2.textContent='Done - '+t.added+' added'+(t.unverified?', '+t.unverified+' unverified':'')
+      +(t.skipped?', '+t.skipped+' already on call':'')+(t.failed?', '+t.failed+' failed':'');
+    setTimeout(()=>{ if(b2.isConnected) b2.textContent=confirm?'Add & Confirm plan':'Add plan'; },4000);
+  }
 }
 
 // The Notes hint never applies itself: it reopens the form with the row added.
@@ -6064,9 +6333,11 @@ function offerResultTally(results){
   return t;
 }
 
-function showOfferResults(title, results){
+// `always`: show the window on a clean run too. Add plan sends several
+// requests and has no single button whose text could carry the result.
+function showOfferResults(title, results, always){
   var t = offerResultTally(results);
-  if(!t.failed && !t.skipped && !t.unverified) return t;   // clean run — the button text says enough
+  if(!always && !t.failed && !t.skipped && !t.unverified) return t;   // clean run — the button text says enough
 
   openEntityModal();
   document.getElementById('entity-modal-title').textContent = title;
@@ -6103,7 +6374,7 @@ function showOfferResults(title, results){
     + 'A failure means SmartStaff refused the booking, usually a clash with an already-confirmed shift, so no row was created. '
     + "\"Couldn't verify\" means the write most likely went through but the read-back didn't run, so it hasn't been confirmed - "
     + 'check those calls before relying on them.'
-    + '</div>' + body;
+    + '</div>' + (body || '<div style="font-size:12px;color:var(--text);padding:5px 0">Every offer went through.</div>');
   document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
   return t;
 }
@@ -28329,7 +28600,11 @@ async function goatSend(){
   const text=input.value.trim();
   if(!text||_goatBusy) return;
   input.value=''; input.style.height='auto';
-  const egg=checkGoatEasterEgg(text);
+  // A plan read-back is waiting for yes: this message is the answer, so it
+  // goes to the GOAT whatever it says — no easter egg, never REALLY? — and
+  // carries the read-back's id, without which the server won't plan.
+  const planReadBack=_goatPlanReadBack;
+  const egg=planReadBack ? null : checkGoatEasterEgg(text);
   if(egg){
     _goatBusy=true; document.getElementById('goat-send').disabled=true;
     appendGoatMessage('user',text); _goatHistory.push({role:'user',content:text});
@@ -28342,7 +28617,7 @@ async function goatSend(){
   var _lastGoat = null;
   for(var _i=_goatHistory.length-1; _i>=0; _i--){ if(_goatHistory[_i].role==='assistant'){ _lastGoat=_goatHistory[_i]; break; } }
   var _answeringGoat = !!(_lastGoat && typeof _lastGoat.content==='string' && _lastGoat.content.indexOf('?')>=0 && _lastGoat.content!=='REALLY?');
-  if(!_answeringGoat && isSillyGoatQuestion(text)){
+  if(!planReadBack && !_answeringGoat && isSillyGoatQuestion(text)){
     _goatBusy=true; document.getElementById('goat-send').disabled=true;
     appendGoatMessage('user',text); _goatHistory.push({role:'user',content:text});
     appendGoatSillyResponse(); _goatHistory.push({role:'assistant',content:'REALLY?'});
@@ -28353,6 +28628,7 @@ async function goatSend(){
 
   appendGoatMessage('user', text);
   _goatHistory.push({role: 'user', content: text});
+  _goatPlanReadBack = null;               // one answer per read-back
 
   const typingId = showGoatTyping();
 
@@ -28360,7 +28636,8 @@ async function goatSend(){
     const resp = await fetch('/api/goat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({messages: _goatHistory})
+      body: JSON.stringify(planReadBack ? {messages: _goatHistory, plan_read_back: planReadBack}
+                                        : {messages: _goatHistory})
     });
 
     removeGoatTyping(typingId);
@@ -28373,9 +28650,14 @@ async function goatSend(){
       const decoder = new TextDecoder();
       let msgEl = null;
       let full  = '';
-      // open_record cards wait for the answer, so the button sits UNDER it as
-      // the GOAT says (5.85.0 test: it was landing above).
+      // open_record and plan cards wait for the answer, so the button sits
+      // UNDER it as the GOAT says (5.85.0 test: it was landing above).
       const openCards = [];
+      const planCards = [];
+      const readBackCards = [];
+      // A read-back turn has no GOAT text: the server sends what goes into
+      // the history instead (the read-back's exact arguments, for the yes).
+      let historyText = '';
 
       while(true){
         const {done, value} = await reader.read();
@@ -28393,7 +28675,14 @@ async function goatSend(){
               renderGoatConfirmCard(ev.payload);
             }
             else if(ev.type === 'plan_ready'){
-              renderGoatPlanCard(ev.payload);
+              planCards.push(ev.payload);
+            }
+            else if(ev.type === 'history'){
+              historyText = ev.text || '';
+            }
+            else if(ev.type === 'plan_read_back'){
+              readBackCards.push(ev.payload);
+              _goatPlanReadBack = ev.payload.id;
             }
             else if(ev.type === 'open_dialog'){
               openCards.push(ev.payload);
@@ -28408,8 +28697,10 @@ async function goatSend(){
             }
             else if(ev.type === 'done'){
               if(msgEl) finaliseGoatStreamingMessage(msgEl, full);
-              if(full) _goatHistory.push({role:'assistant', content: full});
+              if(full || historyText) _goatHistory.push({role:'assistant', content: full || historyText});
               openCards.splice(0).forEach(renderGoatOpenCard);
+              planCards.splice(0).forEach(renderGoatPlanCard);
+              readBackCards.splice(0).forEach(renderGoatReadBackCard);
             }
             else if(ev.type === 'error'){
               appendGoatMessage('goat', `Error: ${ev.error}`, true);
@@ -28419,6 +28710,8 @@ async function goatSend(){
       }
       // A stream that ended without 'done' still gets its buttons.
       openCards.splice(0).forEach(renderGoatOpenCard);
+      planCards.splice(0).forEach(renderGoatPlanCard);
+      readBackCards.splice(0).forEach(renderGoatReadBackCard);
     }
   } catch(e){
     removeGoatTyping(typingId);
@@ -28544,6 +28837,24 @@ function showGoatToolBadge(toolName){
   wrap.scrollTop = wrap.scrollHeight;
 }
 
+// Plan read-back card (plan_staffing mode read_back). The server builds the
+// text from the planner's own figures, so the operator says yes to exactly
+// what will be planned; the GOAT is told not to restate any of it. Only the
+// LATEST read-back can be answered: its id rides on the next message.
+let _goatPlanReadBack = null;
+
+function renderGoatReadBackCard(payload){
+  if(!payload || !payload.text) return;
+  const wrap = document.getElementById('goat-messages');
+  const el = document.createElement('div');
+  el.className = 'gm gm-goat';
+  el.innerHTML = '<div class="gm-label">GOAT</div>'
+    + '<div class="gm-bubble" style="background:rgba(212,175,55,0.06);border-left-color:rgba(212,175,55,0.6);white-space:pre-wrap">'
+    + '🧩 ' + escapeHtml(payload.text) + '</div>';
+  wrap.appendChild(el);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
 // Staffing plan card (plan_staffing). Read-only: its one button opens the plan
 // in Crew Finder, where the operator checks the ticks and sends (D4, D8).
 const _goatPlanPayloads = {};
@@ -28558,8 +28869,11 @@ function renderGoatPlanCard(payload){
     <div class="gm-label">GOAT</div>
     <div class="gm-bubble" style="background:rgba(212,175,55,0.06);border-left-color:rgba(212,175,55,0.6);
          display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <span>🧩 Staffing plan for call #${escapeHtml(String(payload.call_id))}</span>
-      <button type="button" class="btn" onclick="goatOpenPlanInFinder(_goatPlanPayloads['${id}'])">Open in Crew Finder</button>
+      <span>🧩 Staffing plan for ${(payload.call_ids||[]).length > 1
+        ? 'calls ' + payload.call_ids.map(c => '#' + escapeHtml(String(c))).join(', ')
+        : 'call #' + escapeHtml(String(payload.call_id))}</span>
+      <button type="button" class="btn" onclick="goatOpenPlanInFinder(_goatPlanPayloads['${id}'], this)">Open in Crew Finder</button>
+      <div class="gplan-note" style="flex-basis:100%;font-size:11px;color:var(--muted)"></div>
     </div>`;
   wrap.appendChild(el);
   wrap.scrollTop = wrap.scrollHeight;
@@ -28591,21 +28905,26 @@ function renderGoatOpenCard(payload){
 // Re-runs the plan in the Finder with the same spec (no server-side plan
 // store: the planner is deterministic). The Finder's OWN filters apply; the
 // strip's read-back shows them if they differ from what the drawer used.
-function goatOpenPlanInFinder(p){
+function goatOpenPlanInFinder(p, btn){
   if(!p) return;
+  const ids = (p.call_ids && p.call_ids.length) ? p.call_ids : [p.call_id];
   switchTab('crew-finder');
-  const card = document.querySelector('.call-card[data-call-id="'+p.call_id+'"]');
-  if(!card){
-    alert('Call #'+p.call_id+' isn\'t in Unfilled Calls, so it can\'t be planned in the Finder. '
+  const byId = {};
+  (window._finderCalls || []).forEach(function(c){ byId[String(c.call_id)] = c; });
+  const here = ids.filter(id => byId[String(id)] && document.querySelector('.call-card[data-call-id="'+id+'"]'));
+  const gone = ids.filter(id => !here.includes(id));
+  const note = btn && btn.parentElement && btn.parentElement.querySelector('.gplan-note');
+  if(note) note.textContent = gone.map(id => '#'+id+' isn\'t in Unfilled Calls, so it wasn\'t selected.').join(' ');
+  if(!here.length){
+    alert((ids.length === 1 ? 'Call #'+ids[0]+' isn\'t' : 'None of these calls are')
+      + ' in Unfilled Calls, so it can\'t be planned in the Finder. '
       + 'It may be full, or outside the list\'s dates.');
     return;
   }
   clearCallSelection();
-  card.click();                           // select it the way a click does
-  if(selectedCalls.size !== 1){
-    alert('Call #'+p.call_id+' carries other calls with it when selected, so it can\'t be planned on its own yet.');
-    return;
-  }
+  here.forEach(id => _finderApplyCall(byId[String(id)], true));   // the way a click does
+  updateCallSelectionUI();
+  greyOutResults();
   runPlan(p.plan);
 }
 

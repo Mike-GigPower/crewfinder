@@ -1,0 +1,275 @@
+{
+ "assessment": {
+  "available": [
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0000",
+    "id": "9000",
+    "licences": [],
+    "name": "Avery Testcrew00",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0001",
+    "id": "9001",
+    "licences": [],
+    "name": "Blake Testcrew01",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0002",
+    "id": "9002",
+    "licences": [],
+    "name": "Casey Testcrew02",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0003",
+    "id": "9003",
+    "licences": [],
+    "name": "Devon Testcrew03",
+    "rating": 3
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0004",
+    "id": "9004",
+    "licences": [],
+    "name": "Emery Testcrew04",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0005",
+    "id": "9005",
+    "licences": [],
+    "name": "Finley Testcrew05",
+    "rating": 4
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0006",
+    "id": "9006",
+    "licences": [],
+    "name": "Gray Testcrew06",
+    "rating": 5
+   },
+   {
+    "call_results": [
+     {
+      "available": true,
+      "call_id": "1001",
+      "conflict_warning": "",
+      "induction_current": "",
+      "induction_warning": "",
+      "offer_clash": "",
+      "rel": null
+     }
+    ],
+    "conflict_warnings": [],
+    "ein": "T0007",
+    "id": "9007",
+    "licences": [],
+    "name": "Harper Testcrew07",
+    "rating": 3
+   }
+  ],
+  "conflicts": [],
+  "location_unknown": [],
+  "skipped": [],
+  "targets": [
+   {
+    "booking_id": "501",
+    "call_id": "1001",
+    "call_name": "Show",
+    "end_dt": "2027-03-10T17:00:00",
+    "start_dt": "2027-03-10T09:00:00",
+    "venue": "Test Arena"
+   }
+  ]
+ },
+ "body": {
+  "calls": [
+   {
+    "booking_id": "501",
+    "call_id": "1001",
+    "call_name": "Show",
+    "end_dt": "2027-03-10T17:00:00",
+    "start_dt": "2027-03-10T09:00:00",
+    "venue": "Test Arena"
+   }
+  ],
+  "min_rating": 3,
+  "plan": {
+   "objective": "rating"
+  }
+ },
+ "booking": {
+  "calls": [
+   {
+    "call_id": 1001,
+    "call_name": "Show",
+    "cancelled_at": null,
+    "committed": 0,
+    "confirmed": 0,
+    "crew": [],
+    "feeds": [],
+    "feeds_recommended": [],
+    "notes": "",
+    "required": 1,
+    "start_date": 1800000000,
+    "start_time": "09:00:00"
+   }
+  ]
+ },
+ "experience": {
+  "as_at": "2027-03-01T00:00:00",
+  "cache": {},
+  "call": {
+   "is_boss_call": true
+  },
+  "constants": {
+   "probation_hours": 144
+  },
+  "elapsed_ms": 12,
+  "timing": {},
+  "users": {
+   "9000": {
+    "all_time_h": 131.46,
+    "current_run_h": 73.59,
+    "excluded": false,
+    "is_new": true,
+    "past_boss_3y": 0
+   },
+   "9001": {
+    "all_time_h": 30.1,
+    "current_run_h": 96.86,
+    "excluded": false,
+    "is_new": true,
+    "past_boss_3y": 0
+   },
+   "9002": {
+    "all_time_h": 4793.46,
+    "current_run_h": 263.91,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   },
+   "9003": {
+    "all_time_h": 5478.55,
+    "current_run_h": 648.33,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   },
+   "9004": {
+    "all_time_h": 495.33,
+    "current_run_h": 371.41,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 1
+   },
+   "9005": {
+    "all_time_h": 1503.86,
+    "current_run_h": 199.98,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   },
+   "9006": {
+    "all_time_h": 1154.72,
+    "current_run_h": 292.39,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 3
+   },
+   "9007": {
+    "all_time_h": 2747.93,
+    "current_run_h": 569.54,
+    "excluded": false,
+    "is_new": false,
+    "past_boss_3y": 0
+   }
+  }
+ }
+}

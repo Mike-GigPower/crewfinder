@@ -1,0 +1,46 @@
+{
+ "plan": {
+  "booking_id": 501,
+  "call_id": 1001,
+  "call_name": "Show",
+  "committed": 0,
+  "could_fill_warned": [],
+  "experience_as_at": "2027-03-01T00:00:00",
+  "filters": {
+   "exclude_pt": false,
+   "groups": [],
+   "licences_all": [],
+   "min_rating": 3,
+   "origin": null,
+   "radius_km": null
+  },
+  "is_boss_call": true,
+  "licence_mins": [],
+  "mix": null,
+  "new_pct": null,
+  "notes": [
+   "Crew Boss call: the objective and mix don't apply — the boss place goes to experienced crew only, past bosses first."
+  ],
+  "notes_licence_hints": [],
+  "objective": "rating",
+  "picks": [
+   {
+    "all_time_h": 1154.72,
+    "current_run_h": 292.39,
+    "ein": "T0006",
+    "flags": [],
+    "group": "experienced",
+    "name": "Gray Testcrew06",
+    "past_boss_3y": 3,
+    "rating": 5,
+    "tier": 0,
+    "user_id": 9006,
+    "why": "Experienced · 1,155 h · Boss ×3 in 3 years · ★5"
+   }
+  ],
+  "places": 1,
+  "read_back": "Crew Boss call: one experienced crew member, past bosses first. Filters: min rating 3 · any group · no distance limit. Call #1001 Show, 1 place.",
+  "required": 1,
+  "unfilled": 0
+ }
+}

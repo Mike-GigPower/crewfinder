@@ -3025,8 +3025,25 @@ def _ss_booking_graph(ss, booking_ids):
                 # rather than fetching the booking again.
                 "notes":        bc.get("notes") or "",
             }
+            # Who holds the committed places, for the planner's "0 places"
+            # line (BRIEF-staffing-plans-b §2.1). Same split as the call
+            # dialog: confirmed minus unanswered promotions, the promotions,
+            # and offers not yet answered. committed is statuses 0/1/2/5, and
+            # 0 and 2 both arrive labelled 'unconfirmed'.
+            n_conf = n_promo = n_await = 0
             for row in (bc.get("crew") or []):
-                held[(str(row.get("id")), cid)] = row.get("status") or ""
+                st = row.get("status") or ""
+                held[(str(row.get("id")), cid)] = st
+                if st == "confirmed":
+                    if row.get("promo_pending"):
+                        n_promo += 1
+                    else:
+                        n_conf += 1
+                elif st in ("sent", "unconfirmed"):
+                    n_await += 1
+            graph[cid]["held_confirmed"]     = n_conf
+            graph[cid]["held_promo_pending"] = n_promo
+            graph[cid]["held_awaiting"]      = n_await
     return graph, held
 
 
@@ -4065,6 +4082,44 @@ def check_conflict(shifts, target_start, target_end, target_venue,
                 return True, f"Rule 4 - Would work {total:.1f}hrs in 24hr window (max {MAX_24H_HRS}hrs)", 4
 
     return False, "", 0
+
+
+def _offer_clash_pass(shifts_for_target, offers_for_target, t):
+    """Pass 3 of the Finder's conflict check: does target `t` clash with this
+    crew member's open offers? Returns (reason, rule, counterpart call_id), or
+    ("", 0, None). The caller runs it only when the row is bookable and pass 2
+    produced nothing. Shared by _finder_assess and the booking planner, which
+    adds the offers on the booking's own calls that the search leaves out.
+
+    `shifts_for_target` is their confirmed work, `offers_for_target` their open
+    offers, both without t's own call."""
+    # Rules 1-3 are per-shift and correct against the offer set alone.
+    oc, o_reason, o_rule = check_conflict(
+        offers_for_target, t["start"], t["end"], t["venue"], rules=(1, 2, 3))
+
+    # RULE 4 IS DIFFERENT and this is the rule the 19 Sep incident
+    # broke. It totals hours in a rolling 24h window, so run against
+    # offers alone it misses the confirmed work sitting between them.
+    # Run it over confirmed UNION offered, and report it only when it
+    # does not already fire on confirmed alone — otherwise a
+    # confirmed-only breach would be relabelled as an offer clash.
+    if not oc:
+        already, _, _ = check_conflict(
+            shifts_for_target, t["start"], t["end"], t["venue"], rules=(4,))
+        if not already:
+            oc, o_reason, o_rule = check_conflict(
+                shifts_for_target + offers_for_target,
+                t["start"], t["end"], t["venue"], rules=(4,))
+
+    if not oc:
+        return "", 0, None
+    # Rule 4 is a total, not a pair, so it names no counterpart
+    # call. Rules 1-3 return on the first offer that fires; the
+    # reason string carries its time and venue.
+    for o in offers_for_target:
+        if o.get("venue", "") and o["venue"] in o_reason:
+            return o_reason, o_rule, o.get("call_id")
+    return o_reason, o_rule, None
 
 
 def _tag_shift_for_timeline(shift, targets):
@@ -9266,35 +9321,8 @@ def _finder_assess(ss, data):
             if not conflict and not conflict_warning and offers:
                 offers_for_target = [o for o in offers
                                      if str(o.get("call_id")) != str(t["call_id"])]
-
-                # Rules 1-3 are per-shift and correct against the offer set alone.
-                oc, o_reason, o_rule = check_conflict(
-                    offers_for_target, t["start"], t["end"], t["venue"], rules=(1, 2, 3))
-
-                # RULE 4 IS DIFFERENT and this is the rule the 19 Sep incident
-                # broke. It totals hours in a rolling 24h window, so run against
-                # offers alone it misses the confirmed work sitting between them.
-                # Run it over confirmed UNION offered, and report it only when it
-                # does not already fire on confirmed alone — otherwise a
-                # confirmed-only breach would be relabelled as an offer clash.
-                if not oc:
-                    already, _, _ = check_conflict(
-                        shifts_for_target, t["start"], t["end"], t["venue"], rules=(4,))
-                    if not already:
-                        oc, o_reason, o_rule = check_conflict(
-                            shifts_for_target + offers_for_target,
-                            t["start"], t["end"], t["venue"], rules=(4,))
-
-                if oc:
-                    offer_clash      = o_reason
-                    offer_clash_rule = o_rule
-                    # Rule 4 is a total, not a pair, so it names no counterpart
-                    # call. Rules 1-3 return on the first offer that fires; the
-                    # reason string carries its time and venue.
-                    for o in offers_for_target:
-                        if o.get("venue", "") and o["venue"] in o_reason:
-                            offer_clash_call_id = o.get("call_id")
-                            break
+                offer_clash, offer_clash_rule, offer_clash_call_id = _offer_clash_pass(
+                    shifts_for_target, offers_for_target, t)
 
             # Induction check — controlled AND published venues only; the gate is
             # precomputed per target above. "Complete" was already being returned
@@ -9663,23 +9691,15 @@ def _plan_notes_hints(notes, cat, exclude):
     return sorted(out, key=lambda h: h["code"])
 
 
-def build_staffing_plan(ss, data):
-    """The staffing planner (BRIEF-staffing-plans-a §3.3). `data` is the
-    /api/availability body plus "plan": {objective, new_pct, licence_mins}.
+# ── Shared planner core (BRIEF-staffing-plans-b §2.2) ────────────────────────
+# Both planners call these, so a call planned on its own and the same call
+# planned inside a booking use one set of rules. Stage A's output is frozen by
+# tests/fixtures/plan_golden: the only change allowed there is places_breakdown.
 
-    Returns (assessment_with_plan, None) or (None, (message, http_status)).
-    The result is a strict superset of /api/availability's, so the Finder
-    renders it with the same code. Every /ajax/crew/ call is sequential."""
-    from html import unescape
-    data  = dict(data or {})
-    spec  = data.pop("plan", None) or {}
-    calls = data.get("calls") or []
-
-    # ── validation ──────────────────────────────────────────────────────────
-    if len(calls) != 1 or data.get("soft_call_ids"):
-        return None, ("Plan works on one call at a time for now.", 400)
-    if data.get("only_crew_ids"):
-        return None, ("Plan can't run on a spot-check — clear it and search normally.", 400)
+def _plan_parse_spec(ss, data, spec):
+    """Validate the plan form and the licence filter. Returns (P, None) or
+    (None, (message, http_status)). Sets data["licences_valid_only"] when a
+    licence is required: an expired card never counts toward a plan."""
     objective = spec.get("objective")
     if objective not in _PLAN_OBJECTIVES:
         return None, ("objective must be mix, rating or experience.", 400)
@@ -9709,11 +9729,370 @@ def build_staffing_plan(ss, data):
         if isinstance(n, bool) or not isinstance(n, int) or n < 1:
             return None, ("Licence minimum for %s must be a whole number of 1 or more." % code, 400)
         mins_by_code[code] = max(n, mins_by_code.get(code, 0))
-    licence_mins = sorted(mins_by_code.items())
 
-    # An expired card never counts toward a plan.
     if required_licences:
         data["licences_valid_only"] = True
+    return {"objective":         objective,
+            "new_pct":           new_pct,
+            "cat":               cat,
+            "required_licences": required_licences,
+            "mins_by_code":      mins_by_code,
+            "licence_mins":      sorted(mins_by_code.items())}, None
+
+
+def _plan_sort_key(objective):
+    """D11, D19. Ends in the user id, like every plan sort."""
+    if objective == "experience":
+        return lambda c: (c["tier"], -c["all_h"], -c["rating"], c["name"], c["uid"])
+    return lambda c: (c["tier"], -c["rating"], -c["all_h"], c["name"], c["uid"])
+
+
+def _plan_candidate(e, cr, x, group):
+    """One pool entry on one call. `cr` is that call's call_results row and `x`
+    the person's list-crew-experience row."""
+    from html import unescape
+    return {
+        "uid":     int(e["id"]),
+        "name":    unescape(str(e.get("name") or "")).strip(),
+        "ein":     e.get("ein"),
+        "rating":  int(e.get("rating") or 0),
+        "group":   group,
+        "cur_h":   float(x.get("current_run_h") or 0),
+        "all_h":   float(x.get("all_time_h") or 0),
+        "boss":    int(x.get("past_boss_3y") or 0),
+        "tier":    _plan_tier(cr),
+        "cr":      cr,
+        "lic":     e.get("licences") or [],
+    }
+
+
+def _plan_by_id(assessment):
+    """Licence rows for crew already on a call come from wherever the search put
+    them; someone in no bucket can't be checked and counts as not holding."""
+    by_id = {}
+    for bucket in ("available", "conflicts", "skipped", "location_unknown"):
+        for e in (assessment.get(bucket) or []):
+            by_id.setdefault(str(e.get("id")), e)
+    return by_id
+
+
+def _plan_holds(lic_rows, code, call_date):
+    st, _exp = _licence_best_for(lic_rows, set(expand_driver_codes([code])), call_date)
+    return st if st in _PLAN_HOLDS else None
+
+
+def _plan_places_breakdown(node):
+    """{confirmed, promo_pending, awaiting} for the places line (§2.5), or None
+    when the three don't add up to committed: never show numbers that don't."""
+    b = {"confirmed":     node.get("held_confirmed"),
+         "promo_pending": node.get("held_promo_pending"),
+         "awaiting":      node.get("held_awaiting")}
+    if any(v is None for v in b.values()) or sum(b.values()) != node.get("committed"):
+        return None
+    return b
+
+
+def _plan_places_text(places, b):
+    """The places line (§3.5) in words, the same as the Finder's
+    _planPlacesText, so the drawer relays a sentence instead of doing sums."""
+    def pl(n, w):
+        return "%d %s%s" % (n, w, "" if n == 1 else "s")
+    if b and places == 0:
+        parts = []
+        if b["confirmed"]:
+            parts.append("%d confirmed" % b["confirmed"])
+        if b["awaiting"]:
+            parts.append(pl(b["awaiting"], "offer") + " awaiting reply")
+        s = "0 places" + ((" — " + ", ".join(parts)) if parts else "")
+        if b["promo_pending"]:
+            s += " · " + pl(b["promo_pending"], "promotion") + " pending"
+        return s
+    if b and places > 0 and b["awaiting"] > 0:
+        return pl(places, "place") + " (%d held by offers awaiting reply)" % b["awaiting"]
+    return pl(places, "place")
+
+
+class _PlanCall(object):
+    """One call's planning state. `pickable` is sorted by `key`.
+
+    `ok(c)` and `on_take(c)` are the booking planner's hooks: ok refuses a pick
+    that would double-book across the booking, on_take places the pick on the
+    calls this one locked-feeds. A single-call plan leaves both alone."""
+
+    def __init__(self, places, is_boss_call, call_date, on_call, by_id, group_of, key, pickable):
+        self.places       = places
+        self.is_boss_call = is_boss_call
+        self.call_date    = call_date
+        self.on_call      = on_call
+        self.by_id        = by_id
+        self.key          = key
+        self.pickable     = pickable
+        self.picks, self.picked, self.notes = [], set(), []
+        self.pick_flags, self.pick_lics     = {}, {}
+        self.existing = {"new": 0, "experienced": 0}
+        for u in on_call:
+            self.existing[group_of(u)] += 1
+        self.need = self.exp_target = self.new_target = None
+        self.mix, self.licence_out, self.unfilled = None, [], 0
+        self.ok      = lambda c: True
+        self.on_take = None
+
+    def set_mix(self, required, new_pct):
+        self.exp_target = (required * (100 - new_pct) + 99) // 100      # experienced rounds UP (D15)
+        self.new_target = required - self.exp_target
+        self.need = {"experienced": max(0, self.exp_target - self.existing["experienced"]),
+                     "new":         max(0, self.new_target - self.existing["new"])}
+
+    def take(self, c):
+        self.picks.append(c)
+        self.picked.add(c["uid"])
+        if self.on_take:
+            self.on_take(c)
+
+
+def _plan_boss(cs):
+    """Step 7, a Crew Boss call (D16, D19, D20, D24)."""
+    cs.notes.append("Crew Boss call: the objective and mix don't apply — the boss "
+                    "place goes to experienced crew only, past bosses first.")
+    boss_pool = sorted((c for c in cs.pickable if c["group"] == "experienced" and cs.ok(c)),
+                       key=lambda c: (c["tier"], 0 if c["boss"] else 1, -c["boss"],
+                                      -c["all_h"], -c["rating"], c["name"], c["uid"]))
+    if cs.places > 1:
+        cs.notes.append("This boss call is set for %d; the plan fills one." % cs.places)
+    if min(cs.places, 1):
+        if boss_pool:
+            cs.take(boss_pool[0])
+            if not boss_pool[0]["boss"]:
+                cs.pick_flags.setdefault(boss_pool[0]["uid"], []).append("Hasn't been boss before")
+        else:
+            cs.notes.append("No experienced crew available — boss place left empty")
+    cs.unfilled = min(cs.places, 1) - len(cs.picks)
+
+
+def _plan_licence_mins(cs, licence_mins):
+    """Step 8, licence minimums first. Crew the booking planner had already put
+    on this call before this step count as holders, like crew on the call."""
+    pre  = list(cs.picks)
+    need = cs.need
+    for code, want in licence_mins:
+        lname = _licence_name(code)
+        already, unchecked = 0, 0
+        for u in cs.on_call:
+            e = cs.by_id.get(str(u))
+            if e is None:
+                unchecked += 1
+            elif _plan_holds(e.get("licences") or [], code, cs.call_date):
+                already += 1
+        already += sum(1 for c in pre if _plan_holds(c["lic"], code, cs.call_date))
+        if unchecked:
+            cs.notes.append("%d on the call couldn't be checked for %s; counted as not holding it."
+                            % (unchecked, lname))
+        k = max(0, want - already)
+        got, crossed = 0, False
+        while got < k and len(cs.picks) < cs.places:
+            holders = [c for c in cs.pickable
+                       if c["uid"] not in cs.picked and _plan_holds(c["lic"], code, cs.call_date)
+                       and cs.ok(c)]
+            if not holders:
+                break
+            c = holders[0]
+            if need is not None:
+                needing = [g for g in ("experienced", "new") if need[g] > 0]
+                pref = [h for h in holders if h["group"] in needing]
+                if pref:
+                    c = pref[0]
+                elif needing and not crossed:
+                    crossed = True
+                    cs.notes.append("No %s crew hold %s, so %s crew were picked for it."
+                                    % (" or ".join(needing), lname, c["group"]))
+                need[c["group"]] = max(0, need[c["group"]] - 1)
+            cs.take(c)
+            cs.pick_lics.setdefault(c["uid"], []).append(code)
+            if _plan_holds(c["lic"], code, cs.call_date) == "unknown":
+                cs.pick_flags.setdefault(c["uid"], []).append("No expiry on file: " + code)
+            got += 1
+        if got < k:
+            cs.notes.append("Asked for %d with %s, found %d" % (want, lname, already + got))
+        cs.licence_out.append({"code": code, "name": lname, "min": want,
+                               "already_met": already, "picked": got,
+                               "short": max(0, k - got)})
+
+
+def _plan_fill(cs):
+    """Step 9, fill. One pick at a time: in a booking plan a pick can use up a
+    place on a call it carries to, which changes who fits next."""
+    def _fill(group, n):
+        got = 0
+        while got < n and len(cs.picks) < cs.places:
+            nxt = next((c for c in cs.pickable if c["uid"] not in cs.picked
+                        and (group is None or c["group"] == group) and cs.ok(c)), None)
+            if nxt is None:
+                break
+            cs.take(nxt)
+            got += 1
+        return got
+
+    need = cs.need
+    if need is None:
+        _fill(None, max(0, cs.places - len(cs.picks)))
+    else:
+        want_exp = min(need["experienced"], cs.places - len(cs.picks))
+        got_exp  = _fill("experienced", want_exp)
+        want_new = min(need["new"], cs.places - len(cs.picks))
+        got_new  = _fill("new", want_new)
+        # A group that runs dry hands its places to the other (D18).
+        short_notes = []
+        if got_new < want_new:
+            k = _fill("experienced", want_new - got_new)
+            short_notes.append("Asked for %d new, found %d; %d place%s given to experienced crew"
+                               % (want_new, got_new, k, "" if k == 1 else "s"))
+        if got_exp < want_exp:
+            k = _fill("new", want_exp - got_exp)
+            short_notes.append("Asked for %d experienced, found %d; %d place%s given to new crew"
+                               % (want_exp, got_exp, k, "" if k == 1 else "s"))
+        if len(cs.picks) < cs.places:
+            _fill(None, cs.places - len(cs.picks))
+
+        planned = {"new": 0, "experienced": 0}
+        for c in cs.picks:
+            planned[c["group"]] += 1
+        # "Already has" only when the plan really added nobody from that
+        # group. If it did, a shortfall put them there and the shortfall
+        # note says so; both together read as a contradiction (T7).
+        # Order: already-has, then shortfalls, then left-empty below.
+        # Not on a call with no places: the plan adds nobody, so "adds new
+        # crew only" says something that isn't happening.
+        if cs.places > 0 and cs.existing["experienced"] > cs.exp_target and planned["experienced"] == 0:
+            cs.notes.append("The call already has %d experienced, more than the mix's %d — "
+                            "the plan adds new crew only." % (cs.existing["experienced"], cs.exp_target))
+        if cs.places > 0 and cs.existing["new"] > cs.new_target and planned["new"] == 0:
+            cs.notes.append("The call already has %d new, more than the mix's %d — "
+                            "the plan adds experienced crew only." % (cs.existing["new"], cs.new_target))
+        cs.notes.extend(short_notes)
+        cs.mix = {
+            "target":     {"new": cs.new_target, "experienced": cs.exp_target},
+            "existing":   dict(cs.existing),
+            "planned":    planned,
+            "team_after": {"new": cs.existing["new"] + planned["new"],
+                           "experienced": cs.existing["experienced"] + planned["experienced"]},
+        }
+    cs.unfilled = cs.places - len(cs.picks)
+    if cs.unfilled > 0:
+        cs.notes.append("%d place%s left empty — not enough available crew."
+                        % (cs.unfilled, "" if cs.unfilled == 1 else "s"))
+
+
+def _plan_why(cs, c):
+    if cs.is_boss_call:
+        parts = ["Experienced · %s h" % _plan_h(c["all_h"]),
+                 ("Boss ×%d in 3 years" % c["boss"]) if c["boss"] else "Never boss"]
+    elif c["group"] == "new":
+        # One decimal, rounded DOWN, so nobody under 144 ever reads "144"
+        # (143.75 -> 143.7). The 1e-9 absorbs float noise in h * 10.
+        parts = ["New · {:,.1f} h".format(math.floor(c["cur_h"] * 10 + 1e-9) / 10)]
+    else:
+        parts = ["Experienced · %s h" % _plan_h(c["all_h"])]
+    parts.append("★%d" % c["rating"])
+    if c["cr"].get("induction_current"):
+        parts.append("inducted")
+    parts.extend(cs.pick_lics.get(c["uid"], []))
+    return " · ".join(parts)
+
+
+def _plan_flags(cs, c):
+    f = list(cs.pick_flags.get(c["uid"], []))
+    iw = c["cr"].get("induction_warning") or ""
+    if iw:
+        f.append(iw)
+    if c["cr"].get("offer_clash"):
+        f.append("✉ " + c["cr"]["offer_clash"])
+    return f
+
+
+def _plan_pick_out(cs, c):
+    return {
+        "user_id":       c["uid"],
+        "name":          c["name"],
+        "ein":           c["ein"],
+        "group":         c["group"],
+        "current_run_h": round(c["cur_h"], 2),
+        "all_time_h":    round(c["all_h"], 2),
+        "rating":        c["rating"],
+        "tier":          c["tier"],
+        "past_boss_3y":  c["boss"],
+        "why":           _plan_why(cs, c),
+        "flags":         _plan_flags(cs, c),
+    }
+
+
+def _plan_filters(data, required_licences):
+    return {
+        "min_rating":   int(data.get("min_rating", 3)),
+        "groups":       sorted(data.get("required_groups") or []),
+        "licences_all": sorted(required_licences),
+        "exclude_pt":   bool(data.get("exclude_pt", False)),
+        "radius_km":    data.get("radius_km") or None,
+        "origin":       data.get("origin") if data.get("radius_km") else None,
+    }
+
+
+def _plan_read_back_head(is_boss_call, objective, new_pct, probation_h, licence_mins,
+                         required_licences, filters, mins_prefix=""):
+    """Every read-back sentence except the last (the call or calls). Built in
+    Python so the drawer and the Finder show one sentence."""
+    rb = []
+    if is_boss_call:
+        rb.append("Crew Boss call: one experienced crew member, past bosses first.")
+    elif objective == "mix":
+        rb.append("%d%% new (under %s h), %d%% experienced, best rated first within each group."
+                  % (new_pct, probation_h, 100 - new_pct))
+    elif objective == "rating":
+        rb.append("Best rated first.")
+    else:
+        rb.append("Most experienced (all-time hours) first.")
+    if licence_mins and not is_boss_call:
+        rb.append(mins_prefix + ", ".join("%d with %s" % (n, _licence_name(c)) for c, n in licence_mins) + ".")
+    if required_licences:
+        rb.append("Everyone needs: " + ", ".join(_licence_name(c) for c in sorted(required_licences)) + ".")
+    if filters["radius_km"]:
+        o = filters["origin"] or {}
+        dist = "within %s km of %s" % (filters["radius_km"],
+                                       ("postcode " + str(o.get("postcode"))) if o.get("mode") == "postcode"
+                                       else "the venue")
+    else:
+        dist = "no distance limit"
+    fl = ["min rating %d" % filters["min_rating"],
+          ", ".join(filters["groups"]) if filters["groups"] else "any group",
+          dist]
+    if filters["exclude_pt"]:
+        fl.append("no PT-only")
+    rb.append("Filters: " + " · ".join(fl) + ".")
+    return rb
+
+
+def build_staffing_plan(ss, data):
+    """The staffing planner (BRIEF-staffing-plans-a §3.3). `data` is the
+    /api/availability body plus "plan": {objective, new_pct, licence_mins}.
+
+    Returns (assessment_with_plan, None) or (None, (message, http_status)).
+    The result is a strict superset of /api/availability's, so the Finder
+    renders it with the same code. Every /ajax/crew/ call is sequential."""
+    from html import unescape
+    data  = dict(data or {})
+    spec  = data.pop("plan", None) or {}
+    calls = data.get("calls") or []
+
+    # ── validation ──────────────────────────────────────────────────────────
+    if len(calls) != 1 or data.get("soft_call_ids"):
+        return None, ("Plan works on one call at a time for now.", 400)
+    if data.get("only_crew_ids"):
+        return None, ("Plan can't run on a spot-check — clear it and search normally.", 400)
+    P, err = _plan_parse_spec(ss, data, spec)
+    if err:
+        return None, err
+    objective, new_pct = P["objective"], P["new_pct"]
+    required_licences  = P["required_licences"]
+    licence_mins       = P["licence_mins"]
 
     # ── 1. the Finder search ────────────────────────────────────────────────
     assessment, err = _finder_assess(ss, data)
@@ -9762,250 +10141,34 @@ def build_staffing_plan(ss, data):
         x = users[str(e["id"])]
         if x.get("excluded"):
             continue
-        cr = e["call_results"][0]
-        c = {
-            "uid":     int(e["id"]),
-            "name":    unescape(str(e.get("name") or "")).strip(),
-            "ein":     e.get("ein"),
-            "rating":  int(e.get("rating") or 0),
-            "group":   _group(e["id"]),
-            "cur_h":   float(x.get("current_run_h") or 0),
-            "all_h":   float(x.get("all_time_h") or 0),
-            "boss":    int(x.get("past_boss_3y") or 0),
-            "tier":    _plan_tier(cr),
-            "cr":      cr,
-            "lic":     e.get("licences") or [],
-        }
+        c = _plan_candidate(e, e["call_results"][0], x, _group(e["id"]))
         if e.get("conflict_warnings"):
             warned.append(c)
         else:
             pickable.append(c)
 
     # ── 6. sort keys (D11, D19) ─────────────────────────────────────────────
-    if objective == "experience":
-        key = lambda c: (c["tier"], -c["all_h"], -c["rating"], c["name"], c["uid"])
-    else:
-        key = lambda c: (c["tier"], -c["rating"], -c["all_h"], c["name"], c["uid"])
+    key = _plan_sort_key(objective)
     pickable.sort(key=key)
 
-    picks, picked, notes = [], set(), []
-    pick_flags, pick_lics = {}, {}
-
-    def _take(c):
-        picks.append(c)
-        picked.add(c["uid"])
-
-    def _holds(lic_rows, code):
-        st, _exp = _licence_best_for(lic_rows, set(expand_driver_codes([code])), call_date)
-        return st if st in _PLAN_HOLDS else None
-
-    # Licence rows for crew already on the call come from wherever the search
-    # put them; someone in no bucket can't be checked and counts as not holding.
-    by_id = {}
-    for bucket in ("available", "conflicts", "skipped", "location_unknown"):
-        for e in (assessment.get(bucket) or []):
-            by_id.setdefault(str(e.get("id")), e)
-
-    existing = {"new": 0, "experienced": 0}
-    for u in on_call:
-        existing[_group(u)] += 1
-
-    mix = None
-    licence_out = []
+    by_id = _plan_by_id(assessment)
+    cs = _PlanCall(places, is_boss_call, call_date, on_call, by_id, _group, key, pickable)
 
     if is_boss_call:
-        # ── 7. Crew Boss call (D16, D19, D20, D24) ──────────────────────────
-        notes.append("Crew Boss call: the objective and mix don't apply — the boss "
-                     "place goes to experienced crew only, past bosses first.")
-        boss_pool = sorted((c for c in pickable if c["group"] == "experienced"),
-                           key=lambda c: (c["tier"], 0 if c["boss"] else 1, -c["boss"],
-                                          -c["all_h"], -c["rating"], c["name"], c["uid"]))
-        if places > 1:
-            notes.append("This boss call is set for %d; the plan fills one." % places)
-        if min(places, 1):
-            if boss_pool:
-                _take(boss_pool[0])
-                if not boss_pool[0]["boss"]:
-                    pick_flags.setdefault(boss_pool[0]["uid"], []).append("Hasn't been boss before")
-            else:
-                notes.append("No experienced crew available — boss place left empty")
-        unfilled = min(places, 1) - len(picks)
+        _plan_boss(cs)                                  # 7
     else:
-        need = None
         if objective == "mix":
-            exp_target = (required * (100 - new_pct) + 99) // 100      # experienced rounds UP (D15)
-            new_target = required - exp_target
-            need = {"experienced": max(0, exp_target - existing["experienced"]),
-                    "new":         max(0, new_target - existing["new"])}
-
-        # ── 8. licence minimums first ───────────────────────────────────────
-        for code, want in licence_mins:
-            lname = _licence_name(code)
-            already, unchecked = 0, 0
-            for u in on_call:
-                e = by_id.get(str(u))
-                if e is None:
-                    unchecked += 1
-                elif _holds(e.get("licences") or [], code):
-                    already += 1
-            if unchecked:
-                notes.append("%d on the call couldn't be checked for %s; counted as not holding it."
-                             % (unchecked, lname))
-            k = max(0, want - already)
-            got, crossed = 0, False
-            while got < k and len(picks) < places:
-                holders = [c for c in pickable
-                           if c["uid"] not in picked and _holds(c["lic"], code)]
-                if not holders:
-                    break
-                c = holders[0]
-                if need is not None:
-                    needing = [g for g in ("experienced", "new") if need[g] > 0]
-                    pref = [h for h in holders if h["group"] in needing]
-                    if pref:
-                        c = pref[0]
-                    elif needing and not crossed:
-                        crossed = True
-                        notes.append("No %s crew hold %s, so %s crew were picked for it."
-                                     % (" or ".join(needing), lname, c["group"]))
-                    need[c["group"]] = max(0, need[c["group"]] - 1)
-                _take(c)
-                pick_lics.setdefault(c["uid"], []).append(code)
-                if _holds(c["lic"], code) == "unknown":
-                    pick_flags.setdefault(c["uid"], []).append("No expiry on file: " + code)
-                got += 1
-            if got < k:
-                notes.append("Asked for %d with %s, found %d" % (want, lname, already + got))
-            licence_out.append({"code": code, "name": lname, "min": want,
-                                "already_met": already, "picked": got,
-                                "short": max(0, k - got)})
-
-        # ── 9. fill ─────────────────────────────────────────────────────────
-        def _rest(group=None):
-            return [c for c in pickable if c["uid"] not in picked
-                    and (group is None or c["group"] == group)]
-
-        if need is None:
-            for c in _rest()[:max(0, places - len(picks))]:
-                _take(c)
-        else:
-            def _fill(group, n):
-                got = _rest(group)[:max(0, min(n, places - len(picks)))]
-                for c in got:
-                    _take(c)
-                return len(got)
-
-            want_exp = min(need["experienced"], places - len(picks))
-            got_exp  = _fill("experienced", want_exp)
-            want_new = min(need["new"], places - len(picks))
-            got_new  = _fill("new", want_new)
-            # A group that runs dry hands its places to the other (D18).
-            short_notes = []
-            if got_new < want_new:
-                k = _fill("experienced", want_new - got_new)
-                short_notes.append("Asked for %d new, found %d; %d place%s given to experienced crew"
-                                   % (want_new, got_new, k, "" if k == 1 else "s"))
-            if got_exp < want_exp:
-                k = _fill("new", want_exp - got_exp)
-                short_notes.append("Asked for %d experienced, found %d; %d place%s given to new crew"
-                                   % (want_exp, got_exp, k, "" if k == 1 else "s"))
-            if len(picks) < places:
-                for c in sorted(_rest(), key=key)[:places - len(picks)]:
-                    _take(c)
-
-            planned = {"new": 0, "experienced": 0}
-            for c in picks:
-                planned[c["group"]] += 1
-            # "Already has" only when the plan really added nobody from that
-            # group. If it did, a shortfall put them there and the shortfall
-            # note says so; both together read as a contradiction (T7).
-            # Order: already-has, then shortfalls, then left-empty below.
-            if existing["experienced"] > exp_target and planned["experienced"] == 0:
-                notes.append("The call already has %d experienced, more than the mix's %d — "
-                             "the plan adds new crew only." % (existing["experienced"], exp_target))
-            if existing["new"] > new_target and planned["new"] == 0:
-                notes.append("The call already has %d new, more than the mix's %d — "
-                             "the plan adds experienced crew only." % (existing["new"], new_target))
-            notes.extend(short_notes)
-            mix = {
-                "target":     {"new": new_target, "experienced": exp_target},
-                "existing":   dict(existing),
-                "planned":    planned,
-                "team_after": {"new": existing["new"] + planned["new"],
-                               "experienced": existing["experienced"] + planned["experienced"]},
-            }
-        unfilled = places - len(picks)
-        if unfilled > 0:
-            notes.append("%d place%s left empty — not enough available crew."
-                         % (unfilled, "" if unfilled == 1 else "s"))
+            cs.set_mix(required, new_pct)
+        _plan_licence_mins(cs, licence_mins)            # 8
+        _plan_fill(cs)                                  # 9
 
     # ── 10. Notes licence hint (advisory, never applied) ────────────────────
-    hints = _plan_notes_hints(node.get("notes"), cat,
-                              set(required_licences) | set(mins_by_code))
+    hints = _plan_notes_hints(node.get("notes"), P["cat"],
+                              set(required_licences) | set(P["mins_by_code"]))
 
-    # ── shape ───────────────────────────────────────────────────────────────
-    def _why(c):
-        if is_boss_call:
-            parts = ["Experienced · %s h" % _plan_h(c["all_h"]),
-                     ("Boss ×%d in 3 years" % c["boss"]) if c["boss"] else "Never boss"]
-        elif c["group"] == "new":
-            # One decimal, rounded DOWN, so nobody under 144 ever reads "144"
-            # (143.75 -> 143.7). The 1e-9 absorbs float noise in h * 10.
-            parts = ["New · {:,.1f} h".format(math.floor(c["cur_h"] * 10 + 1e-9) / 10)]
-        else:
-            parts = ["Experienced · %s h" % _plan_h(c["all_h"])]
-        parts.append("★%d" % c["rating"])
-        if c["cr"].get("induction_current"):
-            parts.append("inducted")
-        parts.extend(pick_lics.get(c["uid"], []))
-        return " · ".join(parts)
-
-    def _flags(c):
-        f = list(pick_flags.get(c["uid"], []))
-        iw = c["cr"].get("induction_warning") or ""
-        if iw:
-            f.append(iw)
-        if c["cr"].get("offer_clash"):
-            f.append("✉ " + c["cr"]["offer_clash"])
-        return f
-
-    filters = {
-        "min_rating":   int(data.get("min_rating", 3)),
-        "groups":       sorted(data.get("required_groups") or []),
-        "licences_all": sorted(required_licences),
-        "exclude_pt":   bool(data.get("exclude_pt", False)),
-        "radius_km":    data.get("radius_km") or None,
-        "origin":       data.get("origin") if data.get("radius_km") else None,
-    }
-
-    # The read-back, built HERE so the drawer and the Finder show one sentence.
-    rb = []
-    if is_boss_call:
-        rb.append("Crew Boss call: one experienced crew member, past bosses first.")
-    elif objective == "mix":
-        rb.append("%d%% new (under %s h), %d%% experienced, best rated first within each group."
-                  % (new_pct, probation_h, 100 - new_pct))
-    elif objective == "rating":
-        rb.append("Best rated first.")
-    else:
-        rb.append("Most experienced (all-time hours) first.")
-    if licence_mins and not is_boss_call:
-        rb.append(", ".join("%d with %s" % (n, _licence_name(c)) for c, n in licence_mins) + ".")
-    if required_licences:
-        rb.append("Everyone needs: " + ", ".join(_licence_name(c) for c in sorted(required_licences)) + ".")
-    if filters["radius_km"]:
-        o = filters["origin"] or {}
-        dist = "within %s km of %s" % (filters["radius_km"],
-                                       ("postcode " + str(o.get("postcode"))) if o.get("mode") == "postcode"
-                                       else "the venue")
-    else:
-        dist = "no distance limit"
-    fl = ["min rating %d" % filters["min_rating"],
-          ", ".join(filters["groups"]) if filters["groups"] else "any group",
-          dist]
-    if filters["exclude_pt"]:
-        fl.append("no PT-only")
-    rb.append("Filters: " + " · ".join(fl) + ".")
+    filters = _plan_filters(data, required_licences)
+    rb = _plan_read_back_head(is_boss_call, objective, new_pct, probation_h, licence_mins,
+                              required_licences, filters)
     rb.append("Call #%s %s, %d place%s." % (cid, call_name, places, "" if places == 1 else "s"))
 
     assessment["plan"] = {
@@ -10016,32 +10179,21 @@ def build_staffing_plan(ss, data):
         "required":     required,
         "committed":    committed,
         "places":       places,
+        "places_breakdown": _plan_places_breakdown(node),
         "objective":    objective,
         "new_pct":      new_pct,
         "filters":      filters,
-        "licence_mins": licence_out,
-        "mix":          mix,
-        "picks": [{
-            "user_id":       c["uid"],
-            "name":          c["name"],
-            "ein":           c["ein"],
-            "group":         c["group"],
-            "current_run_h": round(c["cur_h"], 2),
-            "all_time_h":    round(c["all_h"], 2),
-            "rating":        c["rating"],
-            "tier":          c["tier"],
-            "past_boss_3y":  c["boss"],
-            "why":           _why(c),
-            "flags":         _flags(c),
-        } for c in picks],
+        "licence_mins": cs.licence_out,
+        "mix":          cs.mix,
+        "picks":        [_plan_pick_out(cs, c) for c in cs.picks],
         "could_fill_warned": [{
             "user_id": c["uid"],
             "name":    c["name"],
             "group":   c["group"],
             "warning": "; ".join(e for e in (by_id.get(str(c["uid"])) or {}).get("conflict_warnings") or []),
         } for c in sorted(warned, key=lambda c: (c["name"], c["uid"]))],
-        "unfilled":            max(0, unfilled),
-        "notes":               notes,
+        "unfilled":            max(0, cs.unfilled),
+        "notes":               cs.notes,
         "notes_licence_hints": hints,
         "experience_as_at":    exp.get("as_at"),
         "read_back":           " ".join(rb),
@@ -10053,13 +10205,580 @@ def build_staffing_plan(ss, data):
     return assessment, None
 
 
+# ─── STAFFING PLANS — STAGE B: A WHOLE BOOKING ────────────────────────────────
+# BRIEF-staffing-plans-b (D26-D33). Plans every selected call of ONE booking,
+# plus the calls they locked-feed (carried, D32), on top of ONE Finder search.
+#
+#   1. boss calls first; the boss is kept off every crew call (D22)
+#   2. licence minimums call by call, each pick extended to the other calls
+#      they pass the run test on
+#   3. continuity runs (D27, D31, D33): the same person across 2+ calls,
+#      longest run first, chosen lazily-greedy
+#   4. stage A's per-call fill for whatever is left, never double-booking (D7)
+#
+# Writes nothing, like stage A. Deterministic: every tie ends in the user id.
+
+def _plan_closure(graph, cid):
+    """Call ids `cid` locked-feeds, transitively, excluding itself. The same
+    rule as expand_downstream_calls: feeds, minus recommended ones."""
+    out, seen, stack = [], {cid}, [cid]
+    while stack:
+        cur = stack.pop()
+        node = graph.get(cur) or {}
+        rec = set(node.get("feeds_recommended") or [])
+        for t in (node.get("feeds") or []):
+            if t in rec or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+            stack.append(t)
+    return out
+
+
+def _plan_carried_flags(clos):
+    """Carried (D32): another target locked-feeds it, so the server places crew
+    there itself. The Finder selects a load-in's load-out along with it, so
+    "selected" alone can't decide this. Both ends of a feed cycle stay roots."""
+    n = len(clos)
+    return [any(i in clos[j] and j not in clos[i] for j in range(n) if j != i) for i in range(n)]
+
+
+def _plan_shift(t):
+    return {"start": t["start"].isoformat(), "end": t["end"].isoformat(), "venue": t["venue"]}
+
+
+def _plan_pair_ok(a, b):
+    """Two calls in one person's plan. Rule 1 and Rule 3 always; Rule 2 except
+    for a roll-through at the same venue (D33). Both directions, because
+    check_conflict's Rule 2 measures the SHIFT's length, not the target's."""
+    same_venue = bool(a["venue"]) and a["venue"] == b["venue"]
+    rules = (1, 3) if same_venue else (1, 2, 3)
+    for s, t in ((a, b), (b, a)):
+        if check_conflict([_plan_shift(s)], t["start"], t["end"], t["venue"], rules=rules)[0]:
+            return False
+    return True
+
+
+def _plan_r4_ok(base, wins):
+    """Rule 4 over `base` shifts plus every call in `wins`, anchored on each
+    call in turn: a run can push an EARLIER call's window over, not only the
+    one being added."""
+    shifts = [_plan_shift(w) for w in wins]
+    for i, w in enumerate(wins):
+        others = base + shifts[:i] + shifts[i + 1:]
+        if check_conflict(others, w["start"], w["end"], w["venue"], rules=(4,))[0]:
+            return False
+    return True
+
+
+def build_booking_plan(ss, data):
+    """Plan 2+ calls of one booking (BRIEF-staffing-plans-b §2.3). Same body as
+    /api/availability plus "plan". Returns (assessment_with_plan, None) or
+    (None, (message, http_status)). Every /ajax/crew/ call is sequential: the
+    PHP session lock hangs a concurrent second call."""
+    import heapq
+    from html import unescape
+    data = dict(data or {})
+    spec = data.pop("plan", None) or {}
+    soft = set(str(x) for x in (data.pop("soft_call_ids", None) or []))
+    calls = [c for c in (data.get("calls") or []) if str(c.get("call_id")) not in soft]
+
+    # ── validation ──────────────────────────────────────────────────────────
+    if len(calls) < 2:
+        return None, ("A booking plan needs 2 or more calls.", 400)
+    bids = sorted(set(str(c.get("booking_id")) for c in calls))
+    if len(bids) != 1:
+        return None, ("Plan one booking at a time.", 400)          # D30
+    if data.get("only_crew_ids"):
+        return None, ("Plan can't run on a spot-check — clear it and search normally.", 400)
+    P, err = _plan_parse_spec(ss, data, spec)
+    if err:
+        return None, err
+    objective, new_pct = P["objective"], P["new_pct"]
+    required_licences  = P["required_licences"]
+    licence_mins       = P["licence_mins"]
+    bid = bids[0]
+
+    # ── graph and targets ───────────────────────────────────────────────────
+    graph, held = _ss_booking_graph(ss, {bid})
+    if not graph:
+        return None, ("Couldn't read booking #%s" % bid, 502)
+    selected, by_sel = [], {}
+    for c in calls:
+        cid = str(c["call_id"])
+        if cid in by_sel:
+            continue
+        if cid not in graph:
+            return None, ("Call #%s isn't on booking #%s." % (cid, bid), 400)
+        by_sel[cid] = c
+        selected.append(cid)
+    target_ids = list(selected)
+    for cid in selected:
+        for t in _plan_closure(graph, cid):
+            if t not in target_ids and t in graph:
+                target_ids.append(t)
+
+    booking_notes, T = [], []
+    for cid in target_ids:
+        node = graph[cid]
+        name = unescape(str(node.get("call_name") or "")).strip()
+        if node.get("cancelled_at"):
+            booking_notes.append("Call #%s %s is cancelled — not planned." % (cid, name))
+            continue
+        if cid in by_sel:
+            c = by_sel[cid]
+            start_dt, end_dt, venue = c["start_dt"], c["end_dt"], c.get("venue") or ""
+        else:
+            det, err = scrape_call_details(ss, bid, cid)
+            if err or not det:
+                return None, ("Couldn't read call #%s: %s" % (cid, err), 502)
+            start_dt, end_dt, venue = det["start_dt"], det["end_dt"], det.get("venue") or ""
+        T.append({"cid": cid, "name": name,
+                  "start": datetime.fromisoformat(start_dt),
+                  "end": datetime.fromisoformat(end_dt), "venue": venue})
+    if not any(t["cid"] in by_sel for t in T):
+        return None, ("Every selected call is cancelled.", 400)
+    T.sort(key=lambda t: (t["start"], int(t["cid"])))
+    idx  = {t["cid"]: i for i, t in enumerate(T)}
+    clos = [[idx[f] for f in _plan_closure(graph, t["cid"]) if f in idx] for t in T]
+    for i, flag in enumerate(_plan_carried_flags(clos)):
+        T[i]["carried"] = flag
+
+    # ── one assessment over every target ────────────────────────────────────
+    data["calls"] = [{"booking_id": bid, "call_id": int(t["cid"]),
+                      "start_dt": t["start"].isoformat(), "end_dt": t["end"].isoformat(),
+                      "venue": t["venue"], "call_num": int(t["cid"]), "call_name": t["name"]}
+                     for t in T]
+    assessment, err = _finder_assess(ss, data)
+    if err:
+        return None, err
+    # call_results follow data["calls"]; read the index from each row anyway.
+    avail = assessment.get("available") or []
+
+    def _cr(e, i):
+        for r in e["call_results"]:
+            if str(r["call_id"]) == T[i]["cid"]:
+                return r
+        return None
+
+    on_call = {t["cid"]: sorted((uid for (uid, c), lbl in held.items()
+                                 if c == t["cid"] and lbl in _PLAN_ON_CALL), key=int)
+               for t in T}
+
+    # ── one experience lookup ───────────────────────────────────────────────
+    pool_ids = set()
+    for e in avail:
+        if any((_cr(e, i) or {}).get("available") and (_cr(e, i) or {}).get("rel") is None
+               for i in range(len(T))):
+            pool_ids.add(int(e["id"]))
+    ask_ids  = sorted(pool_ids | set(int(u) for t in T for u in on_call[t["cid"]]))
+    first    = next(cid for cid in selected if cid in idx)
+    exp, err = ss_list_crew_experience(ss, ask_ids, first)
+    users = (exp or {}).get("users") or {}
+    if err or any(str(u) not in users for u in ask_ids):
+        if err:
+            print(f"[staffing-plan] experience unavailable: {err}")
+        return None, ("Experience data unavailable — plan not built", 502)
+    probation_h = (exp.get("constants") or {}).get("probation_hours", 144)
+    # Boss calls: goat_is_boss_call_name() in PHP, never a Python copy. An empty
+    # user list returns only call.is_boss_call (option (b), no server change).
+    is_boss = {first: bool((exp.get("call") or {}).get("is_boss_call"))}
+    for t in T:
+        if t["cid"] in is_boss:
+            continue
+        e2, err = ss_list_crew_experience(ss, [], t["cid"])
+        if err:
+            print(f"[staffing-plan] boss check failed for {t['cid']}: {err}")
+            return None, ("Experience data unavailable — plan not built", 502)
+        is_boss[t["cid"]] = bool((e2.get("call") or {}).get("is_boss_call"))
+
+    t_plan = time.time()
+
+    def _group(uid):
+        return "new" if users[str(uid)].get("is_new") else "experienced"
+
+    # ── open offers on the booking's own calls ──────────────────────────────
+    # The search leaves out every offer on a call it is searching (an offer on
+    # the call you're filling isn't a clash). With the whole booking searched
+    # that drops the offers on its OTHER calls too, so someone with an offer
+    # awaiting reply on the Load In read as clean on the Show (re-test 23 Oct,
+    # #11831). Rebuilt here from get-booking's rows ('sent' / 'unconfirmed'),
+    # timed as the target, and run through the Finder's own pass 3 for each
+    # other call: the same tier and the same ✉ flag a single-call plan gives.
+    entry_of = {int(e["id"]): e for e in avail}
+    t_ids    = set(t["cid"] for t in T)
+
+    def _booking_offers(uid):
+        return [{"call_id": int(t["cid"]), "start": t["start"].isoformat(), "end": t["end"].isoformat(),
+                 "venue": t["venue"], "is_offer": True}
+                for t in T if held.get((str(uid), t["cid"])) in ("sent", "unconfirmed")]
+
+    cr_over = {}             # (uid, i) -> call_results row with the clash added
+    for e in avail:
+        uid = int(e["id"])
+        shifts = e.get("shifts") or []
+        # The search's own de-dup: a call they already have a calendar row on
+        # is in their shifts, not their offers.
+        cal = set(str(s.get("call_id")) for s in shifts if not s.get("is_offer"))
+        extra = [o for o in _booking_offers(uid) if str(o["call_id"]) not in cal]
+        if not extra:
+            continue
+        for i, t in enumerate(T):
+            cr = _cr(e, i)
+            if not cr or not cr["available"] or cr.get("conflict_warning") or cr.get("offer_clash"):
+                continue
+            tgt = {"call_id": t["cid"], "start": t["start"], "end": t["end"], "venue": t["venue"]}
+            confirmed = [s for s in shifts if s.get("status") == 5 and not s.get("is_offer")
+                         and str(s.get("call_id")) != t["cid"]]
+            offers = [s for s in shifts if s.get("is_offer") and str(s.get("call_id")) != t["cid"]] \
+                + [o for o in extra if str(o["call_id"]) != t["cid"]]
+            reason, rule, other = _offer_clash_pass(confirmed, offers, tgt)
+            if reason:
+                cr_over[(uid, i)] = dict(cr, offer_clash=reason, offer_clash_rule=rule,
+                                         offer_clash_call_id=other)
+
+    # ── per-call state ──────────────────────────────────────────────────────
+    key   = _plan_sort_key(objective)
+    by_id = _plan_by_id(assessment)
+    CS, cand, nodes = [], [], []
+    for i, t in enumerate(T):
+        node = graph[t["cid"]]
+        required, committed = node.get("required"), node.get("committed")
+        if required is None or committed is None:
+            return None, ("Couldn't read the numbers for call #%s" % t["cid"], 502)
+        pickable, warned = [], []
+        for e in avail:
+            cr = cr_over.get((int(e["id"]), i)) or _cr(e, i)
+            if not cr or not cr["available"] or cr["rel"] is not None:
+                continue
+            # The valid-only toggle only drops crew expired on EVERY call; a
+            # card expired on this call's date rules them out of this call.
+            if any((cr.get("licence_status") or {}).get(code) == "expired"
+                   for code in required_licences):
+                continue
+            x = users[str(e["id"])]
+            if x.get("excluded"):
+                continue
+            c = _plan_candidate(e, cr, x, _group(e["id"]))
+            (warned if cr.get("conflict_warning") else pickable).append(c)
+        pickable.sort(key=key)
+        cs = _PlanCall(max(0, required - committed), is_boss[t["cid"]], t["start"].date(),
+                       on_call[t["cid"]], by_id, _group, key, pickable)
+        cs.required, cs.committed, cs.warned = required, committed, warned
+        if not cs.is_boss_call and objective == "mix":
+            cs.set_mix(required, new_pct)
+        CS.append(cs)
+        cand.append({c["uid"]: c for c in pickable})
+        nodes.append(node)
+
+    # Other work per person: confirmed shifts from the search's own timeline
+    # (on the booking's calls too: nobody is planned on a call they already
+    # hold a row on), plus their open offers on the booking's calls, which
+    # hold that time in Rule 1 / Rule 4 for the fill as well as the runs.
+    # Offers on OTHER bookings count only in the stricter run test; the fill
+    # treats them as stage A does, a tier-2 pick with the ✉ flag.
+    _base_cache = {}
+
+    def _base(uid, strict):
+        k = (uid, strict)
+        if k not in _base_cache:
+            out = []
+            for s in (entry_of.get(uid) or {}).get("shifts") or []:
+                if s.get("is_offer"):
+                    if strict and str(s.get("call_id")) not in t_ids:
+                        out.append(s)
+                elif s.get("status") == 5:
+                    out.append(s)
+            _base_cache[k] = out + _booking_offers(uid)
+        return _base_cache[k]
+
+    placed    = {}           # uid -> [target index]
+    boss_uids = set()
+
+    # Places a feeder's carry needs (re-test 23 Oct, booking 11831). A locked
+    # feed books the feeder's crew onto the call it feeds, so while a feeder
+    # still has places, that many of the fed call's places are held for its
+    # carry: nobody may take them directly, by a run or the fill. The Finder
+    # shows the same places as "reserved". Direct feeders only, so a chain
+    # (A -> B -> C) holds B's places on C once, not A's twice. A feeder stops
+    # holding places once it has been filled (`done`).
+    dfeed = [[] for _ in T]
+    for j, t in enumerate(T):
+        node = graph.get(t["cid"]) or {}
+        rec = set(node.get("feeds_recommended") or [])
+        for f in (node.get("feeds") or []):
+            if f not in rec and f in idx and idx[f] != j:
+                dfeed[idx[f]].append(j)
+    done = set()
+
+    def _open(j):
+        return max(0, (min(CS[j].places, 1) if CS[j].is_boss_call else CS[j].places) - len(CS[j].picks))
+
+    def _reserved(k):
+        return sum(_open(j) for j in dfeed[k] if j not in done)
+
+    def _fits(uid, i, acc, strict, carried=False):
+        """Can `uid` go on call i alongside calls `acc`? strict is the run test
+        (§2.3 step 7): a quota with room and nothing raised against their
+        confirmed work plus open offers. Not strict is D7: just the plan.
+        `carried`: a feeder's carry puts them here, so the places held for
+        feeders are theirs to use; anyone else stops short of them."""
+        cs, c = CS[i], cand[i].get(uid)
+        cap = cs.places if carried else cs.places - _reserved(i)
+        if c is None or uid in cs.picked or len(cs.picks) >= cap:
+            return False
+        if uid in boss_uids and not cs.is_boss_call:
+            return False
+        if strict:
+            if cs.is_boss_call:
+                return False
+            if cs.need is not None and cs.need[c["group"]] <= 0:
+                return False
+            if check_conflict(_base(uid, True), T[i]["start"], T[i]["end"], T[i]["venue"])[0]:
+                return False
+        # An offer awaiting reply on another of the booking's calls holds that
+        # time: no overlapping pick (Rule 1), in the fill as in the runs.
+        elif check_conflict(_booking_offers(uid), T[i]["start"], T[i]["end"], T[i]["venue"], rules=(1,))[0]:
+            return False
+        for j in acc:
+            if not _plan_pair_ok(T[j], T[i]):
+                return False
+        return _plan_r4_ok(_base(uid, strict), [T[j] for j in acc] + [T[i]])
+
+    def _with_closure(uid, i, acc, strict):
+        """Call i plus the targets it locked-feeds, if they all fit; else None."""
+        seq = [i] + [f for f in clos[i] if f not in acc and f != i]
+        a = list(acc)
+        for k in seq:
+            if not _fits(uid, k, a, strict, carried=(k != i)):
+                return None
+            a.append(k)
+        return seq
+
+    def _place(uid, seq):
+        for k in seq:
+            c = cand[k][uid]
+            CS[k].picks.append(c)
+            CS[k].picked.add(uid)
+            if CS[k].need is not None:
+                CS[k].need[c["group"]] = max(0, CS[k].need[c["group"]] - 1)
+            placed.setdefault(uid, []).append(k)
+
+    def _hooks(i):
+        def ok(c):
+            return _with_closure(c["uid"], i, placed.get(c["uid"], []), False) is not None
+
+        def on_take(c):
+            uid = c["uid"]
+            placed.setdefault(uid, []).append(i)
+            _place(uid, [f for f in clos[i] if f not in placed[uid]])
+        return ok, on_take
+
+    for i, cs in enumerate(CS):
+        cs.ok, cs.on_take = _hooks(i)
+
+    crew_order = [i for i in range(len(T)) if not CS[i].is_boss_call]
+
+    # ── 1. boss calls first (D19, D20, D22, D24) ────────────────────────────
+    for i, cs in enumerate(CS):
+        if cs.is_boss_call:
+            _plan_boss(cs)
+            boss_uids.update(c["uid"] for c in cs.picks)
+            done.add(i)
+
+    # ── 2. licence minimums, call by call, each pick extended ───────────────
+    if licence_mins:
+        for i in crew_order:
+            before = set(CS[i].picked)
+            _plan_licence_mins(CS[i], licence_mins)
+            for c in [c for c in CS[i].picks if c["uid"] not in before]:
+                uid = c["uid"]
+                for j in crew_order:
+                    if j == i or j in placed.get(uid, []):
+                        continue
+                    seq = _with_closure(uid, j, placed.get(uid, []), True)
+                    if seq:
+                        _place(uid, seq)
+
+    # ── 3. continuity runs (D27, D31, D33), lazy greedy ─────────────────────
+    def _run_of(uid):
+        acc = []
+        for i in crew_order:
+            if i in acc:
+                continue
+            seq = _with_closure(uid, i, acc, True)
+            if seq:
+                acc.extend(seq)
+        return sorted(acc)
+
+    def _okey(c):
+        return (-c["all_h"], -c["rating"]) if objective == "experience" else (-c["rating"], -c["all_h"])
+
+    def _rkey(uid, run):
+        c = cand[run[0]][uid]
+        return (-len(run), max(cand[i][uid]["tier"] for i in run), _okey(c), c["name"], uid)
+
+    heap = []
+    run_ids = sorted(set(u for i in crew_order for u in cand[i]) - boss_uids - set(placed))
+    for uid in run_ids:
+        if sum(1 for i in crew_order if uid in cand[i]) < 2:
+            continue
+        run = _run_of(uid)
+        if len(run) >= 2:
+            heapq.heappush(heap, (_rkey(uid, run), run))
+    while heap:
+        k, run = heapq.heappop(heap)
+        uid = k[-1]
+        now = _run_of(uid)
+        if now == run:
+            _place(uid, run)
+        elif len(now) >= 2:
+            heapq.heappush(heap, (_rkey(uid, now), now))
+
+    # ── 4. per-call fill (stage A step 9), D7 against the plan ──────────────
+    # Feeders before the calls they feed, so a fed call fills only after its
+    # feeders have used the places held for them.
+    upstream = [sum(1 for j in range(len(T)) if i in clos[j] and j not in clos[i]) for i in range(len(T))]
+    for i in sorted(crew_order, key=lambda i: (upstream[i], i)):
+        _plan_fill(CS[i])
+        done.add(i)
+    # A later call's fill can carry crew onto an earlier-filled call.
+    for cs in CS:
+        cs.unfilled = (min(cs.places, 1) if cs.is_boss_call else cs.places) - len(cs.picks)
+
+    # ── shape ───────────────────────────────────────────────────────────────
+    for uid, ks in placed.items():
+        placed[uid] = sorted(set(ks))
+    people = []
+    for uid in sorted(placed, key=lambda u: (cand[placed[u][0]][u]["name"], u)):
+        ks = placed[uid]
+        roots, covered = [], set()
+        for j in ks:
+            if j in covered:
+                continue
+            roots.append(j)
+            covered.update(clos[j])
+        c = cand[ks[0]][uid]
+        people.append({"user_id": uid, "name": c["name"], "ein": c["ein"], "group": c["group"],
+                       "calls": [int(T[j]["cid"]) for j in ks],
+                       "root_calls": [int(T[j]["cid"]) for j in roots]})
+    continuity = sum(1 for p in people if len(p["calls"]) >= 2)
+    single     = sum(1 for p in people if len(p["calls"]) == 1)
+
+    out_calls = []
+    for i, t in enumerate(T):
+        cs = CS[i]
+        notes = []
+        if t["carried"]:
+            # Only when someone actually came across from a feeder.
+            feeders = [j for j in range(len(T)) if not T[j]["carried"] and i in clos[j]
+                       and any(c["uid"] in CS[j].picked for c in cs.picks)]
+            feeders = [T[j] for j in feeders]
+            if feeders:
+                notes.append("%s is carried from %s — crew placed there by the %s."
+                             % (t["name"], " and ".join(f["name"] for f in feeders),
+                                " and ".join(f["name"].lower() for f in feeders)))
+        # The fill's "left empty" note is rebuilt here from the final state,
+        # naming the real cause: a full call this one carries into, or crew
+        # who are available but clash with what they're already planned on.
+        # "Not enough available crew" only when nobody is left at all.
+        if cs.is_boss_call:
+            notes.extend(cs.notes)
+        else:
+            notes.extend(n for n in cs.notes if "left empty — not enough available crew" not in n)
+            if cs.unfilled > 0:
+                left = sum(1 for c in cs.pickable if c["uid"] not in cs.picked)
+                full = [T[j]["name"] for j in clos[i] if len(CS[j].picks) >= CS[j].places]
+                head = "%d place%s left empty — " % (cs.unfilled, "" if cs.unfilled == 1 else "s")
+                if left and full:
+                    notes.append(head + "%s is full, and crew put on %s are booked there too, so the "
+                                 "plan stops short of putting it over." % (" and ".join(full), t["name"]))
+                elif left:
+                    notes.append(head + "%d more crew are available, but none fits beside the calls "
+                                 "they're already planned on." % left)
+                else:
+                    notes.append(head + "not enough available crew.")
+        picks = []
+        for c in cs.picks:
+            p = _plan_pick_out(cs, c)
+            p["also_on"] = [int(T[j]["cid"]) for j in placed.get(c["uid"], []) if j != i]
+            picks.append(p)
+        out_calls.append({
+            "call_id":          int(t["cid"]),
+            "call_name":        t["name"],
+            "start_dt":         t["start"].isoformat(),
+            "is_boss_call":     cs.is_boss_call,
+            "carried":          t["carried"],
+            "carries":          [int(T[j]["cid"]) for j in sorted(clos[i])],
+            "required":         cs.required,
+            "committed":        cs.committed,
+            "places":           cs.places,
+            "places_breakdown": _plan_places_breakdown(nodes[i]),
+            "mix":              cs.mix,
+            "licence_mins":     cs.licence_out,
+            "picks":            picks,
+            "could_fill_warned": [{
+                "user_id": c["uid"], "name": c["name"], "group": c["group"],
+                "warning": c["cr"].get("conflict_warning") or "",
+            } for c in sorted(cs.warned, key=lambda c: (c["name"], c["uid"]))],
+            "unfilled":            max(0, cs.unfilled),
+            "notes":               notes,
+            "notes_licence_hints": _plan_notes_hints(nodes[i].get("notes"), P["cat"],
+                                                     set(required_licences) | set(P["mins_by_code"])),
+        })
+
+    places_total  = sum(cs.places for cs in CS)
+    places_filled = sum(len(cs.picks) for cs in CS)
+    booking_notes.append("%d of %d crew planned across 2+ calls · %d place%s filled separately"
+                         % (continuity, len(people), single, "" if single == 1 else "s"))
+
+    filters = _plan_filters(data, required_licences)
+    rb = _plan_read_back_head(False, objective, new_pct, probation_h, licence_mins,
+                              required_licences, filters, mins_prefix="Each call: ")
+    bosses = [t for i, t in enumerate(T) if CS[i].is_boss_call]
+    if bosses:                       # after the objective, which leads
+        rb.insert(1, "Crew Boss call%s %s: one experienced crew member, past bosses first."
+                  % ("" if len(bosses) == 1 else "s", ", ".join("#" + t["cid"] for t in bosses)))
+    rb.append("Calls " + ", ".join("#%s %s%s" % (t["cid"], t["name"], " (carried)" if t["carried"] else "")
+                                   for t in T)
+              + ", %d place%s." % (places_total, "" if places_total == 1 else "s"))
+
+    assessment["plan"] = {
+        "kind":       "booking",
+        "booking_id": int(bid),
+        "objective":  objective,
+        "new_pct":    new_pct,
+        "filters":    filters,
+        "read_back":  " ".join(rb),
+        "calls":      out_calls,
+        "people":     people,
+        "summary":    {"continuity_crew": continuity, "single_call_crew": single,
+                       "places_total": places_total, "places_filled": places_filled},
+        "notes":      booking_notes,
+        "experience_as_at": exp.get("as_at"),
+    }
+    assessment["experience_stats"] = {"elapsed_ms": exp.get("elapsed_ms"),
+                                      "timing":     exp.get("timing"),
+                                      "cache":      exp.get("cache"),
+                                      "planner_ms": int(round((time.time() - t_plan) * 1000))}
+    print(f"[staffing-plan] booking {bid}: {len(T)} calls, {len(people)} crew, "
+          f"planner {assessment['experience_stats']['planner_ms']} ms", flush=True)
+    return assessment, None
+
+
 @app.route("/api/staffing/plan", methods=["POST"])
 @require_cohort("admin")                       # D17
 def api_staffing_plan():
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
-    result, err = build_staffing_plan(ss, request.json)
+    data = request.json or {}
+    soft = set(str(x) for x in (data.get("soft_call_ids") or []))
+    hard = [c for c in (data.get("calls") or []) if str(c.get("call_id")) not in soft]
+    if len(hard) >= 2:
+        result, err = build_booking_plan(ss, data)
+    else:
+        result, err = build_staffing_plan(ss, data)
     if err:
         return jsonify({"error": err[0]}), err[1]
     return jsonify(result)
@@ -13677,15 +14396,22 @@ GOAT_TOOLS = [
     },
     {
         "name": "plan_staffing",
-        "description": "The ONLY tool that builds a team. Builds a staffing PLAN for ONE call: runs the normal Crew Finder search for it and suggests who to put on, as a mix of new and experienced crew, best rated first, or most experienced first, with optional licence minimums. It NEVER adds anyone - the operator opens the plan in Crew Finder and sends from there. new_pct is the share of NEW crew and is written new first: '80/20 new to old' means new_pct 80, and '20/80 old to new' ALSO means new_pct 80. New = under 144 hours in the current probation run. Licence codes (for licences_all and licence_mins) are catalogue codes: CI = construction induction / white card, LF = forklift, WP = boom EWP over 11m, EWPSOA = EWP under 11m / scissor lift ticket, WAH = working at heights, WWCC = working with children check, FA = first aid, TC = traffic control, LR/MR/HR/HC/MC = driver licence classes (a heavier class counts for a lighter one), DG = dogging, RB/RI/RA = basic/intermediate/advanced rigging, RSA, POLICE = police check. A Crew Boss call is planned as one experienced person whatever the objective.",
+        "description": "The ONLY tool that builds a team. Builds a staffing PLAN for ONE call, or for several calls of ONE booking (call_ids, or booking_id with all_calls): runs the normal Crew Finder search for it and suggests who to put on, as a mix of new and experienced crew, best rated first, or most experienced first, with optional licence minimums. It NEVER adds anyone - the operator opens the plan in Crew Finder and sends from there. new_pct is the share of NEW crew and is written new first: '80/20 new to old' means new_pct 80, and '20/80 old to new' ALSO means new_pct 80. New = under 144 hours in the current probation run. Licence codes (for licences_all and licence_mins) are catalogue codes: CI = construction induction / white card, LF = forklift, WP = boom EWP over 11m, EWPSOA = EWP under 11m / scissor lift ticket, WAH = working at heights, WWCC = working with children check, FA = first aid, TC = traffic control, LR/MR/HR/HC/MC = driver licence classes (a heavier class counts for a lighter one), DG = dogging, RB/RI/RA = basic/intermediate/advanced rigging, RSA, POLICE = police check. A Crew Boss call is planned as one experienced person whatever the objective. A booking plan keeps the same crew across load-in, show and load-out wherever they can work them, never double-books anyone, and adds any call a selected call locked-feeds (carried).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "call_id":         {"type": "integer", "description": "Call number. Required."},
-                "booking_id":      {"type": "integer", "description": "Booking number. Optional - looked up from the call when missing."},
+                "mode":            {"type": "string", "enum": ["read_back", "plan"],
+                                    "description": "read_back FIRST: shows the operator the plan's read-back card (calls and their places, built by the server) and plans nothing. plan only after the operator says yes to that card, with the SAME arguments. A plan call without a matching read-back on screen is refused and reads back instead."},
+                "call_id":         {"type": "integer", "description": "Call number, for one call."},
+                "call_ids":        {"type": "array", "items": {"type": "integer"},
+                                    "description": "Several call numbers from ONE booking, planned together. Wins over all_calls and call_id."},
+                "all_calls":       {"type": "boolean",
+                                    "description": "With booking_id: plan every call on the booking that has places. Wins over call_id."},
+                "booking_id":      {"type": "integer", "description": "Booking number. Optional for call_id / call_ids - looked up from the first call when missing. Required for all_calls."},
                 "objective":       {"type": "string", "enum": ["mix", "rating", "experience"],
-                                    "description": "mix = a share of new vs experienced crew; rating = best rated first; experience = most all-time hours first"},
-                "new_pct":         {"type": "integer", "description": "Mix only, required for mix: percent of NEW crew, 0-100. '80/20 new to old' = 80."},
+                                    "description": "mix = a share of new vs experienced crew; rating = best rated first; experience = most all-time hours first. Any split the operator gives ('80/20 new to old', '20/80 old to new', '80% new', 'mostly new, 80%') IS mix, with new_pct from it - never ask for the objective when a split is given."},
+                "split":           {"type": "string", "description": "Mix only, REQUIRED for mix: the operator's own words for the split, copied exactly as they wrote them, e.g. '20/80 old to new', '80/20 new to old', '80% new', '20% experienced'. The server reads the percentage from these words; never convert it yourself, and never add words such as 'new to old' to a bare '80/20' - pass it as typed and the server asks which side is new."},
+                "new_pct":         {"type": "integer", "description": "Ignored: the server reads the mix from split."},
                 "licences_all":    {"type": "array", "items": {"type": "string"},
                                     "description": "Licence codes EVERY pick must hold (valid on the day)"},
                 "licence_mins":    {"type": "array",
@@ -13697,7 +14423,7 @@ GOAT_TOOLS = [
                 "required_groups": {"type": "array", "items": {"type": "string"},
                                     "description": "Crew groups every pick must be in, default none"}
             },
-            "required": ["call_id", "objective"]
+            "required": ["mode", "objective"]
         }
     },
     {
@@ -13719,18 +14445,29 @@ Your personality: confident, sharp, occasionally cocky (you are, after all, The 
 
 You have access to live SmartStaff data through your tools. Use them proactively — if someone asks about availability, actually check it. If they ask about inductions, pull the data. For "who is assigned to calls at <venue> without a valid induction" or "anyone with expired inductions on upcoming calls", use check_assignment_inductions -- get_inductions alone does NOT know call rosters. When someone asks for crew near a place — "riggers within 20km of the Forum", "who's available near Geelong" — call search_availability with radius_km and near (a 4-digit postcode or a venue name). Crew too far away come back in skipped with their distance, and anyone with no known postcode lands in location_unknown — mention them, don't pretend they're not there.
 
-LICENCES (find_calls, check_call_licences, get_crew_licences): licences — white card/CI, forklift, EWP, WWCC, first aid, driver classes — are NOT inductions; never answer a licence question with get_inductions or check_assignment_inductions. A call number on its own is enough for check_call_licences — never ask the operator for a booking number before trying it. If they give a name or a date, call find_calls first, and if more than one booking or call matches, ask which. You do NOT remember tool results between messages, only what you wrote, so always state the call number (and booking number) in your answer — that is how a follow-up like "and forklifts on that call?" can be answered. When the operator names a whole booking (not one call), check every call on it by giving booking_id and no call_id — do not ask which call. Only ask which call when they named a particular call and more than one matches. Each call carries a summary sentence written by the tool: base your answer on it and never move a person from one list to another — someone in no_expiry_recorded HOLDS the licence and must not be described as missing it. A person is missing a licence ONLY if they are in the missing list. Name everyone in missing, check, expired, expiring_soon and no_expiry_recorded exactly as returned, with their EIN — do not shorten the list or summarise it as "a few". Always relay the note. For get_crew_licences, ALWAYS call the tool with whatever name you were given before saying a name is ambiguous — it returns everyone when up to 5 people match, so "what licences do the Nathans hold" is answerable. Report only the licences returned; do not list licences the person does not hold unless the operator asked about one.
+LICENCES (find_calls, check_call_licences, get_crew_licences): licences — white card/CI, forklift, EWP, WWCC, first aid, driver classes — are NOT inductions; never answer a licence question with get_inductions or check_assignment_inductions. A call number on its own is enough for check_call_licences — never ask the operator for a booking number before trying it. If they \
+give a name or a date, call find_calls first, and if more than one booking or call matches, ask which. You do NOT remember tool results between messages, only what you wrote, so always state the call number (and booking number) in your answer — that is how a follow-up like "and forklifts on that call?" can be answered. When the operator names a whole booking (not one call), \
+check every call on it by giving booking_id and no call_id — do not ask which call. Only ask which call when they named a particular call and more than one matches. Each call carries a summary sentence written by the tool: base your answer on it and never move a person from one list to another — someone in no_expiry_recorded HOLDS the licence and must not be described as \
+missing it. A person is missing a licence ONLY if they are in the missing list. Name everyone in missing, check, expired, expiring_soon and no_expiry_recorded exactly as returned, with their EIN — do not shorten the list or summarise it as "a few". Always relay the note. For get_crew_licences, ALWAYS call the tool with whatever name you were given before saying a name is \
+ambiguous — it returns everyone when up to 5 people match, so "what licences do the Nathans hold" is answerable. Report only the licences returned; do not list licences the person does not hold unless the operator asked about one.
 
-STAFFING PLANS (plan_staffing — admin only, enforced server-side): before calling plan_staffing, READ THE PLAN BACK and wait for a yes. The read-back states the call number, the objective, any licence needs, and for a mix the split in words as "N% new (under 144 h), M% experienced" — never "80/20" on its own. A mix is written new first: "80/20 new to old" and "20/80 old to new" are both 80% new. New means under 144 hours in the CURRENT probation run, so someone returning after an 18-month gap is new. Call the result "a plan" — never "optimal" or "the best team". Always state unfilled, relay every note, and name everyone in could_fill_warned with their warning. If notes_licence_hints is non-empty, ask whether to add those as requirements — never add them yourself. Never offer to add crew from a plan and never call add_crew_to_call for its picks: the operator opens it in Crew Finder (the button under your answer) and sends from there.
+STAFFING PLANS (plan_staffing — admin only, enforced server-side): a plan is ALWAYS two steps, whoever is asking. Step 1: call plan_staffing with mode "read_back". The server shows the operator the read-back itself — the calls, each call's places and the spec, built from the planner's own figures — and the read-back turn shows no text of yours. Never restate the read-back \
+or ANY number in it, never quote place counts from find_calls or any other tool (their figures are not the planner's), and never add, total or work out a figure. Step 2: only when the operator says yes, call plan_staffing again with EXACTLY the same arguments and mode "plan". If the operator changes anything, go back to step 1. If the operator says no or cancel — to the \
+read-back or to any question about a plan — stop: say the plan is cancelled and call nothing; never pick an objective for them. If a plan call comes back with read_back_shown instead of a plan, nothing was planned: ask again. OBJECTIVE: any split the operator gives — "80/20 new to old", "20/80 old to new", "80% new", "20% experienced" — IS objective mix: pass the \
+operator's words for it in split, copied exactly, and never work out the percentage yourself (the server reads it). Don't ask for an objective when a split is given. Only when the operator gave neither an objective nor a split, ask, and offer all three: a mix of new and experienced (with the split), best rated first, or most experienced first. New means under 144 hours in the \
+CURRENT probation run, so someone returning after an 18-month gap is new. Call the result "a plan" — never "optimal" or "the best team". Always state unfilled, relay every note, and name everyone in could_fill_warned with their warning. If notes_licence_hints is non-empty, ask whether to add those as requirements — never add them yourself. Never offer to add crew from a \
+plan and never call add_crew_to_call for its picks: the operator opens it in Crew Finder with the Open in Crew Finder button and sends from there. You may plan a whole booking (call_ids, or booking_id with all_calls): the read-back card then lists every call, and after the plan you relay each call's unfilled places and notes as well as the booking notes. WORDS after a plan: a \
+pick's also_on means the same person is ALSO planned on those calls (continuity) — say "also on #37898 Show", never "carried". "Carried" means only a call whose carried flag is true: a locked feed books the feeding call's crew onto it, and you may say that call is carried from its feeder. FIGURES after a plan: relay every number exactly as the tool gives it — each call's \
+places_text word for word, its picks and its unfilled — and do no arithmetic of your own: never add calls together, never total places, never work out a figure the tool didn't give. An offer awaiting reply is "an offer awaiting reply", never "booked" or "filled"; only confirmed crew are booked. Relay every line in not_planned (calls left out because they have no places).
 
 CRITICAL — WRITE ACTION RULES:
 - ALWAYS call lookup_crew_id for each crew member before calling add_crew_to_call, send_sms_to_crew, add_unavailability, delete_unavailability, or get_unavailabilities. Never use an ID from a previous search result without verifying it first — name formats differ between SmartStaff and what the operator types.
 - For delete_unavailability, first call get_unavailabilities to find the exact period and its event_id — never guess an id.
 - When you call add_crew_to_call, send_sms_to_crew, add_unavailability or delete_unavailability, this generates a CONFIRMATION CARD in the UI for the operator to approve.
 - You must NEVER claim the action was completed after calling the tool. The action has NOT happened yet.
-- After calling the tool, tell the operator you have prepared the action and they need to confirm it using the card above.
+- After calling the tool, tell the operator you have prepared the action and they need to confirm it using the confirmation card.
 - Only after the operator clicks Confirm will the action actually execute in SmartStaff.
-- Example: after calling add_crew_to_call, say something like "I've set that up — confirm it using the card above and I'll get them added."
+- Example: after calling add_crew_to_call, say something like "I've set that up — confirm it on the confirmation card and I'll get them added."
 - Unavailability supports partial days. "Free in the afternoon" means unavailable in the morning — e.g. a uni student with morning lectures is unavailable 09:00–13:00, available after. Translate natural language to explicit start/end times.
 
 RECRUITMENT (get_recruitment_metrics, get_recruitment_exceptions — aggregate intake figures):
@@ -13742,7 +14479,7 @@ RECRUITMENT (get_recruitment_metrics, get_recruitment_exceptions — aggregate i
 - Relay any note field on a figure, don't strip it. registration_rate and ci_cards carry coverage caveats — e.g. the registration rate currently reads low purely because the Booked status isn't in use yet, which is an artefact, not a failure. Quoting the bare number without its note is misleading.
 - The pile names ops use, in order: New (applied), Invited (invited to induction), Booked, Attended, Details in (details submitted), With EH (sent to EH), Ready to convert (all docs received), Crew (active crew). The eight exception keys, with the meaning you must use — do NOT infer any other meaning from the key's name: aged (has sat in its current stage past that stage's age-in-stage threshold — this is about time waiting, NOT the candidate's age; never gloss it as an age, birthday or over-18 issue), no_contact (no email AND no phone on file — not merely one of the two missing), session_passed (their booked induction date has passed and they never attended), awaiting_conversion (every document is in; nobody has pressed Convert yet). The other four say what they mean: details_overdue, visa_unverified, eh_incomplete, contract_unsigned.
 
-OPENING RECORDS (open_record — admin only, enforced server-side): when the operator asks to open, show, pull up or go to a call or booking by number, call open_record. Say what was found — call number, call name, booking name and date, or booking number and name — and that the button under your answer opens it. Never say you opened it. If both a call and a booking have that number, name both and let the operator pick. If neither exists, say so plainly.
+OPENING RECORDS (open_record — admin only, enforced server-side): when the operator asks to open, show, pull up or go to a call or booking by number, call open_record. Say what was found — call number, call name, booking name and date, or booking number and name — and that the Open button opens it. Never say you opened it. If both a call and a booking have that number, name both and let the operator pick. If neither exists, say so plainly.
 
 Keep responses concise but warm. Occasional GOAT pun or dry humour is encouraged — never at the expense of being useful."""
 
@@ -13907,7 +14644,173 @@ def _goat_booking_for_call(ss, call_id):
     return None
 
 
-def _goat_plan_staffing(ss, ti):
+_PLAN_SPLIT_WORD = r"(new(?:er)?|newbies?|old(?:er)?|exp(?:erienced?|erience)?|seasoned)"
+
+
+def _plan_split_side(w):
+    return "new" if w.startswith("new") else "old"
+
+
+def _plan_parse_split(text):
+    """new_pct from the operator's own words for a mix, so the drawer can't
+    swap a split (20/80 old to new read as 20% new). Returns (new_pct, None)
+    or (None, message). Each number belongs to the word it's written with:
+
+      "80/20 new to old"   -> 80      "20/80 old to new"   -> 80
+      "80% new"            -> 80      "20% experienced"    -> 80
+      "80 new 20 old", "80% new, 20% experienced" -> 80
+    A bare "80/20" names neither side, so it is refused rather than guessed."""
+    t = re.sub(r"\s+", " ", str(text or "").lower()).strip()
+    if not t:
+        return None, "split is required for a mix: the operator's own words, e.g. '80/20 new to old'."
+    n, w = r"(\d{1,3})\s*(?:%|per\s*cent|pc)?", _PLAN_SPLIT_WORD
+    pairs = None
+    m = re.search(n + r"\s*/\s*" + n + r"\s*" + w + r"\s*(?:to|vs\.?|versus|/|:|-|and)\s*" + w + r"\b", t)
+    if m:
+        pairs = [(int(m.group(1)), m.group(3)), (int(m.group(2)), m.group(4))]
+    if pairs is None:
+        m = re.search(n + r"\s*" + w + r"\b[\s,;/]*(?:and|to|vs\.?)?\s*" + n + r"\s*" + w + r"\b", t)
+        if m:
+            pairs = [(int(m.group(1)), m.group(2)), (int(m.group(3)), m.group(4))]
+    if pairs is not None:
+        (a, wa), (b, wb) = pairs
+        if _plan_split_side(wa) == _plan_split_side(wb):
+            return None, "The split '%s' names the same side twice; ask which share is new." % text
+        if a + b != 100:
+            return None, "The split '%s' doesn't add up to 100; ask the operator to restate it." % text
+        return (a if _plan_split_side(wa) == "new" else b), None
+    # One side only, and only with a percent: "80 new" could be a head count.
+    m = re.search(n + r"\s*" + w + r"\b", t)
+    if m and re.search(r"%|per\s*cent|\bpc\b", m.group(0)):
+        v = int(m.group(1))
+        if v > 100:
+            return None, "The split '%s' is over 100%%." % text
+        return (v if _plan_split_side(m.group(2)) == "new" else 100 - v), None
+    return None, ("Couldn't read a new/experienced split from '%s'. Ask the operator for it with the "
+                  "sides named, e.g. '80/20 new to old' or '80%% new'." % text)
+
+
+def _plan_split_typed(split, message):
+    """True when `split` is in the operator's message as they typed it,
+    ignoring case and whitespace. The model may copy the operator's words but
+    never add to them: "80/20" typed and "80/20 new to old" passed is refused."""
+    squash = lambda s: re.sub(r"\s+", "", str(s or "")).lower()
+    return bool(squash(split)) and squash(split) in squash(message)
+
+
+def _plan_split_question(split):
+    """The fixed question for a split the server won't take. Built here, not
+    by the model, so it can't settle the sides itself."""
+    m = re.search(r"(\d{1,3})\s*/\s*(\d{1,3})", str(split or ""))
+    if m and int(m.group(1)) + int(m.group(2)) == 100 and m.group(1) != m.group(2):
+        a, b = m.group(1), m.group(2)
+        return ("Which side is new in %s/%s — %s%% new and %s%% experienced, or %s%% new and "
+                "%s%% experienced?" % (a, b, a, b, b, a))
+    return ("What share of the crew should be new? For example \"80/20 new to old\" or "
+            "\"80% new\" (new = under 144 hours in the current probation run).")
+
+
+# A whole message that only says no. "no, 70% new instead" is a change, not a
+# cancel, so only the bare forms count.
+_PLAN_CANCEL_RE = re.compile(
+    r"\s*(no|nope|nah|no thanks|no thank you|cancel|cancel (?:it|that|the plan)|stop|"
+    r"never\s*mind|forget (?:it|that)|don'?t|not now|leave it)[\s.!]*", re.I)
+
+
+def _plan_is_cancel(text):
+    return bool(text) and bool(_PLAN_CANCEL_RE.fullmatch(str(text)))
+
+
+def _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned):
+    """The drawer's read-back for a plan: what will be planned, with each
+    call's figures as the planner reads them. Returns ({text, id, ...}, None)
+    or (None, message). One get-booking, plus one list-crew-experience per
+    call for the boss check (empty user list), all sequential.
+
+    The targets follow the planners: one call is planned alone (stage A); two
+    or more add the calls they locked-feed, marked carried."""
+    from html import unescape as _html_unescape
+    spec = {"objective": ti.get("objective"),
+            "new_pct": ti.get("new_pct") if ti.get("objective") == "mix" else None,
+            "licence_mins": [{"code": str(m.get("code") or "").strip().upper(), "min": m.get("min")}
+                             for m in (ti.get("licence_mins") or []) if isinstance(m, dict)]}
+    data = {"min_rating":        int(ti.get("min_rating") or 1),
+            "required_groups":   sorted(ti.get("required_groups") or []),
+            "required_licences": sorted(str(c).strip().upper() for c in (ti.get("licences_all") or []) if c),
+            "exclude_pt": False, "radius_km": None}
+    P, err = _plan_parse_spec(ss, dict(data), spec)
+    if err:
+        return None, err[0]
+    graph, _held = _ss_booking_graph(ss, {booking_id})
+    ids = [str(c) for c in call_ids]
+    for cid in ids:
+        if cid not in graph:
+            return None, "Call #%s isn't on booking #%s." % (cid, booking_id)
+    targets = list(ids)
+    if len(ids) >= 2:
+        for cid in ids:
+            for t in _plan_closure(graph, cid):
+                if t not in targets and t in graph:
+                    targets.append(t)
+    cancelled = [c for c in targets if graph[c].get("cancelled_at")]
+    targets = [c for c in targets if c not in cancelled]
+    if not targets:
+        return None, "Every call asked for is cancelled."
+
+    def _when(n):
+        try:
+            d = datetime.fromtimestamp(int(n.get("start_date") or 0))
+            return d.strftime("%a %d %b") + " " + str(n.get("start_time") or "")[:5]
+        except Exception:
+            return ""
+    targets.sort(key=lambda c: (int(graph[c].get("start_date") or 0), str(graph[c].get("start_time") or ""), int(c)))
+    clos = [[targets.index(f) for f in _plan_closure(graph, c) if f in targets] for c in targets] \
+        if len(targets) >= 2 else [[] for c in targets]
+    carried = _plan_carried_flags(clos)
+    name = {c: _html_unescape(str(graph[c].get("call_name") or "")).strip() for c in targets}
+
+    lines, bosses = [], []
+    for i, c in enumerate(targets):
+        n = graph[c]
+        if n.get("required") is None or n.get("committed") is None:
+            return None, "Couldn't read the numbers for call #%s" % c
+        e2, err = ss_list_crew_experience(ss, [], c)
+        if err:
+            return None, "Experience data unavailable — plan not built"
+        boss = bool((e2.get("call") or {}).get("is_boss_call"))
+        if boss:
+            bosses.append(c)
+        places = max(0, n["required"] - n["committed"])
+        bits = ["#%s %s" % (c, name[c]), _when(n)]
+        line = " ".join(b for b in bits if b) + ": " + _plan_places_text(places, _plan_places_breakdown(n))
+        if carried[i]:
+            feeders = [name[targets[j]] for j in range(len(targets)) if i in clos[j] and not carried[j]]
+            line += " — carried from " + " and ".join(feeders)
+        if boss:
+            line += " — Crew Boss call"
+        lines.append(line)
+
+    filters = _plan_filters(data, P["required_licences"])
+    head = _plan_read_back_head(False, P["objective"], P["new_pct"], 144, P["licence_mins"],
+                                P["required_licences"], filters,
+                                mins_prefix="Each call: " if len(targets) >= 2 else "")
+    if bosses:
+        head.insert(1, "Crew Boss call%s %s: one experienced crew member, past bosses first."
+                    % ("" if len(bosses) == 1 else "s", ", ".join("#" + c for c in bosses)))
+    text = ["Plan for booking #%s." % booking_id] + head + [""] + ["• " + l for l in lines]
+    for c in cancelled:
+        text.append("Not planned: #%s %s is cancelled." % (c, name.get(c) or _html_unescape(str(graph[c].get("call_name") or "")).strip()))
+    for l in not_planned:
+        text.append("Not planned: " + l.replace(", not planned", "") + ".")
+    text += ["", "Build this plan?"]
+    text = "\n".join(text)
+    rid = hashlib.sha1(json.dumps({"text": text, "spec": spec, "data": data,
+                                   "calls": sorted(int(c) for c in call_ids)},
+                                  sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return {"id": rid, "text": text}, None
+
+
+def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
     """plan_staffing: build the /api/availability body for one call, plan it,
     and hand the model a SUMMARY (never the assessment), plus open_in_finder,
     which api_goat turns into a plan_ready event for the drawer's card.
@@ -13916,15 +14819,73 @@ def _goat_plan_staffing(ss, ti):
     this ss first -- called with no ss outside a request they fail quietly and
     negatively cache for 15 minutes, which would drop the induction gate from
     this plan AND from every Finder search in that window."""
-    try:
-        call_id = int(ti.get("call_id"))
-    except Exception:
-        return {"error": "call_id is required"}
+    # A bare "no" / "cancel" from the operator ends it here, whatever the
+    # model was about to plan (re-test 23 Oct: "no" became Best rated).
+    if _plan_is_cancel(last_user):
+        return {"cancelled": True,
+                "note": "The operator said no, so nothing was planned and nothing is on screen. "
+                        "Say the plan is cancelled. Don't plan with another objective."}
+    # The mix comes from the operator's words, never the model's arithmetic
+    # or its guesses. A split must be in the operator's latest message as
+    # they typed it and name its sides; otherwise plan nothing, show no card,
+    # and put a fixed question (`ask`, which api_goat shows in place of the
+    # model's text). The one exception is the yes to a read-back: that plan
+    # call must match the read-back's id, and the read-back was only shown
+    # after its split passed this test.
+    ti = dict(ti)
+    split = ti.get("split")
+    yes_turn = (ti.get("mode") or "plan") == "plan" and bool(read_back_id)
+    if split or ti.get("objective") == "mix":
+        pct, err = _plan_parse_split(split)
+        if err or not (yes_turn or _plan_split_typed(split, last_user)):
+            return {"ask": _plan_split_question(split),
+                    "note": "Nothing was planned and nothing is on screen: the operator has been asked "
+                            "which side of the split is new. Wait for the answer, then pass split "
+                            "exactly as they type it."}
+        ti["objective"], ti["new_pct"] = "mix", pct
+    else:
+        ti.pop("new_pct", None)
+
+    # Which calls: call_ids, then all_calls, then call_id (BRIEF-staffing-plans-b §2.6).
+    from html import unescape as _html_unescape   # NB: `http` at module level is requests
+    not_planned = []
     booking_id = None
     try:
         booking_id = int(ti.get("booking_id")) if ti.get("booking_id") else None
     except Exception:
         booking_id = None
+    call_ids = []
+    try:
+        call_ids = [int(c) for c in (ti.get("call_ids") or [])]
+    except Exception:
+        return {"error": "call_ids must be call numbers"}
+    call_ids = sorted(set(call_ids), key=call_ids.index)
+    if not call_ids and ti.get("all_calls"):
+        if booking_id is None:
+            return {"error": "all_calls needs booking_id"}
+        graph, _held = _ss_booking_graph(ss, {booking_id})
+        if not graph:
+            return {"error": "Could not read booking " + str(booking_id)}
+        live = sorted((c for c, n in graph.items()
+                       if not n.get("cancelled_at") and n.get("required") is not None
+                       and n.get("committed") is not None), key=int)
+        call_ids = [int(c) for c in live if graph[c]["required"] > graph[c]["committed"]]
+        # Calls left out for having no places, said in the result so the
+        # model relays them (§2.6): "#37895 Load In: 0 places — 1 offer
+        # awaiting reply, not planned".
+        not_planned = ["#%s %s: %s, not planned" % (
+            c, _html_unescape(str(graph[c].get("call_name") or "")).strip(),
+            _plan_places_text(0, _plan_places_breakdown(graph[c])))
+            for c in live if graph[c]["required"] <= graph[c]["committed"]]
+        if not call_ids:
+            return {"error": "No call on booking " + str(booking_id) + " has places to fill. "
+                    + " ".join(not_planned)}
+    if not call_ids:
+        try:
+            call_ids = [int(ti.get("call_id"))]
+        except Exception:
+            return {"error": "call_id, call_ids or booking_id with all_calls is required"}
+    call_id = call_ids[0]
     if booking_id is None:
         booking_id = _goat_booking_for_call(ss, call_id)
         if booking_id is None:
@@ -13932,9 +14893,38 @@ def _goat_plan_staffing(ss, ti):
                     "either side of today. Ask the operator for the booking number - it is on "
                     "the same line as the call number in the call dialog."}
 
-    det, err = scrape_call_details(ss, booking_id, call_id)
-    if err or not det:
-        return {"error": "Could not read call " + str(call_id) + ": " + str(err)}
+    # Read back first, always (DRAWER READ-BACK). The text and its figures are
+    # built here, never by the model, and a plan only runs when the operator
+    # was shown this exact read-back: the drawer sends its id back with the
+    # next message. A different spec or changed figures read back again.
+    rb, err = _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned)
+    if err:
+        return {"error": err}
+    if (ti.get("mode") or "plan") != "plan" or rb["id"] != read_back_id:
+        # Not the yes to this read-back, so a new card would be shown: its
+        # split must be the operator's own words from this message.
+        if split and not _plan_split_typed(split, last_user):
+            return {"ask": _plan_split_question(split),
+                    "note": "Nothing was planned and nothing is on screen: the operator has been asked "
+                            "which side of the split is new."}
+        out = {"read_back_shown": True, "plan_read_back": rb,
+               "note": ("The read-back is on screen for the operator. Do not restate it or any figure "
+                        "in it, and wait for the operator's yes before planning.")}
+        if (ti.get("mode") or "plan") == "plan":
+            out["note"] = ("Nothing was planned: the operator hasn't said yes to this read-back"
+                           + (" (the figures or the request changed since the last one)" if read_back_id else "")
+                           + ". " + out["note"])
+        return out
+
+    body_calls = []
+    for cid in call_ids:                    # sequential: the PHP session lock
+        det, err = scrape_call_details(ss, booking_id, cid)
+        if err or not det:
+            return {"error": "Could not read call " + str(cid) + ": " + str(err)}
+        body_calls.append({"booking_id": booking_id, "call_id": cid,
+                           "start_dt": det["start_dt"], "end_dt": det["end_dt"],
+                           "venue": det.get("venue") or "", "call_num": cid,
+                           "call_name": det.get("call_name") or ""})
 
     load_induction_catalogue(ss)
     load_licence_catalogue(ss)
@@ -13949,10 +14939,7 @@ def _goat_plan_staffing(ss, ti):
     # D21 defaults: the Finder slider's min rating, no groups, no distance, PT
     # not excluded. Anything the operator named overlays them.
     body = {
-        "calls": [{"booking_id": booking_id, "call_id": call_id,
-                   "start_dt": det["start_dt"], "end_dt": det["end_dt"],
-                   "venue": det.get("venue") or "", "call_num": call_id,
-                   "call_name": det.get("call_name") or ""}],
+        "calls":             body_calls,
         "min_rating":        int(ti.get("min_rating") or 1),
         "required_groups":   list(ti.get("required_groups") or []),
         "required_licences": [str(c).strip().upper() for c in (ti.get("licences_all") or []) if c],
@@ -13960,6 +14947,47 @@ def _goat_plan_staffing(ss, ti):
         "radius_km":         None,
         "plan":              plan_spec,
     }
+    if len(body_calls) >= 2:
+        result, err = build_booking_plan(ss, body)
+        if err:
+            return {"error": err[0]}
+        p = result["plan"]
+        call_names = {c["call_id"]: c["call_name"] for c in p["calls"]}
+        return {
+            "read_back":   p["read_back"],
+            "booking_id":  p["booking_id"],
+            "summary":     p["summary"],
+            "notes":       p["notes"],
+            "not_planned": not_planned,
+            "calls": [{
+                "call_id":          c["call_id"],
+                "call_name":        c["call_name"],
+                "start":            c["start_dt"],
+                "carried":          c["carried"],
+                "is_boss_call":     c["is_boss_call"],
+                "places":           c["places"],
+                "places_breakdown": c["places_breakdown"],
+                "places_text":      _plan_places_text(c["places"], c["places_breakdown"]),
+                "unfilled":         c["unfilled"],
+                "mix":              c["mix"],
+                "licence_mins":     c["licence_mins"],
+                "picks": [{"name": k["name"], "ein": k["ein"], "group": k["group"],
+                           "why": k["why"], "flags": k["flags"],
+                           "also_on": ["#%s %s" % (a, call_names.get(a, "")) for a in k["also_on"]]}
+                          for k in c["picks"]],
+                "could_fill_warned": [{"name": k["name"], "warning": k["warning"]}
+                                      for k in c["could_fill_warned"]],
+                "notes":               c["notes"],
+                "notes_licence_hints": c["notes_licence_hints"],
+            } for c in p["calls"]],
+            "open_in_finder": {
+                "booking_id": p["booking_id"],
+                "call_id":    call_ids[0],
+                "call_ids":   call_ids,
+                "plan":       plan_spec,
+                "filters":    p["filters"],
+            },
+        }
     result, err = build_staffing_plan(ss, body)
     if err:
         return {"error": err[0]}
@@ -13971,6 +14999,9 @@ def _goat_plan_staffing(ss, ti):
         "call_name":           p["call_name"],
         "is_boss_call":        p["is_boss_call"],
         "places":              p["places"],
+        "places_breakdown":    p["places_breakdown"],
+        "places_text":         _plan_places_text(p["places"], p["places_breakdown"]),
+        "not_planned":         not_planned,
         "unfilled":            p["unfilled"],
         "mix":                 p["mix"],
         "licence_mins":        p["licence_mins"],
@@ -13983,6 +15014,7 @@ def _goat_plan_staffing(ss, ti):
         "open_in_finder": {
             "booking_id": p["booking_id"],
             "call_id":    p["call_id"],
+            "call_ids":   [p["call_id"]],
             "plan":       {"objective": p["objective"], "new_pct": p["new_pct"],
                            "licence_mins": [{"code": m["code"], "min": m["min"]}
                                             for m in p["licence_mins"]]},
@@ -14206,7 +15238,7 @@ def _goat_get_crew_licences(ss, ti):
     return res
 
 
-def execute_goat_tool(tool_name, tool_input, ss, cohort):
+def execute_goat_tool(tool_name, tool_input, ss, cohort, plan_ctx=None):
     """Execute a GOAT tool call and return the result as a string.
 
     `cohort` is captured by the caller (api_goat) WHILE THE REQUEST CONTEXT IS STILL
@@ -14605,7 +15637,7 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
                 return _json.dumps({"id": out["id"], "found": False,
                                     "note": "No call or booking has that number."})
             res = {"id": out["id"], "found": True, "call": out["call"], "booking": out["booking"],
-                   "note": "A button under your answer opens it. You have not opened anything."}
+                   "note": "The Open button opens it. You have not opened anything."}
             res["open_dialog"] = {"id": out["id"], "call": out["call"], "booking": out["booking"]}
             return _json.dumps(res)
         except Exception as e:
@@ -14618,7 +15650,8 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort):
             return ("That's above your access level — staffing plans are admin-only in THE GOAT. "
                     "Relay this as given; it is not a SmartStaff setting.")
         try:
-            res = _goat_plan_staffing(ss, tool_input)
+            res = _goat_plan_staffing(ss, tool_input, (plan_ctx or {}).get("read_back"),
+                                      (plan_ctx or {}).get("last_user"))
             if res.get("error"):
                 return f"Error: {res['error']}"
             return _json.dumps(res)
@@ -14849,6 +15882,12 @@ def api_goat():
     # see execute_goat_tool's docstring. Passing one string is a far smaller blast
     # radius than wrapping the whole streaming path in stream_with_context.
     cohort = current_cohort()
+    # The plan read-back the drawer showed the operator just before this
+    # message, if any. plan_staffing only plans when it matches (DRAWER READ-BACK).
+    plan_read_back = str(body.get("plan_read_back") or "") or None
+    last_user = next((m.get("content") for m in reversed(messages)
+                      if m.get("role") == "user" and isinstance(m.get("content"), str)), None)
+    plan_ctx = {"read_back": plan_read_back, "last_user": last_user}
 
     # Merge incoming messages into server-side history
     # The frontend sends the full history each time — use it as the source of truth
@@ -14869,6 +15908,15 @@ def api_goat():
     def generate():
         import json as _json
         msgs = list(messages[-GOAT_MAX_HISTORY:])
+        # The arguments of a plan read-back shown this turn (and not followed
+        # by a plan or a cancel). Such a turn shows no model text: the
+        # read-back speaks for itself, and the model kept describing where it
+        # sat on screen. History gets a note with the exact arguments instead,
+        # so a yes can repeat them and match the read-back's id.
+        read_back_args = None
+        # A fixed question from plan_staffing (which side of a split is new):
+        # shown word for word in place of the model's text.
+        ask_text = None
 
         # Agentic loop — run until no more tool calls
         while True:
@@ -14895,7 +15943,7 @@ def api_goat():
                 tool_results = []
                 for tc in tool_calls:
                     yield f"data: {_json.dumps({'type':'tool_start','tool':tc.name})}\n\n"
-                    result = execute_goat_tool(tc.name, tc.input, ss, cohort)
+                    result = execute_goat_tool(tc.name, tc.input, ss, cohort, plan_ctx)
                     # Licence tools only: log what the model was actually handed, so
                     # a wrong retelling can be told apart from a wrong result by
                     # reading the terminal (smoke test 16 Oct 2026).
@@ -14906,6 +15954,11 @@ def api_goat():
                         parsed = _json.loads(result)
                         if parsed.get("requires_confirmation"):
                             yield f"data: {_json.dumps({'type':'confirm_request','payload':parsed})}\n\n"
+                        if parsed.get("plan_read_back"):
+                            yield f"data: {_json.dumps({'type':'plan_read_back','payload':parsed['plan_read_back']})}\n\n"
+                        if tc.name == "plan_staffing":
+                            read_back_args = (dict(tc.input) if parsed.get("read_back_shown") else None)
+                            ask_text = parsed.get("ask")
                         if parsed.get("open_in_finder"):
                             yield f"data: {_json.dumps({'type':'plan_ready','payload':parsed['open_in_finder']})}\n\n"
                         if parsed.get("open_dialog"):
@@ -14924,6 +15977,24 @@ def api_goat():
 
             # No tool calls — stream the final text response
             full_response = ""
+            if ask_text:
+                hist = _goat_histories.get(sid, list(msgs))
+                hist.append({"role": "assistant", "content": ask_text})
+                _goat_histories[sid] = hist[-GOAT_MAX_HISTORY:]
+                yield f"data: {_json.dumps({'type':'text','text':ask_text})}\n\n"
+                yield f"data: {_json.dumps({'type':'done'})}\n\n"
+                return
+            if read_back_args is not None:
+                note = ("[Plan read-back shown to the operator; nothing planned yet. plan_staffing arguments: "
+                        + _json.dumps(read_back_args, sort_keys=True)
+                        + '. On yes, call plan_staffing with exactly these arguments and mode "plan". '
+                        + "If they change anything, read back again. If they say no, say it's cancelled.]")
+                hist = _goat_histories.get(sid, list(msgs))
+                hist.append({"role": "assistant", "content": note})
+                _goat_histories[sid] = hist[-GOAT_MAX_HISTORY:]
+                yield f"data: {_json.dumps({'type':'history','text':note})}\n\n"
+                yield f"data: {_json.dumps({'type':'done'})}\n\n"
+                return
             for block in response.content:
                 if hasattr(block, "text"):
                     words = block.text.split(" ")

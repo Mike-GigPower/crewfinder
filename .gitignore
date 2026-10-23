@@ -47,4 +47,9 @@ visa-*-register.csv
 # The tests skip when the directory is absent, so it exists only on the build
 # machine and must never be committed.
 fixtures/
+# ...except the staffing-plan golden test's cases: invented data
+# (BRIEF-staffing-plans-b §2.2), committed on purpose.
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/plan_golden/
 import_log.json
