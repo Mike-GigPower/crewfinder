@@ -1,6 +1,6 @@
 {
-  "version": "5.86.0",
-  "release_date": "2026-10-23",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.86.0/TheGOAT.dmg",
-  "release_notes": "Plan a whole booking in Crew Finder: select its calls and press Plan to fill every call with the same crew where possible, then review and send in one go. Also new since 5.84.0: open any call or booking by its number (⌘K)."
+  "version": "5.87.0",
+  "release_date": "2026-10-26",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.87.0/TheGOAT.dmg",
+  "release_notes": "Delete all feeds: a booking's Call feeds tab now has a button (Admin only) that removes every feed on the booking in one go. Nobody is taken off any call."
 }
