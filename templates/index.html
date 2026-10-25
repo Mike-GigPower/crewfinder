@@ -26208,6 +26208,14 @@ function bkFeedEdgeList(bookingId, c, maps){
   return '<div style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 0 26px">'+items+'</div>';
 }
 
+function bkFeedEdgeTotal(maps){
+  // Every outgoing edge on the booking, both modes. feedsOf carries ALL modes
+  // (get-booking.php), so a migrated linked pair counts as its two arrows.
+  var n = 0;
+  Object.keys(maps.feedsOf).forEach(function(id){ n += maps.feedsOf[id].length; });
+  return n;
+}
+
 // Call Type chips (Stage 2 §4.2). ONE POST per booking open, never one per
 // call; the rows render first and redraw when the types arrive. A failure
 // leaves the rows chip-less rather than showing a wrong type.
@@ -26751,6 +26759,16 @@ function bkCallsSection(bookingId, d){
       footer = '<div style="font-size:10px;color:var(--muted);margin-top:6px">'
         + 'Pick the call crew come <em>from</em>. Anyone booked there will also be booked on the calls you choose next.</div>'
         + '<div id="bk-feed-status" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>';
+      // Delete all feeds (DESIGN-delete-all-feeds-v0_1). Only with no source
+      // picked, so it can't be mistaken for part of an edit; only for Admin,
+      // because call-feeds.php refuses anyone else; only when there is
+      // something to delete.
+      var _edgeTotal = bkFeedEdgeTotal(maps);
+      if(_edgeTotal && window._cohort === 'admin'){
+        footer += '<div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">'
+          + entityBtn('<span style="color:var(--text)">\u2715</span> Delete all feeds ('+_edgeTotal+')', "bkFeedDeleteAll('"+bookingId+"')", {id:'bk-feed-delall'})
+          + '<span style="font-size:10px;color:var(--muted)">Removes every arrow on this booking. Nobody is taken off any call.</span></div>';
+      }
     } else {
       var n = Object.keys(_bkFeedSel).length;
       var recChecked = _bkFeedRecommended ? ' checked' : '';
@@ -26907,6 +26925,76 @@ async function bkFeedRemove(bookingId, sourceId, targetId){
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
   }catch(e){ fail('Remove failed: '+e.message); }
+}
+
+async function bkFeedDeleteAll(bookingId){
+  // Removes EVERY feed edge on the booking, locked and recommended, by posting
+  // the existing per-source remove once for each call that feeds something
+  // (DESIGN-delete-all-feeds-v0_1, D3: no PHP change). Edges only, exactly
+  // like the single x: call-feeds.php never touches call_crew_map, so crew
+  // already carried onto a downstream call stay where they are (D2).
+  //
+  // NOT ATOMIC. Each source is its own DELETE. If one fails part-way, the
+  // ones before it are already gone; we carry on with the rest, then reopen
+  // the dialog so it shows what is actually left, and say how many failed.
+  // Crew boss assignments (call_supervision) are a different table and are
+  // not touched.
+  var st = document.getElementById('bk-feed-status');
+  function say(m, bad){ if(st){ st.style.color = bad ? 'var(--conflict)' : 'var(--muted)'; st.textContent = m; } }
+
+  var d     = window._curBookingEdit;
+  var maps  = bkFeedMaps((d && d.calls) || []);
+  var srcs  = Object.keys(maps.feedsOf).filter(function(id){ return maps.feedsOf[id].length; });
+  var total = bkFeedEdgeTotal(maps);
+  if(!srcs.length){ say('This booking has no feeds.'); return; }
+
+  var nRec = 0;
+  srcs.forEach(function(id){ nRec += (maps.feedsRecOf[id] || []).length; });
+  var nLocked = total - nRec;
+  var parts = [];
+  if(nLocked) parts.push(nLocked+' locked');
+  if(nRec)    parts.push(nRec+' recommended');
+
+  var ok = await goatChoice({
+    title: total === 1 ? 'Delete the feed on this booking?' : 'Delete all '+total+' feeds on this booking?',
+    html: 'This removes every feed arrow on the booking ('+parts.join(', ')+'), from '
+      + srcs.length+' '+(srcs.length === 1 ? 'call' : 'calls')+'.'
+      + '<div style="margin-top:10px"><b>Nobody is taken off any call.</b> Crew already booked onto a call '
+      + 'through a feed stay booked there. From now on, offering, accepting, declining and promoting on '
+      + 'one call no longer carries onto any other.</div>'
+      + '<div style="margin-top:10px;color:var(--muted)">Crew boss assignments are not affected. '
+      + 'Feeds can be added again from this tab, one call at a time.</div>',
+    buttons: [
+      {label:'Cancel', value:false},
+      {label: total === 1 ? 'Delete feed' : 'Delete all '+total, value:true, primary:true}
+    ]
+  });
+  if(!ok) return;
+
+  var btn = document.getElementById('bk-feed-delall'); if(btn) btn.disabled = true;
+  var failed = 0, removed = 0;
+  for(var i = 0; i < srcs.length; i++){
+    say('Deleting feeds… '+(i+1)+' of '+srcs.length);
+    try{
+      var resp = await fetch('/api/calls/feeds/remove', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({source_call: srcs[i], target_calls: maps.feedsOf[srcs[i]]})
+      });
+      var j = await resp.json();
+      if(!resp.ok || (j && j.error)) failed++;
+      else removed += maps.feedsOf[srcs[i]].length;
+    }catch(e){ failed++; }
+  }
+
+  delete window._bookingIndex[bookingId];
+  await openBookingDialog(bookingId);
+  if(failed){
+    goatInfoToast('Removed '+removed+' of '+total+' feeds. '+failed+' '
+      +(failed === 1 ? 'call' : 'calls')+' failed — what is left is shown. Try again.', 6000);
+  } else {
+    goatInfoToast('Removed all '+total+' feeds.', 3000);
+  }
 }
 
 // ── CREW BOSS SUPERVISION (booking dialog) ──────────────────────────────────
