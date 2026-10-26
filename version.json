@@ -1,6 +1,6 @@
 {
-  "version": "5.87.0",
-  "release_date": "2026-10-26",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.87.0/TheGOAT.dmg",
-  "release_notes": "Delete all feeds: a booking's Call feeds tab now has a button (Admin only) that removes every feed on the booking in one go. Nobody is taken off any call."
+  "version": "5.88.0",
+  "release_date": "2026-10-27",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.88.0/TheGOAT.dmg",
+  "release_notes": "Staffing plans now read licences from call Notes, ask before assuming one from a call's name, prefer crew with LX/VX/SX/Backline/Spot history, and keep Wardrobe crew on Wardrobe calls."
 }
