@@ -9657,9 +9657,58 @@ def _plan_h(h):
     return "{:,}".format(int(round(h or 0)))
 
 
-def _plan_notes_hints(notes, cat, exclude):
+# Department tags (goat_call_dept_tags in list-crew-experience.php) are never
+# licence codes: 5.80.1's "8x LX, 8xVX" is crew counts (BRIEF-staffing-plans-c
+# §2.2). None is a catalogue code today; this keeps it that way here.
+_PLAN_DEPT_CODES = ("LX", "VX", "SX")
+
+# Codes that are also English words. Matched by the code test ALONE they are a
+# question, never applied: "ALL CREW TO WEAR BLACK" is not Turbine operation.
+_PLAN_WORD_CODES = ("TO", "ES", "SA", "CS")
+
+# Codes the Notes only ever ASK about, however they're matched: "first aid kit
+# on site" is not "every place needs First Aid" (Mike, 26 Oct).
+_PLAN_ASK_CODES = ("FA",)
+
+_PLAN_LICENCE_LINE_RE = re.compile(r"(?<![a-z])(ticket|licen[cs]e|cert)", re.I)
+
+
+def _plan_notes_scan(notes, cat):
+    """(text, hits): every place the Notes mention a catalogue licence, as
+    (start, end, code, test). `end` runs to the end of the word, so a count
+    after it ("Forklift x2") sits right there."""
+    from html import unescape
+    text = unescape(str(notes or ""))
+    if not text.strip():
+        return text, []
+    low = text.lower()
+
+    def _word_end(e):
+        while e < len(low) and low[e].isalnum():
+            e += 1
+        return e
+
+    hits = []
+    for r in cat:
+        code = r.get("code") or ""
+        if not code or code in _PLAN_DEPT_CODES:
+            continue
+        for m in re.finditer(r"(?<![A-Za-z0-9])" + re.escape(code) + r"(?![A-Za-z0-9])", text):
+            hits.append((m.start(), m.end(), code, "code"))
+        name = str(r.get("name") or "").lower()
+        if name:
+            for m in re.finditer(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", low):
+                hits.append((m.start(), m.end(), code, "name"))
+        for kw in _LICENCE_CHECK_KEYWORDS.get(code, []):
+            for m in re.finditer(r"(?<![a-z0-9])" + re.escape(kw), low):
+                hits.append((m.start(), _word_end(m.end()), code, "keyword"))
+    return text, sorted(hits)
+
+
+def _plan_notes_hints(notes, cat, exclude, detail=False):
     """Catalogue licences the call's Notes seem to mention, minus `exclude`.
-    ADVISORY ONLY — reported, never applied (design §3.3).
+    The ONE Notes matcher: stage A reported these (advisory); stage C applies
+    them through _plan_call_requirements (D34), with `detail`.
 
     Three tests, any one enough:
       code    whole word, CASE-SENSITIVE: TO, ES, SA and CS are also English
@@ -9668,27 +9717,525 @@ def _plan_notes_hints(notes, cat, exclude):
       name    whole phrase, case-insensitive ("first aid")
       keyword _LICENCE_CHECK_KEYWORDS at a word start ("forklift" -> LF), the
               list check_call_licences uses for uncoded rows. Without it a note
-              saying "forklift" would never match the name "Forklift truck"."""
-    from html import unescape
-    text = unescape(str(notes or ""))
-    if not text.strip():
-        return []
-    low = text.lower()
-    out = []
-    for r in cat:
-        code = r.get("code") or ""
-        if not code or code in exclude:
+              saying "forklift" would never match the name "Forklift truck".
+
+    detail=True returns {"mentions": [...], "unmatched": [...]} instead.
+    A mention with `ask` set is a yes/no question, never applied: a word code
+    matched as a code alone, or First Aid however it matched.
+    A mention is one stretch of the Notes and every code found in it, so
+    "ewp" (WP and EWPSOA) is one mention with two codes — ambiguous, a
+    question. Its count, if any: "2x Forklift", "2 x LF", "2 forklift",
+    "Forklift x2". `unmatched` are the Notes' lines that read like a licence
+    line (ticket / licence / license / cert) but name no code (C7)."""
+    text, hits = _plan_notes_scan(notes, cat)
+    if not detail:
+        names = dict((r.get("code"), r.get("name") or r.get("code")) for r in cat)
+        codes = set(h[2] for h in hits) - set(exclude)
+        return sorted(({"code": c, "name": names[c]} for c in codes), key=lambda h: h["code"])
+
+    groups = []
+    for s, e, code, how in hits:
+        if groups and s < groups[-1]["end"]:
+            g = groups[-1]
+            g["end"] = max(g["end"], e)
+        else:
+            g = {"start": s, "end": e, "hows": {}}
+            groups.append(g)
+        g["hows"].setdefault(code, set()).add(how)
+    mentions = []
+    for g in groups:
+        n = None
+        m = re.search(r"(?<![0-9])(\d{1,2})\s*[x×]?\s*$", text[:g["start"]])
+        if not m:
+            m = re.match(r"\s*[x×]\s*(\d{1,2})(?![0-9])", text[g["end"]:])
+        if m and int(m.group(1)) >= 1:
+            n = int(m.group(1))
+        codes = sorted(g["hows"])
+        ask = len(codes) == 1 and (codes[0] in _PLAN_ASK_CODES or (
+            codes[0] in _PLAN_WORD_CODES and g["hows"][codes[0]] == {"code"}))
+        mentions.append({"codes": codes, "n": n, "word": text[g["start"]:g["end"]], "ask": ask})
+    unmatched = []
+    for seg in re.finditer(r"[^\n;.!?]+", text):
+        line = seg.group(0).strip()
+        if not line or not _PLAN_LICENCE_LINE_RE.search(line):
             continue
-        hit = re.search(r"(?<![A-Za-z0-9])" + re.escape(code) + r"(?![A-Za-z0-9])", text)
-        name = str(r.get("name") or "").lower()
-        if not hit and name:
-            hit = re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", low)
-        if not hit:
-            hit = any(re.search(r"(?<![a-z0-9])" + re.escape(kw), low)
-                      for kw in _LICENCE_CHECK_KEYWORDS.get(code, []))
-        if hit:
-            out.append({"code": code, "name": r.get("name") or code})
-    return sorted(out, key=lambda h: h["code"])
+        if any(seg.start() <= h[0] < seg.end() for h in hits):
+            continue
+        unmatched.append(line[:120])
+    return {"mentions": mentions, "unmatched": unmatched}
+
+
+# ── Stage C: what a call is for (BRIEF-staffing-plans-c §2) ──────────────────
+# Requirements per target call, built BEFORE the pickable filtering, from:
+#   Notes      applied (D34): a code for every place, or at least N (D36, D43)
+#   call name  clues -> questions, never silent rules (D35)
+#   Call Type  the same clues, from the effective type
+#   operator   licence_mins, applied as in stage A
+#   PHP        call_depts (D38) and call_specialist (D44), never re-derived
+
+# Token -> the codes it hints at. One code is a yes/no question; several are
+# a choice (each code, Either, No). Checked by Mike before release (§2.3).
+PLAN_LICENCE_CLUES = {
+    "fork":     ["LF"],
+    "forklift": ["LF"],
+    "ewp":      ["WP", "EWPSOA"],
+    "boom":     ["WP", "EWPSOA"],
+    "scissor":  ["WP", "EWPSOA"],
+    "rigger":   ["RB", "RI", "RA"],
+    "rigging":  ["RB", "RI", "RA"],
+    "traffic":  ["TC"],
+    "truck":    ["LR", "MR", "HR", "HC", "MC"],
+    "driver":   ["LR", "MR", "HR", "HC", "MC"],
+}
+
+# call_specialist value -> the SmartStaff crew_groups name (matched ignoring
+# case). Seamstress is its own group, never Wardrobe (D46); the live list has
+# none yet (26 Oct), so a Seamstress call plans nobody until it's created.
+_PLAN_SPECIALIST_GROUPS = {"WARDROBE": "Wardrobe", "SEAMSTRESS": "Seamstress"}
+
+# One licence family per PLAN_LICENCE_CLUES entry (its codes, joined), for a
+# Call Type that names several: "Fork/Truck/EWP" is a rate-card role, a
+# pricing bundle, not three requirements (test run on #11832).
+_PLAN_CLUE_FAMILY = {
+    "LF":             "Forklift",
+    "WP/EWPSOA":      "EWP",
+    "RB/RI/RA":       "Rigging",
+    "TC":             "Traffic control",
+    "LR/MR/HR/HC/MC": "Truck licence",
+}
+
+# Crew groups that are NOT skills, ignored when deciding who is specialist-only
+# (D45): Wardrobe + Own Car + MCG is Wardrobe-only. Any group not listed here
+# counts as a skill (today: Audio, Backline, Lights, Set/Stg, Spot, Wardrobe).
+# Lower case; edit here.
+_PLAN_NON_SKILL_GROUPS = {
+    "venue/client": ("mcec", "mcg", "mopt"),
+    "attribute":    ("own car", "pt only", "joat", "phd."),
+    "licence-type": ("ci card", "ewp", "fork", "truck"),
+}
+_PLAN_DEPT_LABEL = {"LX": "LX", "VX": "VX", "SX": "SX", "BACKLINE": "Backline", "SPOT": "Spot"}
+_PLAN_REQ_SOURCE = {"notes": "from Notes", "answer": "your answer", "operator": "your minimum"}
+
+
+def _plan_req_empty():
+    return {"licences": [], "questions": [], "answers": {}, "unmatched_notes": [],
+            "depts": [], "specialist": [], "notes": [], "lines": [], "precheck": [],
+            "review": [], "open": 0}
+
+
+def _plan_call_types(bid, calls):
+    """({call_id: role or None}, error): each call's EFFECTIVE Call Type (the
+    stored one, else derived from the call name), read once per booking. Not
+    SmartStaff, so the per-session lock doesn't apply."""
+    try:
+        rows, err = fetch_booking_rate_cards([int(bid)])
+        if err:
+            return {}, err
+        set_code = pricing_rules.set_for_booking(rows.get(int(bid)))
+        stored, err = fetch_call_types(booking_ids=[int(bid)])
+        if err:
+            return {}, err
+        rules, _ = pricing_rules.load_rules()
+        out = {}
+        for cid, name in calls:
+            eff = call_types.effective_call_type(name, set_code, rules,
+                                                 stored["call_types"].get(int(cid)))
+            out[str(cid)] = eff.get("role")
+        return out, None
+    except Exception as e:
+        return {}, "%s: %s" % (type(e).__name__, e)
+
+
+def _plan_holds_any(lic_rows, codes, call_date):
+    """The best _plan_holds over `codes` ("Either" holds any of them)."""
+    best = None
+    for code in codes:
+        st = _plan_holds(lic_rows, code, call_date)
+        if st and (best is None or _PLAN_HOLDS.index(st) < _PLAN_HOLDS.index(best)):
+            best = st
+    return best
+
+
+def _plan_req_name(codes):
+    return " or ".join(_licence_name(c) for c in codes)
+
+
+def _plan_req_text(e):
+    src = _PLAN_REQ_SOURCE.get(e["source"], e["source"])
+    if e["scope"] == "min":
+        return "Requires %d with %s (%s)" % (e["n"], e["name"], src)
+    return "Requires %s (%s)" % (e["name"], src)
+
+
+def _plan_call_requirements(cid, call_name, notes, call_type, ct_err, meta, P, answers):
+    """One call's requirements (§2.4). Pure: no search, no request, so the
+    drawer's read-back builds the same structure. `answers` is the operator's
+    {question id: "yes" | "no" | code | "either"}; anything else is ignored."""
+    from html import unescape
+    cat       = P["cat"]
+    cat_codes = set(r.get("code") for r in cat)
+    order     = dict((r.get("code"), i) for i, r in enumerate(cat))
+    corder    = lambda codes: sorted(set(codes), key=lambda c: (order.get(c, len(order)), c))
+    lic       = {}                                 # key -> entry
+
+    def _add(codes, scope, n, source):
+        codes = sorted(set(codes))
+        key = "/".join(codes)
+        e = {"key": key, "code": key, "codes": codes, "name": _plan_req_name(codes),
+             "scope": scope, "n": n if scope == "min" else None, "source": source}
+        old = lic.get(key)
+        rank = lambda x: (1 if x["scope"] == "all" else 0, x["n"] or 0)
+        if old is None or rank(e) > rank(old):     # strictest wins
+            lic[key] = e
+
+    for code, n in P["licence_mins"]:
+        _add([code], "min", n, "operator")
+
+    questions = {}                                 # qid -> question
+
+    def _ask(codes, text, source, options, n=None):
+        codes = sorted(set(codes))
+        qid = "%s:%s" % (cid, "/".join(codes))
+        if qid not in questions:
+            questions[qid] = {"id": qid, "text": text, "source": source, "codes": codes,
+                              "options": options, "n": n}
+
+    def _choices(codes, with_no):
+        opts = [{"value": c, "label": c} for c in corder(codes)] + [{"value": "either", "label": "Either"}]
+        return opts + ([{"value": "no", "label": "No"}] if with_no else [])
+
+    yes_no = [{"value": "yes", "label": "Yes"}, {"value": "no", "label": "No"}]
+    named = lambda codes: " or ".join("%s (%s)" % (c, _licence_name(c)) for c in corder(codes))
+
+    det = _plan_notes_hints(notes, cat, (), detail=True)
+    for m in det["mentions"]:
+        codes = m["codes"]
+        if m["ask"]:
+            _ask(codes, "Notes say %s: does it need %s?" % (m["word"], named(codes)), "notes", yes_no, m["n"])
+        elif len(codes) == 1:
+            _add(codes, "min" if m["n"] else "all", m["n"], "notes")
+        else:
+            _ask(codes, "Notes say %s: which licence: %s?" % (m["word"], named(codes)),
+                 "notes", _choices(codes, False), m["n"])
+
+    required = set(c for e in lic.values() for c in e["codes"]) | set(P["required_licences"])
+
+    def _clues(text):
+        """[(word as written, family key, codes)] for each clue token, in order."""
+        out = []
+        for tok in re.findall(r"[a-z0-9]+", text.lower()):
+            raw = PLAN_LICENCE_CLUES.get(tok) or (tok.endswith("s") and PLAN_LICENCE_CLUES.get(tok[:-1])) or []
+            codes = [c for c in raw if c in cat_codes]
+            if codes:
+                word = next((w for w in re.findall(r"[A-Za-z0-9]+", text) if w.lower() == tok), tok)
+                out.append((word, "/".join(raw), codes))
+        return out
+
+    def _clue_question(label, word, codes):
+        if required & set(codes):
+            return
+        if len(codes) == 1:
+            _ask(codes, '%s says "%s": does it need %s?' % (label, word, named(codes)), label, yes_no)
+        else:
+            _ask(codes, '%s says "%s": which licence: %s?' % (label, word, named(codes)),
+                 label, _choices(codes, True))
+
+    name_clues = _clues(unescape(str(call_name or "")))
+    for word, _fam, codes in name_clues:
+        _clue_question("The call name", word, codes)
+    if not ct_err:
+        ct_text = str(call_type or "")
+        ct_clues = _clues(ct_text)
+        fams = []
+        for _w, fam, codes in ct_clues:
+            if fam not in [f for f, _c in fams]:
+                fams.append((fam, codes))
+        if len(fams) == 1:
+            for word, _fam, codes in ct_clues:
+                _clue_question("The Call Type", word, codes)
+        elif len(fams) >= 2:
+            # A pricing bundle. The call name or the Notes already pointing to
+            # one of its families settles it: no question from the Call Type.
+            pointed = set(f for _w, f, _c in name_clues)
+            noted = required | set(c for q in questions.values() for c in q["codes"])
+            pointed |= set(f for f, codes in fams if noted & set(codes))
+            if not pointed & set(f for f, _c in fams):
+                qid = "%s:type:%s" % (cid, "/".join(sorted(f for f, _c in fams)))
+                labels = [_PLAN_CLUE_FAMILY.get(f, f) for f, _c in fams]
+                questions[qid] = {
+                    "id": qid, "source": "The Call Type", "n": None,
+                    "codes": sorted(set(c for _f, codes in fams for c in codes)),
+                    "families": dict((_PLAN_CLUE_FAMILY.get(f, f), codes) for f, codes in fams),
+                    "text": 'The Call Type "%s" covers several licences: which does this call need: %s?'
+                            % (ct_text, ", ".join(labels[:-1]) + " or " + labels[-1]),
+                    "options": [{"value": l, "label": l} for l in labels] + [{"value": "none", "label": "None"}]}
+
+    used = {}
+    for qid in sorted(questions):
+        q = questions[qid]
+        a = str((answers or {}).get(qid) or "")
+        if a not in [o["value"] for o in q["options"]]:
+            continue
+        used[qid] = a
+        if a in ("no", "none"):
+            continue
+        if q.get("families"):                       # a Call Type bundle: the family's codes
+            _add(q["families"][a], "all", None, "answer")
+            continue
+        codes = q["codes"] if a in ("yes", "either") else [a]
+        _add(codes, "min" if q["n"] else "all", q["n"], "answer")
+
+    meta = meta or {}
+    depts = [t for t in (meta.get("call_depts") or []) if t in _PLAN_DEPT_LABEL]
+    spec = meta.get("call_specialist") or []
+    if isinstance(spec, str):
+        spec = [spec]
+    spec = [s for s in spec if s in _PLAN_SPECIALIST_GROUPS]
+
+    req = _plan_req_empty()
+    req["call_name"] = unescape(str(call_name or "")).strip()
+    req["licences"] = [lic[k] for k in sorted(lic)]
+    req["questions"] = [questions[k] for k in sorted(questions)]
+    req["answers"] = used
+    req["open"] = sum(1 for q in req["questions"] if q["id"] not in used)
+    req["unmatched_notes"] = det["unmatched"]
+    req["depts"] = depts
+    req["specialist"] = spec
+    req["specialist_groups"] = [_PLAN_SPECIALIST_GROUPS[s] for s in spec]
+    if ct_err:
+        req["notes"].append("Call Type couldn't be read")
+    lines = [_plan_req_text(e) for e in req["licences"]]
+    if depts:
+        lines.append("Prefers %s experience" % " / ".join(_PLAN_DEPT_LABEL[t] for t in depts))
+    if spec:
+        lines.append("%s crew only" % " or ".join(req["specialist_groups"]))
+    lines += ['Notes mention a licence the plan can\'t match: "%s"' % u for u in req["unmatched_notes"]]
+    req["lines"] = lines + req["notes"]
+    return req
+
+
+def _plan_req_precheck(req, cands, places, call_date):
+    """§2.6: available crew (the Finder's filters, before the mix) holding each
+    required licence, and each question's codes, on the call date."""
+    for e in req["licences"]:
+        k = sum(1 for c in cands if _plan_holds_any(c["lic"], e["codes"], call_date))
+        need = e["n"] if e["scope"] == "min" else places
+        req["precheck"].append({"key": e["key"], "available": k, "need": need,
+                                "text": "%s: %d available for %d place%s"
+                                        % (_plan_req_text(e), k, need, "" if need == 1 else "s")})
+    for q in req["questions"]:
+        q["counts"] = dict((c, sum(1 for x in cands if _plan_holds_any(x["lic"], [c], call_date)))
+                           for c in q["codes"])
+        for fam, codes in (q.get("families") or {}).items():
+            q["counts"][fam] = sum(1 for x in cands if _plan_holds_any(x["lic"], codes, call_date))
+
+
+def _plan_spec_only(c):
+    """Wardrobe/Seamstress-only crew (D39, D45): their SKILL groups are
+    non-empty and every one is a specialist group. Venue/client, attribute
+    and licence-type groups (_PLAN_NON_SKILL_GROUPS) don't count either way."""
+    ignore = set(g for gs in _PLAN_NON_SKILL_GROUPS.values() for g in gs)
+    skills = [g for g in (str(x).strip().lower() for x in (c.get("groups") or [])) if g and g not in ignore]
+    spec = set(v.lower() for v in _PLAN_SPECIALIST_GROUPS.values())
+    return bool(skills) and all(g in spec for g in skills)
+
+
+def _plan_live_groups(ss):
+    """Lower-cased crew_groups names from list-groups.php (the Finder chips'
+    source), or None when it can't be read. Asked only when a call is a
+    specialist call; one request, sequential. Every way it can fail is logged:
+    a silent None reads as "nothing missing" (test run on #11832)."""
+    from html import unescape
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/list-groups.php", allow_redirects=True, timeout=15)
+    except Exception as e:
+        print(f"[staffing-plan] list-groups failed: {type(e).__name__}: {e}", flush=True)
+        return None
+    if resp.status_code != 200:
+        print(f"[staffing-plan] list-groups failed: HTTP {resp.status_code}", flush=True)
+        return None
+    try:
+        rows = json.loads(resp.text or "{}").get("groups") or []
+    except Exception:
+        print(f"[staffing-plan] list-groups failed: not JSON: {str(resp.text)[:120]!r}", flush=True)
+        return None
+    names = set(unescape(str(g.get("name"))).strip().lower() for g in rows if g.get("name"))
+    if not names:
+        print("[staffing-plan] list-groups failed: no groups in the reply", flush=True)
+        return None
+    return names
+
+
+def _plan_mark_missing_groups(ss, reqs):
+    """D46 on every path that shows requirements: the planners (before a
+    needs_answers reply too) and the drawer's read-back. One read, and only
+    when a call is a specialist call."""
+    spec = [r for r in reqs if r.get("specialist_groups")]
+    if spec:
+        _plan_missing_groups(spec, _plan_live_groups(ss))
+
+
+def _plan_missing_groups(reqs, live):
+    """D46: a specialist group SmartStaff doesn't have. Each such call says so
+    in its requirements, and a call whose every group is missing plans nobody
+    with that sentence as its note. `live` None (unreadable): claim nothing."""
+    for req in reqs:
+        gone = [g for g in (req.get("specialist_groups") or [])
+                if live is not None and g.lower() not in live]
+        req["missing_groups"] = gone
+        for g in gone:
+            req["lines"].append("No %s group in SmartStaff: create it and add crew" % g)
+
+
+def _plan_apply_requirements(req, pickable, warned, call_date):
+    """(pickable, warned, reserve) for one call. Scope "all" keeps holders only
+    (§3.1). A specialist call keeps its group only and leaves places empty
+    rather than back-fill (D44). On any other call, specialist-only crew are
+    held back as `reserve`, used only for places still empty (D39, D42)."""
+    alls = [e for e in req["licences"] if e["scope"] == "all"]
+
+    def ok(c):
+        return all(_plan_holds_any(c["lic"], e["codes"], call_date) for e in alls)
+
+    pickable = [c for c in pickable if ok(c)]
+    warned   = [c for c in warned if ok(c)]
+    groups = set(g.lower() for g in req.get("specialist_groups") or [])
+    if groups:
+        inside = lambda c: any(str(g).strip().lower() in groups for g in (c.get("groups") or []))
+        return [c for c in pickable if inside(c)], [c for c in warned if inside(c)], []
+    reserve = [c for c in pickable if _plan_spec_only(c)]
+    return [c for c in pickable if not _plan_spec_only(c)], warned, reserve
+
+
+def _plan_req_setup(cs, req):
+    """Hand a call's requirements to its _PlanCall: the minimums (operator,
+    Notes "min", answers with a count) and the names the steps print."""
+    cs.req = req
+    cs.depts = list(req["depts"]) if not cs.is_boss_call else []
+    cs.specialist = list(req.get("specialist_groups") or [])
+    for e in req["licences"]:
+        cs.req_codes[e["key"]] = e["codes"]
+        cs.req_names[e["key"]] = e["name"]
+    cs.lic_mins = [(e["key"], e["n"]) for e in req["licences"] if e["scope"] == "min"]
+
+
+def _plan_mix_recount(cs):
+    if not cs.mix:
+        return
+    planned = {"new": 0, "experienced": 0}
+    for c in cs.picks:
+        planned[c["group"]] += 1
+    cs.mix["planned"] = planned
+    cs.mix["team_after"] = {"new": cs.existing["new"] + planned["new"],
+                            "experienced": cs.existing["experienced"] + planned["experienced"]}
+
+
+def _plan_use_reserve(cs, reserve):
+    """D42's second pass: specialist-only crew, for places nothing else filled.
+    Returns how many were used."""
+    cap = min(cs.places, 1) if cs.is_boss_call else cs.places
+    got = 0
+    for c in sorted(reserve, key=cs.key):
+        if len(cs.picks) >= cap:
+            break
+        if c["uid"] in cs.picked or not cs.ok(c):
+            continue
+        if cs.is_boss_call and c["group"] != "experienced":
+            continue
+        cs.take(c)
+        if cs.need is not None:
+            cs.need[c["group"]] = max(0, cs.need[c["group"]] - 1)
+        got += 1
+    if got:
+        cs.notes = [n for n in cs.notes
+                    if "left empty — not enough available crew" not in n and "boss place left empty" not in n]
+        cs.notes.append("Used %d Wardrobe/Seamstress crew: nobody else available" % got)
+        _plan_mix_recount(cs)
+    cs.unfilled = cap - len(cs.picks)
+    return got
+
+
+def _plan_missing_group_note(cs):
+    """A call with a missing group and another that qualifies (Wardrobe &
+    Seamstress) says so once in its notes; one whose every group is missing
+    says it as its left-empty note (_plan_empty_note) instead."""
+    gone = (cs.req or {}).get("missing_groups") or []
+    if gone and len(gone) < len(cs.specialist):
+        cs.notes.extend("No %s group in SmartStaff: create it and add crew" % g for g in gone)
+
+
+def _plan_drop_mix_shortfalls(cs):
+    """A call left with nobody on it — a licence, an overlap or a missing
+    group emptied it: the mix's "Asked for N …, found 0" notes only repeat
+    that, and the left-empty note gives the cause. Run on the final plan."""
+    if cs.picks:
+        return
+    cs.notes = [n for n in cs.notes if not re.match(r"Asked for \d+ (new|experienced), found 0;", n)]
+
+
+# Notes that already explain a licence gap (min shortfall, holders-only
+# left-empty, D47's "planned on").
+_PLAN_LICENCE_GAP_RE = re.compile(r"^Asked for \d+ with |not enough available crew holding |: \d+ holders?, planned on ")
+
+
+def _plan_drop_explained_shortfalls(notes):
+    """A partly filled licence call: when a licence note already explains the
+    gap, the mix's "Asked for N …, found 0" note only repeats it."""
+    if not any(_PLAN_LICENCE_GAP_RE.search(n) for n in notes):
+        return list(notes)
+    return [n for n in notes if not re.match(r"Asked for \d+ (new|experienced), found 0;", n)]
+
+
+def _plan_empty_note(cs):
+    """The left-empty sentence: a specialist call names its group (D44), a
+    call every pick must hold a licence on names the licence. Otherwise
+    stage A's sentence, word for word."""
+    n = cs.unfilled
+    pl = "" if n == 1 else "s"
+    gone = (cs.req or {}).get("missing_groups") or []
+    if cs.specialist and gone and len(gone) == len(cs.specialist):
+        return "No %s group in SmartStaff: create it and add crew" % " or ".join(gone)
+    if cs.specialist:
+        return "%d place%s left empty: not enough %s crew available" % (n, pl, " or ".join(cs.specialist))
+    alls = [e["name"] for e in ((cs.req or {}).get("licences") or []) if e["scope"] == "all"]
+    if alls:
+        return "%d place%s left empty — not enough available crew holding %s." % (n, pl, " and ".join(alls))
+    return "%d place%s left empty — not enough available crew." % (n, pl)
+
+
+def _plan_req_review(cs, elsewhere=None):
+    """The review line per call (§4.2): what was required and how it went, in
+    ONE format for both scopes: "Requires Forklift truck · N of M places held",
+    M being the call's places (every place needs it) or the minimum. Then
+    "· none available", or, for holders planned on other calls (`elsewhere`:
+    {requirement key: [call ids]}), "· 1 holder planned on #37901"."""
+    req = getattr(cs, "req", None)
+    if not req:
+        return []
+    out = []
+    mins = dict((m["code"], m) for m in cs.licence_out)
+    avail = dict((p["key"], p["available"]) for p in req.get("precheck") or [])
+    for e in req["licences"]:
+        if e["scope"] == "all":
+            k = sum(1 for c in cs.picks if _plan_holds_any(c["lic"], e["codes"], cs.call_date))
+            m_ = cs.places
+        else:
+            m = mins.get(e["key"]) or {}
+            k, m_ = (m.get("already_met") or 0) + (m.get("picked") or 0), e["n"]
+        line = "Requires %s · %d of %d place%s held" % (e["name"], min(k, m_), m_, "" if m_ == 1 else "s")
+        gone = (elsewhere or {}).get(e["key"]) or []
+        if avail.get(e["key"]) == 0:
+            line += " · none available"
+        elif gone and k < m_:
+            n = len(set(u for u, _c in gone))
+            line += " · %d holder%s planned on %s" % (
+                n, "" if n == 1 else "s", ", ".join(sorted(set("#%s" % c for _u, c in gone), key=lambda x: int(x[1:]))))
+        out.append(line)
+    if req["depts"]:
+        out.append("Prefers %s experience" % " / ".join(_PLAN_DEPT_LABEL[t] for t in req["depts"]))
+    if req.get("specialist_groups"):
+        out.append("%s crew only" % " or ".join(req["specialist_groups"]))
+    return out
 
 
 # ── Shared planner core (BRIEF-staffing-plans-b §2.2) ────────────────────────
@@ -9730,6 +10277,13 @@ def _plan_parse_spec(ss, data, spec):
             return None, ("Licence minimum for %s must be a whole number of 1 or more." % code, 400)
         mins_by_code[code] = max(n, mins_by_code.get(code, 0))
 
+    # Stage C §2.5: the operator's answers to requirement questions, from the
+    # Finder's form or the drawer card's buttons — never from free text.
+    answers = spec.get("requirement_answers") or {}
+    if not isinstance(answers, dict):
+        return None, ("requirement_answers must be {question id: answer}.", 400)
+    answers = dict((str(k), str(v)) for k, v in answers.items() if isinstance(v, str))
+
     if required_licences:
         data["licences_valid_only"] = True
     return {"objective":         objective,
@@ -9737,11 +10291,19 @@ def _plan_parse_spec(ss, data, spec):
             "cat":               cat,
             "required_licences": required_licences,
             "mins_by_code":      mins_by_code,
-            "licence_mins":      sorted(mins_by_code.items())}, None
+            "licence_mins":      sorted(mins_by_code.items()),
+            "answers":           answers}, None
 
 
-def _plan_sort_key(objective):
-    """D11, D19. Ends in the user id, like every plan sort."""
+def _plan_sort_key(objective, depts=()):
+    """D11, D19. Ends in the user id, like every plan sort. On a department
+    call (D38) the call's dept_3y count, summed over its tags, comes next
+    after the tier: within each group, crew with that history first."""
+    if depts:
+        d = lambda c: -sum(int((c.get("dept") or {}).get(t) or 0) for t in depts)
+        if objective == "experience":
+            return lambda c: (c["tier"], d(c), -c["all_h"], -c["rating"], c["name"], c["uid"])
+        return lambda c: (c["tier"], d(c), -c["rating"], -c["all_h"], c["name"], c["uid"])
     if objective == "experience":
         return lambda c: (c["tier"], -c["all_h"], -c["rating"], c["name"], c["uid"])
     return lambda c: (c["tier"], -c["rating"], -c["all_h"], c["name"], c["uid"])
@@ -9763,6 +10325,9 @@ def _plan_candidate(e, cr, x, group):
         "tier":    _plan_tier(cr),
         "cr":      cr,
         "lic":     e.get("licences") or [],
+        # Stage C. dept_3y is {} from the old PHP (C9), and so is no history.
+        "dept":    dict(x.get("dept_3y")) if isinstance(x.get("dept_3y"), dict) else {},
+        "groups":  list(e.get("groups") or []),
     }
 
 
@@ -9836,6 +10401,10 @@ class _PlanCall(object):
         self.mix, self.licence_out, self.unfilled = None, [], 0
         self.ok      = lambda c: True
         self.on_take = None
+        # Stage C (_plan_req_setup): requirement keys -> codes / names, the
+        # call's minimums, department tags and specialist groups.
+        self.req, self.req_codes, self.req_names = None, {}, {}
+        self.lic_mins, self.depts, self.specialist = [], [], []
 
     def set_mix(self, required, new_pct):
         self.exp_target = (required * (100 - new_pct) + 99) // 100      # experienced rounds UP (D15)
@@ -9871,19 +10440,23 @@ def _plan_boss(cs):
 
 def _plan_licence_mins(cs, licence_mins):
     """Step 8, licence minimums first. Crew the booking planner had already put
-    on this call before this step count as holders, like crew on the call."""
+    on this call before this step count as holders, like crew on the call.
+
+    `code` is a requirement key: a catalogue code, or several joined by "/"
+    when the operator answered Either (cs.req_codes holds which)."""
     pre  = list(cs.picks)
     need = cs.need
     for code, want in licence_mins:
-        lname = _licence_name(code)
+        codes = cs.req_codes.get(code) or [code]
+        lname = cs.req_names.get(code) or _licence_name(code)
         already, unchecked = 0, 0
         for u in cs.on_call:
             e = cs.by_id.get(str(u))
             if e is None:
                 unchecked += 1
-            elif _plan_holds(e.get("licences") or [], code, cs.call_date):
+            elif _plan_holds_any(e.get("licences") or [], codes, cs.call_date):
                 already += 1
-        already += sum(1 for c in pre if _plan_holds(c["lic"], code, cs.call_date))
+        already += sum(1 for c in pre if _plan_holds_any(c["lic"], codes, cs.call_date))
         if unchecked:
             cs.notes.append("%d on the call couldn't be checked for %s; counted as not holding it."
                             % (unchecked, lname))
@@ -9891,7 +10464,7 @@ def _plan_licence_mins(cs, licence_mins):
         got, crossed = 0, False
         while got < k and len(cs.picks) < cs.places:
             holders = [c for c in cs.pickable
-                       if c["uid"] not in cs.picked and _plan_holds(c["lic"], code, cs.call_date)
+                       if c["uid"] not in cs.picked and _plan_holds_any(c["lic"], codes, cs.call_date)
                        and cs.ok(c)]
             if not holders:
                 break
@@ -9908,7 +10481,7 @@ def _plan_licence_mins(cs, licence_mins):
                 need[c["group"]] = max(0, need[c["group"]] - 1)
             cs.take(c)
             cs.pick_lics.setdefault(c["uid"], []).append(code)
-            if _plan_holds(c["lic"], code, cs.call_date) == "unknown":
+            if _plan_holds_any(c["lic"], codes, cs.call_date) == "unknown":
                 cs.pick_flags.setdefault(c["uid"], []).append("No expiry on file: " + code)
             got += 1
         if got < k:
@@ -9995,6 +10568,10 @@ def _plan_why(cs, c):
     parts.append("★%d" % c["rating"])
     if c["cr"].get("induction_current"):
         parts.append("inducted")
+    for t in cs.depts:                                  # D38
+        n = int((c.get("dept") or {}).get(t) or 0)
+        if n:
+            parts.append("%s ×%d in 3 years" % (_PLAN_DEPT_LABEL[t], n))
     parts.extend(cs.pick_lics.get(c["uid"], []))
     return " · ".join(parts)
 
@@ -10072,11 +10649,17 @@ def _plan_read_back_head(is_boss_call, objective, new_pct, probation_h, licence_
 
 def build_staffing_plan(ss, data):
     """The staffing planner (BRIEF-staffing-plans-a §3.3). `data` is the
-    /api/availability body plus "plan": {objective, new_pct, licence_mins}.
+    /api/availability body plus "plan": {objective, new_pct, licence_mins,
+    requirement_answers}.
 
     Returns (assessment_with_plan, None) or (None, (message, http_status)).
     The result is a strict superset of /api/availability's, so the Finder
-    renders it with the same code. Every /ajax/crew/ call is sequential."""
+    renders it with the same code. Every /ajax/crew/ call is sequential.
+
+    Stage C: the call's requirements (Notes, name, Call Type, operator, PHP)
+    are built before the pickable filtering. A question still unanswered
+    returns ({"needs_answers": True, "requirements": {call_id: ...}}, None)
+    and builds no plan (§2.5)."""
     from html import unescape
     data  = dict(data or {})
     spec  = data.pop("plan", None) or {}
@@ -10129,7 +10712,8 @@ def build_staffing_plan(ss, data):
         if err:
             print(f"[staffing-plan] experience unavailable: {err}")
         return None, ("Experience data unavailable — plan not built", 502)
-    is_boss_call = bool((exp.get("call") or {}).get("is_boss_call"))
+    meta         = exp.get("call") or {}
+    is_boss_call = bool(meta.get("is_boss_call"))
     probation_h  = (exp.get("constants") or {}).get("probation_hours", 144)
 
     def _group(uid):
@@ -10147,24 +10731,51 @@ def build_staffing_plan(ss, data):
         else:
             pickable.append(c)
 
-    # ── 6. sort keys (D11, D19) ─────────────────────────────────────────────
-    key = _plan_sort_key(objective)
+    # ── 5b. requirements (stage C §2): the Notes come from the graph ────────
+    # (scrape_call_details has none, 5.80.1); the Call Type is one read.
+    ct, ct_err = _plan_call_types(bid, [(cid, call_name)])
+    if ct_err:
+        print(f"[staffing-plan] call type read failed: {ct_err}")
+    req = _plan_call_requirements(cid, call_name, node.get("notes"), ct.get(cid), ct_err,
+                                  meta, P, P["answers"])
+    _plan_req_precheck(req, pickable, places, call_date)
+    _plan_mark_missing_groups(ss, [req])
+    if req["open"]:
+        return {"needs_answers": True, "requirements": {cid: req}}, None
+    pickable, warned, reserve = _plan_apply_requirements(req, pickable, warned, call_date)
+
+    # ── 6. sort keys (D11, D19; D38 on a department call) ───────────────────
+    key = _plan_sort_key(objective, () if is_boss_call else req["depts"])
     pickable.sort(key=key)
 
     by_id = _plan_by_id(assessment)
     cs = _PlanCall(places, is_boss_call, call_date, on_call, by_id, _group, key, pickable)
+    _plan_req_setup(cs, req)
 
     if is_boss_call:
         _plan_boss(cs)                                  # 7
     else:
         if objective == "mix":
             cs.set_mix(required, new_pct)
-        _plan_licence_mins(cs, licence_mins)            # 8
+        _plan_licence_mins(cs, cs.lic_mins)             # 8
         _plan_fill(cs)                                  # 9
+    # D42: Wardrobe/Seamstress-only crew, only for places still empty.
+    if reserve and cs.unfilled > 0:
+        _plan_use_reserve(cs, reserve)
+    _plan_drop_mix_shortfalls(cs)
+    # The left-empty note last, naming the real cause (D44, D46, scope all).
+    _plan_missing_group_note(cs)
+    if not is_boss_call and cs.unfilled > 0:
+        cs.notes = [n for n in cs.notes if "left empty — not enough available crew" not in n]
+        cs.notes.append(_plan_empty_note(cs))
+    cs.notes = _plan_drop_explained_shortfalls(cs.notes)
+    req["review"] = _plan_req_review(cs)
 
-    # ── 10. Notes licence hint (advisory, never applied) ────────────────────
-    hints = _plan_notes_hints(node.get("notes"), P["cat"],
-                              set(required_licences) | set(P["mins_by_code"]))
+    # ── 10. Notes licence hint: whatever the requirements didn't take ───────
+    taken = set(required_licences) | set(P["mins_by_code"])
+    taken |= set(c for e in req["licences"] for c in e["codes"])
+    taken |= set(c for q in req["questions"] for c in q["codes"])
+    hints = _plan_notes_hints(node.get("notes"), P["cat"], taken)
 
     filters = _plan_filters(data, required_licences)
     rb = _plan_read_back_head(is_boss_call, objective, new_pct, probation_h, licence_mins,
@@ -10195,6 +10806,7 @@ def build_staffing_plan(ss, data):
         "unfilled":            max(0, cs.unfilled),
         "notes":               cs.notes,
         "notes_licence_hints": hints,
+        "requirements":        req,
         "experience_as_at":    exp.get("as_at"),
         "read_back":           " ".join(rb),
     }
@@ -10382,7 +10994,10 @@ def build_booking_plan(ss, data):
     probation_h = (exp.get("constants") or {}).get("probation_hours", 144)
     # Boss calls: goat_is_boss_call_name() in PHP, never a Python copy. An empty
     # user list returns only call.is_boss_call (option (b), no server change).
-    is_boss = {first: bool((exp.get("call") or {}).get("is_boss_call"))}
+    # The same `call` carries call_depts and call_specialist (stage C), so
+    # each call's PHP metadata costs no extra request.
+    meta    = {first: exp.get("call") or {}}
+    is_boss = {first: bool(meta[first].get("is_boss_call"))}
     for t in T:
         if t["cid"] in is_boss:
             continue
@@ -10390,7 +11005,17 @@ def build_booking_plan(ss, data):
         if err:
             print(f"[staffing-plan] boss check failed for {t['cid']}: {err}")
             return None, ("Experience data unavailable — plan not built", 502)
-        is_boss[t["cid"]] = bool((e2.get("call") or {}).get("is_boss_call"))
+        meta[t["cid"]] = e2.get("call") or {}
+        is_boss[t["cid"]] = bool(meta[t["cid"]].get("is_boss_call"))
+
+    # Requirements for every target, carried ones too (stage C §2.1). One
+    # Call Type read for the booking; if it fails, no clues come from it.
+    ct, ct_err = _plan_call_types(bid, [(t["cid"], t["name"]) for t in T])
+    if ct_err:
+        print(f"[staffing-plan] call type read failed: {ct_err}")
+    reqs = [_plan_call_requirements(t["cid"], t["name"], graph[t["cid"]].get("notes"),
+                                    ct.get(t["cid"]), ct_err, meta[t["cid"]], P, P["answers"])
+            for t in T]
 
     t_plan = time.time()
 
@@ -10438,9 +11063,8 @@ def build_booking_plan(ss, data):
                                          offer_clash_call_id=other)
 
     # ── per-call state ──────────────────────────────────────────────────────
-    key   = _plan_sort_key(objective)
     by_id = _plan_by_id(assessment)
-    CS, cand, nodes = [], [], []
+    raw, nodes = [], []
     for i, t in enumerate(T):
         node = graph[t["cid"]]
         required, committed = node.get("required"), node.get("committed")
@@ -10461,15 +11085,35 @@ def build_booking_plan(ss, data):
                 continue
             c = _plan_candidate(e, cr, x, _group(e["id"]))
             (warned if cr.get("conflict_warning") else pickable).append(c)
+        _plan_req_precheck(reqs[i], pickable, max(0, required - committed), t["start"].date())
+        raw.append((pickable, warned))
+        nodes.append(node)
+    _plan_mark_missing_groups(ss, reqs)
+    # An unanswered question on any call: no plan, the questions instead (§2.5).
+    if any(r["open"] for r in reqs):
+        return {"needs_answers": True,
+                "requirements": dict((t["cid"], reqs[i]) for i, t in enumerate(T))}, None
+
+    CS, cand, held_back, reserve = [], [], [], []
+    for i, t in enumerate(T):
+        node = nodes[i]
+        required, committed = node.get("required"), node.get("committed")
+        pickable, warned, res = _plan_apply_requirements(reqs[i], raw[i][0], raw[i][1], t["start"].date())
+        key = _plan_sort_key(objective, () if is_boss[t["cid"]] else reqs[i]["depts"])
         pickable.sort(key=key)
         cs = _PlanCall(max(0, required - committed), is_boss[t["cid"]], t["start"].date(),
                        on_call[t["cid"]], by_id, _group, key, pickable)
         cs.required, cs.committed, cs.warned = required, committed, warned
+        _plan_req_setup(cs, reqs[i])
         if not cs.is_boss_call and objective == "mix":
             cs.set_mix(required, new_pct)
         CS.append(cs)
-        cand.append({c["uid"]: c for c in pickable})
-        nodes.append(node)
+        # Held-back crew stay in cand so the run test can see them; _fits
+        # refuses them until the second pass (D42).
+        cand.append(dict((c["uid"], c) for c in pickable + res))
+        held_back.append(set(c["uid"] for c in res))
+        reserve.append(res)
+    second_pass = {"on": False}
 
     # Other work per person: confirmed shifts from the search's own timeline
     # (on the booking's calls too: nobody is planned on a call they already
@@ -10526,6 +11170,8 @@ def build_booking_plan(ss, data):
         cs, c = CS[i], cand[i].get(uid)
         cap = cs.places if carried else cs.places - _reserved(i)
         if c is None or uid in cs.picked or len(cs.picks) >= cap:
+            return False
+        if uid in held_back[i] and not second_pass["on"]:
             return False
         if uid in boss_uids and not cs.is_boss_call:
             return False
@@ -10586,19 +11232,41 @@ def build_booking_plan(ss, data):
             boss_uids.update(c["uid"] for c in cs.picks)
             done.add(i)
 
-    # ── 2. licence minimums, call by call, each pick extended ───────────────
-    if licence_mins:
-        for i in crew_order:
+    def _extend(i, before):
+        """Each new pick on call i, extended to the other calls they pass the
+        run test on (stage B step 2)."""
+        for c in [c for c in CS[i].picks if c["uid"] not in before]:
+            uid = c["uid"]
+            for j in crew_order:
+                if j == i or j in placed.get(uid, []):
+                    continue
+                seq = _with_closure(uid, j, placed.get(uid, []), True)
+                if seq:
+                    _place(uid, seq)
+
+    # ── 1b. scarce licences (D47) ───────────────────────────────────────────
+    # Holders go first to calls where EVERY place needs the licence: each such
+    # call is filled whole here (its minimums, then its holders-only pool),
+    # earlier call first, then call id (T's order), before minimums and runs
+    # can claim them. Its picks still roll on to the calls they fit.
+    prefilled = []
+    for i in crew_order:
+        if any(e["scope"] == "all" for e in reqs[i]["licences"]):
             before = set(CS[i].picked)
-            _plan_licence_mins(CS[i], licence_mins)
-            for c in [c for c in CS[i].picks if c["uid"] not in before]:
-                uid = c["uid"]
-                for j in crew_order:
-                    if j == i or j in placed.get(uid, []):
-                        continue
-                    seq = _with_closure(uid, j, placed.get(uid, []), True)
-                    if seq:
-                        _place(uid, seq)
+            if CS[i].lic_mins:
+                _plan_licence_mins(CS[i], CS[i].lic_mins)
+            _plan_fill(CS[i])
+            done.add(i)
+            prefilled.append(i)
+            _extend(i, before)
+
+    # ── 2. licence minimums, call by call, each pick extended ───────────────
+    # Each call's own: the operator's, plus its Notes / answers (stage C).
+    for i in crew_order:
+        if CS[i].lic_mins and i not in prefilled:
+            before = set(CS[i].picked)
+            _plan_licence_mins(CS[i], CS[i].lic_mins)
+            _extend(i, before)
 
     # ── 3. continuity runs (D27, D31, D33), lazy greedy ─────────────────────
     def _run_of(uid):
@@ -10640,8 +11308,47 @@ def build_booking_plan(ss, data):
     # feeders have used the places held for them.
     upstream = [sum(1 for j in range(len(T)) if i in clos[j] and j not in clos[i]) for i in range(len(T))]
     for i in sorted(crew_order, key=lambda i: (upstream[i], i)):
+        if i in prefilled:
+            continue
         _plan_fill(CS[i])
         done.add(i)
+
+    # ── 5. specialist-only crew for places still empty (D42) ────────────────
+    second_pass["on"] = True
+    for i in sorted(range(len(T)), key=lambda i: (upstream[i], i)):
+        cs = CS[i]
+        cap = min(cs.places, 1) if cs.is_boss_call else cs.places
+        if reserve[i] and len(cs.picks) < cap:
+            _plan_use_reserve(cs, reserve[i])
+    second_pass["on"] = False
+
+    # ── 6. final check (D40): nobody on two overlapping calls ───────────────
+    # Rule 1 on the finished plan, pairwise, whatever built it. The later
+    # placement goes. This should never fire: a server line says if it does.
+    removed = [[] for _ in T]
+    for uid in sorted(placed):
+        keep = []
+        for k in sorted(set(placed[uid])):
+            hit = next((j for j in keep
+                        if check_conflict([_plan_shift(T[j])], T[k]["start"], T[k]["end"],
+                                          T[k]["venue"], rules=(1,))[0]), None)
+            if hit is None:
+                keep.append(k)
+                continue
+            c = cand[k][uid]
+            CS[k].picks = [p for p in CS[k].picks if p["uid"] != uid]
+            CS[k].picked.discard(uid)
+            _plan_mix_recount(CS[k])
+            removed[k].append("Removed %s from #%s: overlapped #%s" % (c["name"], T[k]["cid"], T[hit]["cid"]))
+            print(f"[staffing-plan] D40 fired: booking {bid}, user {uid} on #{T[k]['cid']} "
+                  f"overlaps #{T[hit]['cid']}; later placement dropped", flush=True)
+        placed[uid] = keep
+    for uid in [u for u in placed if not placed[u]]:
+        del placed[uid]
+    for cs in CS:
+        _plan_drop_mix_shortfalls(cs)
+        _plan_missing_group_note(cs)
+
     # A later call's fill can carry crew onto an earlier-filled call.
     for cs in CS:
         cs.unfilled = (min(cs.places, 1) if cs.is_boss_call else cs.places) - len(cs.picks)
@@ -10674,10 +11381,14 @@ def build_booking_plan(ss, data):
             feeders = [j for j in range(len(T)) if not T[j]["carried"] and i in clos[j]
                        and any(c["uid"] in CS[j].picked for c in cs.picks)]
             feeders = [T[j] for j in feeders]
+            # Each feeder by call id and day: a booking repeats names ("General
+            # is carried from General", #11832 test run).
             if feeders:
-                notes.append("%s is carried from %s — crew placed there by the %s."
-                             % (t["name"], " and ".join(f["name"] for f in feeders),
-                                " and ".join(f["name"].lower() for f in feeders)))
+                notes.append("Carried from %s — crew placed there by %s."
+                             % (" and ".join("#%s %s (%s %d %s)" % (f["cid"], f["name"], f["start"].strftime("%a"),
+                                                                    f["start"].day, f["start"].strftime("%b"))
+                                             for f in feeders),
+                                "it" if len(feeders) == 1 else "them"))
         # The fill's "left empty" note is rebuilt here from the final state,
         # naming the real cause: a full call this one carries into, or crew
         # who are available but clash with what they're already planned on.
@@ -10697,7 +11408,23 @@ def build_booking_plan(ss, data):
                     notes.append(head + "%d more crew are available, but none fits beside the calls "
                                  "they're already planned on." % left)
                 else:
-                    notes.append(head + "not enough available crew.")
+                    notes.append(_plan_empty_note(cs))
+        notes.extend(removed[i])
+        # D47: a call short of a licence names where its holders went.
+        elsewhere = {}
+        for e in reqs[i]["licences"]:
+            short = cs.unfilled > 0 if e["scope"] == "all" else any(
+                m["code"] == e["key"] and m["short"] for m in cs.licence_out)
+            holders = sorted(u for u, c in cand[i].items()
+                             if _plan_holds_any(c["lic"], e["codes"], cs.call_date))
+            gone = [(u, T[j]["cid"]) for u in holders if u not in cs.picked
+                    for j in placed.get(u, []) if j != i]
+            elsewhere[e["key"]] = gone
+            if short and gone and not cs.is_boss_call:
+                calls = [T[j] for j in sorted(set(idx[c] for _u, c in gone))]
+                notes.append("%s: %d holder%s, planned on %s" % (
+                    e["name"], len(holders), "" if len(holders) == 1 else "s",
+                    " and ".join("#%s %s" % (t["cid"], t["name"]) for t in calls)))
         picks = []
         for c in cs.picks:
             p = _plan_pick_out(cs, c)
@@ -10722,9 +11449,13 @@ def build_booking_plan(ss, data):
                 "warning": c["cr"].get("conflict_warning") or "",
             } for c in sorted(cs.warned, key=lambda c: (c["name"], c["uid"]))],
             "unfilled":            max(0, cs.unfilled),
-            "notes":               notes,
-            "notes_licence_hints": _plan_notes_hints(nodes[i].get("notes"), P["cat"],
-                                                     set(required_licences) | set(P["mins_by_code"])),
+            "notes":               _plan_drop_explained_shortfalls(notes),
+            "notes_licence_hints": _plan_notes_hints(
+                nodes[i].get("notes"), P["cat"],
+                set(required_licences) | set(P["mins_by_code"])
+                | set(c for e in reqs[i]["licences"] for c in e["codes"])
+                | set(c for q in reqs[i]["questions"] for c in q["codes"])),
+            "requirements":        dict(reqs[i], review=_plan_req_review(cs, elsewhere)),
         })
 
     places_total  = sum(cs.places for cs in CS)
@@ -14421,7 +15152,9 @@ GOAT_TOOLS = [
                                     "description": "At least N on the call with this licence, e.g. [{code: 'LF', min: 2}]"},
                 "min_rating":      {"type": "integer", "description": "Minimum crew rating, default 1"},
                 "required_groups": {"type": "array", "items": {"type": "string"},
-                                    "description": "Crew groups every pick must be in, default none"}
+                                    "description": "Crew groups every pick must be in, default none"},
+                "requirement_answers": {"type": "object", "additionalProperties": {"type": "string"},
+                                        "description": "Never fill this in. Requirement questions (a licence the call's Notes, name or Call Type points to) are answered ONLY by the operator clicking the read-back card's buttons; the drawer sends those clicks itself and the server ignores anything passed here."}
             },
             "required": ["mode", "objective"]
         }
@@ -14455,7 +15188,8 @@ STAFFING PLANS (plan_staffing — admin only, enforced server-side): a plan is A
 or ANY number in it, never quote place counts from find_calls or any other tool (their figures are not the planner's), and never add, total or work out a figure. Step 2: only when the operator says yes, call plan_staffing again with EXACTLY the same arguments and mode "plan". If the operator changes anything, go back to step 1. If the operator says no or cancel — to the \
 read-back or to any question about a plan — stop: say the plan is cancelled and call nothing; never pick an objective for them. If a plan call comes back with read_back_shown instead of a plan, nothing was planned: ask again. OBJECTIVE: any split the operator gives — "80/20 new to old", "20/80 old to new", "80% new", "20% experienced" — IS objective mix: pass the \
 operator's words for it in split, copied exactly, and never work out the percentage yourself (the server reads it). Don't ask for an objective when a split is given. Only when the operator gave neither an objective nor a split, ask, and offer all three: a mix of new and experienced (with the split), best rated first, or most experienced first. New means under 144 hours in the \
-CURRENT probation run, so someone returning after an 18-month gap is new. Call the result "a plan" — never "optimal" or "the best team". Always state unfilled, relay every note, and name everyone in could_fill_warned with their warning. If notes_licence_hints is non-empty, ask whether to add those as requirements — never add them yourself. Never offer to add crew from a \
+CURRENT probation run, so someone returning after an 18-month gap is new. Call the result "a plan" — never "optimal" or "the best team". Always state unfilled, relay every note, and name everyone in could_fill_warned with their warning. \
+REQUIREMENTS: the server reads what each call needs from its Notes, name and Call Type. A read-back card may ask requirement questions ("does it need Forklift?"): only the operator answers them, by clicking the card. Never answer one, suggest an answer, or restate the card or its figures; relay the card and wait. When the operator has clicked answers, call plan_staffing again with mode "read_back" and the same arguments. Never offer to add crew from a \
 plan and never call add_crew_to_call for its picks: the operator opens it in Crew Finder with the Open in Crew Finder button and sends from there. You may plan a whole booking (call_ids, or booking_id with all_calls): the read-back card then lists every call, and after the plan you relay each call's unfilled places and notes as well as the booking notes. WORDS after a plan: a \
 pick's also_on means the same person is ALSO planned on those calls (continuity) — say "also on #37898 Show", never "carried". "Carried" means only a call whose carried flag is true: a locked feed books the feeding call's crew onto it, and you may say that call is carried from its feeder. FIGURES after a plan: relay every number exactly as the tool gives it — each call's \
 places_text word for word, its picks and its unfilled — and do no arithmetic of your own: never add calls together, never total places, never work out a figure the tool didn't give. An offer awaiting reply is "an offer awaiting reply", never "booked" or "filled"; only confirmed crew are booked. Relay every line in not_planned (calls left out because they have no places).
@@ -14721,14 +15455,20 @@ def _plan_is_cancel(text):
     return bool(text) and bool(_PLAN_CANCEL_RE.fullmatch(str(text)))
 
 
-def _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned):
+def _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned, answers=None):
     """The drawer's read-back for a plan: what will be planned, with each
     call's figures as the planner reads them. Returns ({text, id, ...}, None)
     or (None, message). One get-booking, plus one list-crew-experience per
     call for the boss check (empty user list), all sequential.
 
     The targets follow the planners: one call is planned alone (stage A); two
-    or more add the calls they locked-feed, marked carried."""
+    or more add the calls they locked-feed, marked carried.
+
+    Stage C: each call's requirements, from the same builder the planners
+    use, with its questions as buttons (`questions`). `answers` are the
+    operator's clicks, sent by the drawer with the card's id; they are part of
+    the id, so a changed answer is a new card. No search here, so no pre-check
+    counts: the Finder shows those."""
     from html import unescape as _html_unescape
     spec = {"objective": ti.get("objective"),
             "new_pct": ti.get("new_pct") if ti.get("objective") == "mix" else None,
@@ -14769,26 +15509,47 @@ def _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned):
     carried = _plan_carried_flags(clos)
     name = {c: _html_unescape(str(graph[c].get("call_name") or "")).strip() for c in targets}
 
-    lines, bosses = [], []
-    for i, c in enumerate(targets):
+    metas, bosses = {}, []
+    for c in targets:
         n = graph[c]
         if n.get("required") is None or n.get("committed") is None:
             return None, "Couldn't read the numbers for call #%s" % c
         e2, err = ss_list_crew_experience(ss, [], c)
         if err:
             return None, "Experience data unavailable — plan not built"
-        boss = bool((e2.get("call") or {}).get("is_boss_call"))
-        if boss:
+        metas[c] = e2.get("call") or {}
+        if metas[c].get("is_boss_call"):
             bosses.append(c)
+    ct, ct_err = _plan_call_types(booking_id, [(c, name[c]) for c in targets])
+    if ct_err:
+        print(f"[staffing-plan] call type read failed: {ct_err}")
+
+    reqs = dict((c, _plan_call_requirements(c, name[c], graph[c].get("notes"), ct.get(c), ct_err,
+                                            metas[c], P, answers)) for c in targets)
+    _plan_mark_missing_groups(ss, [reqs[c] for c in targets])
+
+    lines, questions, used, n_open = [], [], {}, 0
+    for i, c in enumerate(targets):
+        n = graph[c]
         places = max(0, n["required"] - n["committed"])
         bits = ["#%s %s" % (c, name[c]), _when(n)]
         line = " ".join(b for b in bits if b) + ": " + _plan_places_text(places, _plan_places_breakdown(n))
         if carried[i]:
             feeders = [name[targets[j]] for j in range(len(targets)) if i in clos[j] and not carried[j]]
             line += " — carried from " + " and ".join(feeders)
-        if boss:
+        if c in bosses:
             line += " — Crew Boss call"
-        lines.append(line)
+        lines.append("• " + line)
+        req = reqs[c]
+        lines += ["    " + l for l in req["lines"]]
+        used.update(req["answers"])
+        n_open += req["open"]
+        for q in req["questions"]:
+            a = req["answers"].get(q["id"])
+            label = next((o["label"] for o in q["options"] if o["value"] == a), None)
+            lines.append("    " + ("? " if a is None else "") + q["text"]
+                         + ("" if a is None else " Answered: " + label + "."))
+            questions.append(dict(q, call_id=int(c), call_name=name[c], answer=a))
 
     filters = _plan_filters(data, P["required_licences"])
     head = _plan_read_back_head(False, P["objective"], P["new_pct"], 144, P["licence_mins"],
@@ -14797,23 +15558,48 @@ def _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned):
     if bosses:
         head.insert(1, "Crew Boss call%s %s: one experienced crew member, past bosses first."
                     % ("" if len(bosses) == 1 else "s", ", ".join("#" + c for c in bosses)))
-    text = ["Plan for booking #%s." % booking_id] + head + [""] + ["• " + l for l in lines]
+    text = ["Plan for booking #%s." % booking_id] + head + [""] + lines
     for c in cancelled:
         text.append("Not planned: #%s %s is cancelled." % (c, name.get(c) or _html_unescape(str(graph[c].get("call_name") or "")).strip()))
     for l in not_planned:
         text.append("Not planned: " + l.replace(", not planned", "") + ".")
-    text += ["", "Build this plan?"]
+    if n_open:
+        text += ["", "Answer the question%s to build this plan." % ("" if n_open == 1 else "s")]
+    else:
+        text += ["", "Build this plan?"]
     text = "\n".join(text)
-    rid = hashlib.sha1(json.dumps({"text": text, "spec": spec, "data": data,
+    rid = hashlib.sha1(json.dumps({"text": text, "spec": spec, "data": data, "answers": used,
                                    "calls": sorted(int(c) for c in call_ids)},
                                   sort_keys=True).encode("utf-8")).hexdigest()[:16]
-    return {"id": rid, "text": text}, None
+    return {"id": rid, "text": text, "questions": questions, "answers": used, "open": n_open}, None
 
 
-def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
+def _goat_plan_req_summary(req):
+    """A plan's requirements for the model: the sentences only, to relay."""
+    req = req or {}
+    return {"applied": list(req.get("lines") or []), "result": list(req.get("review") or [])}
+
+
+def _goat_plan_requirements_changed(rb):
+    """The planner found a question the read-back didn't (the Notes or the
+    call changed in between): nothing is planned, the card is shown again."""
+    return {"read_back_shown": True, "plan_read_back": rb,
+            "note": ("Nothing was planned: the call's requirements changed since the read-back. "
+                     "The card is on screen again; wait for the operator.")}
+
+
+def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None, answers=None, split_user=None):
     """plan_staffing: build the /api/availability body for one call, plan it,
     and hand the model a SUMMARY (never the assessment), plus open_in_finder,
     which api_goat turns into a plan_ready event for the drawer's card.
+
+    `answers` are the operator's clicks on the read-back card's requirement
+    questions, sent by the drawer with the card's id (stage C §4.3). They are
+    the only answers used: ti["requirement_answers"] from the model is not,
+    so the model can never answer a requirement question for the operator.
+    On that turn the latest message is the drawer's "Requirement answers: …",
+    so the split is looked for in `split_user`, the operator's last message of
+    their own (api_goat finds it); every other turn uses last_user.
 
     Runs inside generate(): no request context. Both catalogues are warmed with
     this ss first -- called with no ss outside a request they fail quietly and
@@ -14834,10 +15620,11 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
     # after its split passed this test.
     ti = dict(ti)
     split = ti.get("split")
+    typed_in = split_user if (answers and read_back_id and split_user) else last_user
     yes_turn = (ti.get("mode") or "plan") == "plan" and bool(read_back_id)
     if split or ti.get("objective") == "mix":
         pct, err = _plan_parse_split(split)
-        if err or not (yes_turn or _plan_split_typed(split, last_user)):
+        if err or not (yes_turn or _plan_split_typed(split, typed_in)):
             return {"ask": _plan_split_question(split),
                     "note": "Nothing was planned and nothing is on screen: the operator has been asked "
                             "which side of the split is new. Wait for the answer, then pass split "
@@ -14897,19 +15684,23 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
     # built here, never by the model, and a plan only runs when the operator
     # was shown this exact read-back: the drawer sends its id back with the
     # next message. A different spec or changed figures read back again.
-    rb, err = _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned)
+    rb, err = _goat_plan_read_back(ss, ti, booking_id, call_ids, not_planned, answers)
     if err:
         return {"error": err}
-    if (ti.get("mode") or "plan") != "plan" or rb["id"] != read_back_id:
+    if (ti.get("mode") or "plan") != "plan" or rb["id"] != read_back_id or rb["open"]:
         # Not the yes to this read-back, so a new card would be shown: its
         # split must be the operator's own words from this message.
-        if split and not _plan_split_typed(split, last_user):
+        if split and not _plan_split_typed(split, typed_in):
             return {"ask": _plan_split_question(split),
                     "note": "Nothing was planned and nothing is on screen: the operator has been asked "
                             "which side of the split is new."}
         out = {"read_back_shown": True, "plan_read_back": rb,
                "note": ("The read-back is on screen for the operator. Do not restate it or any figure "
                         "in it, and wait for the operator's yes before planning.")}
+        if rb["open"]:
+            out["note"] = ("The read-back is on screen with requirement questions that only the operator "
+                           "can answer, by clicking the card's buttons. Never answer them, suggest an "
+                           "answer or restate them; wait. Nothing can be planned until they're answered.")
         if (ti.get("mode") or "plan") == "plan":
             out["note"] = ("Nothing was planned: the operator hasn't said yes to this read-back"
                            + (" (the figures or the request changed since the last one)" if read_back_id else "")
@@ -14932,7 +15723,8 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
     plan_spec = {"objective": ti.get("objective"),
                  "licence_mins": [{"code": str(m.get("code") or "").strip().upper(),
                                    "min": m.get("min")}
-                                  for m in (ti.get("licence_mins") or []) if isinstance(m, dict)]}
+                                  for m in (ti.get("licence_mins") or []) if isinstance(m, dict)],
+                 "requirement_answers": dict(rb["answers"])}
     if ti.get("objective") == "mix":
         plan_spec["new_pct"] = ti.get("new_pct")
 
@@ -14951,6 +15743,8 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
         result, err = build_booking_plan(ss, body)
         if err:
             return {"error": err[0]}
+        if result.get("needs_answers"):
+            return _goat_plan_requirements_changed(rb)
         p = result["plan"]
         call_names = {c["call_id"]: c["call_name"] for c in p["calls"]}
         return {
@@ -14979,6 +15773,7 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
                                       for k in c["could_fill_warned"]],
                 "notes":               c["notes"],
                 "notes_licence_hints": c["notes_licence_hints"],
+                "requirements":        _goat_plan_req_summary(c["requirements"]),
             } for c in p["calls"]],
             "open_in_finder": {
                 "booking_id": p["booking_id"],
@@ -14991,6 +15786,8 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
     result, err = build_staffing_plan(ss, body)
     if err:
         return {"error": err[0]}
+    if result.get("needs_answers"):
+        return _goat_plan_requirements_changed(rb)
     p = result["plan"]
     return {
         "read_back":           p["read_back"],
@@ -15011,13 +15808,18 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None):
                               for c in p["could_fill_warned"]],
         "notes":               p["notes"],
         "notes_licence_hints": p["notes_licence_hints"],
+        "requirements":        _goat_plan_req_summary(p["requirements"]),
         "open_in_finder": {
             "booking_id": p["booking_id"],
             "call_id":    p["call_id"],
             "call_ids":   [p["call_id"]],
+            # Operator minimums only: the Notes' and the answers' requirements
+            # are rebuilt from the call in the Finder, as here.
             "plan":       {"objective": p["objective"], "new_pct": p["new_pct"],
                            "licence_mins": [{"code": m["code"], "min": m["min"]}
-                                            for m in p["licence_mins"]]},
+                                            for m in p["licence_mins"]
+                                            if m["code"] in set(x["code"] for x in plan_spec["licence_mins"])],
+                           "requirement_answers": dict(rb["answers"])},
             "filters":    p["filters"],
         },
     }
@@ -15651,7 +16453,9 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort, plan_ctx=None):
                     "Relay this as given; it is not a SmartStaff setting.")
         try:
             res = _goat_plan_staffing(ss, tool_input, (plan_ctx or {}).get("read_back"),
-                                      (plan_ctx or {}).get("last_user"))
+                                      (plan_ctx or {}).get("last_user"),
+                                      (plan_ctx or {}).get("requirement_answers"),
+                                      (plan_ctx or {}).get("split_user"))
             if res.get("error"):
                 return f"Error: {res['error']}"
             return _json.dumps(res)
@@ -15885,9 +16689,18 @@ def api_goat():
     # The plan read-back the drawer showed the operator just before this
     # message, if any. plan_staffing only plans when it matches (DRAWER READ-BACK).
     plan_read_back = str(body.get("plan_read_back") or "") or None
+    # The operator's clicks on that card's requirement questions (stage C
+    # §4.3): {question id: answer}. Never parsed from the message text.
+    plan_answers = body.get("requirement_answers") if isinstance(body.get("requirement_answers"), dict) else {}
     last_user = next((m.get("content") for m in reversed(messages)
                       if m.get("role") == "user" and isinstance(m.get("content"), str)), None)
-    plan_ctx = {"read_back": plan_read_back, "last_user": last_user}
+    # On a turn carrying card answers, the drawer wrote the latest message;
+    # the split is checked against the operator's last message of their own.
+    split_user = next((m.get("content") for m in reversed(messages)
+                       if m.get("role") == "user" and isinstance(m.get("content"), str)
+                       and not m.get("content").startswith("Requirement answers: ")), None)
+    plan_ctx = {"read_back": plan_read_back, "last_user": last_user, "split_user": split_user,
+                "requirement_answers": dict((str(k), str(v)) for k, v in plan_answers.items())}
 
     # Merge incoming messages into server-side history
     # The frontend sends the full history each time — use it as the source of truth

@@ -27,10 +27,16 @@
 	/*                   last 3 years (D20, D23, D24) — goat_is_boss_call_name(),
 	/*                   the Crew Hub contact rule. call_crew_map.is_call_boss
 	/*                   (the per-call Set Boss flag) is NOT read.
+	/*   dept_3y         distinct calls confirmed on in the same 3 years, per
+	/*                   department tag (stage C D37) — goat_call_dept_tags() on
+	/*                   the call name. Cancelled calls do not count: cancelled_at
+	/*                   set, or "cancel" in the name. Non-zero keys only; {}
+	/*                   when none.
 	/*   last_shift_iso  end of the last run, or null
 	/*   excluded        1 for placeholder accounts (Casper) — the planner drops them
 	/*
-	/* plus whether the call itself is a Crew Boss call.
+	/* plus, for the call itself: is_boss_call, call_depts (its department tags)
+	/* and call_specialist (a list: [], ["WARDROBE"], ["SEAMSTRESS"] or both, D44).
 	/*
 	/* Every hour figure comes from goat_crew_hours_build() — the same library the
 	/* Hours tab and the Probation lane use — so "new" here and a person's Hours
@@ -52,15 +58,133 @@
 
 	/* Bump whenever eligibility or the boss rule changes, so a day cache
 	   written under the old rules is never served.
-	     1  staffing plans stage A — 22 Oct 2026 */
+	     1  staffing plans stage A — 22 Oct 2026
+	     2  staffing plans stage C — dept_3y added, 26 Oct 2026. A rules-1 entry
+	        has no dept_3y and must never be served. */
 	if (!defined('GOAT_EXPERIENCE_RULES'))
-		define('GOAT_EXPERIENCE_RULES', 1);
+		define('GOAT_EXPERIENCE_RULES', 2);
 
 	if (!defined('GOAT_EXPERIENCE_BOSS_YEARS'))
 		define('GOAT_EXPERIENCE_BOSS_YEARS', 3);
 
 	if (!defined('GOAT_EXPERIENCE_MAX_IDS'))
 		define('GOAT_EXPERIENCE_MAX_IDS', 1500);
+
+	/*
+	/* Is calls.cancelled_at present on this environment? The same question as
+	/* goat_calls_have_cancelled() (get-booking.php, resolve-call-contact.php),
+	/* asked on the PDO handle: those helpers use mysql_query. A failed check
+	/* reads as absent, so the experience query never fails over it.
+	*/
+	function goat_experience_calls_have_cancelled($pdo)
+	{
+		static $has = null;
+
+		if ($has === null)
+		{
+			try
+			{
+				$st  = $pdo->query("SHOW COLUMNS FROM calls LIKE 'cancelled_at'");
+				$has = ($st !== false && $st->fetch(PDO::FETCH_ASSOC) !== false);
+				if ($st !== false)
+					$st->closeCursor();
+			}
+			catch (PDOException $e)
+			{
+				error_log('list-crew-experience: cancelled_at check: ' . $e->getMessage());
+				$has = false;
+			}
+		}
+
+		return $has;
+	}
+
+	/*
+	/* A call name's whole tokens, lower case. Split on anything that is not a
+	/* letter or digit; a leading count ("8xVX", "2xLX") is stripped so the tag
+	/* behind it still matches. "Lexus" stays "lexus" — no substring matches.
+	*/
+	function goat_call_name_tokens($call_name)
+	{
+		$parts = preg_split('/[^a-z0-9]+/', strtolower((string) $call_name), -1, PREG_SPLIT_NO_EMPTY);
+		$out   = array();
+
+		if (!is_array($parts))
+			return $out;
+
+		foreach ($parts as $p)
+			$out[] = preg_replace('/^[0-9]+x(?=[a-z])/', '', $p);
+
+		return $out;
+	}
+
+	/*
+	/* Department tags on a call name (stage C D37), in this fixed order:
+	/* LX, VX, SX, BACKLINE, SPOT. Whole-token, case-insensitive; SPOTS counts
+	/* as SPOT. The ONE implementation — Python reads call_depts / dept_3y and
+	/* never re-implements this (the goat_is_boss_call_name() rule, D20).
+	*/
+	function goat_call_dept_tags($call_name)
+	{
+		$map = array(
+			'lx'       => 'LX',
+			'vx'       => 'VX',
+			'sx'       => 'SX',
+			'backline' => 'BACKLINE',
+			'spot'     => 'SPOT',
+			'spots'    => 'SPOT'
+		);
+		$order = array('LX', 'VX', 'SX', 'BACKLINE', 'SPOT');
+
+		$hit = array();
+		foreach (goat_call_name_tokens($call_name) as $t)
+		{
+			if (isset($map[$t]))
+				$hit[$map[$t]] = 1;
+		}
+
+		$out = array();
+		foreach ($order as $tag)
+		{
+			if (isset($hit[$tag]))
+				$out[] = $tag;
+		}
+
+		return $out;
+	}
+
+	/*
+	/* Specialist groups on a call name (D44): a list in this fixed order,
+	/* WARDROBE then SEAMSTRESS; empty when neither. Same whole-token rule;
+	/* WARDROBES / SEAMSTRESSES count. A name carrying both returns both, and
+	/* the planner accepts crew in either group.
+	*/
+	function goat_call_specialists($call_name)
+	{
+		$map = array(
+			'wardrobe'     => 'WARDROBE',
+			'wardrobes'    => 'WARDROBE',
+			'seamstress'   => 'SEAMSTRESS',
+			'seamstresses' => 'SEAMSTRESS'
+		);
+		$order = array('WARDROBE', 'SEAMSTRESS');
+
+		$hit = array();
+		foreach (goat_call_name_tokens($call_name) as $t)
+		{
+			if (isset($map[$t]))
+				$hit[$map[$t]] = 1;
+		}
+
+		$out = array();
+		foreach ($order as $s)
+		{
+			if (isset($hit[$s]))
+				$out[] = $s;
+		}
+
+		return $out;
+	}
 
 	/* ---- parse body ---- */
 
@@ -147,9 +271,11 @@
 
 	/* The RAW stored name, as call-supervision.php passes it. */
 	$call_out = array(
-		'call_id'      => (int) $call_row['id'],
-		'call_name'    => (string) $call_row['call_name'],
-		'is_boss_call' => goat_is_boss_call_name((string) $call_row['call_name']) ? 1 : 0
+		'call_id'         => (int) $call_row['id'],
+		'call_name'       => (string) $call_row['call_name'],
+		'is_boss_call'    => goat_is_boss_call_name((string) $call_row['call_name']) ? 1 : 0,
+		'call_depts'      => goat_call_dept_tags((string) $call_row['call_name']),
+		'call_specialist' => goat_call_specialists((string) $call_row['call_name'])
 	);
 
 	/*
@@ -233,6 +359,7 @@
 			'is_new'         => ($cur < GOAT_PROBATION_HOURS) ? 1 : 0,
 			'all_time_h'     => round($built['totals']['recorded_h'], 2),
 			'past_boss_3y'   => 0,
+			'dept_3y'        => array(),
 			'last_shift_iso' => $last,
 			'excluded'       => 0
 		);
@@ -276,9 +403,17 @@
 		/* Past boss: confirmed on a call in the last 3 years. The boss test is
 		   goat_is_boss_call_name() in PHP, not a SQL LIKE, so its exclusions
 		   (cancelled, the two working "boss" calls) apply exactly as for Crew
-		   Hub. Buffered: a few thousand short rows at most. */
+		   Hub. Buffered: a few thousand short rows at most.
+
+		   cancelled_at is read for dept_3y only (stage C). Column-guarded like
+		   get-booking.php: absent reads as NULL, "not cancelled". */
+		$cancel_sel = goat_experience_calls_have_cancelled($pdo)
+		            ? 'c.cancelled_at AS cancelled_at'
+		            : 'NULL AS cancelled_at';
+
 		$sql_boss = "
-			SELECT ccm.userID AS user_id, ccm.callID AS call_id, c.call_name AS call_name
+			SELECT ccm.userID AS user_id, ccm.callID AS call_id, c.call_name AS call_name,
+			       " . $cancel_sel . "
 			FROM call_crew_map ccm
 			JOIN calls    c ON c.id = ccm.callID
 			JOIN bookings b ON b.id = c.bookingID
@@ -352,13 +487,15 @@
 						'is_new'         => 1,
 						'all_time_h'     => 0.0,
 						'past_boss_3y'   => 0,
+						'dept_3y'        => array(),
 						'last_shift_iso' => null,
 						'excluded'       => 0
 					);
 				}
 			}
 
-			/* 2. past boss */
+			/* 2. past boss, and department history (stage C) — the same rows,
+			   no new query */
 			$tbo = microtime(true);
 			$from3y_ts = strtotime(goat_add_months_clamped($today_iso, -12 * GOAT_EXPERIENCE_BOSS_YEARS));
 
@@ -366,13 +503,35 @@
 			$bstmt->execute(array(':from3y' => $from3y_ts, ':today' => $today_ts));
 
 			$boss_calls = array();             /* uid => array(callID => 1) */
+			$dept_calls = array();             /* uid => array(tag => array(callID => 1)) */
+			$tags_of    = array();             /* callID => tags, one name parse per call */
 
 			while ($r = $bstmt->fetch(PDO::FETCH_ASSOC))
 			{
+				$k   = (string) (int) $r['user_id'];
+				$cid = (int) $r['call_id'];
+
+				/* Cancelled calls are not history. EITHER test: cancelled_at set
+				   (the truth for cancellations made with the feature; set means
+				   NOT NULL, as get-booking.php reads it) or "cancel" in the name
+				   (renamed cancellations from before it, goat_is_boss_call_name()'s
+				   test). past_boss_3y below keeps the boss rule's own test only. */
+				if (!isset($tags_of[$cid]))
+				{
+					if ($r['cancelled_at'] !== null
+					    || strpos(strtolower((string) $r['call_name']), 'cancel') !== false)
+						$tags_of[$cid] = array();
+					else
+						$tags_of[$cid] = goat_call_dept_tags((string) $r['call_name']);
+				}
+
+				foreach ($tags_of[$cid] as $tag)
+					$dept_calls[$k][$tag][$cid] = 1;
+
 				if (!goat_is_boss_call_name((string) $r['call_name']))
 					continue;
 
-				$boss_calls[(string) (int) $r['user_id']][(int) $r['call_id']] = 1;
+				$boss_calls[$k][$cid] = 1;
 			}
 			$bstmt->closeCursor();
 
@@ -380,6 +539,22 @@
 			{
 				if (isset($users[$k]))
 					$users[$k]['past_boss_3y'] = count($set);
+			}
+
+			/* Distinct calls per tag; only tags with a count are present, and
+			   they come out in goat_call_dept_tags() order. */
+			foreach ($dept_calls as $k => $by_tag)
+			{
+				if (!isset($users[$k]))
+					continue;
+
+				$d = array();
+				foreach (array('LX', 'VX', 'SX', 'BACKLINE', 'SPOT') as $tag)
+				{
+					if (isset($by_tag[$tag]))
+						$d[$tag] = count($by_tag[$tag]);
+				}
+				$users[$k]['dept_3y'] = $d;
 			}
 
 			$t_boss = microtime(true) - $tbo;
@@ -436,10 +611,15 @@
 			error_log('list-crew-experience: could not save cache to ' . $cache_dir);
 	}
 
-	/* Response in id order — deterministic. */
+	/* Response in id order — deterministic. dept_3y is cast to an object so an
+	   empty one encodes as {} not [] (a cached {} decodes back to array()). */
 	$out = array();
 	for ($i = 0; $i < count($ids); $i++)
-		$out[(string) $ids[$i]] = $users[(string) $ids[$i]];
+	{
+		$u = $users[(string) $ids[$i]];
+		$u['dept_3y'] = (object) (isset($u['dept_3y']) && is_array($u['dept_3y']) ? $u['dept_3y'] : array());
+		$out[(string) $ids[$i]] = $u;
+	}
 
 	$constants = goat_crew_hours_constants();
 	$constants['boss_years'] = GOAT_EXPERIENCE_BOSS_YEARS;

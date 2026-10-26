@@ -13,6 +13,7 @@ import js_harness as H
 FUNCS = H.extract(
     "_planPlacesText", "_planEsc", "_planClearTicks", "_planCallKey", "renderBookingPlan", "_bpCall",
     "_bookingPlanPeople", "bookingPlanRemove", "_bookingPlanRender", "bookingPlanSend",
+    "_planReqReviewHtml",
 ) if H.NODE else ""
 
 PLAN = r"""
@@ -153,6 +154,7 @@ class DrawerReadBackTests(unittest.TestCase):
     def run_send(self, pending, text):
         return H.run(H.DOM_PRELUDE + self.SEND + r"""
 var _goatPlanReadBack = %s, _goatHistory = [{role:'assistant', content:'Planning booking 11831.'}], _goatBusy = false;
+var _goatPlanAnswers = {'1:LF': 'yes'};
 _el('goat-input').value = %s; _el('goat-send'); _el('goat-input').focus = function(){};
 var silly = 0, egg = 0, bodies = [];
 function checkGoatEasterEgg(t){ egg++; return null; }
@@ -163,6 +165,7 @@ function removeGoatTyping(){}
 async function fetch(url, o){ bodies.push(JSON.parse(o.body)); return {ok:false, json: async () => ({})}; }
 (async function(){
   await goatSend();
+  window._answersSent = bodies.map(b => b.requirement_answers || null);
   console.log(JSON.stringify({silly:silly, egg:egg, sent:bodies.map(b => b.plan_read_back || null),
                               pendingAfter:_goatPlanReadBack}));
 })();
@@ -175,9 +178,29 @@ async function fetch(url, o){ bodies.push(JSON.parse(o.body)); return {ok:false,
             self.assertEqual(out, {"silly": 0, "egg": 0, "sent": ["rb123"], "pendingAfter": None}, text)
 
     @unittest.skipUnless(H.NODE, "node not installed")
+    def test_requirement_answers_ride_with_the_card_id(self):
+        # Stage C §4.3: the card's clicked answers go with its id, never alone.
+        js = self.SEND
+        out = H.run(H.DOM_PRELUDE + js + r"""
+var _goatPlanReadBack = 'rb5', _goatHistory = [], _goatBusy = false, _goatPlanAnswers = {'1:LF': 'no'};
+_el('goat-input').value = 'yes'; _el('goat-send'); _el('goat-input').focus = function(){};
+function checkGoatEasterEgg(){ return null; } function appendGoatMessage(){}
+function showGoatTyping(){ return 1; } function removeGoatTyping(){} function appendGoatSillyResponse(){}
+var bodies = [];
+async function fetch(url, o){ bodies.push(JSON.parse(o.body)); return {ok:false, json: async () => ({})}; }
+(async function(){
+  await goatSend();
+  _goatPlanReadBack = null; _el('goat-input').value = 'plan booking 11831, all calls';
+  await goatSend();
+  console.log(JSON.stringify(bodies.map(b => [b.plan_read_back || null, b.requirement_answers || null])));
+})();
+""")
+        self.assertEqual(out, [["rb5", {"1:LF": "no"}], [None, None]])
+
+    @unittest.skipUnless(H.NODE, "node not installed")
     def test_read_back_turn_stores_history_note(self):
         out = H.run(H.DOM_PRELUDE + self.SEND + r"""
-var _goatPlanReadBack = null, _goatHistory = [], _goatBusy = false;
+var _goatPlanReadBack = null, _goatHistory = [], _goatBusy = false, _goatPlanAnswers = {};
 _el('goat-input').value = 'plan booking 11831, all calls, 20/80 old to new'; _el('goat-send');
 _el('goat-input').focus = function(){};
 var cards = [], bubbles = 0;

@@ -9,8 +9,14 @@ runs for real.
     python3 tests/fixtures/plan_golden/run_golden.py --write   # record golden/
     python3 tests/fixtures/plan_golden/run_golden.py           # compare to golden/
 
-The only difference allowed against golden/ is plan.places_breakdown, added in
-stage B (§2.5). Anything else is printed as a diff and exits 1.
+The only differences allowed against golden/ are plan.places_breakdown, added
+in stage B (§2.5), and plan.requirements, added in stage C (B1), and only in a
+golden file recorded before them. Anything else is printed as a diff and exits 1.
+
+mix80 has Notes "Forklift needed at dock", which stage C applies (C1), so its
+golden was re-recorded for stage C, requirements included; mix80_no_notes is the
+same case with the Notes cleared, held to the stage B golden. The Call Type read is stubbed as "no types
+stored", so a case's requirements come from its Notes and plan spec alone.
 """
 import difflib
 import glob
@@ -23,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "..", "..")))
 import app as A                                     # noqa: E402
 
-ALLOWED_NEW = {"places_breakdown"}
+ALLOWED_NEW = {"places_breakdown", "requirements"}
 
 
 def run_case(path):
@@ -32,7 +38,8 @@ def run_case(path):
     with mock.patch.object(A, "_finder_assess", lambda ss, d: (json.loads(json.dumps(fx["assessment"])), None)), \
          mock.patch.object(A, "fetch_booking_bulk", lambda ss, bid: (json.loads(json.dumps(fx["booking"])), None)), \
          mock.patch.object(A, "ss_list_crew_experience", lambda ss, ids, cid, force=False: (fx["experience"], None)), \
-         mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None):
+         mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None), \
+         mock.patch.object(A, "_plan_call_types", lambda bid, calls: ({}, None)):
         result, err = A.build_staffing_plan(object(), json.loads(json.dumps(fx["body"])))
     if err:
         return {"error": list(err)}
@@ -62,7 +69,10 @@ def main():
         added = sorted(set(out.get("plan", {})) - set(gold.get("plan", {})))
         cmp_out = dict(out)
         if "plan" in out:
-            cmp_out["plan"] = {k: v for k, v in out["plan"].items() if k not in ALLOWED_NEW}
+            # An allowed key is skipped only where the golden file predates it;
+            # a golden recorded with it (mix80, stage C) compares it too.
+            have = set(gold.get("plan", {}))
+            cmp_out["plan"] = {k: v for k, v in out["plan"].items() if k not in ALLOWED_NEW or k in have}
         if dump(cmp_out) != dump(gold):
             bad += 1
             print("FAIL", name)

@@ -4171,8 +4171,47 @@ function _planFiltersLine(){
   return parts.join(' · ');
 }
 
-// The Plan… form. `prefill` reopens it with a spec (the Notes hint's button).
-async function openPlanForm(prefill){
+// Stage C requirements block (BRIEF-staffing-plans-c §4.1): per call, what
+// the server applied (with its source), the pre-check counts, unmatched
+// Notes lines and the questions, as buttons. `answers` is {question id:
+// value}; the server built every sentence, so nothing here is worded twice.
+function _planReqBlockHtml(reqs, answers, nameOf){
+  const h=[];
+  Object.keys(reqs||{}).sort((a,b)=>Number(a)-Number(b)).forEach(cid=>{
+    const r=reqs[cid]||{};
+    const qs=r.questions||[];
+    const lines=(r.precheck||[]).map(p=>p.text).concat((r.lines||[]).slice((r.licences||[]).length));
+    if(!lines.length && !qs.length) return;
+    h.push('<div style="margin-top:6px"><b>#'+_planEsc(cid)+' '+_planEsc((nameOf||{})[cid]||r.call_name||'')+'</b></div>');
+    lines.forEach(l=>h.push('<div style="color:var(--muted)">'+_planEsc(l)+'</div>'));
+    qs.forEach(q=>{
+      const a=(answers||{})[q.id];
+      h.push('<div style="margin-top:4px">'+_planEsc(q.text)+'</div><div style="display:flex;gap:4px;flex-wrap:wrap">'
+        +(q.options||[]).map(o=>{
+          const n=(q.counts||{})[o.value];
+          const on=a===o.value;
+          return '<button type="button" class="pf-req-ans" data-q="'+_planEsc(q.id)+'" data-v="'+_planEsc(o.value)+'"'
+            +' style="font-size:11px;padding:2px 8px;border-radius:3px;cursor:pointer;background:var(--surface2);'
+            +'border:1px solid '+(on?'var(--accent)':'var(--border)')+';color:'+(on?'var(--accent)':'var(--text)')+'">'
+            +_planEsc(o.label)+(n==null?'':' · '+n+' available')+'</button>';
+        }).join('')+'</div>');
+    });
+  });
+  return h.join('');
+}
+
+// How many of the block's questions are still unanswered.
+function _planReqOpen(reqs, answers){
+  let n=0;
+  Object.keys(reqs||{}).forEach(cid=>((reqs[cid]||{}).questions||[]).forEach(q=>{ if(!(answers||{})[q.id]) n++; }));
+  return n;
+}
+
+// The Plan… form. `prefill` reopens it with a spec (the Notes hint's button,
+// or the answers so far); `reqs` is a needs_answers reply's requirements
+// (stage C §4.1): the Requirements block sits above the Plan button, which
+// stays disabled until every question has an answer.
+async function openPlanForm(prefill, reqs){
   if(!selectedCalls.size){ alert('Select a call to plan.'); return; }
   if(_planBookingIds().length!==1){ alert('Plan works on one booking at a time.'); return; }
   const cat=await _ensureLicCatalogue();
@@ -4180,6 +4219,8 @@ async function openPlanForm(prefill){
   const call=[...selectedCalls.values()][0];
   const planCalls=[...selectedCalls.values()];
   const softN=[...consideredCalls.keys()].filter(k=>!selectedCalls.has(k)).length;
+  const answers=Object.assign({}, pf.requirement_answers||{});
+  const nameOf={}; planCalls.forEach(c=>{ nameOf[String(c.call_id)]=c.call_name||''; });
   const opt=function(code){
     return '<option value="">Licence…</option>'+cat.map(e=>
       '<option value="'+escapeHtml(e.code)+'"'+(e.code===code?' selected':'')+'>'+escapeHtml(e.code+' — '+e.name)+'</option>').join('');
@@ -4206,6 +4247,9 @@ async function openPlanForm(prefill){
     +   '<div style="font-size:11px;color:var(--muted)">New = under 144 hours in the current probation run.</div></div>'
     + '<div style="margin-bottom:8px"><b>Licence minimums</b> <button type="button" id="pf-lic-add" title="Add a licence minimum">+</button>'
     +   '<div id="pf-lic-rows">'+(pf.licence_mins||[]).map(m=>rowHtml(m.code,m.min)).join('')+'</div></div>'
+    + (reqs ? '<div style="margin-bottom:8px;border-top:1px solid var(--border);padding-top:8px"><b>Requirements</b>'
+            + '<div style="font-size:11px;color:var(--muted)">Read from each call’s Notes, name and Call Type. Answer every question to plan.</div>'
+            + '<div id="pf-req"></div></div>' : '')
     + '<div style="font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:8px">'
     +   '<b>Filters:</b> '+_planFiltersLine()+'. Change them on the left before planning.'
     +   (softN ? '<br>'+softN+' considered call'+(softN===1?' is':'s are')+' ignored for a plan.' : '')
@@ -4220,41 +4264,60 @@ async function openPlanForm(prefill){
   const mixText=document.getElementById('pf-mix-text');
   const rows=document.getElementById('pf-lic-rows');
   const radios=[...document.querySelectorAll('input[name="pf-obj"]')];
+  const reqBox=document.getElementById('pf-req');
+  const planBtn=[...document.querySelectorAll('.gc-btns button')].pop();
   const syncMix=function(){
     const v=Math.max(0,Math.min(100,parseInt(pct.value,10)||0));
     mixText.textContent=v+'% new · '+(100-v)+'% experienced';
+  };
+  const syncReq=function(){
+    if(!reqBox) return;
+    reqBox.innerHTML=_planReqBlockHtml(reqs, answers, nameOf);
+    const open=_planReqOpen(reqs, answers);
+    if(planBtn){ planBtn.disabled=open>0; planBtn.style.opacity=open>0?'0.5':''; planBtn.title=open>0?'Answer the requirement questions first':''; }
   };
   pct.addEventListener('input',syncMix); syncMix();
   radios.forEach(r=>r.addEventListener('change',()=>{ mixBox.style.display=((radios.find(x=>x.checked)||{}).value==='mix')?'':'none'; }));
   document.getElementById('pf-lic-add').addEventListener('click',()=>rows.insertAdjacentHTML('beforeend',rowHtml('',1)));
   rows.addEventListener('click',e=>{ if(e.target.classList.contains('pf-lic-del')) e.target.closest('.pf-lic-row').remove(); });
+  if(reqBox){
+    reqBox.addEventListener('click',e=>{
+      const b=e.target.closest && e.target.closest('.pf-req-ans'); if(!b) return;
+      answers[b.dataset.q]=b.dataset.v; syncReq();
+    });
+    syncReq();
+  }
 
   if(await answer!=='plan') return;
   const objective=(radios.find(x=>x.checked)||{value:'mix'}).value;
   const opts={objective:objective, licence_mins:[]};
   if(objective==='mix'){
     const v=parseInt(pct.value,10);
-    if(isNaN(v)||v<0||v>100){ alert('New crew must be a whole number from 0 to 100.'); return openPlanForm(pf); }
+    if(isNaN(v)||v<0||v>100){ alert('New crew must be a whole number from 0 to 100.'); return openPlanForm(pf, reqs); }
     opts.new_pct=v;
   }
   for(const r of rows.querySelectorAll('.pf-lic-row')){
     const code=r.querySelector('.pf-lic-code').value;
     const n=parseInt(r.querySelector('.pf-lic-n').value,10);
     if(!code) continue;
-    if(isNaN(n)||n<1){ alert('Each licence minimum needs a count of 1 or more.'); return openPlanForm(pf); }
+    if(isNaN(n)||n<1){ alert('Each licence minimum needs a count of 1 or more.'); return openPlanForm(pf, reqs); }
     opts.licence_mins.push({code:code, min:n});
   }
+  if(Object.keys(answers).length) opts.requirement_answers=answers;
   return runPlan(opts);
 }
 
 // Same body runSearch builds, plus `plan`. Soft (considered) calls are left
-// out (the form says so). Two or more hard calls make a booking plan.
+// out (the form says so). Two or more hard calls make a booking plan. A
+// needs_answers reply (stage C §2.5) builds nothing: the form reopens with
+// its Requirements block, and Plan resends with requirement_answers.
 async function runPlan(opts){
   if(!selectedCalls.size){ alert('Select a call to plan.'); return; }
   if(_planBookingIds().length!==1){ alert('Plan works on one booking at a time.'); return; }
   const geoFields=_finderGeoFields();
   if(geoFields===null) return;
   showOverlay('Building plan…', 'First plan of the day can take a little longer');
+  let reqs=null;
   try{
     const built=await buildCallPayload();
     if(!built) return;
@@ -4266,12 +4329,16 @@ async function runPlan(opts){
       body:JSON.stringify(body)});
     const result=await resp.json();
     if(result.error){ alert(result.error); return; }
+    if(result.needs_answers){ reqs=result.requirements||{}; return; }
     planStripHide();
     await _applyFinderResult(result, planBuilt);
     if(result.plan && result.plan.kind==='booking') renderBookingPlan(result, opts);
     else applyPlan(result.plan, opts);
   }catch(e){ alert('Plan error: '+e); }
-  finally{ hideOverlay(); restoreResults(); }
+  finally{
+    hideOverlay(); restoreResults();
+    if(reqs) openPlanForm(opts, reqs);
+  }
 }
 
 function applyPlan(plan, opts){
@@ -4299,6 +4366,16 @@ function _planTick(){
   _planRenderStrip(missing);
 }
 
+// The review line per call (§4.2): the server's "Requires Forklift · 2 of 2
+// hold it" / "Prefers LX experience", plus Notes it couldn't match.
+function _planReqReviewHtml(r){
+  if(!r) return '';
+  const amber='var(--warn)';
+  return (r.review||[]).map(l=>'<div style="color:var(--accent)">'+_planEsc(l)+'</div>').join('')
+    + (r.unmatched_notes||[]).map(u=>'<div style="color:'+amber+'">Notes mention a licence the plan can’t match: “'+_planEsc(u)+'”</div>').join('')
+    + (r.notes||[]).map(n=>'<div style="color:'+amber+'">'+_planEsc(n)+'</div>').join('');
+}
+
 function _planRenderStrip(missing){
   const el=document.getElementById('plan-strip'); if(!el||!_activePlan) return;
   const plan=_activePlan.plan;
@@ -4319,6 +4396,7 @@ function _planRenderStrip(missing){
     if(plan.mix) o+=' · team after: '+plan.mix.team_after.new+' new / '+plan.mix.team_after.experienced+' experienced';
     h.push('<div>'+o+'</div>');
   }
+  h.push(_planReqReviewHtml(plan.requirements));
   if(missing.length){
     h.push('<div style="color:'+red+';font-weight:600">'+missing.length+' planned crew '+(missing.length===1?'isn\'t':'aren\'t')
       +' showing — check the Hide filter and the name filter: '+missing.map(p=>_planEsc(p.name)).join(', ')+'</div>');
@@ -4332,7 +4410,7 @@ function _planRenderStrip(missing){
       +(p.flags||[]).map(f=>chip(f,amber)).join('')+'</div>').join('')+'</div>');
   }
   (plan.notes||[]).forEach(n=>{
-    const short=/^Asked for|left empty|couldn't be checked|^No .* hold|not enough/i.test(n);
+    const short=/^Asked for|left empty|couldn't be checked|^No .* hold|not enough|^Used \d+ Wardrobe|^Removed /i.test(n);
     h.push('<div style="color:'+(short?amber:'var(--muted)')+'">'+_planEsc(n)+'</div>');
   });
   if((plan.could_fill_warned||[]).length){
@@ -4445,6 +4523,7 @@ function _bookingPlanRender(){
       +(c.is_boss_call?chip('Crew Boss','var(--accent)'):'')+'</div>');
     const pt=_planPlacesText(c.places, c.places_breakdown);
     h.push('<div>'+(c.places===0 ? pt : picks.length+' of '+pt)+'</div>');
+    h.push(_planReqReviewHtml(c.requirements));
     picks.forEach(p => {
       const live=people.find(x => String(x.user_id)===String(p.user_id));
       const also=(live ? live.calls : []).filter(k => k!==String(c.call_id)).map(k => nameOf[k]);
@@ -4455,7 +4534,7 @@ function _bookingPlanRender(){
         +' onclick="bookingPlanRemove('+Number(p.user_id)+','+Number(c.call_id)+')" style="margin-left:4px;border:none;background:none;color:var(--muted);cursor:pointer">&#215;</button></div>');
     });
     (c.notes||[]).forEach(n => {
-      const short=/^Asked for|left empty|couldn't be checked|^No .* hold|not enough/i.test(n);
+      const short=/^Asked for|left empty|couldn't be checked|^No .* hold|not enough|^Used \d+ Wardrobe|^Removed /i.test(n);
       h.push('<div style="color:'+(short?amber:'var(--muted)')+'">'+_planEsc(n)+'</div>');
     });
     (c.notes_licence_hints||[]).forEach(hn => h.push('<div style="color:var(--muted)">Notes mention <i>'+_planEsc(hn.name)+'</i>.</div>'));
@@ -4543,12 +4622,14 @@ async function bookingPlanSend(confirm){
 }
 
 // The Notes hint never applies itself: it reopens the form with the row added.
+// Answers already given ride along, so the questions aren't asked again.
 function planAddHint(i){
   if(!_activePlan) return;
   const hn=(_activePlan.plan.notes_licence_hints||[])[i]; if(!hn) return;
   const o=_activePlan.opts||{};
   const mins=(o.licence_mins||[]).filter(m=>m.code!==hn.code).concat([{code:hn.code, min:1}]);
-  openPlanForm({objective:o.objective||'mix', new_pct:(o.new_pct==null?80:o.new_pct), licence_mins:mins});
+  openPlanForm({objective:o.objective||'mix', new_pct:(o.new_pct==null?80:o.new_pct), licence_mins:mins,
+                requirement_answers:o.requirement_answers||{}});
 }
 
 // Build the /api/availability call payload for the currently-selected calls.
@@ -28690,8 +28771,11 @@ async function goatSend(){
   input.value=''; input.style.height='auto';
   // A plan read-back is waiting for yes: this message is the answer, so it
   // goes to the GOAT whatever it says — no easter egg, never REALLY? — and
-  // carries the read-back's id, without which the server won't plan.
+  // carries the read-back's id, without which the server won't plan. The
+  // card's clicked requirement answers ride with it (stage C §4.3): the
+  // server never reads them from this text.
   const planReadBack=_goatPlanReadBack;
+  const planAnswers=planReadBack ? Object.assign({}, _goatPlanAnswers) : null;
   const egg=planReadBack ? null : checkGoatEasterEgg(text);
   if(egg){
     _goatBusy=true; document.getElementById('goat-send').disabled=true;
@@ -28724,7 +28808,8 @@ async function goatSend(){
     const resp = await fetch('/api/goat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(planReadBack ? {messages: _goatHistory, plan_read_back: planReadBack}
+      body: JSON.stringify(planReadBack ? {messages: _goatHistory, plan_read_back: planReadBack,
+                                           requirement_answers: planAnswers}
                                         : {messages: _goatHistory})
     });
 
@@ -28764,6 +28849,7 @@ async function goatSend(){
             }
             else if(ev.type === 'plan_ready'){
               planCards.push(ev.payload);
+              _goatPlanAnswers = {};
             }
             else if(ev.type === 'history'){
               historyText = ev.text || '';
@@ -28771,6 +28857,7 @@ async function goatSend(){
             else if(ev.type === 'plan_read_back'){
               readBackCards.push(ev.payload);
               _goatPlanReadBack = ev.payload.id;
+              _goatPlanAnswers = Object.assign({}, ev.payload.answers || {});
             }
             else if(ev.type === 'open_dialog'){
               openCards.push(ev.payload);
@@ -28930,17 +29017,54 @@ function showGoatToolBadge(toolName){
 // what will be planned; the GOAT is told not to restate any of it. Only the
 // LATEST read-back can be answered: its id rides on the next message.
 let _goatPlanReadBack = null;
+// That card's requirement answers so far, {question id: value} (stage C).
+let _goatPlanAnswers = {};
 
 function renderGoatReadBackCard(payload){
   if(!payload || !payload.text) return;
   const wrap = document.getElementById('goat-messages');
+  // Only the latest card can be answered: older cards' buttons go dead.
+  wrap.querySelectorAll('.grb-ans').forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
   const el = document.createElement('div');
   el.className = 'gm gm-goat';
+  const qs = (payload.questions || []).filter(q => q.answer == null);
+  const btns = qs.map(q =>
+    '<div style="margin-top:6px">#' + escapeHtml(String(q.call_id)) + ' ' + _planEsc(q.call_name || '') + ': ' + _planEsc(q.text) + '</div>'
+    + '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">'
+    + (q.options || []).map(o => '<button type="button" class="btn grb-ans" data-q="' + _planEsc(q.id) + '" data-v="' + _planEsc(o.value)
+        + '" data-l="' + _planEsc(o.label) + '" onclick="goatPlanAnswer(this)">' + _planEsc(o.label) + '</button>').join('')
+    + '</div>').join('');
   el.innerHTML = '<div class="gm-label">GOAT</div>'
     + '<div class="gm-bubble" style="background:rgba(212,175,55,0.06);border-left-color:rgba(212,175,55,0.6);white-space:pre-wrap">'
-    + '🧩 ' + escapeHtml(payload.text) + '</div>';
+    + '🧩 ' + escapeHtml(payload.text)
+    + (btns ? '<div style="white-space:normal;border-top:1px solid var(--border);margin-top:8px;padding-top:4px">' + btns + '</div>' : '')
+    + '</div>';
+  el.dataset.open = String(qs.length);
   wrap.appendChild(el);
   wrap.scrollTop = wrap.scrollHeight;
+}
+
+// A click on a read-back card's requirement question (stage C §4.3). The
+// answer is kept with the card; once every question on it has one, the
+// drawer sends them, with the card's id, so the GOAT reads back again with
+// the answers applied. The words sent are for the conversation only.
+function goatPlanAnswer(btn){
+  if(!btn || btn.disabled || _goatBusy || !_goatPlanReadBack) return;
+  const card = btn.closest('.gm');
+  card.querySelectorAll('.grb-ans[data-q="' + btn.dataset.q + '"]').forEach(b => {
+    b.style.borderColor = ''; b.style.color = '';
+  });
+  btn.style.borderColor = 'var(--accent)'; btn.style.color = 'var(--accent)';
+  _goatPlanAnswers[btn.dataset.q] = btn.dataset.v;
+  const qids = [...new Set([...card.querySelectorAll('.grb-ans')].map(b => b.dataset.q))];
+  if(qids.some(q => !_goatPlanAnswers[q])) return;
+  const said = qids.map(q => {
+    const b = card.querySelector('.grb-ans[data-q="' + q + '"][data-v="' + _goatPlanAnswers[q] + '"]');
+    return '#' + q.split(':')[0] + ' ' + q.split(':')[1] + ': ' + (b ? b.dataset.l : _goatPlanAnswers[q]);
+  });
+  card.querySelectorAll('.grb-ans').forEach(b => { b.disabled = true; });
+  document.getElementById('goat-input').value = 'Requirement answers: ' + said.join('; ');
+  goatSend();
 }
 
 // Staffing plan card (plan_staffing). Read-only: its one button opens the plan

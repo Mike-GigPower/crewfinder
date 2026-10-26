@@ -99,6 +99,11 @@ class Fake(object):
         return {"users": users, "call": {"is_boss_call": str(cid) in self.boss},
                 "constants": {"probation_hours": 144}, "as_at": "2027-03-01T00:00:00"}, None
 
+    def call_types(self, bid, calls):
+        """_plan_call_types: no Call Type stored or derivable (the network
+        read, stubbed)."""
+        return {}, None
+
     def scrape(self, ss, bid, cid):
         c = next(c for c in self.calls if c["cid"] == str(cid))
         return {"call_name": c["name"], "start_dt": c["start"], "end_dt": c["end"],
@@ -117,7 +122,8 @@ class Fake(object):
              mock.patch.object(A, "fetch_booking_bulk", self.booking), \
              mock.patch.object(A, "ss_list_crew_experience", self.experience), \
              mock.patch.object(A, "scrape_call_details", self.scrape), \
-             mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None):
+             mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None), \
+             mock.patch.object(A, "_plan_call_types", self.call_types):
             return A.build_booking_plan(object(), self.body(cids, plan))
 
 
@@ -177,7 +183,7 @@ class BookingPlanTests(unittest.TestCase):
             self.assertIn(name, picks(p, 3))              # load-in picks carried
         c_both = next(x for x in p["people"] if x["name"] == "C Both")
         self.assertEqual(c_both["root_calls"], [1])       # server carries the load out
-        self.assertTrue(any("carried from Load In" in n for n in out["notes"]))
+        self.assertIn("Carried from #1 Load In (Wed 10 Mar) — crew placed there by it.", out["notes"])
 
         # The Finder selects the load out along with the load in: still carried.
         r2, err = f.run([1, 3])
@@ -329,7 +335,8 @@ class BookingPlanTests(unittest.TestCase):
              mock.patch.object(A, "ss_list_crew_experience", f.experience), \
              mock.patch.object(A, "scrape_call_details", f.scrape), \
              mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None), \
-             mock.patch.object(A, "load_induction_catalogue", lambda ss=None: None):
+             mock.patch.object(A, "load_induction_catalogue", lambda ss=None: None), \
+             mock.patch.object(A, "_plan_call_types", f.call_types):
             return A._goat_plan_staffing(object(), ti, read_back_id, last_user)
 
     def test_goat_read_back_is_code_built(self):
@@ -440,7 +447,8 @@ class BookingPlanTests(unittest.TestCase):
         with mock.patch.object(A, "_finder_assess", f.assess), \
              mock.patch.object(A, "fetch_booking_bulk", f.booking), \
              mock.patch.object(A, "ss_list_crew_experience", f.experience), \
-             mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None):
+             mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None), \
+             mock.patch.object(A, "_plan_call_types", f.call_types):
             r, err = A.build_staffing_plan(object(), dict(f.body([cid]), plan={"objective": "rating"}))
         self.assertIsNone(err)
         return r["plan"]
@@ -542,7 +550,8 @@ class BookingPlanTests(unittest.TestCase):
         self.assertIn("plan_read_back", res)
         with mock.patch.object(A, "fetch_booking_bulk", f.booking), \
              mock.patch.object(A, "ss_list_crew_experience", f.experience), \
-             mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None):
+             mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None), \
+             mock.patch.object(A, "_plan_call_types", f.call_types):
             res = A._goat_plan_staffing(object(), ti, None, "no, 70% new instead")
         self.assertIn("plan_read_back", res)
 
@@ -555,7 +564,8 @@ class PlanRouteTests(unittest.TestCase):
         with self.client.session_transaction() as s:
             s["sid"] = "plan-b-sid"
         self.patches = [mock.patch.object(A, "get_ss_session", lambda: object()),
-                        mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None)]
+                        mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None),
+                        mock.patch.object(A, "_plan_call_types", lambda bid, calls: ({}, None))]
         for p in self.patches:
             p.start()
 
