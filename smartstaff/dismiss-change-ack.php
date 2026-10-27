@@ -6,6 +6,7 @@
 	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
+	include('call-change-log.php');
 
 	/*
 	/* JSON response */
@@ -32,7 +33,8 @@
 	/* successful dismiss appends a row to call_change_log (answer 'dismiss',
 	/* answer_src 'ops'), copying the "was" timing from the ack row before it is
 	/* deleted. call_change_ack is still a plain DELETE, exactly as above. See
-	/* MIGRATION-call-change-log.sql.
+	/* MIGRATION-call-change-log.sql. The INSERT itself is goat_log_change_answer()
+	/* in call-change-log.php (PDO, prepared), shared with respond-to-change.php.
 	/*
 	/* Contract: POST ?id=<callID> with JSON body {userID}. call_crew_map.status is
 	/* NEVER touched — the crew member stays confirmed (5) / backup (7); only the
@@ -127,18 +129,7 @@
 
 	if ($cleared && $ack)
 	{
-		mysql_query(
-			'INSERT INTO call_change_log ' .
-			'(callID, userID, prev_start_date, prev_start_time, prev_est_length, changed_at, ' .
-			'answer, answer_src, prior_status, result_status, answered_at) ' .
-			'VALUES (' .
-				intval($callID) . ', ' . intval($userID) . ', ' .
-				intval($ack->prev_start_date) . ', ' . $db->sc($ack->prev_start_time) . ', ' .
-				$db->sc($ack->prev_est_length) . ', ' . intval($ack->changed_at) . ', ' .
-				"'dismiss', 'ops', " .
-				$curStatus . ', ' . $curStatus . ', ' . time() .
-			')'
-		);
+		goat_log_change_answer($callID, $userID, $ack, 'dismiss', 'ops', $curStatus, $curStatus);
 	}
 
 	echo json_encode(array(
