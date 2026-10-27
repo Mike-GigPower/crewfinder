@@ -23236,7 +23236,7 @@ function renderCallResponses(bookingId, callId){
 
   // A missing accept time is never a blank. Each of these is a real, different
   // state, and the difference matters to someone reading the row.
-  function whenCell(c){
+  function acceptCell(c){
     if(c.responded_src === 'phone')
       return '<span style="color:var(--muted)">by phone</span>'
            + '<div style="color:var(--muted);font-size:10px;line-height:1.2">time not recorded</div>';
@@ -23250,6 +23250,56 @@ function renderCallResponses(bookingId, callId){
     if(c.responded_src === 'ops')
       return when + '<div style="color:var(--muted);font-size:10px;line-height:1.2">recorded by ops</div>';
     return when;
+  }
+
+  // ANSWERS TO TIME CHANGES (5.89.0). responded_at is the first answer to the
+  // ORIGINAL offer and never moves, so a later "the time changed, can you still
+  // do it?" decline used to show as a bare DECLINED beside an accept time —
+  // reading like an offer declined days earlier. One stacked line for the
+  // LATEST event, in the same style as "recorded by ops"; the full list is in
+  // the tooltip.
+  //
+  // A pending change outranks any earlier answer: it is the newest thing that
+  // has happened to this row. Nothing is drawn when change_history_available
+  // is false — the fields are absent, and the how-to-read note says why.
+  function changeWord(a){
+    if(a.answer === 'decline') return 'declined time change';
+    if(a.answer === 'accept')  return 'accepted new time';
+    if(a.answer === 'dismiss') return 'cleared by ops';
+    return String(a.answer || 'answered');
+  }
+  function changeWas(x){
+    if(!x || !x.prev_start) return '';
+    const len = (x.prev_est_length === null || x.prev_est_length === undefined) ? '' : (' · '+String(+x.prev_est_length)+'h');
+    return ' (was '+goatFmtStamp(x.prev_start)+len+')';
+  }
+  function changeLine(c){
+    if(!j.change_history_available) return '';
+    const answers = c.change_answers || [];
+    const pending = c.change_pending || null;
+    if(!answers.length && !pending) return '';
+
+    const tip = answers.map(function(a){
+      return changeWord(a)+' '+goatFmtStamp(a.answered_at)+changeWas(a);
+    });
+    if(pending) tip.push('time changed '+goatFmtStamp(pending.changed_at)+changeWas(pending)+' — no answer yet');
+    const title = ' title="'+escapeHtml(tip.join('\n'))+'"';
+
+    let colour, text;
+    if(pending){
+      colour = '#f59e0b';
+      text   = 'time changed — no answer yet';
+    }else{
+      const last = answers[answers.length - 1];
+      colour = (last.answer === 'decline') ? 'var(--conflict)' : 'var(--muted)';
+      text   = changeWord(last)+' '+goatFmtStamp(last.answered_at);
+    }
+    const more = (answers.length + (pending ? 1 : 0) > 1) ? ' <span style="opacity:.7">+'+(answers.length + (pending ? 1 : 0) - 1)+'</span>' : '';
+    return '<div'+title+' style="color:'+colour+';font-size:10px;line-height:1.2;cursor:help">'+escapeHtml(text)+more+'</div>';
+  }
+
+  function whenCell(c){
+    return acceptCell(c) + changeLine(c);
   }
 
   const rows = crew.map(function(c){
@@ -23308,6 +23358,8 @@ function renderCallResponses(bookingId, callId){
     +     '<li><strong>This booking</strong> — other calls on this job they are still holding. Cutting someone from one call of a five-call booking is not the same as cutting their only shift.</li>'
     +     '<li><strong>90d</strong> — calls they were confirmed on that have already started, in the last '+(j.work_window_days||90)+' days.</li>'
     +     '<li><strong>History</strong> — declines and no-shows over '+(j.stats_window_days||90)+' days, and how many times <em>we</em> stood them down. Response rate is not shown: an ignored offer is usually reassigned, which deletes the record, so it reads high for almost everyone and only a low figure means anything.</li>'
+    +     '<li><strong>Time changes</strong> — when a call\'s time moves after someone has accepted, their answer to the change shows under the accept time: <span style="color:var(--conflict)">declined time change</span>, accepted new time, cleared by ops, or <span style="color:#f59e0b">time changed — no answer yet</span>. Hover for every change. These are recorded from 27 Oct 2026; an earlier time-change decline still shows only as Declined beside the original accept time.</li>'
+    +     (j.change_history_available === false ? '<li style="color:#f59e0b"><strong>Time-change answers are unavailable right now</strong> — they could not be loaded, so none are shown. That is not the same as nobody having answered one.</li>' : '')
     +     '<li><strong>Crew removed from this call earlier do not appear.</strong> Removing someone deletes the record, so this list is who is on the call now — not everyone who ever was.</li>'
     +     (j.stats_available ? '' : '<li style="color:#f59e0b"><strong>History figures are unavailable right now</strong> — the crew statistics could not be loaded. The columns are blank rather than zero on purpose.</li>')
     +   '</ul>'
