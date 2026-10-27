@@ -28,6 +28,12 @@
 	/* cleared by ops is indistinguishable from one the crew member answered. A
 	/* deliberate trade, recorded — not an oversight.
 	/*
+	/* UPDATE: that cost is now closed WITHOUT touching the pending test. A
+	/* successful dismiss appends a row to call_change_log (answer 'dismiss',
+	/* answer_src 'ops'), copying the "was" timing from the ack row before it is
+	/* deleted. call_change_ack is still a plain DELETE, exactly as above. See
+	/* MIGRATION-call-change-log.sql.
+	/*
 	/* Contract: POST ?id=<callID> with JSON body {userID}. call_crew_map.status is
 	/* NEVER touched — the crew member stays confirmed (5) / backup (7); only the
 	/* outstanding QUESTION is cleared.
@@ -79,6 +85,22 @@
 		goat_json_error(400, 'userID is required');
 	}
 
+	/* Read the ack row (for the history copy) and the current status BEFORE the
+	/* delete. A missing ack row just means nothing gets logged below. */
+
+	$ack = $db->selectFirst(
+		'prev_start_date, prev_start_time, prev_est_length, changed_at',
+		'call_change_ack',
+		'callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
+	);
+
+	$mapRow = $db->selectFirst(
+		'status',
+		'call_crew_map',
+		'callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
+	);
+	$curStatus = $mapRow ? (int) $mapRow->status : 0;
+
 	mysql_query(
 		'DELETE FROM call_change_ack WHERE callID=' . intval($callID) .
 		' AND userID=' . intval($userID)
@@ -98,6 +120,26 @@
 	/* way, so a stale double-click never raises an error banner. */
 
 	$cleared = (mysql_affected_rows() > 0);
+
+	/* History row — only for a real dismiss (not a no-op double-click), and NOT
+	/* gated: the dismiss has already succeeded and must never 500 over its
+	/* history row. Status is never touched here, so prior = result. */
+
+	if ($cleared && $ack)
+	{
+		mysql_query(
+			'INSERT INTO call_change_log ' .
+			'(callID, userID, prev_start_date, prev_start_time, prev_est_length, changed_at, ' .
+			'answer, answer_src, prior_status, result_status, answered_at) ' .
+			'VALUES (' .
+				intval($callID) . ', ' . intval($userID) . ', ' .
+				intval($ack->prev_start_date) . ', ' . $db->sc($ack->prev_start_time) . ', ' .
+				$db->sc($ack->prev_est_length) . ', ' . intval($ack->changed_at) . ', ' .
+				"'dismiss', 'ops', " .
+				$curStatus . ', ' . $curStatus . ', ' . time() .
+			')'
+		);
+	}
 
 	echo json_encode(array(
 		'ok'      => $cleared,

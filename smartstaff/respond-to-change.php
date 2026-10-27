@@ -38,12 +38,41 @@
 	/*       has no calendar row, so that path is skipped)
 	/*     - DELETE the ack row
 	/*
+	/* HISTORY: every successful answer also appends one row to call_change_log
+	/* (answer, answer_src 'crew', prior/result status, answered_at, plus the
+	/* "was" timing copied from the ack row before it is deleted). That table is
+	/* the audit trail; call_change_ack stays a pure pending flag, deleted on
+	/* answer, exactly as before. See MIGRATION-call-change-log.sql.
+	/*
 	/* Self-scoped, service-key trust — same identity path as respond-to-call.php.
 	/* Reuses $db and $sss from global.php so the side-effects are byte-identical
 	/* to SmartStaff's own dashboard.
 	/*
 	/* PHP 5.x — mysql_*, no null-coalescing (??), no short array syntax.
 	*/
+
+	/*
+	/* Append one answer to call_change_log. Called AFTER the answer's own
+	/* error gate and NOT gated itself (same rule as the promo subsume below):
+	/* the answer has already succeeded and must never 500 over its history row.
+	/* If the table is missing (PHP deployed before the migration) this fails
+	/* silently and the answer stands, just unlogged.
+	*/
+	function log_change_answer($db, $callID, $userID, $ack, $answer, $priorStatus, $resultStatus)
+	{
+		mysql_query(
+			'INSERT INTO call_change_log ' .
+			'(callID, userID, prev_start_date, prev_start_time, prev_est_length, changed_at, ' .
+			'answer, answer_src, prior_status, result_status, answered_at) ' .
+			'VALUES (' .
+				intval($callID) . ', ' . intval($userID) . ', ' .
+				intval($ack->prev_start_date) . ', ' . $db->sc($ack->prev_start_time) . ', ' .
+				$db->sc($ack->prev_est_length) . ', ' . intval($ack->changed_at) . ', ' .
+				$db->sc($answer) . ", 'crew', " .
+				intval($priorStatus) . ', ' . intval($resultStatus) . ', ' . time() .
+			')'
+		);
+	}
 
 	$userID = (int) goat_acting_user_id();
 
@@ -73,7 +102,7 @@
 	/* presence is the whole authorisation: no row -> nothing to answer.
 	*/
 	$ack = $db->selectFirst(
-		'id',
+		'id, prev_start_date, prev_start_time, prev_est_length, changed_at',
 		'call_change_ack',
 		'callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
 	);
@@ -143,6 +172,9 @@
 			die('{"error":"ack clear failed: ' . addslashes(mysql_error()) . '"}');
 		}
 
+		/* History row — status unchanged on accept. */
+		log_change_answer($db, $callID, $userID, $ack, 'accept', $priorStatus, $priorStatus);
+
 		/*
 		/* Subsume any pending promotion acknowledgement: answering the timing
 		/* change answers the promotion. Accepting the new time is agreement to
@@ -200,6 +232,9 @@
 		http_response_code(500);
 		die('{"error":"ack clear failed: ' . addslashes(mysql_error()) . '"}');
 	}
+
+	/* History row — 6 if the flip happened, otherwise the status it already had. */
+	log_change_answer($db, $callID, $userID, $ack, 'decline', $priorStatus, $declined ? 6 : $priorStatus);
 
 	/*
 	/* Subsume any pending promotion acknowledgement: answering the timing
