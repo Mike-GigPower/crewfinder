@@ -6,6 +6,7 @@
 	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
+	include_once(dirname(__FILE__) . '/goat-db.php');
 
 	/*
 	/* JSON response */
@@ -61,6 +62,14 @@
 	/* all are on test and production. A failed lookup here is a 500, never an
 	/* empty set — an empty response history is indistinguishable from a crew
 	/* member who never answered, and this screen decides who loses work.
+	/*
+	/* TIME-CHANGE ANSWERS (section 4, added 5.89.0) ARE THE EXCEPTION. They are
+	/* a display add-on read from call_change_log / call_change_ack through
+	/* goat_pdo(), and they DEGRADE rather than 500: if the handle is missing or
+	/* either read throws, change_history_available is false and no crew row
+	/* carries change_* fields at all -- a visible absence, never an empty list
+	/* that would read as "never answered a change". Same pattern as app.py's
+	/* stats_available.
 	/*
 	/* Request:  GET ?id=<callID>
 	/*
@@ -270,6 +279,115 @@
 		}
 	}
 
+	/* ---- 4. answers to time changes (display add-on; degrades) ----
+	/*
+	/* responded_at above is the FIRST answer to the original offer. A later
+	/* "the time moved, can you still do it?" answer never moves it, so a
+	/* change-decline used to show as a bare DECLINED beside the original accept
+	/* time. call_change_log (27 Oct 2026) keeps every such answer; a surviving
+	/* call_change_ack row is a change still waiting for one.
+	/*
+	/* Per crew row, when available:
+	/*   change_answers : oldest -> newest, {answer, answer_src, prior_status,
+	/*                    result_status, answered_at, changed_at, prev_start,
+	/*                    prev_est_length}
+	/*   change_pending : {changed_at, prev_start, prev_est_length} or null
+	/*
+	/* TIMESTAMPS ARE "Y-m-d H:i:s" STRINGS IN Australia/Melbourne, set with an
+	/* explicit DateTimeZone, so they read on the same clock as responded_at and
+	/* go through goatFmtStamp() unchanged. NEVER emit the raw unix int: JS reads
+	/* a bare number as milliseconds (the v5.50.0 1970 bug).
+	/*
+	/* prev_start mirrors how $startIso below is built (date() on start_date plus
+	/* the start_time string), so a "was" time reads like the call's own start.
+	*/
+
+	function goat_resp_mel_stamp($ts)
+	{
+		$ts = (int) $ts;
+		if ($ts <= 0) return null;
+		$dt = new DateTime('@' . $ts);
+		$dt->setTimezone(new DateTimeZone('Australia/Melbourne'));
+		return $dt->format('Y-m-d H:i:s');
+	}
+
+	function goat_resp_prev_start($date, $time)
+	{
+		$date = (int) $date;
+		if ($date <= 0) return null;
+		return date('Y-m-d', $date) . ' ' . $time;
+	}
+
+	$changeAvailable = false;
+	$changeAnswers   = array();
+	$changePending   = array();
+
+	$pdo = goat_pdo();
+
+	if ($pdo)
+	{
+		try
+		{
+			$st = $pdo->prepare(
+				'SELECT userID, answer, answer_src, prior_status, result_status, answered_at, ' .
+				'changed_at, prev_start_date, prev_start_time, prev_est_length ' .
+				'FROM call_change_log WHERE callID = ? ORDER BY answered_at, id'
+			);
+			$st->execute(array($callID));
+
+			foreach ($st->fetchAll() as $r)
+			{
+				$uid = (int) $r['userID'];
+				if (!isset($changeAnswers[$uid])) $changeAnswers[$uid] = array();
+				$changeAnswers[$uid][] = array(
+					'answer'          => $r['answer'],
+					'answer_src'      => $r['answer_src'],
+					'prior_status'    => (int) $r['prior_status'],
+					'result_status'   => (int) $r['result_status'],
+					'answered_at'     => goat_resp_mel_stamp($r['answered_at']),
+					'changed_at'      => goat_resp_mel_stamp($r['changed_at']),
+					'prev_start'      => goat_resp_prev_start($r['prev_start_date'], $r['prev_start_time']),
+					'prev_est_length' => (float) $r['prev_est_length']
+				);
+			}
+
+			$st = $pdo->prepare(
+				'SELECT userID, changed_at, prev_start_date, prev_start_time, prev_est_length ' .
+				'FROM call_change_ack WHERE callID = ?'
+			);
+			$st->execute(array($callID));
+
+			foreach ($st->fetchAll() as $r)
+			{
+				$changePending[(int) $r['userID']] = array(
+					'changed_at'      => goat_resp_mel_stamp($r['changed_at']),
+					'prev_start'      => goat_resp_prev_start($r['prev_start_date'], $r['prev_start_time']),
+					'prev_est_length' => (float) $r['prev_est_length']
+				);
+			}
+
+			$changeAvailable = true;
+		}
+		catch (Exception $e)
+		{
+			error_log('get-call-responses: change history read failed (call ' . $callID . '): ' . $e->getMessage());
+			$changeAvailable = false;
+		}
+	}
+	else
+	{
+		error_log('get-call-responses: no PDO handle, change history omitted (call ' . $callID . ')');
+	}
+
+	if ($changeAvailable)
+	{
+		foreach ($crew as $uid => $row)
+		{
+			$crew[$uid]['change_answers'] = isset($changeAnswers[$uid]) ? $changeAnswers[$uid] : array();
+			$crew[$uid]['change_pending'] = isset($changePending[$uid]) ? $changePending[$uid] : null;
+		}
+	}
+
 	/* ---- respond ----
 	/*
 	/* crew is re-indexed to a list: a JSON object keyed by userID would be
@@ -294,6 +412,8 @@
 		'cancelled'        => ($call->cancelled_at !== null && (int) $call->cancelled_at > 0) ? 1 : 0,
 		'tracking_since'   => str_replace(' ', 'T', $TRACKING_SINCE),
 		'work_window_days' => $WORK_WINDOW_DAYS,
+		'change_history_available' => $changeAvailable,
+		'change_history_since'     => '2026-10-27',
 		'crew'             => array_values($crew)
 	));
 
