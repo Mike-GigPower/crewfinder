@@ -2314,6 +2314,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         <span id="ab-view-pills" style="display:flex;gap:4px;align-items:center">
           <button class="ab-fchip ab-on" data-view="list" onclick="abSetView('list')" title="List view">&#9776; List</button>
           <button class="ab-fchip" data-view="calendar" onclick="abSetView('calendar')" title="Calendar view">&#128197; Calendar</button>
+          <button class="ab-fchip" data-view="events" onclick="abSetView('events')" title="Events: festivals and show runs">★ Events</button>
         </span>
         <input id="ab-search" type="text" placeholder="Search booking name…" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" oninput="abSearchDebounced()" style="background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;padding:6px 10px;min-width:220px">
         <span id="ab-filters" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
@@ -2326,11 +2327,16 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
           <button class="ab-fchip" data-win="90" onclick="abSetWindow(90)">90d</button>
           </span>
         </span>
+        <span id="ab-ev-tools" style="display:none;gap:4px;align-items:center">
+          <button class="ab-fchip" id="ab-ev-archived-chip" onclick="abEvToggleArchived()" title="List archived events instead of live ones">Show archived</button>
+          <button class="ab-fchip" onclick="abEvNewForm()" title="Make an event: the whole festival or show run">+ New event</button>
+        </span>
         <span id="ab-count" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
         <button class="btn" onclick="abRefresh()">&#8635; Refresh</button>
       </div>
       <div id="ab-list" style="flex:1;overflow-y:auto"><div class="empty-state"><div class="empty-sub">Loading bookings…</div></div></div>
       <div id="ab-more" style="flex-shrink:0;text-align:center"></div>
+      <div id="ab-events" style="flex:1;overflow-y:auto;display:none"><div id="ab-ev-new"></div><div id="ab-events-list"></div></div>
       <div id="ab-cal-wrap" class="abc-wrap">
         <div class="abc-nav">
           <button class="btn" onclick="abCalNav(-1)" title="Previous">&#8249;</button>
@@ -24219,6 +24225,7 @@ function loadAllBookings(force){
   // Calendar view reads its own date-window endpoint; the list loads lazily
   // the first time somebody switches to it (abSetView).
   if(_abView === 'calendar' && !force){ abCalLoad(); return; }
+  if(_abView === 'events' && !force){ abEvLoad(); return; }
   if(_abState.loaded && !force) return;
   _abState = {loaded:true, q:(document.getElementById('ab-search')||{}).value || '',
               activeOnly:false, windowDays:0, all:[], offset:0, limit:100,
@@ -24239,6 +24246,8 @@ function abSearchDebounced(){
     // re-fetches with the new search when somebody switches back (one request,
     // not two — the per-session PHP lock serialises them).
     if(_abView === 'calendar'){ _abState.stale = true; abCalLoad(); return; }
+    // Events view searches event names; the list catches up on switch back.
+    if(_abView === 'events'){ _abState.stale = true; abEvLoad(); return; }
     _abState.stale = false;
     _abState.all = []; _abState.offset = 0; _abState.total = 0; _abState.done = false;
     const list = document.getElementById('ab-list');
@@ -24291,6 +24300,7 @@ function abWindowCovered(){
 }
 
 function abRender(){
+  if(_abView === 'events') return;   // a page landing in Events view; drawn on switch back
   const list = document.getElementById('ab-list');
   const rows = abFiltered();
   if(list){
@@ -24478,20 +24488,28 @@ const AB_CAL_MAX_LANES = 4;   // D10
 function abInitView(){
   if(_abViewInit) return;
   _abViewInit = true;
-  _abView = (goatPrefs.get('allBookings', 'view', 'list') === 'calendar') ? 'calendar' : 'list';
+  _abView = abViewName(goatPrefs.get('allBookings', 'view', 'list'));
   _abCal.layout = (goatPrefs.get('allBookings', 'calLayout', 'month') === 'week') ? 'week' : 'month';
   const t = new Date();
   _abCal.anchor = new Date(t.getFullYear(), t.getMonth(), t.getDate());
   abApplyView();
 }
 
+// List, Calendar or Events (BRIEF-events-view §5). Anything else is List.
+function abViewName(v){ return (v === 'calendar' || v === 'events') ? v : 'list'; }
+
 function abApplyView(){
-  const cal = _abView === 'calendar';
+  const cal = _abView === 'calendar', ev = _abView === 'events', list = _abView === 'list';
   const show = function(id, on, disp){ const el = document.getElementById(id); if(el) el.style.display = on ? (disp||'') : 'none'; };
-  show('ab-list', !cal);
-  show('ab-more', !cal);
-  show('ab-win-chips', !cal, 'flex');
+  show('ab-list', list);
+  show('ab-more', list);
+  show('ab-win-chips', list, 'flex');
+  show('ab-filters', !ev, 'flex');
   show('ab-cal-wrap', cal, 'flex');
+  show('ab-events', ev);
+  show('ab-ev-tools', ev, 'flex');
+  const search = document.getElementById('ab-search');
+  if(search) search.placeholder = ev ? 'Search event name…' : 'Search booking name…';
   document.querySelectorAll('#ab-view-pills [data-view]').forEach(function(el){
     el.classList.toggle('ab-on', el.getAttribute('data-view') === _abView);
   });
@@ -24502,10 +24520,11 @@ function abApplyView(){
 
 function abSetView(v){
   abInitView();
-  _abView = (v === 'calendar') ? 'calendar' : 'list';
+  _abView = abViewName(v);
   goatPrefs.set('allBookings', 'view', _abView);
   abApplyView();
   if(_abView === 'calendar'){ abCalLoad(); return; }
+  if(_abView === 'events'){ abEvLoad(); return; }
   if(!_abState.loaded){ loadAllBookings(); return; }
   if(_abState.stale){ abSearchDebounced(); return; }   // search changed while in Calendar
   abRender(); abAutoContinue();
@@ -24513,6 +24532,7 @@ function abSetView(v){
 
 function abRefresh(){
   abInitView();
+  if(_abView === 'events'){ abEvLoad(); return; }
   if(_abView === 'calendar'){
     _abCal.cache = {};
     _abState.loaded = false;   // the list re-reads too, next time it is shown
@@ -24520,6 +24540,126 @@ function abRefresh(){
     return;
   }
   loadAllBookings(true);
+}
+
+// ── ALL BOOKINGS: EVENTS VIEW ───────────────────────────────────────────────
+// BRIEF-events-view §5. Events by name from /api/events (newest first, 50 at
+// most: no paging yet, Q4). The search box is shared with the other views;
+// here it searches event names. Show archived lists the archived events
+// instead of the live ones, and isn't saved. A row opens the Event dialog.
+const _abEv = {archived:false, seq:0, events:[], error:null};
+
+async function abEvLoad(){
+  const list = document.getElementById('ab-events-list');
+  const count = document.getElementById('ab-count');
+  const chip = document.getElementById('ab-ev-archived-chip');
+  if(chip) chip.classList.toggle('ab-on', _abEv.archived);
+  const seq = ++_abEv.seq;
+  const q = ((document.getElementById('ab-search')||{}).value || '').trim();
+  if(list) list.innerHTML = '<div class="empty-state"><div class="empty-sub">Loading events…</div></div>';
+  if(count) count.textContent = 'loading...';
+  let events = null, err = '';
+  try{
+    const r = await fetch('/api/events?q=' + encodeURIComponent(q) + (_abEv.archived ? '&archived=1' : ''));
+    const j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status); else events = j.events || [];
+  }catch(e){ err = e.message || String(e); }
+  if(seq !== _abEv.seq) return;   // a newer search or toggle went out after this one
+  _abEv.events = events || [];
+  _abEv.error = events ? null : err;
+  (events || []).forEach(function(e){
+    window._eventIndex[e.id] = {name: e.name, booking_count: e.booking_count || 0};
+  });
+  abEvRender(q);
+}
+
+function abEvRender(q){
+  if(_abView !== 'events') return;
+  const list = document.getElementById('ab-events-list');
+  const count = document.getElementById('ab-count');
+  if(_abEv.error){
+    if(list) list.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:10px">Couldn\'t load events: ' + escapeHtml(_abEv.error) + '</div>';
+    if(count) count.textContent = '';
+    return;
+  }
+  const evs = _abEv.events;
+  if(count){
+    count.textContent = (evs.length >= 50 ? '50+' : String(evs.length)) + ' event' + (evs.length === 1 ? '' : 's')
+      + (_abEv.archived ? ' archived' : '');
+  }
+  if(!list) return;
+  if(!evs.length){
+    const msg = _abEv.archived ? (q ? 'No archived event matches.' : 'No archived events.')
+              : q ? 'No live event matches.'
+              : 'No events yet. Add a booking to one from its Details tab, or + New event.';
+    list.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:10px">' + escapeHtml(msg) + '</div>';
+    return;
+  }
+  list.innerHTML = evs.map(abEvRow).join('');
+}
+
+function abEvRow(e){
+  const n = e.booking_count || 0;
+  const note = String(e.notes || '').split('\n')[0].trim();
+  const created = e.created_at ? new Date(e.created_at) : null;
+  const when = (created && !isNaN(created)) ? created.toLocaleDateString('en-AU', {day:'numeric', month:'short', year:'numeric'}) : '';
+  return '<div class="ab-row" onclick="openEventDialog(\'' + escapeHtml(String(e.id)) + '\')" style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;margin-bottom:8px;background:var(--surface2);cursor:pointer">'
+    + '<div style="flex:1;min-width:0">'
+    +   '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">★ ' + escapeHtml(e.name || '') + '</div>'
+    +   (note ? '<div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(note) + '</div>' : '')
+    + '</div>'
+    + (e.archived ? '<span style="font-size:9px;letter-spacing:.5px;color:#64748b;background:rgba(100,116,139,0.14);border-radius:3px;padding:2px 7px;white-space:nowrap">Archived</span>' : '')
+    + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + n + ' booking' + (n === 1 ? '' : 's') + '</span>'
+    + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + escapeHtml(when) + '</span>'
+    + '</div>';
+}
+
+function abEvToggleArchived(){
+  _abEv.archived = !_abEv.archived;
+  abEvLoad();
+}
+
+// Re-read the list after the Event dialog changed something, if it's showing.
+function abEvRefreshIfShown(){
+  if(_abViewInit && _abView === 'events') abEvLoad();
+}
+
+function abEvNewForm(msg){
+  const box = document.getElementById('ab-ev-new');
+  if(!box) return;
+  box.innerHTML = '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:var(--surface2)">'
+    + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">New event: the whole festival or show run</div>'
+    + '<input id="ab-ev-name" type="text" maxlength="200" placeholder="Event name" style="' + EF_INPUT_STYLE + '">'
+    + '<textarea id="ab-ev-notes" rows="2" maxlength="2000" placeholder="Notes (optional)" style="' + EF_INPUT_STYLE + ';margin-top:4px"></textarea>'
+    + '<div style="margin-top:6px;display:flex;gap:6px">' + ctBtn('Create', 'abEvCreate()') + ctBtn('Cancel', 'abEvNewClose()') + '</div>'
+    + '<div id="ab-ev-new-msg">' + bkPctxMsg(msg) + '</div>'
+    + '</div>';
+  const nm = document.getElementById('ab-ev-name');
+  if(nm) nm.focus();
+}
+
+function abEvNewClose(){
+  const box = document.getElementById('ab-ev-new');
+  if(box) box.innerHTML = '';
+}
+
+let _abEvCreating = false;
+async function abEvCreate(){
+  const name = (_efVal('ab-ev-name') || '').trim();
+  const fail = function(m){ const el = document.getElementById('ab-ev-new-msg'); if(el) el.innerHTML = bkPctxMsg(m); };
+  if(!name) return fail('Give the event a name.');
+  if(_abEvCreating) return;
+  _abEvCreating = true;
+  let j;
+  try{
+    j = await bkEventPost('/api/events', { name: name, notes: _efVal('ab-ev-notes') || '' });
+  } finally { _abEvCreating = false; }
+  if(j.error) return fail(j.error);   // the 409 for a duplicate name, as the function words it
+  abEvNewClose();
+  showFeedback(j.warning || ('Made ' + name));
+  window._eventIndex[j.event.id] = {name: j.event.name, booking_count: 0};
+  abEvLoad();
+  openEventDialog(j.event.id);
 }
 
 function abCalSetLayout(l){
@@ -24740,6 +24880,7 @@ function _abCalCallsHtml(bookings, week){
 }
 
 function abCalRender(){
+  if(_abView === 'events') return;   // a late calendar read must not overwrite the events count
   const body = document.getElementById('ab-cal');
   const note = document.getElementById('ab-cal-note');
   const count = document.getElementById('ab-count');
@@ -26557,7 +26698,20 @@ function bkRenderEvent(bookingId, msg){
   var acts = p.can_change
     ? bkPctxLink('Change…', "bkOpenEventPicker('" + bookingId + "')") + bkPctxLink('Remove', "bkRemoveFromEvent('" + bookingId + "')")
     : '';
-  host.innerHTML = entityRow('Event', '<span>' + escapeHtml(ev.name || '') + '</span>' + acts + list + notes + bkPctxMsg(msg));
+  var name = '<button type="button" class="ce-call-link" title="Open the event" onclick="bkOpenEvent(\''
+    + bookingId + '\',\'' + escapeHtml(String(ev.id)) + '\')">' + escapeHtml(ev.name || '') + '</button>';
+  host.innerHTML = entityRow('Event', name + acts + list + notes + bkPctxMsg(msg));
+}
+
+// The event name on the Details tab opens the Event dialog (BRIEF-events-view
+// §6.7); the breadcrumb comes back to this booking.
+function bkOpenEvent(fromId, eventId){
+  var ev = _bkPctx.data && _bkPctx.data.event;
+  if(ev && ev.id === eventId){
+    window._eventIndex[eventId] = {name: ev.name, booking_count: (ev.other_booking_ids || []).length + 1};
+  }
+  entityStackPush('booking:'+fromId, 'booking', function(){ openBookingDialog(fromId); });
+  openEventDialog(eventId);
 }
 
 function bkOpenEventPicker(bookingId, msg){
@@ -26700,6 +26854,455 @@ async function bkRemoveFromEvent(bookingId){
     if(!j.warning) showFeedback('Taken out of ' + cur.name);
     await bkPctxReload(bookingId, { event: j.warning || '' });
   } finally { _bkPctxBusy = false; }
+}
+
+// ── EVENT DIALOG (BRIEF-events-view §6) ─────────────────────────────────────
+// Same shell as Booking and Call: tabs Bookings, Crew and Notes, Admin actions
+// below. One read, /api/events/<id>, builds every tab; any change re-opens the
+// dialog, which keeps its tab. Nothing here is billed (the honesty line).
+window._eventIndex = window._eventIndex || {};   // event id -> {name, booking_count}
+var _evDlg = {id: null, data: null, busy: false, addResults: [], addTimer: null, addToken: 0};
+var EV_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+var EV_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// One call's fill (§6.3): the call dialog's Crew row. Confirmed crew less the
+// confirmed ones whose promotion is unanswered; unconfirmed don't count; a
+// cancelled call counts for nothing. The twin of event_call_fill in app.py:
+// test_events_view.py pins both to the same fixture.
+function evCallFill(call){
+  if(!call || _clIsCancelled(call)) return {required: 0, filled: 0};
+  var confirmed = (call.crew || []).filter(function(c){ return (c.status || '').toLowerCase() === 'confirmed'; });
+  var promo = confirmed.filter(function(c){ return !!c.promo_pending; }).length;
+  return {required: Number(call.required) || 0, filled: confirmed.length - promo};
+}
+
+function evPl(n, word){ return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+// "YYYY-MM-DD" (Melbourne, from the route) -> {d, day, mon, year}, or null.
+function evDate(iso){
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if(!m) return null;
+  var dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return {d: dt.getDate(), day: EV_DAYS[dt.getDay()], mon: EV_MONTHS[dt.getMonth()], year: dt.getFullYear()};
+}
+
+// A booking row's dates: "Fri 6 – Sun 8 Feb", "Fri 30 Jan – Sun 1 Feb", "Fri 6 Feb".
+function evFmtRange(first, last){
+  var a = evDate(first), b = evDate(last);
+  if(!a) return 'no live calls';
+  if(!b || first === last) return a.day + ' ' + a.d + ' ' + a.mon;
+  if(a.mon === b.mon && a.year === b.year) return a.day + ' ' + a.d + ' – ' + b.day + ' ' + b.d + ' ' + b.mon;
+  return a.day + ' ' + a.d + ' ' + a.mon + ' – ' + b.day + ' ' + b.d + ' ' + b.mon;
+}
+
+// The head's span: "Fri 6 Feb – Sun 8 Feb 2027", the year on both ends if it changes.
+function evFmtSpan(first, last){
+  var a = evDate(first), b = evDate(last);
+  if(!a) return '';
+  var one = function(x, yr){ return x.day + ' ' + x.d + ' ' + x.mon + (yr ? ' ' + x.year : ''); };
+  if(!b || first === last) return one(a, true);
+  return one(a, a.year !== b.year) + ' – ' + one(b, true);
+}
+
+function evFillHtml(filled, required){
+  var full = filled >= required;
+  return '<span style="color:' + (full ? 'var(--ok,#10b981)' : '#f59e0b') + '">' + filled + ' / ' + required + '</span>';
+}
+
+// The head's fill figure (§8.3 F-1). Green only when every booking loaded and
+// the event is full; uncoloured when nothing is required; a failed booking
+// adds "· N couldn't load" in red, since its calls aren't in the totals.
+function evHeadFillHtml(t, bookings){
+  var req = t.required || 0, filled = t.filled || 0;
+  var failed = (bookings || []).filter(function(b){ return b.ok === false; }).length;
+  var colour = !req ? '' : filled < req ? '#f59e0b' : failed ? '' : 'var(--ok,#10b981)';
+  return '<span' + (colour ? ' style="color:' + colour + '"' : '') + '>' + filled + ' of ' + req + ' filled</span>'
+    + (failed ? ' · <span style="color:var(--conflict)">' + failed + ' couldn\'t load</span>' : '');
+}
+
+function evMarker(text, title){
+  return '<span title="' + escapeHtml(title) + '" style="font-size:9px;font-weight:bold;color:#0b0b0b;background:var(--accent);'
+    + 'border-radius:3px;padding:0 4px;margin-left:4px;vertical-align:middle;white-space:nowrap">' + text + '</span>';
+}
+
+function evChip(text){
+  return '<span style="font-size:9px;letter-spacing:.5px;color:#64748b;background:rgba(100,116,139,0.14);border-radius:3px;padding:2px 7px;white-space:nowrap">'
+    + escapeHtml(text) + '</span>';
+}
+
+async function openEventDialog(eventId){
+  eventId = String(eventId);
+  var key = 'event:' + eventId;
+  entityTabsCarry(key);   // a reload (a save) keeps its tab (§3.3 rule 1)
+  openEntityModal();
+  entityStackTrim(key);
+  var cached = window._eventIndex[eventId];
+  document.getElementById('entity-modal-title').textContent = '★ ' + ((cached && cached.name) || 'Event');
+  document.getElementById('entity-modal-sub').textContent = 'Event' + (cached ? ' · ' + evPl(cached.booking_count || 0, 'booking') : '');
+  document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading event…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  _evDlg = {id: eventId, data: null, busy: false, addResults: [], addTimer: null, addToken: 0};
+  var d = null, err = '';
+  try{
+    var r = await fetch('/api/events/' + encodeURIComponent(eventId));
+    var j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status); else d = j;
+  }catch(e){ err = e.message || String(e); }
+  if(_evDlg.id !== eventId) return;   // another event opened while this one loaded
+  renderEventDialog(eventId, d, err);
+}
+
+function renderEventDialog(eventId, d, err){
+  var key = 'event:' + eventId;
+  if(!d){
+    document.getElementById('entity-modal-body').innerHTML =
+      '<div style="color:var(--conflict);font-size:12px;padding:8px 0">Couldn\'t load the event: ' + escapeHtml(err || 'unknown error') + '</div>'
+      + '<div style="margin-top:6px">' + ctBtn('Retry', "openEventDialog('" + escapeHtml(eventId) + "')") + '</div>';
+    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close', 'closeEntityModal()');
+    return;
+  }
+  _evDlg.data = d;
+  var ev = d.event || {}, t = d.totals || {}, bookings = d.bookings || [];
+  window._eventIndex[eventId] = {name: ev.name, booking_count: bookings.length};
+  document.getElementById('entity-modal-title').textContent = '★ ' + (ev.name || 'Event');
+  document.getElementById('entity-modal-sub').textContent = 'Event · ' + evPl(bookings.length, 'booking');
+  entityRenderTrail();
+
+  var span = evFmtSpan(t.first_date, t.last_date);
+  var head = '<div style="font-size:12px;color:var(--text);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +   '<span>' + evPl(bookings.length, 'booking')
+    +     (span ? ' · ' + escapeHtml(span) : '')
+    +     ' · ' + evHeadFillHtml(t, bookings) + '</span>'
+    +   (ev.archived ? evChip('Archived') : '')
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + escapeHtml(d.honesty || CT_HONESTY) + '</div>'
+    + '<div id="ev-act-msg"></div>';
+
+  var pick = entityTabsPick(key);
+  document.getElementById('entity-modal-body').innerHTML = entityTabs(key, [
+    {id: 'bookings', label: 'Bookings', count: bookings.length, html: evBookingsHtml(eventId, d)},
+    {id: 'crew',     label: 'Crew',     count: (d.crew || []).length, html: evCrewHtml(eventId, d)},
+    {id: 'notes',    label: 'Notes',    html: '<div id="ev-notes-host">' + evNotesHtml(eventId) + '</div>'},
+  ], pick.tab, head);
+  evRenderActions(eventId);
+  entityRestoreScroll();
+}
+
+function evBookingsHtml(eventId, d){
+  var ev = d.event || {}, rows = d.bookings || [];
+  var admin = d.can_change && !ev.archived;
+  var h = d.flags_ok ? '' : '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">Allowance markers unavailable</div>';
+  h += rows.length
+    ? rows.map(function(b){ return evBookingRow(eventId, b, d); }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:6px 0">No bookings in this event yet.</div>';
+  if(admin){
+    h += '<div id="ev-add" style="margin-top:8px">' + ctBtn('+ Add booking…', "evAddOpen('" + escapeHtml(eventId) + "')") + '</div>';
+  }
+  return h;
+}
+
+function evBookingRow(eventId, b, d){
+  var eid = escapeHtml(eventId), bid = Number(b.booking_id);
+  var box = 'padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:5px;background:var(--surface2)';
+  if(!b.ok){
+    return '<div style="' + box + ';display:flex;align-items:center;gap:8px">'
+      + '<span style="flex:1;font-size:12px;color:var(--conflict)">#' + bid + ' — couldn\'t load (' + escapeHtml(b.error || 'unknown error') + ')</span>'
+      + ctBtn('Retry', "openEventDialog('" + eid + "')")
+      + '</div>';
+  }
+  var marks = '';
+  if(d.flags_ok){
+    if(b.broadcast_calls) marks += evMarker('B ' + b.broadcast_calls, evPl(b.broadcast_calls, 'call') + ' attract Broadcast');
+    if(b.travel_calls)    marks += evMarker('T ' + b.travel_calls, evPl(b.travel_calls, 'call') + ' travel eligible');
+  }
+  var remove = (d.can_change && !(d.event || {}).archived)
+    ? ctBtn('Remove', "evRemoveBooking('" + eid + "'," + bid + ")", 'Take this booking out of the event') : '';
+  return '<div style="' + box + '">'
+    + '<div style="display:flex;align-items:center;gap:8px">'
+    +   '<span style="flex:1;min-width:0;font-size:12px">'
+    +     '<button type="button" class="ce-call-link" title="Open booking #' + bid + '" onclick="evOpenBooking(\'' + eid + '\',' + bid + ')">'
+    +       escapeHtml(decodeEntities(b.name || ('Booking #' + bid))) + '</button>'
+    +     ' <span style="font-size:10px;color:var(--muted)">#' + bid + '</span>' + marks
+    +   '</span>'
+    +   (b.status ? evChip(decodeEntities(b.status)) : '')
+    +   remove
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">'
+    +   '<span>' + escapeHtml(evFmtRange(b.first_date, b.last_date)) + '</span>'
+    +   (b.venue_name ? '<span>' + escapeHtml(decodeEntities(b.venue_name)) + '</span>' : '')
+    +   (b.live_calls ? '<span>fill ' + evFillHtml(b.filled || 0, b.required || 0) + '</span>' : '')
+    + '</div>'
+    + '</div>';
+}
+
+function evCrewHtml(eventId, d){
+  var crew = d.crew || [];
+  var eid = escapeHtml(eventId);
+  var h = '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">' + escapeHtml(d.honesty || CT_HONESTY) + '</div>';
+  if(!crew.length) return h + '<div style="color:var(--muted);font-size:12px;padding:6px 0">No confirmed or unconfirmed crew on its live calls.</div>';
+  return h + crew.map(function(p){
+    var muted = p.unconfirmed_only;
+    var counts = evPl(p.calls || 0, 'call') + ' · ' + evPl(p.days || 0, 'day') + (muted ? ' · unconfirmed' : '');
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px' + (muted ? ';opacity:.6' : '') + '">'
+      + '<span style="flex:1;min-width:0">'
+      +   '<button type="button" class="ce-call-link"' + (muted ? ' style="color:var(--muted)"' : '') + ' onclick="evOpenCrew(\'' + eid + '\',' + Number(p.user_id) + ')">'
+      +     escapeHtml(decodeEntities(p.name || ('#' + p.user_id))) + '</button>'
+      +   (p.ein ? ' <span style="font-size:10px;color:var(--muted)">' + escapeHtml(p.ein) + '</span>' : '')
+      + '</span>'
+      + (p.is_boss ? evChip('Crew boss') : '')
+      + (p.broadcast ? evMarker('B', 'On a Broadcast call') : '')
+      + '<span style="font-size:11px;color:var(--muted);white-space:nowrap">' + escapeHtml(counts) + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+function evNotesHtml(eventId, msg){
+  var d = _evDlg.data || {}, ev = d.event || {};
+  var made = '';
+  if(ev.created_at || ev.created_by_name){
+    var dt = ev.created_at ? new Date(ev.created_at) : null;
+    made = '<div style="font-size:10px;color:var(--muted);margin-top:8px">Made'
+      + (ev.created_by_name ? ' by ' + escapeHtml(ev.created_by_name) : '')
+      + ((dt && !isNaN(dt)) ? ' on ' + escapeHtml(dt.toLocaleDateString('en-AU', {day: 'numeric', month: 'short', year: 'numeric'})) : '')
+      + '</div>';
+  }
+  var body = ev.notes
+    ? '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere">' + escapeHtml(ev.notes) + '</div>'
+    : '<div style="font-size:12px;color:var(--muted)">No notes</div>';
+  var edit = d.can_change ? '<div style="margin-top:8px">' + ctBtn('Edit', "evNotesEdit('" + escapeHtml(eventId) + "')") + '</div>' : '';
+  return body + edit + bkPctxMsg(msg) + made;
+}
+
+function evNotesEdit(eventId){
+  var host = document.getElementById('ev-notes-host');
+  var ev = (_evDlg.data || {}).event || {};
+  if(!host) return;
+  var eid = escapeHtml(eventId);
+  host.innerHTML = '<textarea id="ev-notes-text" rows="8" maxlength="2000" style="' + EF_INPUT_STYLE + '" oninput="evNotesCount()">'
+    + escapeHtml(ev.notes || '') + '</textarea>'
+    + '<div id="ev-notes-count" style="font-size:10px;color:var(--muted);margin-top:2px;text-align:right"></div>'
+    + '<div style="margin-top:6px;display:flex;gap:6px">'
+    +   ctBtn('Save', "evNotesSave('" + eid + "')") + ctBtn('Cancel', "evNotesCancel('" + eid + "')")
+    + '</div><div id="ev-notes-msg"></div>';
+  evNotesCount();
+  var ta = document.getElementById('ev-notes-text');
+  if(ta) ta.focus();
+}
+
+function evNotesCount(){
+  var el = document.getElementById('ev-notes-count');
+  if(el) el.textContent = (_efVal('ev-notes-text') || '').length + ' / 2000';
+}
+
+function evNotesCancel(eventId, msg){
+  var host = document.getElementById('ev-notes-host');
+  if(host) host.innerHTML = evNotesHtml(eventId, msg);
+}
+
+async function evNotesSave(eventId){
+  if(_evDlg.busy) return;
+  _evDlg.busy = true;
+  var j;
+  try{
+    j = await bkEventPost('/api/events/' + encodeURIComponent(eventId), { notes: _efVal('ev-notes-text') || '' });
+  } finally { _evDlg.busy = false; }
+  if(_evDlg.id !== eventId) return;
+  if(j.error){
+    var m = document.getElementById('ev-notes-msg');
+    if(m) m.innerHTML = bkPctxMsg(j.error);
+    return;
+  }
+  if(_evDlg.data) _evDlg.data.event.notes = (j.event || {}).notes || null;
+  if(!j.warning && !j.unchanged) showFeedback('Notes saved');
+  evNotesCancel(eventId, j.warning || '');
+  abEvRefreshIfShown();
+}
+
+function evActMsg(msg){
+  var el = document.getElementById('ev-act-msg');
+  if(el) el.innerHTML = bkPctxMsg(msg);
+}
+
+function evRenderActions(eventId){
+  var el = document.getElementById('entity-modal-actions');
+  var d = _evDlg.data;
+  if(!el) return;
+  if(!d || !d.can_change){ el.innerHTML = entityBtn('Close', 'closeEntityModal()'); return; }
+  var eid = escapeHtml(eventId), n = (d.bookings || []).length, archived = !!(d.event || {}).archived;
+  var arch;
+  if(archived){
+    arch = entityBtn('Unarchive', "evSetArchived('" + eid + "',false)");
+  } else if(n){
+    // A disabled button doesn't show its own tooltip everywhere; the span does.
+    var tip = 'Take its ' + evPl(n, 'booking') + ' out first';
+    arch = '<span title="' + escapeHtml(tip) + '">' + entityBtn('Archive', '', {disabled: true, title: tip}) + '</span>';
+  } else {
+    arch = entityBtn('Archive', "evSetArchived('" + eid + "',true)");
+  }
+  el.innerHTML = entityBtn('Rename…', "evRenameForm('" + eid + "')") + arch + entityBtn('Close', 'closeEntityModal()');
+}
+
+function evRenameForm(eventId){
+  var el = document.getElementById('entity-modal-actions');
+  var ev = ((_evDlg.data || {}).event) || {};
+  if(!el) return;
+  var eid = escapeHtml(eventId);
+  el.innerHTML = '<input id="ev-rename" type="text" maxlength="200" value="' + escapeHtml(ev.name || '') + '" style="' + EF_INPUT_STYLE + ';width:auto;flex:1;min-width:180px">'
+    + entityBtn('Save', "evRenameSave('" + eid + "')", {primary: true}) + entityBtn('Cancel', "evRenderActions('" + eid + "')");
+  var inp = document.getElementById('ev-rename');
+  if(inp){ inp.focus(); inp.select(); }
+}
+
+async function evRenameSave(eventId){
+  var name = (_efVal('ev-rename') || '').trim();
+  if(!name) return evActMsg('Give the event a name.');
+  if(_evDlg.busy) return;
+  _evDlg.busy = true;
+  var j;
+  try{
+    j = await bkEventPost('/api/events/' + encodeURIComponent(eventId), { name: name });
+  } finally { _evDlg.busy = false; }
+  if(j.error) return evActMsg(j.error);   // the 409 for a duplicate name, as the function words it
+  if(!j.warning && !j.unchanged) showFeedback('Renamed to ' + name);
+  window._eventIndex[eventId] = {name: (j.event || {}).name || name, booking_count: ((_evDlg.data || {}).bookings || []).length};
+  abEvRefreshIfShown();
+  await openEventDialog(eventId);
+  if(j.warning) evActMsg(j.warning);
+}
+
+async function evSetArchived(eventId, archived){
+  var ev = ((_evDlg.data || {}).event) || {};
+  if(archived && !confirm('Archive "' + (ev.name || 'this event') + '"? It stops showing in the Add to event picker and the Events list.')) return;
+  if(_evDlg.busy) return;
+  _evDlg.busy = true;
+  var j;
+  try{
+    j = await bkEventPost('/api/events/' + encodeURIComponent(eventId), { archived: archived });
+  } finally { _evDlg.busy = false; }
+  if(j.error) return evActMsg(j.error);
+  if(!j.warning) showFeedback((archived ? 'Archived ' : 'Unarchived ') + (ev.name || 'the event'));
+  abEvRefreshIfShown();
+  await openEventDialog(eventId);
+  if(j.warning) evActMsg(j.warning);
+}
+
+async function evRemoveBooking(eventId, bookingId){
+  var d = _evDlg.data || {}, ev = d.event || {};
+  var b = (d.bookings || []).find(function(x){ return Number(x.booking_id) === Number(bookingId); }) || {};
+  var bname = b.name ? decodeEntities(b.name) : ('booking #' + bookingId);
+  if(_evDlg.busy || !confirm('Take ' + bname + ' out of ' + (ev.name || 'this event') + '?')) return;
+  _evDlg.busy = true;
+  var j;
+  try{
+    j = await bkEventPost('/api/booking/' + encodeURIComponent(bookingId) + '/event', { event_id: null });
+  } finally { _evDlg.busy = false; }
+  if(j.error) return evActMsg(j.error);
+  if(!j.warning) showFeedback('Took ' + bname + ' out of ' + (ev.name || 'the event'));
+  abEvRefreshIfShown();
+  await openEventDialog(eventId);
+  if(j.warning) evActMsg(j.warning);
+}
+
+// + Add booking… (§6.2): search bookings by name; on pick, ONE pricing-context
+// read for that booking says whether it's in another event (a move, confirmed
+// naming both). Search results are never looked up one by one.
+function evAddOpen(eventId){
+  var host = document.getElementById('ev-add');
+  if(!host) return;
+  var eid = escapeHtml(eventId);
+  host.innerHTML = '<div style="border:1px solid var(--border);border-radius:4px;padding:8px 10px;background:var(--surface2)">'
+    + '<input id="ev-add-q" type="text" placeholder="Search bookings by name" style="' + EF_INPUT_STYLE + '" oninput="evAddSearchSoon(\'' + eid + '\')">'
+    + '<div id="ev-add-results" style="margin-top:6px;font-size:12px;color:var(--muted)">Type part of a booking name.</div>'
+    + '<div style="margin-top:8px">' + ctBtn('Cancel', "evAddClose('" + eid + "')") + '</div>'
+    + '<div id="ev-add-msg"></div>'
+    + '</div>';
+  var q = document.getElementById('ev-add-q');
+  if(q) q.focus();
+}
+
+function evAddClose(eventId){
+  var host = document.getElementById('ev-add');
+  if(host) host.innerHTML = ctBtn('+ Add booking…', "evAddOpen('" + escapeHtml(eventId) + "')");
+}
+
+function evAddFail(msg){
+  var el = document.getElementById('ev-add-msg');
+  if(el) el.innerHTML = bkPctxMsg(msg);
+}
+
+function evAddSearchSoon(eventId){
+  clearTimeout(_evDlg.addTimer);
+  _evDlg.addTimer = setTimeout(function(){ evAddSearch(eventId); }, 300);
+}
+
+async function evAddSearch(eventId){
+  var box = document.getElementById('ev-add-results');
+  if(!box) return;
+  var q = (_efVal('ev-add-q') || '').trim();
+  var token = ++_evDlg.addToken;
+  if(!q){ box.textContent = 'Type part of a booking name.'; return; }
+  box.textContent = 'Searching…';
+  var rows = null, err = '';
+  try{
+    var r = await fetch('/api/bookings/all?q=' + encodeURIComponent(q) + '&limit=20');
+    var j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status); else rows = j.bookings || [];
+  }catch(e){ err = e.message || String(e); }
+  if(token !== _evDlg.addToken || !box.isConnected) return;
+  if(!rows){ box.innerHTML = '<span style="color:var(--conflict)">' + escapeHtml(err) + '</span>'; return; }
+  _evDlg.addResults = rows;
+  if(!rows.length){ box.textContent = 'No booking matches.'; return; }
+  var inEvent = {};
+  ((_evDlg.data || {}).bookings || []).forEach(function(b){ inEvent[Number(b.booking_id)] = true; });
+  var eid = escapeHtml(eventId);
+  box.innerHTML = rows.map(function(b, i){
+    var here = !!inEvent[Number(b.booking_id)];
+    return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)' + (here ? ';opacity:.5' : '') + '">'
+      + '<span style="flex:1;min-width:0;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+      +   escapeHtml(decodeEntities(b.name || '(unnamed booking)'))
+      +   ' <span style="font-size:10px;color:var(--muted)">#' + Number(b.booking_id) + '</span></span>'
+      + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + escapeHtml(b.date_str || '') + '</span>'
+      + (here ? '<span style="font-size:10px;color:var(--muted)">in this event</span>'
+              : ctBtn('Add', "evAddPick('" + eid + "'," + i + ")"))
+      + '</div>';
+  }).join('');
+}
+
+async function evAddPick(eventId, i){
+  var b = _evDlg.addResults[i];
+  var ev = ((_evDlg.data || {}).event) || {};
+  if(!b || _evDlg.busy) return;
+  var bid = Number(b.booking_id);
+  _evDlg.busy = true;
+  try{
+    var cur = null;
+    try{
+      var r = await fetch('/api/booking/' + bid + '/pricing-context');
+      var p = await r.json();
+      if(!r.ok || p.error) return evAddFail(p.error || ('HTTP ' + r.status));
+      cur = p.event;
+    }catch(e){ return evAddFail("Couldn't reach the pricing context service."); }
+    if(cur && cur.id === eventId){ evAddFail('It\'s in this event already.'); return; }
+    // The Stage 3 move confirm (bkSetEvent), naming both events.
+    if(cur && !confirm('Move this booking from "' + cur.name + '" to "' + ev.name + '"?\n\nA booking is in one event at most.')) return;
+    var j = await bkEventPost('/api/booking/' + bid + '/event', { event_id: eventId });
+    if(j.error) return evAddFail(j.error);
+    if(!j.warning) showFeedback((cur ? 'Moved to ' : 'Added to ') + ev.name);
+    abEvRefreshIfShown();
+    _evDlg.busy = false;
+    await openEventDialog(eventId);
+    if(j.warning) evActMsg(j.warning);
+  } finally { _evDlg.busy = false; }
+}
+
+function evOpenBooking(eventId, bookingId){
+  entityStackPush('event:' + eventId, 'event', function(){ openEventDialog(eventId); });
+  openBookingDialog(String(bookingId));
+}
+
+function evOpenCrew(eventId, userId){
+  entityStackPush('event:' + eventId, 'event', function(){ openEventDialog(eventId); });
+  openCrewEdit(String(userId));
 }
 
 function bkCallRow(bookingId, c, maps, smaps){
