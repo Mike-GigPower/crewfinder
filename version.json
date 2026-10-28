@@ -1,6 +1,6 @@
 {
-  "version": "5.89.0",
-  "release_date": "2026-10-27",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.89.0/TheGOAT.dmg",
-  "release_notes": "The Responses tab now shows each crew member's answer to a call time change (declined, accepted, cleared by ops, or still waiting) under their accept time."
+  "version": "5.90.0",
+  "release_date": "2026-10-28",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.90.0/TheGOAT.dmg",
+  "release_notes": "Events now have their own view: All Bookings has a new Events button, and each event opens to show its bookings, the crew across the event, and its notes."
 }
