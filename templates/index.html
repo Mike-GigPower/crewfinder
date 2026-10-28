@@ -10515,6 +10515,16 @@ function fmtPhone(v){
   return raw;
 }
 
+// Clickable phone for the Recruitment detail panels. Same contract as the other
+// tel: links in this file (crew contacts, ops rows): the href carries the RAW
+// stored value, the label carries fmtPhone()'s display form. Empty -> '—'.
+function recruitTelLink(v){
+  const raw = String(v == null ? '' : v).trim();
+  if(!raw) return '—';
+  return '<a href="tel:' + recruitEsc(raw) + '" style="color:var(--accent);text-decoration:none" title="Call">'
+       + recruitEsc(fmtPhone(raw)) + '</a>';
+}
+
 // Muted EIN chip for the name cell. Only a converted candidate HAS an EIN, and it
 // is now a searchable field — without it on the row, a search for 6233 returns a
 // row with nothing on it that says 6233. Mirrors the EIN styling on Crew Records.
@@ -10802,7 +10812,7 @@ function renderRecruitRow(c, i){
             ${allDocsDetail}
             ${crewIdDetail}
             <div><span class="recruit-label">Email</span>${recruitEsc(c.email || '—')}</div>
-            <div><span class="recruit-label">Phone</span>${c.phone ? recruitEsc(fmtPhone(c.phone)) : '—'}</div>
+            <div><span class="recruit-label">Phone</span>${recruitTelLink(c.phone)}</div>
             <div><span class="recruit-label">Transport</span>${recruitEsc(c.transport || '—')}</div>
             <div><span class="recruit-label">Tickets</span>${ticketsFull}</div>
           </div>${withdrawnBlock}
@@ -10870,7 +10880,7 @@ function recruitRenderDetail(d, i){
   const contact = `
     <div class="recruit-detail-grid">
       <div><span class="recruit-label">Email</span>${val(d.email)}</div>
-      <div><span class="recruit-label">Phone</span>${val(fmtPhone(d.phone))}</div>
+      <div><span class="recruit-label">Phone</span>${recruitTelLink(d.phone)}</div>
       <div><span class="recruit-label">Date of birth</span>${d.dob ? recruitDate(d.dob) : '—'}</div>
       <div><span class="recruit-label">Address</span>${recruitAddress(d)}</div>
       <div><span class="recruit-label">Emergency contact</span>${recruitEmergency(d)}</div>
