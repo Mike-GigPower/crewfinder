@@ -21318,17 +21318,234 @@ def api_venue_travel_set(venue_id):
 @app.route("/api/events")
 @require_cohort("admin")
 def api_events_search():
-    """The Add to event picker (§6): live events whose name contains ?q=,
-    newest first, each with its booking count. Admin only, like the picker."""
+    """The Add to event picker (§6) and the All Bookings Events list: events
+    whose name contains ?q=, newest first, each with its booking count. Live
+    events only, unless ?archived=1 (the Events list's Show archived), which
+    lists the archived ones instead. The picker never sends it. Admin only."""
     q = str(request.args.get("q") or "").strip()[:200]
-    res, err, status = _pricing_context_request("GET", "/events", "event search", params={"q": q})
+    params = {"q": q}
+    if request.args.get("archived") == "1":
+        params["archived"] = "1"
+    res, err, status = _pricing_context_request("GET", "/events", "event search", params=params)
     if err:
         if err == RATE_CARD_KEY_MISSING:
             msg, status = rate_card_read_failure(err, "Pricing context service")
             return jsonify({"error": msg}), status
         return jsonify({"error": err}), 502
-    return jsonify({"events": [{k: e.get(k) for k in ("id", "name", "notes", "created_at", "booking_count")}
+    return jsonify({"events": [{k: e.get(k) for k in ("id", "name", "notes", "created_at",
+                                                      "booking_count", "archived")}
                                for e in res.get("events") or []]})
+
+
+# ─── EVENT DIALOG (BRIEF-events-view §4.2) ────────────────────────────────────
+# One read for the whole dialog: the event, each of its bookings from
+# get-booking.php, and one pricing-context read for the B / T markers. Nothing
+# here is billed: the Crew roll-up is a headcount, not Stage 4's invoice.
+
+def event_call_is_live(call):
+    """Not cancelled: the front end's _clIsCancelled test (cancelled_at set,
+    cancelled true, or a name starting "CANCELLED -"), the same as crew lists."""
+    return not _crewlist_is_cancelled(call or {})
+
+
+def event_call_fill(call):
+    """(required, filled) for one call: the call dialog's Crew row (§1.1, §6.3).
+    Confirmed crew, less the confirmed ones whose promotion is unanswered.
+    Unconfirmed crew don't count. A cancelled call is (0, 0)."""
+    if not event_call_is_live(call):
+        return 0, 0
+    crew = call.get("crew") or []
+    confirmed = [m for m in crew if str(m.get("status") or "").lower() == "confirmed"]
+    filled = len(confirmed) - sum(1 for m in confirmed if m.get("promo_pending"))
+    return int(_int_or_none(call.get("required")) or 0), filled
+
+
+def _event_melb_date(ts):
+    """get-booking.php's Unix start_date -> "YYYY-MM-DD" in Melbourne, never
+    UTC. None if it isn't a usable timestamp."""
+    try:
+        n = int(ts)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    from zoneinfo import ZoneInfo
+    return datetime.fromtimestamp(n, ZoneInfo("Australia/Melbourne")).strftime("%Y-%m-%d")
+
+
+def _event_call_flag(flags, call_id, key):
+    try:
+        return bool((flags.get(int(call_id)) or {}).get(key))
+    except (TypeError, ValueError):
+        return False
+
+
+def event_booking_row(bid, data, flags, added_at):
+    """One Bookings-tab row from get-booking.php. flags is pricing context's
+    call_flags ({call_id: row}); empty when it couldn't be read."""
+    venue = data.get("venue") if isinstance(data.get("venue"), dict) else {}
+    live = [c for c in data.get("calls") or [] if event_call_is_live(c)]
+    dates = sorted(d for d in (_event_melb_date(c.get("start_date")) for c in live) if d)
+    required = filled = 0
+    for c in live:
+        r, f = event_call_fill(c)
+        required += r
+        filled += f
+    return {
+        "booking_id":      bid,
+        "ok":              True,
+        "name":            data.get("name") or "",
+        "status":          data.get("status") or "",
+        "venue_name":      venue.get("name") or "",
+        "first_date":      dates[0] if dates else None,
+        "last_date":       dates[-1] if dates else None,
+        "live_calls":      len(live),
+        "required":        required,
+        "filled":          filled,
+        "broadcast_calls": sum(1 for c in live if _event_call_flag(flags, c.get("call_id"), "attracts_broadcast")),
+        "travel_calls":    sum(1 for c in live if _event_call_flag(flags, c.get("call_id"), "travel_eligible")),
+        "added_at":        added_at,
+    }
+
+
+def event_crew_rollup(bookings_data, flags):
+    """The Crew tab (§6.4): one row per person across every live call of every
+    booking. Counts confirmed and unconfirmed; a confirmed row with an
+    unanswered promotion counts as unconfirmed. declined, noshow, backup,
+    cancelled and sent are left out. Sorted by days, most first, then surname."""
+    people = {}
+    for data in bookings_data:
+        for c in data.get("calls") or []:
+            if not event_call_is_live(c):
+                continue
+            day = _event_melb_date(c.get("start_date"))
+            broadcast = _event_call_flag(flags, c.get("call_id"), "attracts_broadcast")
+            for m in c.get("crew") or []:
+                status = str(m.get("status") or "").lower()
+                if status not in ("confirmed", "unconfirmed"):
+                    continue
+                try:
+                    uid = int(m.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                p = people.get(uid)
+                if p is None:
+                    first = str(m.get("firstname") or "").strip()
+                    last = str(m.get("lastname") or "").strip()
+                    p = people[uid] = {
+                        "user_id": uid, "name": (first + " " + last).strip() or str(m.get("name") or ""),
+                        "ein": str(m.get("ein") or "").strip(), "_last": last.lower(),
+                        "_calls": set(), "_days": set(), "confirmed": False,
+                        "is_boss": False, "broadcast": False,
+                    }
+                p["_calls"].add(str(c.get("call_id")))
+                if day:
+                    p["_days"].add(day)
+                if status == "confirmed" and not m.get("promo_pending"):
+                    p["confirmed"] = True
+                if int(_int_or_none(m.get("is_call_boss")) or 0):
+                    p["is_boss"] = True
+                if broadcast:
+                    p["broadcast"] = True
+    rows = [{"user_id": p["user_id"], "name": p["name"], "ein": p["ein"],
+             "calls": len(p["_calls"]), "days": len(p["_days"]),
+             "unconfirmed_only": not p["confirmed"], "is_boss": p["is_boss"],
+             "broadcast": p["broadcast"], "_last": p["_last"]}
+            for p in people.values()]
+    rows.sort(key=lambda r: (-r["days"], r["_last"], r["name"].lower()))
+    for r in rows:
+        r.pop("_last")
+    return rows
+
+
+def _event_booking_sort_key(row):
+    if not row.get("ok"):
+        return (2, "", row.get("booking_id") or 0)
+    if not row.get("first_date"):
+        return (1, "", row.get("booking_id") or 0)
+    return (0, row["first_date"], row.get("booking_id") or 0)
+
+
+@app.route("/api/events/<event_id>")
+@require_cohort("admin")
+def api_event_detail(event_id):
+    """The Event dialog (§4.2, §6): the event, its bookings with dates, venue
+    and fill, the Crew roll-up and the B / T counts. Admin only, like every
+    /api/events route. A booking SmartStaff can't return comes back ok:false,
+    never dropped; a pricing-context read that fails only hides the markers."""
+    if not _EVENT_ID_RE.match(str(event_id)):
+        return jsonify({"error": "event id must be a uuid"}), 400
+    res, err, status = _pricing_context_request("GET", "/events/" + str(event_id).lower(), "event")
+    if err:
+        if err == RATE_CARD_KEY_MISSING:
+            msg, status = rate_card_read_failure(err, "Pricing context service")
+            return jsonify({"error": msg}), status
+        if status == 404:
+            return jsonify({"error": err}), 404
+        return jsonify({"error": err}), 502
+    ev = res.get("event") or {}
+    links = []
+    for row in res.get("bookings") or []:
+        bid = _int_or_none(row.get("booking_id"))
+        if bid is not None:
+            links.append((bid, row.get("set_at")))
+
+    fetched = []
+    if links:
+        ss = get_ss_session()
+        if not ss:
+            return jsonify({"error": "Not logged in"}), 401
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            fetched = list(ex.map(lambda link: fetch_booking_bulk(ss, str(link[0])), links))
+
+    flags_ok = True
+    flags = {}
+    if links:
+        ctx, ferr = fetch_pricing_context([bid for bid, _ in links])
+        if ferr:
+            print(f"[events] pricing context read failed: {ferr}")
+            flags_ok = False
+        else:
+            flags = ctx["call_flags"]
+
+    rows, good = [], []
+    for (bid, added_at), (data, berr) in zip(links, fetched):
+        if berr or not isinstance(data, dict):
+            print(f"[events] booking {bid} load failed: {berr}")
+            rows.append({"booking_id": bid, "ok": False,
+                         "error": str(berr or "no booking data"), "added_at": added_at})
+            continue
+        good.append(data)
+        rows.append(event_booking_row(bid, data, flags, added_at))
+    rows.sort(key=_event_booking_sort_key)
+
+    ok_rows = [r for r in rows if r.get("ok")]
+    firsts = [r["first_date"] for r in ok_rows if r.get("first_date")]
+    lasts = [r["last_date"] for r in ok_rows if r.get("last_date")]
+    names = user_names_for([ev.get("created_by_user_id")])
+    return jsonify({
+        "event": {
+            "id":              ev.get("id"),
+            "name":            ev.get("name"),
+            "notes":           ev.get("notes"),
+            "archived":        bool(ev.get("archived")),
+            "created_at":      ev.get("created_at"),
+            "created_by_name": names.get(call_types.as_call_id(ev.get("created_by_user_id"))),
+        },
+        "bookings": rows,
+        "totals": {
+            "bookings":   len(rows),
+            "first_date": min(firsts) if firsts else None,
+            "last_date":  max(lasts) if lasts else None,
+            "required":   sum(r["required"] for r in ok_rows),
+            "filled":     sum(r["filled"] for r in ok_rows),
+        },
+        "crew":       event_crew_rollup(good, flags),
+        "flags_ok":   flags_ok,
+        "can_change": current_cohort() == "admin",
+        "honesty":    PRICING_CONTEXT_HONESTY,
+    })
 
 
 def _event_result(res):
@@ -21381,6 +21598,11 @@ def api_event_update(event_id):
     res, err, status = _post_pricing_context("/events/" + str(event_id).lower(), patch,
                                              "event", current_user_id())
     if err:
+        # An unarchive refused by the live-name index: the function builds its
+        # message from patch.name, which an unarchive doesn't send, so it reads
+        # 'An event called "undefined" already exists' (§6.6).
+        if status == 409 and patch == {"archived": False}:
+            err = "A live event already has this name. Rename one of them first."
         return jsonify({"error": err}), (status if status in (400, 404, 409, 422) else 502)
     return _event_result(res)
 
