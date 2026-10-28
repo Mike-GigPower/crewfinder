@@ -2,5 +2,5 @@
   "version": "5.90.0",
   "release_date": "2026-10-28",
   "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.90.0/TheGOAT.dmg",
-  "release_notes": "Events now have their own view: All Bookings has a new Events button, and each event opens to show its bookings, the crew across the event, and its notes."
+  "release_notes": "Events now have their own view: open All Bookings and click Events to search events, see each event's bookings, crew and notes, and open an event from a booking's Details tab."
 }
