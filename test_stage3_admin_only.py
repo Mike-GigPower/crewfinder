@@ -28,6 +28,8 @@ WRITES = [
 ]
 ADMIN_READS = [
     ("event search", "/api/events?q=zz"),
+    ("archived event search", "/api/events?q=zz&archived=1"),
+    ("event dialog", f"/api/events/{EVENT}"),
 ]
 
 
