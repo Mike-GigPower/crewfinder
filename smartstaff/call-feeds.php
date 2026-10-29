@@ -199,7 +199,14 @@
 		*/
 
 		$warnings = array();
-		$srcStart = (int) $info[$source]->start_date + goat_time_to_secs($info[$source]->start_time);
+		/* Wall-clock date and time resolved TOGETHER, so PHP applies the UTC
+		/* offset in force on that date. The old "$date_i + $hh * 3600" added
+		/* seconds to midnight, which comes out an hour wrong on the two
+		/* daylight-saving changeover Sundays (a 23- or 25-hour day) -- e.g. an
+		/* 08:00 call on 4 Oct 2026 read 09:00. Same idiom as offer-clash.php.
+		/* The fallback keeps the old arithmetic only if strtotime refuses. */
+		$srcStart = strtotime(date('Y-m-d', (int) $info[$source]->start_date) . ' ' . substr($info[$source]->start_time, 0, 8));
+		if ($srcStart === false) $srcStart = (int) $info[$source]->start_date + goat_time_to_secs($info[$source]->start_time);
 		$srcEnd   = $srcStart + (int) round(((double) $info[$source]->est_length) * 3600);
 
 		/* Which of these targets already have an edge from this source. The
@@ -225,7 +232,14 @@
 
 		foreach ($targets as $t)
 		{
-			$tStart = (int) $info[$t]->start_date + goat_time_to_secs($info[$t]->start_time);
+			/* Wall-clock date and time resolved TOGETHER, so PHP applies the UTC
+			/* offset in force on that date. The old "$date_i + $hh * 3600" added
+			/* seconds to midnight, which comes out an hour wrong on the two
+			/* daylight-saving changeover Sundays (a 23- or 25-hour day) -- e.g. an
+			/* 08:00 call on 4 Oct 2026 read 09:00. Same idiom as offer-clash.php.
+			/* The fallback keeps the old arithmetic only if strtotime refuses. */
+			$tStart = strtotime(date('Y-m-d', (int) $info[$t]->start_date) . ' ' . substr($info[$t]->start_time, 0, 8));
+			if ($tStart === false) $tStart = (int) $info[$t]->start_date + goat_time_to_secs($info[$t]->start_time);
 			$tEnd   = $tStart + (int) round(((double) $info[$t]->est_length) * 3600);
 
 			if ($srcStart < $tEnd && $tStart < $srcEnd)

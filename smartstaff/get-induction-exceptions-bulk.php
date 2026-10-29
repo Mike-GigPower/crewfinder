@@ -260,7 +260,14 @@
 		$time_hm = substr($row->start_time, 0, 5);
 		if (!preg_match('/^\d{2}:\d{2}$/', $time_hm)) $time_hm = '00:00';
 		list($hh, $mm) = array_map('intval', explode(':', $time_hm));
-		$call_start = $date_i + ($hh * 3600) + ($mm * 60);
+		/* Wall-clock date and time resolved TOGETHER, so PHP applies the UTC
+		/* offset in force on that date. The old "$date_i + $hh * 3600" added
+		/* seconds to midnight, which comes out an hour wrong on the two
+		/* daylight-saving changeover Sundays (a 23- or 25-hour day) -- e.g. an
+		/* 08:00 call on 4 Oct 2026 read 09:00. Same idiom as offer-clash.php.
+		/* The fallback keeps the old arithmetic only if strtotime refuses. */
+		$call_start = strtotime(date('Y-m-d', $date_i) . ' ' . $time_hm . ':00');
+		if ($call_start === false) $call_start = $date_i + ($hh * 3600) + ($mm * 60);
 
 		$warn = ($row->warn_days !== null) ? (int) $row->warn_days : 14;
 
