@@ -1,6 +1,6 @@
 {
-  "version": "5.90.1",
-  "release_date": "2026-10-28",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.90.1/TheGOAT.dmg",
-  "release_notes": "Phone numbers on Recruitment applicant records are now clickable. Click an applicant's number to call it."
+  "version": "5.90.2",
+  "release_date": "2026-10-30",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.90.2/TheGOAT.dmg",
+  "release_notes": "Booked Crew on a call now shows names as Last, First and sorts them by last name."
 }
