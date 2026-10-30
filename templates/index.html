@@ -21527,6 +21527,32 @@ function refreshCallCrewSummary(callId){
 var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show']];
 var CALL_CREW_ORDERS = [['status','Status'],['name','Name']];
 
+// Sort key for a Booked Crew row: surname first, then first name, lowercased
+// -- the Last-name order used on most other screens (Rich, Oct 2026). Shown
+// as "Last, First" by callCrewDisplayName. get-booking.php sends firstname/lastname; the
+// fallback roster (/api/booked-crew) may send only `name`, so take its last
+// word as the surname there.
+function callCrewSortName(c){
+  var last = decodeEntities((c && c.lastname) || '').trim();
+  var first = decodeEntities((c && c.firstname) || '').trim();
+  if(!last){
+    var parts = decodeEntities((c && c.name) || '').trim().split(/\s+/);
+    last = parts.pop() || '';
+    first = parts.join(' ');
+  }
+  return (last + ' ' + first).trim().toLowerCase();
+}
+
+// Display name for a Booked Crew row: "Lastname, Firstname", as on Crew →
+// Records and the crew list (Rich, Oct 2026). Falls back to `name` when the
+// row has no surname (the /api/booked-crew fallback roster).
+function callCrewDisplayName(c){
+  var last = decodeEntities((c && c.lastname) || '').trim();
+  var first = decodeEntities((c && c.firstname) || '').trim();
+  if(last && first) return last + ', ' + first;
+  return last || decodeEntities((c && c.name) || '').trim();
+}
+
 function _callCrewItems(callId){
   var list = document.getElementById('cc-list-'+callId);
   return list ? Array.prototype.slice.call(list.querySelectorAll(':scope > .call-crew-item')) : [];
@@ -22704,7 +22730,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         if(c.callout_member) promo += ' <span title="Called out from standby — has not answered yet" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">called out</span>';
         // Admin only: the crew record is /api/admin/crew. The fallback roster
         // (/api/booked-crew) carries no id, so those names stay plain text.
-        var nm = escapeHtml(decodeEntities(c.name));
+        var nm = escapeHtml(callCrewDisplayName(c));
         if(window._cohort === 'admin' && Number(c.id) > 0){
           nm = '<button type="button" class="ce-call-link" title="Open crew record" onclick="entityOpenCrew('
             + Number(bookingId) + ',' + Number(callId) + ',' + Number(c.id) + ')">' + nm + '</button>';
@@ -22714,7 +22740,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // position as received, kept for a stable sort.
         // An unanswered promotion files under Pending (1) for the chips and
         // the status sort, matching its badge (design D4).
-        return '<div class="call-crew-item" data-status="'+(crewIsPromoPending(c) ? 1 : crewStatusInt(c.status))+'" data-name="'+escapeHtml(decodeEntities(c.name||'').toLowerCase())+'" data-idx="'+_ci+'">'
+        return '<div class="call-crew-item" data-status="'+(crewIsPromoPending(c) ? 1 : crewStatusInt(c.status))+'" data-name="'+escapeHtml(callCrewSortName(c))+'" data-idx="'+_ci+'">'
           + '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text)">'+nm+boss+ctTag+chg+promo+'</span><span style="display:flex;align-items:center;gap:4px">'+crewBossControl(c, bookingId, callId, isCancelled)+ctCtl+crewPromoteControl(c, bookingId, callId)+crewStatusControl(c, bookingId, callId)+mob+crewRemoveControl(c, bookingId, callId)+'</span></div>'+ctEdit
           + '</div>'; }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew booked yet.</div>';
