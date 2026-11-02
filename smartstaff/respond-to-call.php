@@ -570,7 +570,7 @@
 			die('{"error":"call status update failed: ' . addslashes(mysql_error()) . '"}');
 		}
 
-		$changed = mysql_affected_rows();
+		$changed = $db->affected_rows;
 
 		if ($changed > 0 || $isBreak)
 		{
