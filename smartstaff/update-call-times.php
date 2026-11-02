@@ -315,7 +315,7 @@
 		   rows even though the row exists. Capture affected_rows immediately. */
 
 		$err = mysql_error();
-		$aff = mysql_affected_rows();
+		$aff = $db->affected_rows;
 
 		if ($err !== '')
 		{
