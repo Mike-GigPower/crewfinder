@@ -2811,10 +2811,10 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
             <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
               <div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">From</label>
                 <input type="date" id="ms-un-start-date" class="ms-mini-input">
-                <input type="time" id="ms-un-start-time" class="ms-mini-input" value="00:00"></div>
+                <input type="text" inputmode="numeric" placeholder="HH:MM" maxlength="5" onblur="normalizeTime24(this)" id="ms-un-start-time" class="ms-mini-input time24" value="00:00"></div>
               <div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">To</label>
                 <input type="date" id="ms-un-end-date" class="ms-mini-input">
-                <input type="time" id="ms-un-end-time" class="ms-mini-input" value="23:59"></div>
+                <input type="text" inputmode="numeric" placeholder="HH:MM" maxlength="5" onblur="normalizeTime24(this)" id="ms-un-end-time" class="ms-mini-input time24" value="23:59"></div>
             </div>
             <div style="margin-top:10px"><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">Reason</label>
               <input type="text" id="ms-un-reason" placeholder="e.g. Uni lectures, On leave" class="ms-mini-input" style="width:100%;box-sizing:border-box"></div>
@@ -3046,7 +3046,7 @@ function dtToH(iso,targetDate){
 function hToLabel(h,targetDate){
   const d=new Date(targetDate+'T00:00');
   d.setHours(Math.floor(h),Math.round((h%1)*60));
-  return d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+  return d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 }
 
 
@@ -3322,8 +3322,8 @@ async function loadMyShifts(){
     const shifts=(d.shifts||[]).slice().sort((a,b)=>a.start.localeCompare(b.start));
     if(!shifts.length){ sb.innerHTML='<div class="ms-empty">No upcoming shifts.</div>'; sm.textContent=''; }
     else{
-      const fmt=iso=>{const x=new Date(iso);return x.toLocaleDateString('en-AU',{weekday:'short',day:'2-digit',month:'short'})+' '+x.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});};
-      const endt=iso=>new Date(iso).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+      const fmt=iso=>{const x=new Date(iso);return x.toLocaleDateString('en-AU',{weekday:'short',day:'2-digit',month:'short'})+' '+x.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});};
+      const endt=iso=>new Date(iso).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
       sb.innerHTML = shifts.map(s=>`<div class="ms-row"><span class="ms-venue">${s.venue||s.booking_name||'Shift'}${s.call_name?(' · '+s.call_name):''}</span><span class="ms-when">${fmt(s.start)} – ${endt(s.end)}</span></div>`).join('');
       sm.textContent = shifts.length+' shift(s)';
     }
@@ -3400,9 +3400,10 @@ async function msSubmitUnavail(){
   const ed=document.getElementById('ms-un-end-date').value;
   const reason=document.getElementById('ms-un-reason').value.trim();
   const allDay=!!(document.getElementById('ms-un-allday') && document.getElementById('ms-un-allday').checked);
-  const st = allDay ? '00:00' : (document.getElementById('ms-un-start-time').value||'00:00');
-  const et = allDay ? '23:59' : (document.getElementById('ms-un-end-time').value||'23:59');
+  const st = allDay ? '00:00' : time24Value(document.getElementById('ms-un-start-time'), '00:00');
+  const et = allDay ? '23:59' : time24Value(document.getElementById('ms-un-end-time'), '23:59');
   if(!sd||!ed||!reason){ msg.style.color='var(--conflict)'; msg.textContent='Fill in both dates and a reason.'; return; }
+  if(!st||!et){ msg.style.color='var(--conflict)'; msg.textContent='Enter times on the 24-hour clock, e.g. 09:00 or 17:30.'; return; }
   const sp=st.split(':').map(Number), ep=et.split(':').map(Number);
   msg.style.color='var(--muted)'; msg.textContent='Saving…';
   try{
@@ -4521,7 +4522,7 @@ function _bookingPlanRender(){
   (plan.calls||[]).forEach(c => {
     const d=new Date(c.start_dt);
     const when=isNaN(d) ? '' : d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})
-      +' '+d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+      +' '+d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
     const picks=(c.picks||[]).filter(p => !removed.has(p.user_id+':'+c.call_id));
     h.push('<div style="margin-top:10px;padding-top:6px;border-top:1px solid var(--border)">'
       +'<b>#'+_planEsc(c.call_id)+' '+_planEsc(c.call_name)+'</b> <span style="color:var(--muted)">'+_planEsc(when)+'</span>'
@@ -6996,7 +6997,7 @@ function recruitSessionLabel(ms){
   try{
     return new Intl.DateTimeFormat('en-AU', {
       timeZone: 'Australia/Melbourne', weekday: 'long', day: 'numeric',
-      month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+      month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
     }).format(new Date(ms));
   }catch(e){ return new Date(ms).toISOString(); }
 }
@@ -7205,11 +7206,11 @@ function _fmtMelbParts(iso, opts){
       Object.assign({timeZone:'Australia/Melbourne'}, opts)).format(new Date(iso));
   }catch(e){ return ''; }
 }
-// "Thu 20 Aug 2026, 11:00 am" — day name + date + time, Melbourne.
+// "Thu 20 Aug 2026, 11:00" — day name + date + 24-hour time, Melbourne.
 function _fmtSessionStart(iso){
   if(!iso) return '—';
   const d = _fmtMelbParts(iso, {weekday:'short', day:'numeric', month:'short', year:'numeric'});
-  const t = _fmtMelbParts(iso, {hour:'numeric', minute:'2-digit', hour12:true});
+  const t = _fmtMelbParts(iso, {hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
   return d ? (d + ', ' + t) : '';
 }
 // UTC ISO → "YYYY-MM-DDTHH:mm" Melbourne wall-clock, for a datetime-local input.
@@ -7219,7 +7220,7 @@ function _isoToMelbLocalInput(iso){
     const p = {};
     new Intl.DateTimeFormat('en-CA', {timeZone:'Australia/Melbourne',
       year:'numeric', month:'2-digit', day:'2-digit',
-      hour:'2-digit', minute:'2-digit', hour12:false})
+      hour:'2-digit', minute:'2-digit', hourCycle:'h23'})
       .formatToParts(new Date(iso)).forEach(x => { if(x.type!=='literal') p[x.type]=x.value; });
     if(!p.year) return '';
     const hh = (p.hour === '24') ? '00' : p.hour;   // Intl can emit 24 for midnight
@@ -7236,7 +7237,7 @@ function _melbLocalToIso(localStr){
   const d = new Date(localStr);
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
-// Default booking-closes = 5pm on the previous WEEKDAY before the start date.
+// Default booking-closes = 17:00 on the previous WEEKDAY before the start date.
 // Weekday arithmetic only — no public-holiday calendar (that's why the value is
 // an editable column, not logic: ops can nudge it when a session sits near a
 // holiday). A crude, overridable default; not worth more than this.
@@ -7545,10 +7546,19 @@ function openSessionEdit(id){
   intakeOpts += '<option value="__new__">＋ New intake…</option>';
 
   const modeOpt = (v,l) => '<option value="'+v+'"'+((isEdit?s.mode:'in_person')===v?' selected':'')+'>'+l+'</option>';
-  const dt = (i,val) => '<input id="'+i+'" type="datetime-local" value="'+escapeHtml(val||'')+'" style="'+EF_INPUT_STYLE+'">';
+  // A date box plus a 24-hour time box (Mike, 2 Nov 2026). datetime-local
+  // follows the Mac's 12/24-hour setting and showed am/pm; read with dtValue().
+  const dt = (i,val) => {
+    const v = String(val||'');
+    return '<div style="display:flex;gap:6px">'
+      + '<input id="'+i+'-d" type="date" value="'+escapeHtml(v.slice(0,10))+'" style="'+EF_INPUT_STYLE+';flex:1 1 auto">'
+      + '<input id="'+i+'-t" class="time24" type="text" inputmode="numeric" placeholder="HH:MM" maxlength="5" onblur="normalizeTime24(this)"'
+      + ' value="'+escapeHtml(v.slice(11,16))+'" style="'+EF_INPUT_STYLE+';flex:0 0 5.5em;text-align:center">'
+      + '</div>';
+  };
 
   const body =
-      efRow('Label', '<input id="sess-label" type="text" placeholder="Wed 2 Sept, 9:00 AM" value="'+escapeHtml(isEdit?(s.label||''):'')+'" style="'+EF_INPUT_STYLE+'">'
+      efRow('Label', '<input id="sess-label" type="text" placeholder="Wed 2 Sept, 09:00" value="'+escapeHtml(isEdit?(s.label||''):'')+'" style="'+EF_INPUT_STYLE+'">'
         + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Names this sitting. The intake below names the whole round.</div>')
     + efRow('Intake',
         '<select id="sess-intake" onchange="sessIntakeToggle()" style="'+EF_INPUT_STYLE+'">'+intakeOpts+'</select>'
@@ -7569,7 +7579,7 @@ function openSessionEdit(id){
     + efRow('What attendees need to know', '<textarea id="sess-mnotes" rows="3" style="'+EF_INPUT_STYLE+';resize:vertical" placeholder="Enter via Gate 3. Bring photo ID and steel-caps. Parking on Pearl River Rd.">'+escapeHtml(isEdit?(s.meeting_notes||''):'')+'</textarea>'
         + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Goes out in their confirmation and reminder emails. Entry instructions, what to bring, parking.</div>')
     + efRow('Booking closes', dt('sess-close', isEdit?_isoToMelbLocalInput(s.booking_closes_at):'')
-        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Defaults to 5pm the previous working day; editable.</div>')
+        + '<div style="font-size:10px;color:var(--muted);margin-top:3px">Defaults to 17:00 the previous working day; editable.</div>')
     + efRow('Waitlist', '<label style="font-size:12px;color:var(--text);display:flex;gap:8px;align-items:center"><input id="sess-waitlist" type="checkbox" '+((!isEdit||s.waitlist_enabled)?'checked':'')+'> Enable waitlist</label>')
     + efRow('Notes', '<textarea id="sess-notes" rows="2" style="'+EF_INPUT_STYLE+';resize:vertical" placeholder="Ops-only — never shown to candidates">'+escapeHtml(isEdit?(s.notes||''):'')+'</textarea>');
 
@@ -7580,13 +7590,14 @@ function openSessionEdit(id){
 
   sessModeToggle();
   sessIntakeToggle();
-  const startEl = document.getElementById('sess-start');
-  if(startEl){
-    startEl.addEventListener('change', function(){
-      const c = document.getElementById('sess-close');
-      if(c && !c.value){ c.value = _defaultBookingCloses(startEl.value); }
+  ['sess-start-d','sess-start-t'].forEach(function(sid){
+    const el = document.getElementById(sid);
+    if(!el) return;
+    el.addEventListener('change', function(){
+      const start = dtValue('sess-start');
+      if(start && start !== 'bad' && !dtValue('sess-close')){ dtSet('sess-close', _defaultBookingCloses(start)); }
     });
-  }
+  });
 }
 function sessModeToggle(){
   const mode = (document.getElementById('sess-mode')||{}).value || 'in_person';
@@ -7619,9 +7630,13 @@ function saveSession(id){
   if(intake === '__new__') intake = val('sess-intake-new').trim();
   const capacity = parseInt(val('sess-capacity'), 10);
   const mode = val('sess-mode') || 'in_person';
-  const startLocal = val('sess-start');
-  const endLocal = val('sess-end');
-  const closeLocal = val('sess-close');
+  const startLocal = dtValue('sess-start');
+  const endLocal = dtValue('sess-end');
+  const closeLocal = dtValue('sess-close');
+  if(startLocal === 'bad' || endLocal === 'bad' || closeLocal === 'bad'){
+    sessDialogError('Enter each date with a 24-hour time, e.g. 09:00 or 17:30.');
+    return;
+  }
   const location = val('sess-location').trim();
   const address = val('sess-address').trim();
   const entryMap = val('sess-entrymap').trim();
@@ -12536,7 +12551,7 @@ function icRowHtml(c){
         <input class="ic-date" type="date" value="${escapeHtml(c.date || '')}" onchange="icOnDate(this)">
         <div class="ic-daycap">${escapeHtml(dateCaption(c.date || ''))}</div>
       </td>
-      <td style="min-width:112px"><input class="ic-time" type="text" placeholder="e.g. 8.30pm" value="${escapeHtml(c.start_time || '')}" onblur="normalizeMbcTime(this);updateImportReadiness()" oninput="updateImportReadiness()"></td>
+      <td style="min-width:112px"><input class="ic-time" type="text" placeholder="e.g. 20:30" value="${escapeHtml(c.start_time || '')}" onblur="normalizeMbcTime(this);updateImportReadiness()" oninput="updateImportReadiness()"></td>
       <td style="min-width:76px"><input class="ic-length" type="number" min="0" step="0.5" value="${c.duration_hours == null ? '' : c.duration_hours}"></td>
       <td style="min-width:68px"><input class="ic-required" type="number" min="0" step="1" value="${c.quantity == null ? '' : c.quantity}"></td>
       <td style="min-width:150px"><input class="ic-notes" type="text" placeholder="optional" value="${escapeHtml(c.shift_notes || '')}"></td>
@@ -12885,7 +12900,7 @@ function ctChip(eff){
       + 'color:var(--muted);border:1px dashed var(--border)">' + escapeHtml(eff.role || '') + ' · from call name</span>';
   }
   var who = eff.set_by_user_id ? ' by ' + ctWho(eff) : '';
-  var when = eff.set_at ? ' · ' + new Date(eff.set_at).toLocaleString() : '';
+  var when = eff.set_at ? ' · ' + fmtStamp24(new Date(eff.set_at)) : '';
   var src = { estimate_import: 'From the estimate', add_call: 'Set on Add call',
               manual_booking: 'Set on the Booking form', admin: 'Changed on the call' }[eff.source] || 'Stored';
   return '<span title="' + escapeHtml(src + who + when) + '" style="' + base
@@ -12960,7 +12975,7 @@ async function loadPublicHolidays(force){
     if(!resp.ok) throw new Error(d.error || ('HTTP ' + resp.status));
     const fetched = d.fetched_at ? new Date(d.fetched_at) : null;
     const when = (fetched && !isNaN(fetched))
-      ? fetched.toLocaleString('en-AU', {weekday:'short', day:'numeric', month:'short', hour:'numeric', minute:'2-digit'})
+      ? fetched.toLocaleString('en-AU', {weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'})
       : '—';
     meta.textContent = 'Source: Estimator · last fetched ' + when;
     const warns = [];
@@ -13010,7 +13025,7 @@ function prWhen(iso){
   if(!iso) return '—';
   const d = new Date(iso);
   return isNaN(d) ? String(iso)
-    : d.toLocaleString('en-AU', {weekday:'short', day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+    : d.toLocaleString('en-AU', {weekday:'short', day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
 }
 function prRender(d){
   const meta = document.getElementById('pr-meta');
@@ -15888,7 +15903,7 @@ async function _ceLoadMessageHistory(crewId){
   var msgs = d.messages || [];
   if(!msgs.length){ box.textContent = 'Nothing sent to ' + decodeEntities(_ceFirstName()) + ' yet.'; return; }
   box.innerHTML = msgs.map(function(m){
-    var when = m.createdAt ? new Date(m.createdAt).toLocaleString('en-AU', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}) : '';
+    var when = m.createdAt ? new Date(m.createdAt).toLocaleString('en-AU', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'}) : '';
     var read = m.readAt
       ? '<span style="color:var(--ok,#10b981)">read ✓ ' + escapeHtml(new Date(m.readAt).toLocaleString('en-AU', {day:'numeric', month:'short'})) + '</span>'
       : '<span>unread</span>';
@@ -16842,7 +16857,7 @@ function unavailDatePart(d){
   return d.toLocaleDateString('en-AU', {day:'2-digit', month:'short', year:'numeric'});
 }
 function unavailTimePart(d){
-  return d.toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit', hour12:false});
+  return d.toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
 }
 function unavailFmtRange(startIso, endIso){
   var s = new Date(startIso), e = new Date(endIso);
@@ -16980,10 +16995,10 @@ async function ceLoadUnavail(id){
     + '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start">'
     +   '<div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">From</label>'
     +     '<input type="date" id="ceu-sd" value="'+today+'" style="'+inp+'">'
-    +     '<input type="time" id="ceu-st" value="00:00" style="'+inp+'"></div>'
+    +     '<input type="text" inputmode="numeric" placeholder="HH:MM" maxlength="5" onblur="normalizeTime24(this)" id="ceu-st" class="time24" value="00:00" style="'+inp+'"></div>'
     +   '<div><label style="display:block;font-size:10px;color:var(--muted);margin-bottom:3px">To</label>'
     +     '<input type="date" id="ceu-ed" value="'+today+'" style="'+inp+'">'
-    +     '<input type="time" id="ceu-et" value="23:59" style="'+inp+'"></div>'
+    +     '<input type="text" inputmode="numeric" placeholder="HH:MM" maxlength="5" onblur="normalizeTime24(this)" id="ceu-et" class="time24" value="23:59" style="'+inp+'"></div>'
     + '</div>'
     + efRow('Reason', '<input type="text" id="ceu-reason" placeholder="e.g. Uni lectures, On leave" style="'+EF_INPUT_STYLE+'">')
     + '<div id="ceu-msg" style="font-size:11px;margin-top:8px;min-height:14px"></div>'
@@ -17187,9 +17202,10 @@ async function ceUnavailAdd(id){
   var ed=(document.getElementById('ceu-ed')||{value:''}).value;
   var reason=((document.getElementById('ceu-reason')||{value:''}).value||'').trim();
   var allDay=!!(document.getElementById('ceu-allday') && document.getElementById('ceu-allday').checked);
-  var st = allDay ? '00:00' : ((document.getElementById('ceu-st')||{value:'00:00'}).value||'00:00');
-  var et = allDay ? '23:59' : ((document.getElementById('ceu-et')||{value:'23:59'}).value||'23:59');
+  var st = allDay ? '00:00' : time24Value(document.getElementById('ceu-st'), '00:00');
+  var et = allDay ? '23:59' : time24Value(document.getElementById('ceu-et'), '23:59');
   if(!sd||!ed){ set('Pick start and end dates.',false); return; }
+  if(!st||!et){ set('Enter times on the 24-hour clock, e.g. 09:00 or 17:30.',false); return; }
   if(!reason){ set('A reason is required.',false); return; }
   var sp=st.split(':').map(Number), ep=et.split(':').map(Number);
   var startTs=new Date(sd+'T'+st), endTs=new Date(ed+'T'+et);
@@ -20088,6 +20104,45 @@ async function submitAddEntity(kind){
     if(btn){ btn.disabled = false; btn.textContent = cfg.ok; }
   }
 }
+// ---- 24-hour time boxes (Mike, 2 Nov 2026: "24 hr clock for recording times,
+// no am/pm"). Every typed time in THE GOAT is a plain text box read through
+// parseFlexTime, so it shows HH:MM whatever the Mac's 12/24-hour setting.
+function normalizeTime24(el){
+  if(!el) return;
+  var p = parseFlexTime(el.value);
+  if(p){ el.value = p; el.classList.remove('mbc-time-bad'); }
+  else if(el.value.trim()){ el.classList.add('mbc-time-bad'); }
+  else { el.classList.remove('mbc-time-bad'); }
+}
+// The box's time as "HH:MM"; `fallback` when it is empty; '' when it can't be read.
+function time24Value(el, fallback){
+  if(!el) return fallback;
+  var raw = String(el.value || '').trim();
+  if(!raw) return fallback;
+  return parseFlexTime(raw) || '';
+}
+// A dt() pair as "YYYY-MM-DDTHH:mm"; '' when the date is empty; 'bad' when the
+// date is set but the time is missing or can't be read.
+function dtValue(id){
+  var d = (document.getElementById(id+'-d')||{}).value || '';
+  var t = String((document.getElementById(id+'-t')||{}).value || '').trim();
+  if(!d) return '';
+  var p = parseFlexTime(t);
+  return p ? d+'T'+p : 'bad';
+}
+function dtSet(id, v){
+  var d = document.getElementById(id+'-d'), t = document.getElementById(id+'-t');
+  v = String(v||'');
+  if(d) d.value = v.slice(0,10);
+  if(t) t.value = v.slice(11,16);
+}
+// A timestamp for "set at / cancelled at" lines: date and 24-hour time, Melbourne.
+function fmtStamp24(d){
+  try{
+    return d.toLocaleString('en-AU', {timeZone:'Australia/Melbourne', day:'numeric', month:'short',
+      year:'numeric', hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
+  }catch(e){ return String(d); }
+}
 // Flexible 24-hour time parser for manual booking call times. Accepts "8.30pm",
 // "10:30", "1030", "830", "8pm", "20:30", "2030" -> "HH:MM" (24hr), or null if
 // it can't be made sense of. macOS WebKit renders <input type=time> as AM/PM, so
@@ -20164,7 +20219,7 @@ function addManualCall(){
        <input class="mbc-date" type="date" value="${lastDate}" onchange="onManualCallDate(this)">
        <div class="mbc-daycap">${escapeHtml(dateCaption(lastDate))}</div>
      </div>
-     <input class="mbc-time" type="text" placeholder="e.g. 8.30pm or 2030" value="08:00" onblur="normalizeMbcTime(this)">
+     <input class="mbc-time" type="text" placeholder="e.g. 20:30 or 2030" value="08:00" onblur="normalizeMbcTime(this)">
      <input class="mbc-length" type="number" min="0" step="0.5" value="4">
      <input class="mbc-required" type="number" min="0" step="1" value="1">
      <input class="mbc-notes" placeholder="optional">
@@ -22246,7 +22301,7 @@ function callRenderCallType(bookingId, callId, editing, msg){
   else if(eff.source === 'derived') note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">from call name</span>';
   else if(eff.status === 'not_set') note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">the call name matches no role on the ' + escapeHtml(p.set_label || '') + ' card</span>';
   else if(eff.set_by_user_id) note = '<span style="font-size:10px;color:var(--muted);margin-left:8px">set by ' + escapeHtml(ctWho(eff))
-    + (eff.set_at ? ' · ' + escapeHtml(new Date(eff.set_at).toLocaleString()) : '') + '</span>';
+    + (eff.set_at ? ' · ' + escapeHtml(fmtStamp24(new Date(eff.set_at))) : '') + '</span>';
   var change = (window._cohort === 'admin' && p.roles && p.roles.length)
     ? '<span onclick="callRenderCallType(\'' + bookingId + '\',\'' + callId + '\',true)" style="font-size:11px;color:var(--accent);cursor:pointer;margin-left:10px">Change…</span>'
     : '';
@@ -22290,7 +22345,7 @@ function callRenderRowControls(bookingId, callId){
     var o = callOverrideFor(p, uid);
     var tag = document.getElementById('ct-tag-' + callId + '-' + uid);
     if(tag) tag.innerHTML = '';   // the state now lives on the controls themselves
-    var who = o ? ' Set by ' + ctWho(o) + (o.set_at ? ', ' + new Date(o.set_at).toLocaleString() : '') + '.' : '';
+    var who = o ? ' Set by ' + ctWho(o) + (o.set_at ? ', ' + fmtStamp24(new Date(o.set_at)) : '') + '.' : '';
     var edit = "callOpenRateEditor('" + bookingId + "','" + callId + "'," + uid + ")";
 
     // CREW BOSS: on when the row's override is the system Crew Boss one.
@@ -22464,7 +22519,7 @@ function callRenderFlags(bookingId, callId, msg){
   var p = _callFlags[callId];
   if(!host || !p) return;
   var admin = !!p.can_change;
-  var who = p.set_by_user_id ? ' Set by ' + ctWho(p) + (p.set_at ? ', ' + new Date(p.set_at).toLocaleString() : '') + '.' : '';
+  var who = p.set_by_user_id ? ' Set by ' + ctWho(p) + (p.set_at ? ', ' + fmtStamp24(new Date(p.set_at)) : '') + '.' : '';
   var toggle = function(which){ return "callToggleFlag('" + bookingId + "','" + callId + "','" + which + "')"; };
   var bits = [];
 
@@ -22650,7 +22705,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   let cancelBanner = '';
   if(isCancelled){
     const meta = [];
-    if(cx.cancelled_at) meta.push(new Date(cx.cancelled_at*1000).toLocaleString());
+    if(cx.cancelled_at) meta.push(fmtStamp24(new Date(cx.cancelled_at*1000)));
     if(cx.cancelled_by) meta.push('by #'+cx.cancelled_by);
     // The money facts get the loud colour. "Detail unavailable" is shown
     // INSTEAD of pay / charge state when we are working off the name prefix --
@@ -24149,7 +24204,7 @@ async function _ctSave(accept){
 
   if(bad.length){
     result.style.color = 'var(--conflict)';
-    result.innerHTML   = 'Couldn\'t read these — On/Off take 15:00 · 1500 · 3pm, breaks take 1:30 · 1.5: '+escapeHtml(bad.join('; '));
+    result.innerHTML   = 'Couldn\'t read these — On/Off take 24-hour times like 15:00 or 1500, breaks take 1:30 · 1.5: '+escapeHtml(bad.join('; '));
     return;
   }
 
@@ -26161,7 +26216,7 @@ function _gsheetWhen(iso){
   if(!iso) return '';
   var d = new Date(iso);
   if(isNaN(d)) return '';
-  return d.toLocaleString('en-AU', {day:'numeric', month:'short', hour:'numeric', minute:'2-digit'});
+  return d.toLocaleString('en-AU', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
 }
 
 async function gsheetLoadStatus(bookingId){
@@ -26634,7 +26689,7 @@ function bkRenderTravel(bookingId, msg){
   var vt = p.venue_travel || {};
   var set = vt.return_minutes != null;
   var who = (set && vt.set_by_name) ? ' title="Set by ' + escapeHtml(vt.set_by_name)
-    + (vt.set_at ? ', ' + escapeHtml(new Date(vt.set_at).toLocaleString()) : '') + '"' : '';
+    + (vt.set_at ? ', ' + escapeHtml(fmtStamp24(new Date(vt.set_at))) : '') + '"' : '';
   var shown = set
     ? '<span' + who + '>' + escapeHtml(pcFmtMinutes(vt.return_minutes)) + ' return</span>'
     : '<span style="color:var(--muted)">not set</span>';
@@ -33568,7 +33623,7 @@ function perfWhen(iso){
   if(!iso) return '';
   const d = new Date(iso);
   return isNaN(d) ? String(iso)
-    : d.toLocaleString('en-AU', {day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit'});
+    : d.toLocaleString('en-AU', {day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
 }
 function perfRatesAsOf(card){
   if(!card) return '';
