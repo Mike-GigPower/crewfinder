@@ -3145,7 +3145,7 @@ async function loadWhoami(){
     window._ssBase = d.ss_base || window._ssBase;
     window._identity = d;
     applyCohort(d);
-    if(d.just_logged_in) goatGreetOnLogin(d);
+    if(d.greeting === 'monty') goatGreetOnLogin();
     // Crew Finder layout prefs are keyed by pref_key, so they can only be read
     // once identity has resolved — goatPrefs falls back to 'anon' before that.
     cfRestoreLayoutPrefs();
@@ -3265,13 +3265,13 @@ async function exitAdmin(){
 
 
 // ── Easter egg: Monty gets a hello when he logs on — Mike, 2 Nov 2026 ────────
-// Once per login (the server's one-shot just_logged_in flag), never on reloads.
-// Monty is EIN 3315 (Camilleri, Emil). A page that has just loaded may not be
+// Once per login, never on reloads: the server decides who (Monty's own account,
+// EIN 3315, and his Admin account "Monty") and says so once, as greeting:'monty'
+// on the first /api/whoami after the login. A page that has just loaded may not be
 // allowed to play sound until the user does something, so if the browser
 // refuses, the clip waits for the first click or key press instead.
-function goatGreetOnLogin(d){
+function goatGreetOnLogin(){
   try{
-    if(String((d && d.ein) || '') !== '3315') return;
     const a = new Audio('/static/hello-monty.wav');
     const later = function(){
       document.removeEventListener('pointerdown', later, true);
