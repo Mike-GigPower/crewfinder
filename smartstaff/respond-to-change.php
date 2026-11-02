@@ -194,7 +194,7 @@
 		die('{"error":"decline update failed: ' . addslashes(mysql_error()) . '"}');
 	}
 
-	$declined = (mysql_affected_rows() > 0);
+	$declined = ($db->affected_rows > 0);
 
 	/* A prior Confirmed (5) had a calendar row — remove it. Backups (7) never do. */
 	if ($declined && $priorStatus === 5)
