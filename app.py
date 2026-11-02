@@ -5578,6 +5578,28 @@ def index():
                            env_url=BASE_URL,
                            env_is_prod=(BASE_URL == PROD_BASE_URL))
 
+# Login greetings — Mike, 2 Nov 2026. Admin ids/usernames from SmartStaff `users`
+# (Monty 10258 "Monty", Rich 10259 "Rich"); crew logins are their EINs.
+_LOGIN_GREETINGS = {
+    "monty": {"user_ids": {10258}, "usernames": {"monty", "3315"}, "eins": {"3315"}},
+    "rich":  {"user_ids": {10259}, "usernames": {"rich", "472"},   "eins": {"472"}},
+}
+
+
+def _login_greeting(username, ident):
+    """'monty', 'rich' or '' for the account that has just logged in."""
+    uname = str(username or "").strip().lower()
+    ein = str((ident or {}).get("ein") or "").strip()
+    try:
+        uid = int((ident or {}).get("user_id"))
+    except (TypeError, ValueError):
+        uid = None
+    for key, who in _LOGIN_GREETINGS.items():
+        if uid in who["user_ids"] or uname in who["usernames"] or (ein and ein in who["eins"]):
+            return key
+    return ""
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -5631,13 +5653,14 @@ def login():
             # page can greet people once per login rather than on every reload
             # (the Monty greeting, Mike 2 Nov 2026). Popped by api_whoami.
             session["just_logged_in"] = True
-            # Who is greeted with a sound on login. Monty: his own account
-            # (EIN 3315) and his separate Admin account, which signs in as
-            # "Monty" (Mike, 2 Nov 2026). One-shot, popped by api_whoami.
-            if (str(ident.get("ein") or "") == "3315"
-                    or username.strip().lower() == "monty"
-                    or str(ident.get("name") or "").strip().lower() == "monty"):
-                session["login_greeting"] = "monty"
+            # Who is greeted with a sound on login (Mike, 2 Nov 2026). One-shot,
+            # popped by api_whoami. Each person has two accounts: their own crew
+            # login (username = EIN) and a dedicated Admin account. Admin
+            # accounts carry the shared placeholder EIN "0", so they are matched
+            # by user id and username, never by EIN.
+            greeting = _login_greeting(username, ident)
+            if greeting:
+                session["login_greeting"] = greeting
             else:
                 session.pop("login_greeting", None)
 
@@ -17237,7 +17260,7 @@ def api_whoami():
         "pref_key":    current_pref_key(),
         # True on the first whoami after a login, then never again for it.
         "just_logged_in": bool(session.pop("just_logged_in", False)),
-        # Which login greeting to play, if any — "monty" or "". Same one-shot.
+        # Which login greeting to play, if any — "monty", "rich" or "". One-shot.
         "greeting":    session.pop("login_greeting", "") or "",
     })
 
