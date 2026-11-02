@@ -301,7 +301,7 @@
 	$db->update('call_crew_map', $updFields, 'callID=' . $callID . ' AND userID=' . $userID);
 
 	$err         = mysql_error();
-	$updAffected = mysql_affected_rows();   /* capture NOW; the calendar call below runs its own queries */
+	$updAffected = $db->affected_rows;   /* capture NOW; the calendar call below runs its own queries */
 
 	if ($err !== '')
 	{

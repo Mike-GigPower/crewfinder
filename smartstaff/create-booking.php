@@ -142,7 +142,7 @@
 
 	$db->insert('bookings', $bookingData);
 
-	if (mysql_affected_rows() !== 1)
+	if ($db->affected_rows !== 1)
 	{
 		send_status(500, 'Internal Server Error');
 		echo json_encode(array('error' => 'booking insert failed', 'detail' => mysql_error()));
@@ -175,7 +175,7 @@
 
 		$db->insert('calls', $callData);
 
-		if (mysql_affected_rows() === 1)
+		if ($db->affected_rows === 1)
 			$callIDs[] = (int) $db->insert_id();
 		else
 			$callErrors[] = array('index' => $i, 'detail' => mysql_error());

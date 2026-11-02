@@ -163,7 +163,7 @@
 	$db->update('calls', $callData, 'id=' . $callID);
 
 	$err          = mysql_error();
-	$updAffected  = mysql_affected_rows();   /* capture NOW; the calendar loop below runs its own queries */
+	$updAffected  = $db->affected_rows;   /* capture NOW; the calendar loop below runs its own queries */
 
 	if ($err !== '')
 	{

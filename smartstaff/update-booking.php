@@ -160,7 +160,7 @@
 	echo json_encode(array(
 		'ok'             => true,
 		'booking_id'     => $bookingID,
-		'affected_rows'  => mysql_affected_rows(),
+		'affected_rows'  => $db->affected_rows,
 	));
 
 ?>

@@ -191,7 +191,7 @@
 			die('{"error":"decline update failed: ' . addslashes(mysql_error()) . '"}');
 		}
 
-		if (mysql_affected_rows() > 0)
+		if ($db->affected_rows > 0)
 		{
 			/* A promoted row IS confirmed, so it always has a calendar row to remove. */
 			$sss->removeFromCalendar($gc, $userID);
@@ -230,7 +230,7 @@
 			die('{"error":"upstream withdraw failed: ' . addslashes(mysql_error()) . '"}');
 		}
 
-		if (mysql_affected_rows() > 0)
+		if ($db->affected_rows > 0)
 		{
 			$sss->removeFromCalendar($wc, $userID);
 			$withdrawn[] = $wc;
