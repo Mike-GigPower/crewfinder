@@ -5631,6 +5631,15 @@ def login():
             # page can greet people once per login rather than on every reload
             # (the Monty greeting, Mike 2 Nov 2026). Popped by api_whoami.
             session["just_logged_in"] = True
+            # Who is greeted with a sound on login. Monty: his own account
+            # (EIN 3315) and his separate Admin account, which signs in as
+            # "Monty" (Mike, 2 Nov 2026). One-shot, popped by api_whoami.
+            if (str(ident.get("ein") or "") == "3315"
+                    or username.strip().lower() == "monty"
+                    or str(ident.get("name") or "").strip().lower() == "monty"):
+                session["login_greeting"] = "monty"
+            else:
+                session.pop("login_greeting", None)
 
             return redirect(url_for("index"))
 
@@ -17228,6 +17237,8 @@ def api_whoami():
         "pref_key":    current_pref_key(),
         # True on the first whoami after a login, then never again for it.
         "just_logged_in": bool(session.pop("just_logged_in", False)),
+        # Which login greeting to play, if any — "monty" or "". Same one-shot.
+        "greeting":    session.pop("login_greeting", "") or "",
     })
 
 
