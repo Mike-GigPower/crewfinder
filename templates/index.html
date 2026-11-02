@@ -1973,7 +1973,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 <div class="update-banner" id="update-banner">
   <span>⚡ THE GOAT <span id="update-version"></span> is available</span>
   <span id="update-notes" style="color:var(--muted)"></span>
-  <a id="update-link" href="#">Download update</a>
+  <a id="update-link" href="#" onclick="playUpdateSound()">Download update</a>
   <button class="update-banner-close" onclick="document.getElementById('update-banner').classList.remove('show')">&#215;</button>
 </div>
 <div class="tab-bar">
@@ -3145,6 +3145,7 @@ async function loadWhoami(){
     window._ssBase = d.ss_base || window._ssBase;
     window._identity = d;
     applyCohort(d);
+    if(d.just_logged_in) goatGreetOnLogin(d);
     // Crew Finder layout prefs are keyed by pref_key, so they can only be read
     // once identity has resolved — goatPrefs falls back to 'anon' before that.
     cfRestoreLayoutPrefs();
@@ -3262,6 +3263,27 @@ async function exitAdmin(){
 }
 
 
+
+// ── Easter egg: Monty gets a hello when he logs on — Mike, 2 Nov 2026 ────────
+// Once per login (the server's one-shot just_logged_in flag), never on reloads.
+// Monty is EIN 3315 (Camilleri, Emil). A page that has just loaded may not be
+// allowed to play sound until the user does something, so if the browser
+// refuses, the clip waits for the first click or key press instead.
+function goatGreetOnLogin(d){
+  try{
+    if(String((d && d.ein) || '') !== '3315') return;
+    const a = new Audio('/static/hello-monty.wav');
+    const later = function(){
+      document.removeEventListener('pointerdown', later, true);
+      document.removeEventListener('keydown', later, true);
+      a.play().catch(function(){});
+    };
+    a.play().catch(function(){
+      document.addEventListener('pointerdown', later, true);
+      document.addEventListener('keydown', later, true);
+    });
+  }catch(e){}
+}
 
 // ── Easter egg: click the GOAT emblem -> bray + stampede ─────────────────────
 function goatBleat(){
@@ -37027,6 +37049,23 @@ async function pingSession(){
 
 // Ping every 9 minutes (keepalive runs every 8, this catches any gaps)
 setInterval(pingSession, 9 * 60 * 1000);
+
+// "Download update" plays one of these at random — Mike, 2 Nov 2026. The link
+// is a GitHub download (served as an attachment), so the page stays put and the
+// clip plays out. The list lives inside the function: no top-level const.
+function playUpdateSound(){
+  try{
+    const clips = [
+      '/static/update-as-good-as-i-am.wav',
+      '/static/update-so-excited.wav',
+      '/static/update-feels-like-christmas.wav',
+      '/static/update-hard-to-improve.wav',
+      '/static/update-want-to-see-something.wav',
+    ];
+    const a = new Audio(clips[Math.floor(Math.random() * clips.length)]);
+    a.play().catch(()=>{});
+  }catch(e){}
+}
 
 async function checkForUpdates(){
   try{
