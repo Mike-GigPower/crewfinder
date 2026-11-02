@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.90.3"
+APP_VERSION    = "5.91.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -5626,6 +5626,11 @@ def login():
                 cfg["username"] = username
                 cfg["password"] = password
                 save_config(cfg)
+
+            # One-shot: the first /api/whoami after a real login says so, so the
+            # page can greet people once per login rather than on every reload
+            # (the Monty greeting, Mike 2 Nov 2026). Popped by api_whoami.
+            session["just_logged_in"] = True
 
             return redirect(url_for("index"))
 
@@ -17221,6 +17226,8 @@ def api_whoami():
         # Opaque per-person id for UI preferences. Safe to expose: a one-way
         # digest, no name or username in it, and it grants nothing on its own.
         "pref_key":    current_pref_key(),
+        # True on the first whoami after a login, then never again for it.
+        "just_logged_in": bool(session.pop("just_logged_in", False)),
     })
 
 
