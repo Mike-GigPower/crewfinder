@@ -134,17 +134,23 @@
 		$db->delete('calendars', 'id = ' . $id . ' AND user = ' . (int) $userID . ' AND type = 1');
 
 		/*
-		/* $db->delete() returns nothing, so the outcome is read here rather
-		/* than assumed. mysql_affected_rows() reports on the last query on the
-		/* connection; the class opens a single link in connect(), so the bare
-		/* call reads the right one.
-		/*
-		/* 0 rows is a legitimate outcome (already deleted, or not this user's),
-		/* which is exactly why it must be distinguishable from 1 — without this
-		/* check, a delete that matched nothing would look identical to success.
-		*/
+        /* $db->delete() returns nothing, so the outcome is read here rather
+        /* than assumed. $db->affected_rows is set by delete() itself, on the
+        /* class's own connection.
+        /*
+        /* 0 rows is a legitimate outcome (already deleted, or not this user's),
+        /* which is exactly why it must be distinguishable from 1 — without this
+        /* check, a delete that matched nothing would look identical to success.
+        /*
+        /* HISTORY: this read used the bare global mysql_affected_rows(), which
+        /* the mysqli conversion makes unusable — the class no longer opens a
+        /* mysql link for it to read.
+        /*
+        /* TRAP: select() overwrites affected_rows. This read must stay
+        /* IMMEDIATELY after the delete.
+        */
 
-		if (mysql_affected_rows() > 0)
+		if ($db->affected_rows > 0)
 			$deleted[] = $id;
 		else
 			$missing[] = $id;

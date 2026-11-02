@@ -187,18 +187,26 @@
 		$db->insert('calendars', $eventData);
 
 		/*
-		/* $db->insert() returns nothing and swallows errors, so the write is
-		/* checked here rather than assumed. mysql_affected_rows() reports on
-		/* the last query on the connection; the class opens a single link via
-		/* mysql_connect() in connect(), so the bare call reads the right one.
-		/*
-		/* Deliberately NOT solved by changing $db->insert() itself — that class
-		/* backs every page in SmartStaff, and this endpoint needs the result
-		/* from exactly two callers. See GOAT-Calendar-Endpoints-Handover.md
-		/* item 2.
-		*/
+        /* $db->insert() returns nothing and swallows errors, so the write is
+        /* checked here rather than assumed. $db->affected_rows is set by
+        /* insert() itself, on the class's own connection.
+        /*
+        /* HISTORY: this read used the bare global mysql_affected_rows(), which
+        /* worked only because the class held a single mysql link that the bare
+        /* call happened to read. The mysqli conversion removes that link, so the
+        /* bare call cannot survive it. The class now sets affected_rows in
+        /* insert(), update() and delete() — a change this comment previously
+        /* declined, correctly, while the bare call was still free.
+        /*
+        /* TRAP: select() overwrites affected_rows. This read must stay
+        /* IMMEDIATELY after the insert — do not introduce a selectFirst()
+        /* between them.
+        /*
+        /* See CHANGELOG-class-db-mysqli-2026-10-12.md §7a and
+        /* GOAT-Calendar-Endpoints-Handover.md item 2.
+        */
 
-		$rows = mysql_affected_rows();
+		$rows = $db->affected_rows;
 		$id   = $db->insert_id();
 
 		if ($rows > 0 && $id > 0)
