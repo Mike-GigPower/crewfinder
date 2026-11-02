@@ -1964,7 +1964,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
             onclick="switchTab('docs')">📖 Docs</button>
     <button id="btn-elevate" class="btn-logout" style="display:none;border-color:var(--accent);color:var(--accent)" onclick="openElevateModal()">🔑 Admin</button>
     <button id="btn-exit-admin" class="btn-logout" style="display:none;border-color:var(--warn);color:var(--warn)" onclick="exitAdmin()">⤓ Exit Admin</button>
-    <a href="/logout" class="btn-logout">Sign out</a>
+    <a href="/logout" class="btn-logout" onclick="return goatSignOut(this)">Sign out</a>
   </div>
 </nav>
 {% if not env_is_prod %}
@@ -3145,7 +3145,7 @@ async function loadWhoami(){
     window._ssBase = d.ss_base || window._ssBase;
     window._identity = d;
     applyCohort(d);
-    if(d.greeting === 'monty') goatGreetOnLogin();
+    if(d.greeting) goatGreetOnLogin(d.greeting);
     // Crew Finder layout prefs are keyed by pref_key, so they can only be read
     // once identity has resolved — goatPrefs falls back to 'anon' before that.
     cfRestoreLayoutPrefs();
@@ -3264,15 +3264,17 @@ async function exitAdmin(){
 
 
 
-// ── Easter egg: Monty gets a hello when he logs on — Mike, 2 Nov 2026 ────────
-// Once per login, never on reloads: the server decides who (Monty's own account,
-// EIN 3315, and his Admin account "Monty") and says so once, as greeting:'monty'
-// on the first /api/whoami after the login. A page that has just loaded may not be
+// ── Easter egg: Monty and Rich each get a hello when they log on — Mike, 2 Nov 2026
+// Once per login, never on reloads: the server decides who (Monty and Rich, each
+// on their own account and their Admin account) and says so once, as greeting
+// 'monty' or 'rich', on the first /api/whoami after the login. A page that has just loaded may not be
 // allowed to play sound until the user does something, so if the browser
 // refuses, the clip waits for the first click or key press instead.
-function goatGreetOnLogin(){
+function goatGreetOnLogin(who){
   try{
-    const a = new Audio('/static/hello-monty.wav');
+    const clip = {monty: '/static/hello-monty.wav', rich: '/static/hello-rich.wav'}[who];
+    if(!clip) return;
+    const a = new Audio(clip);
     const later = function(){
       document.removeEventListener('pointerdown', later, true);
       document.removeEventListener('keydown', later, true);
@@ -3283,6 +3285,33 @@ function goatGreetOnLogin(){
       document.addEventListener('keydown', later, true);
     });
   }catch(e){}
+}
+
+// ── Easter egg: admins get a parting line on Sign out — Mike, 2 Nov 2026 ─────
+// Admin cohort only (an elevated session counts). Leaving the page would cut the
+// clip off, so sign-out waits for it to finish — the clips are 1-4 s — with a
+// 6 s ceiling, and goes straight away if the sound can't play. Everyone else
+// signs out exactly as before.
+function goatSignOut(link){
+  try{
+    if(window._cohort !== 'admin') return true;
+    const clips = [
+      '/static/logout-goat-out.wav',
+      '/static/logout-chat-longer.wav',
+      '/static/logout-in-the-shed.wav',
+      '/static/logout-outside-for-a-smoke.wav',
+    ];
+    const href = (link && link.getAttribute('href')) || '/logout';
+    let gone = false;
+    const go = function(){ if(gone) return; gone = true; window.location.href = href; };
+    const a = new Audio(clips[Math.floor(Math.random() * clips.length)]);
+    a.addEventListener('ended', go);
+    a.addEventListener('error', go);
+    setTimeout(go, 6000);
+    a.play().catch(go);
+    if(link) link.style.pointerEvents = 'none';
+    return false;
+  }catch(e){ return true; }
 }
 
 // ── Easter egg: click the GOAT emblem -> bray + stampede ─────────────────────
