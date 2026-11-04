@@ -36,7 +36,7 @@
 	/* lives in Supabase (D7) and only the self-times Edge Function checks it
 	/* before forwarding. A session path here would be a way round the
 	/* switch, so there is none — the key is required first, and only then is
-	/* the userID it asserts read.
+	/* the userID it asserts read — directly, never through a session (R7).
 	/*
 	/* GATES, IN ORDER, EACH THE SAME 403 BODY (so a caller cannot tell which
 	/* one it failed by reading the message):
@@ -109,7 +109,30 @@
 		smt_fail(403, 'Forbidden', 'service key required', array());
 	}
 
-	$actor = goat_acting_user_id();   /* owns its own 400 for a missing userID */
+	/*
+	/* THE ACTOR IS THE userID THE EDGE FUNCTION ASSERTS, READ DIRECTLY
+	/* (review R7). goat_acting_user_id() is NOT used: it checks a SmartStaff
+	/* session FIRST, so a request carrying the key plus a session cookie would
+	/* act as the session's user, not the one the Edge Function verified.
+	/* Here only the key path exists, so only its userID counts. Same
+	/* $_GET-then-$_POST order as goat_acting_user_id()'s service branch.
+	*/
+
+	$actor = 0;
+
+	if (isset($_GET['userID']))
+	{
+		$actor = (int) $_GET['userID'];
+	}
+	else if (isset($_POST['userID']))
+	{
+		$actor = (int) $_POST['userID'];
+	}
+
+	if ($actor <= 0)
+	{
+		smt_fail(400, 'Bad Request', 'userID required', array());
+	}
 
 	/* ---- body ---- */
 
@@ -201,9 +224,22 @@
 		smt_refuse();
 	}
 
+	/*
+	/* NO USABLE START, NO SUBMISSION (review R6). start_date <= 0 means the
+	/* call has no date at all, and goat_call_window() would place it at the
+	/* 1970 epoch — "started" by any test. A start strtotime() cannot parse
+	/* comes back false, and false <= time() is true in PHP. Either way the
+	/* call's timing is unknown, so it is refused rather than treated as past.
+	*/
+
+	if ((int) $call->start_date <= 0)
+	{
+		smt_refuse();
+	}
+
 	$win = goat_call_window($call);
 
-	if ($win['start'] > time())
+	if ($win['start'] === false || (int) $win['start'] <= 0 || $win['start'] > time())
 	{
 		smt_refuse();
 	}
@@ -213,9 +249,12 @@
 	/*
 	/* times_filled is THE GOAT's and SmartStaff's done-tick. Cast in PHP,
 	/* never compared in SQL: SmartStaff's own form writes it as a string.
+	/* ANY NON-ZERO VALUE IS APPROVED (review R8): refusing a resubmission on
+	/* an approved call matters more than which non-zero value SmartStaff
+	/* happened to write.
 	*/
 
-	if ((int) $call->times_filled === 1)
+	if ((int) $call->times_filled !== 0)
 	{
 		smt_fail(409, 'Conflict',
 		         'Your times for this call have already been approved. Contact Gig Power Operations.', array());

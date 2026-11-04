@@ -11,16 +11,19 @@
 	/* a Crew Boss now outranks a Team Lead, and the boss call is found by
 	/* explicit link only.
 	/*
-	/*   1. in_call_boss      — a confirmed is_crew_boss=1 resource on the
-	/*      (role crew_boss)    viewer's OWN call (the Crew Boss pill)
+	/*   1. in_call_boss      — a confirmed, non-promo-pending is_crew_boss=1
+	/*      (role crew_boss)    resource on the viewer's OWN call (the Crew
+	/*                          Boss pill)
 	/*   2. boss_call         — the live Crew Boss call LINKED to the viewer's
 	/*                          call through call_supervision: its ticked person
 	/*                          (Crew Boss pill, else Team Lead tick), else
-	/*                          everyone confirmed on it
+	/*                          everyone confirmed on it — promo-pending people
+	/*                          excluded throughout
 	/*   3. in_call_boss      — a confirmed is_call_boss=1 resource on the
-	/*      (role team_lead)
-	/*                          viewer's OWN call (the Team Lead tick). Reached
-	/*                          ONLY when rungs 1-2 found nobody
+	/*      (role team_lead)    viewer's OWN call (the Team Lead tick). Reached
+	/*                          ONLY when rungs 1-2 found nobody, and SKIPPED
+	/*                          when the viewer holds the Crew Boss pill on the
+	/*                          call — a Crew Boss is not pointed at a Team Lead
 	/*   4. onsite            — bookings.onsiteUserID, falling back to
 	/*                          bookings.userID
 	/*
@@ -323,11 +326,12 @@
 			/* An UNANSWERED PROMOTION is skipped for the Crew Boss rung: a backup
 			/* promoted to 5 who has not accepted is not known to be coming, and
 			/* goat_call_tiers() does not count them as the call's Crew Boss
-			/* either. Rung 3 keeps its old reading of status 5 alone, because it
-			/* is the old rung moved, not a new one.
+			/* either; nor does rung 2 (review R4). Rung 3 keeps its old reading of
+			/* status 5 alone, because it is the old rung moved, not a new one.
 			*/
 
-			$r1 = mysql_query("SELECT ccm.is_call_boss AS is_call_boss,
+			$r1 = mysql_query("SELECT ccm.userID AS user_id,
+			                          ccm.is_call_boss AS is_call_boss,
 			                          " . $crewBossCol . " AS is_crew_boss,
 			                          (cpa.id IS NOT NULL) AS promo_pending,
 			                          u.firstname, u.lastname, u.mobile, u.phone
@@ -339,16 +343,35 @@
 			                         AND cpa.acked_at IS NULL
 			                   WHERE ccm.callID  = " . $callID . "
 			                     AND ccm.status  = 5
-			                     AND ccm.userID <> " . $viewerUserID . "
 			                   ORDER BY u.lastname ASC, u.firstname ASC");
 
 			$inCallCrewBoss = array();
 			$inCallTeamLead = array();
 
+			/*
+			/* THE VIEWER'S OWN ROW is read too (it used to be excluded in SQL),
+			/* for one fact only: do they hold the Crew Boss pill here? If so the
+			/* Team Lead rung is skipped below (review R10) — a Crew Boss is not
+			/* told to ring the Team Lead they outrank. Their row is never a
+			/* contact; it is skipped before anything else is read from it.
+			*/
+
+			$viewerHoldsPill = false;
+
 			if ($r1 !== false)
 			{
 				while ($row = mysql_fetch_object($r1))
 				{
+					if ((int) $row->user_id === $viewerUserID)
+					{
+						if ((int) $row->is_crew_boss === 1 && (int) $row->promo_pending !== 1)
+						{
+							$viewerHoldsPill = true;
+						}
+
+						continue;
+					}
+
 					if ($row->firstname === null) continue;
 					if (goat_same_human($viewerMobile, $row->mobile)) continue;
 
@@ -416,14 +439,26 @@
 
 				if ($bc && goat_is_boss_call_name($bc->call_name))
 				{
+					/*
+					/* UNANSWERED PROMOTIONS ARE NOT CONTACTS (review R4). A backup
+					/* promoted onto the boss call who has not accepted is not known
+					/* to be coming, and goat_call_tiers() does not count them —
+					/* so the crew are not handed their number either.
+					*/
+
 					$cres = mysql_query("SELECT ccm.is_call_boss AS is_call_boss,
 					                            " . $crewBossCol . " AS is_crew_boss,
 					                            u.firstname, u.lastname, u.mobile, u.phone
 					                     FROM call_crew_map ccm
 					                     LEFT JOIN users u ON u.id = ccm.userID
+					                     LEFT JOIN call_promo_ack cpa
+					                            ON cpa.callID = ccm.callID
+					                           AND cpa.userID = ccm.userID
+					                           AND cpa.acked_at IS NULL
 					                     WHERE ccm.callID  = " . ((int) $bc->id) . "
 					                       AND ccm.status  = 5
 					                       AND ccm.userID <> " . $viewerUserID . "
+					                       AND cpa.id IS NULL
 					                     ORDER BY u.lastname ASC, u.firstname ASC");
 
 					/*
@@ -473,13 +508,15 @@
 			/*
 			/* ---- RUNG 3 — Team Lead tick on the viewer's call ----
 			/*
-			/* Only reached when nobody holds the Crew Boss pill on this call and
-			/* no linked Crew Boss call produced a contact (D18). add-call.php's
+			/* Only reached when nobody ELSE holds the Crew Boss pill on this call
+			/* and no linked Crew Boss call produced a contact (D18). SKIPPED when
+			/* the VIEWER holds the pill (review R10): they fall to the on-site
+			/* contact rather than to a Team Lead below them. add-call.php's
 			/* makeboss handler clears is_call_boss on every other row before
 			/* setting it, so there is normally at most one.
 			*/
 
-			if (count($inCallTeamLead) > 0)
+			if (count($inCallTeamLead) > 0 && !$viewerHoldsPill)
 			{
 				$cache[$ck] = $inCallTeamLead;
 				return $inCallTeamLead;

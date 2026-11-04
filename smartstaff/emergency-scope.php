@@ -213,8 +213,9 @@
 
 			/*
 			/* Scope decided; the inversion supplies the REASON, in the
-			/* estate's own vocabulary (direct > container > supervisory, its
-			/* precedence already applied by goat_boss_claim()). The log then
+			/* estate's own vocabulary (direct_crew_boss > direct > container >
+			/* supervisory, its precedence already applied by goat_boss_claim(),
+			/* with direct_crew_boss logged as boss_direct — see below). The log then
 			/* speaks the same language as the resolver that granted access.
 			/*
 			/* boss_unattributed should be unreachable: it means the scope

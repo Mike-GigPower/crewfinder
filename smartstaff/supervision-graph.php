@@ -303,7 +303,14 @@
 		/*
 		/* THE CALLS THIS USER MAY SEE AS A BOSS, AND WHY.
 		/*
-		/*   callID => 'direct_crew_boss' | 'direct_team_lead' | 'supervisory'
+		/*   goat_boss_scope_detail_result($u) -> array('ok', 'error', 'detail')
+		/*   goat_boss_scope_detail($u)        -> detail, or array() on failure
+		/*
+		/*   detail: callID => 'direct_crew_boss' | 'direct_team_lead' | 'supervisory'
+		/*
+		/* The _result form exists so the time-entry helpers can tell "no scope"
+		/* from "the query broke" (review R1); viewing callers keep the plain
+		/* form and its degrade-to-empty rule.
 		/*
 		/* Three sources, the strongest kept per call:
 		/*
@@ -327,19 +334,22 @@
 		/* "do not retrofit it"): this is viewing, and viewing is unchanged.
 		/* goat_time_entry_scope() applies the exclusion for entry.
 		/*
-		/* This returns ACT-ON calls. A user's own boss call appears here only
+		/* This returns SEE-AS-BOSS calls (who may ENTER is goat_time_entry_*).
+		/* A user's own boss call appears here only
 		/* via a direct branch, if they happen to carry a marker on it. Slice E
 		/* fetches the boss calls separately, through goat_boss_calls_for_user(),
 		/* as grouping containers.
 		*/
 
-		function goat_boss_scope_detail($userID)
+		function goat_boss_scope_detail_result($userID)
 		{
+			$fail = array('ok' => false, 'error' => '', 'detail' => array());
+
 			$userID = (int) $userID;
 
 			if ($userID <= 0)
 			{
-				return array();
+				return array('ok' => true, 'error' => '', 'detail' => array());
 			}
 
 			$res = mysql_query("SELECT ccm.callID AS n,
@@ -354,10 +364,12 @@
 
 			if ($res === false)
 			{
-				return array();
+				$fail['error'] = 'scope query failed: ' . mysql_error();
+				return $fail;
 			}
 
-			$detail = array();
+			$detail    = array();
+			$liveBoss  = array();   /* boss calls whose children are in scope */
 
 			while ($row = mysql_fetch_object($res))
 			{
@@ -380,14 +392,50 @@
 
 				if (goat_boss_call_is_live($row->call_name, $row->cancelled_at))
 				{
-					foreach (goat_supervision_children($callID) as $kid)
-					{
-						goat_scope_claim($detail, (int) $kid, 'supervisory');
-					}
+					$liveBoss[$callID] = true;
 				}
 			}
 
-			return $detail;
+			/*
+			/* SUPERVISORY — one query for every live boss call, not one per
+			/* call, and it reports its own failure. Same join as
+			/* goat_supervision_children(): the CHILD is INNER JOINed, so an edge
+			/* to a deleted call is invisible.
+			*/
+
+			if (count($liveBoss) > 0)
+			{
+				$kres = mysql_query("SELECT s.child_call AS n
+				                     FROM call_supervision s
+				                     INNER JOIN calls c ON c.id = s.child_call
+				                     WHERE s.boss_call IN (" . implode(',', array_keys($liveBoss)) . ")");
+
+				if ($kres === false)
+				{
+					$fail['error'] = 'supervision query failed: ' . mysql_error();
+					return $fail;
+				}
+
+				while ($krow = mysql_fetch_object($kres))
+				{
+					goat_scope_claim($detail, (int) $krow->n, 'supervisory');
+				}
+			}
+
+			return array('ok' => true, 'error' => '', 'detail' => $detail);
+		}
+
+		/*
+		/* The VIEWING form: the detail map, or array() on any failure — the
+		/* userID-keyed helpers' rule (file header). Viewing degrades; entry
+		/* does not, which is why goat_time_entry_* read the _result form.
+		*/
+
+		function goat_boss_scope_detail($userID)
+		{
+			$r = goat_boss_scope_detail_result($userID);
+
+			return $r['ok'] ? $r['detail'] : array();
 		}
 
 		/*
@@ -1187,52 +1235,93 @@
 		}
 
 		/*
-		/* THE CALLS THIS USER MAY ENTER TIMES FOR. Gates submit-call-times.php
-		/* and my-call-times.php, and drives can_enter_times on Your Crew.
+		/* THE CALLS THIS USER MAY ENTER TIMES FOR.
 		/*
-		/* Candidates are the user's goat_boss_scope_detail() calls — every route
-		/* into entry (a pill, a tick, or confirmed on a supervising call) is
-		/* already a route into scope — narrowed to those whose entry_user_ids
-		/* contain the user, minus calls where the user is promo-pending.
+		/*   array('ok' => bool, 'error' => string, 'call_ids' => list of int)
 		/*
-		/* FAILS CLOSED: any failed lookup returns array(), which every caller
-		/* turns into a 403. Same array()-on-failure rule as goat_boss_scope().
+		/* ok === false IS A FAILED QUERY AND EVERY CALLER RETURNS A 500 ON IT
+		/* (review R1, 5 Nov 2026). It used to return array() on failure, which
+		/* every caller turned into a 403 — so a broken query told a Crew Boss
+		/* "you are not the person entering times for this call", which is
+		/* false, alarming, and indistinguishable from the real refusal.
 		/*
-		/* Unwindowed, like goat_boss_scope(): callers window or test membership.
+		/* Candidates are the user's scope detail — every route into entry (a
+		/* pill, a tick, or confirmed on a supervising call) is already a route
+		/* into scope — narrowed to those whose entry_user_ids contain the
+		/* user, minus calls where the user is promo-pending.
+		/*
+		/* THREE ENTRY POINTS over one implementation (review R2):
+		/*
+		/*   goat_time_entry_scope($u)            every call, unwindowed
+		/*   goat_time_entry_scope_for($u, $ids)  only the calls asked about —
+		/*                                        tiers those and nothing else;
+		/*                                        what a per-call gate wants
+		/*   goat_time_entry_calls($u, $detail,   the core, for a caller that
+		/*                         $ids)          already holds the user's scope
+		/*                                        detail (my-boss-calls.php), so
+		/*                                        it is computed once per request
+		/*
+		/* $onlyCallIDs null means "no restriction"; an array restricts.
 		*/
 
-		function goat_time_entry_scope($userID)
+		function goat_time_entry_calls($userID, $detail, $onlyCallIDs)
 		{
+			$ok   = array('ok' => true,  'error' => '', 'call_ids' => array());
+			$fail = array('ok' => false, 'error' => '', 'call_ids' => array());
+
 			$userID = (int) $userID;
 
-			if ($userID <= 0)
+			if ($userID <= 0 || !is_array($detail) || count($detail) === 0)
 			{
-				return array();
+				return $ok;
 			}
 
-			$detail = goat_boss_scope_detail($userID);
+			$cand = array();
 
-			if (count($detail) === 0)
+			if ($onlyCallIDs === null)
 			{
-				return array();
+				foreach ($detail as $cid => $why)
+				{
+					$cand[(int) $cid] = true;
+				}
+			}
+			else
+			{
+				foreach (goat_sg_clean_ids($onlyCallIDs) as $cid)
+				{
+					if (isset($detail[$cid]))
+					{
+						$cand[$cid] = true;
+					}
+				}
 			}
 
-			$t = goat_call_tiers(array_keys($detail));
+			if (count($cand) === 0)
+			{
+				return $ok;
+			}
+
+			$candIDs = array_keys($cand);
+
+			$t = goat_call_tiers($candIDs);
 
 			if (!$t['ok'])
 			{
-				return array();
+				$fail['error'] = $t['error'];
+				return $fail;
 			}
 
 			$pending = array();
 
 			$pres = mysql_query("SELECT callID AS n FROM call_promo_ack
 			                     WHERE userID = " . $userID . "
-			                       AND acked_at IS NULL");
+			                       AND acked_at IS NULL
+			                       AND callID IN (" . implode(',', $candIDs) . ")");
 
 			if ($pres === false)
 			{
-				return array();
+				$fail['error'] = 'promotion lookup failed: ' . mysql_error();
+				return $fail;
 			}
 
 			while ($prow = mysql_fetch_object($pres))
@@ -1255,7 +1344,33 @@
 				}
 			}
 
-			return $out;
+			sort($out);
+
+			return array('ok' => true, 'error' => '', 'call_ids' => $out);
+		}
+
+		function goat_time_entry_scope($userID)
+		{
+			$d = goat_boss_scope_detail_result($userID);
+
+			if (!$d['ok'])
+			{
+				return array('ok' => false, 'error' => $d['error'], 'call_ids' => array());
+			}
+
+			return goat_time_entry_calls($userID, $d['detail'], null);
+		}
+
+		function goat_time_entry_scope_for($userID, $callIDs)
+		{
+			$d = goat_boss_scope_detail_result($userID);
+
+			if (!$d['ok'])
+			{
+				return array('ok' => false, 'error' => $d['error'], 'call_ids' => array());
+			}
+
+			return goat_time_entry_calls($userID, $d['detail'], is_array($callIDs) ? $callIDs : array());
 		}
 
 	}

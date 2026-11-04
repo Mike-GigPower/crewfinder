@@ -35,8 +35,10 @@
 	/*   403  not an admin session
 	/*   404  no call_crew_map row for (callID, userID); for on:1, no
 	/*        CONFIRMED row — the pill marks someone who is working the call
-	/*   409  {ok:false, error, team_leads:[{user_id, name}]} — clearing would
-	/*        leave the call with no Crew Boss and two or more Team Leads (D17)
+	/*   409  on:1 to a promo-pending person ({error}), or
+	/*        {ok:false, error, team_leads:[{user_id, name}]} — clearing a pill
+	/*        that counts would leave the call with no Crew Boss and two or
+	/*        more Team Leads (D17)
 	/*   422  bad body
 	/*   500  database failure (detail in the server log, never the body)
 	/*
@@ -107,8 +109,14 @@
 
 	try
 	{
-		$stmt = $pdo->prepare("SELECT `status` FROM `call_crew_map`
-		                       WHERE `callID` = ? AND `userID` = ?");
+		$stmt = $pdo->prepare("SELECT ccm.`status` AS status, ccm.`is_crew_boss` AS is_crew_boss,
+		                              (cpa.`id` IS NOT NULL) AS promo_pending
+		                       FROM `call_crew_map` ccm
+		                       LEFT JOIN `call_promo_ack` cpa
+		                              ON cpa.`callID` = ccm.`callID`
+		                             AND cpa.`userID` = ccm.`userID`
+		                             AND cpa.`acked_at` IS NULL
+		                       WHERE ccm.`callID` = ? AND ccm.`userID` = ?");
 		$stmt->execute(array($callID, $userID));
 		$rows = $stmt->fetchAll();
 	}
@@ -123,14 +131,38 @@
 		goat_json_error(404, 'That person is not on this call');
 	}
 
-	$confirmed = false;
+	/*
+	/* $countingPill — does the target CURRENTLY hold a pill that
+	/* goat_call_tiers() counts: a confirmed row, carrying is_crew_boss, not
+	/* promo-pending. Only clearing such a pill can change the call's tier, so
+	/* only then can it break D17 (review R3).
+	*/
+
+	$confirmed    = false;
+	$promoPending = false;
+	$countingPill = false;
 
 	foreach ($rows as $r)
 	{
+		if ((int) $r['promo_pending'] === 1)
+		{
+			$promoPending = true;
+		}
+
 		if ((int) $r['status'] === 5)
 		{
 			$confirmed = true;
+
+			if ((int) $r['is_crew_boss'] === 1)
+			{
+				$countingPill = true;
+			}
 		}
+	}
+
+	if ($promoPending)
+	{
+		$countingPill = false;
 	}
 
 	if ($on === 1 && !$confirmed)
@@ -139,7 +171,25 @@
 	}
 
 	/*
+	/* AN UNANSWERED PROMOTION CANNOT TAKE THE PILL (review R5). A backup
+	/* promoted to 5 who has not accepted is not known to be working, so
+	/* goat_call_tiers() ignores their pill — setting it would make THE GOAT
+	/* show a Crew Boss the tier does not have. 409: the row is real, the
+	/* timing is wrong; it can be set once they accept or Ops confirm.
+	*/
+
+	if ($on === 1 && $promoPending)
+	{
+		goat_json_error(409, 'That person has not accepted their promotion to this call yet, so they cannot be made Crew Boss. Set it once they accept.');
+	}
+
+	/*
 	/* ---- D17: clearing must not leave two Team Leads and no Crew Boss ----
+	/*
+	/* ONLY WHEN THE TARGET'S PILL COUNTS (review R3). Clearing a pill from a
+	/* declined, stood-down or promo-pending row changes nothing about the
+	/* tier, and refusing it would leave a stale marker that the nightly
+	/* drift check reports forever — the cleanup this endpoint exists for.
 	/*
 	/* Read through goat_call_tier(), the same answer the submit gate reads,
 	/* so "would have no Crew Boss" means what the tier means: no OTHER
@@ -148,7 +198,7 @@
 	/* its own entry rule and it never becomes tier team_lead.
 	*/
 
-	if ($on === 0)
+	if ($on === 0 && $countingPill)
 	{
 		$t = goat_call_tier($callID);
 

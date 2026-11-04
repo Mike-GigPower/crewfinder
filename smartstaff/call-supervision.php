@@ -363,9 +363,11 @@
 		/* collides, so a plain INSERT fails. Deleting first would work on an
 		/* engine with transactions — but this is MyISAM, so between the DELETE
 		/* and the INSERT the child has NO supervisor at all, and a failure
-		/* between the two leaves it permanently unsupervised: the contact
-		/* hierarchy silently reverts to overlap for that call, which is the
-		/* exact ambiguity this table exists to remove. The upsert has no such
+		/* between the two leaves it permanently unsupervised: the call silently
+		/* loses its Crew Boss — no tier, no time entry for the boss, and the
+		/* contact hierarchy drops to the Team Lead or the on-site contact
+		/* (there is no overlap fallback since slice B of BRIEF-crew-self-times).
+		/* The upsert has no such
 		/* window, and is what call-feeds.php already does on this engine in
 		/* production.
 		/*

@@ -118,7 +118,8 @@
 	/*
 	/* SCOPE.
 	/*
-	/*   $scope    — the calls this user may ACT ON (direct + supervisory).
+	/*   $scope    — the calls this user may SEE AS A BOSS (direct pill or tick,
+	/*               + supervisory). Who may ENTER times is $entrySet, below.
 	/*   $bossCall — this user's own DEDICATED boss calls, the grouping
 	/*               containers. Separate on purpose: a boss call reaches
 	/*               $scope only if the user also happens to be flagged on it.
@@ -129,32 +130,34 @@
 	*/
 
 	/*
-	/* goat_boss_scope_detail() rather than goat_boss_scope(), so the
-	/* direct_calls rule below can tell a Crew Boss pill holder from a Team
-	/* Lead. Its keys ARE goat_boss_scope() — one implementation, read twice.
+	/* THE SCOPE DETAIL, COMPUTED ONCE (review R2) and read three ways: its
+	/* keys ARE goat_boss_scope(); its values let the direct_calls rule below
+	/* tell a Crew Boss pill holder from a Team Lead; and it is handed to
+	/* goat_time_entry_calls() after query 1, so entry does not recompute it.
 	/*
-	/* $entrySet — the calls this user may ENTER TIMES for (slice B of
-	/* BRIEF-crew-self-times). Narrower than scope: a Team Lead on a call with
-	/* a Crew Boss sees the crew here (D18) but does not enter, and on a
-	/* dedicated Crew Boss call only the ticked person does. It drives
-	/* can_enter_times on every call emitted, and nothing else — viewing is
-	/* unchanged.
+	/* A FAILED SCOPE QUERY IS A 500 (review R1). It used to degrade to "no
+	/* scope", a 200 with empty arrays — indistinguishable from an ordinary
+	/* crew member, and the endpoint's own rule (below) is that it asserts.
 	*/
 
-	$scopeDetail = goat_boss_scope_detail($userID);
+	$sd = goat_boss_scope_detail_result($userID);
+
+	if (!$sd['ok'])
+	{
+		goat_json_error(500, 'scope lookup failed: ' . $sd['error']);
+	}
+
+	$scopeDetail = $sd['detail'];
 	$scope       = array_keys($scopeDetail);
 	$bossCall    = goat_boss_calls_for_user($userID);
-	$entryScope  = goat_time_entry_scope($userID);
 
 	/* keyed for O(1) membership tests further down */
 
 	$scopeSet = array();
 	$bossSet  = array();
-	$entrySet = array();
 
-	foreach ($scope      as $cid) { $scopeSet[(int) $cid] = true; }
-	foreach ($bossCall   as $cid) { $bossSet[(int) $cid]  = true; }
-	foreach ($entryScope as $cid) { $entrySet[(int) $cid] = true; }
+	foreach ($scope    as $cid) { $scopeSet[(int) $cid] = true; }
+	foreach ($bossCall as $cid) { $bossSet[(int) $cid]  = true; }
 
 	$wantIDs = array_keys($scopeSet + $bossSet);
 
@@ -276,6 +279,31 @@
 
 		$order[] = $cid;
 	}
+
+	/*
+	/* $entrySet — the calls this user may ENTER TIMES for (slice B of
+	/* BRIEF-crew-self-times). Narrower than scope: a Team Lead on a call with
+	/* a Crew Boss sees the crew here (D18) but does not enter, and on a
+	/* dedicated Crew Boss call only the ticked person does. It drives
+	/* can_enter_times on every call emitted, and nothing else — viewing is
+	/* unchanged.
+	/*
+	/* Asked for the WINDOWED calls only ($order), from the scope detail
+	/* already in hand (review R2). A failed lookup is a 500 (review R1): a
+	/* boss whose badge and times link vanished because a query broke would
+	/* read it as having lost the job.
+	*/
+
+	$es = goat_time_entry_calls($userID, $scopeDetail, $order);
+
+	if (!$es['ok'])
+	{
+		goat_json_error(500, 'time-entry scope lookup failed: ' . $es['error']);
+	}
+
+	$entrySet = array();
+
+	foreach ($es['call_ids'] as $cid) { $entrySet[(int) $cid] = true; }
 
 	/*
 	/* QUERY 2 of 3 — the rosters. ONE query over every SCOPE call that

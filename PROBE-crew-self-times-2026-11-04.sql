@@ -103,7 +103,9 @@ ORDER BY cc.start_date DESC, cc.start_time DESC;
 -- (call, overlapping Crew Boss call) pair that fallback produces today, i.e.
 -- the calls that need an explicit link before slice B ships.
 --
--- Mirrors the resolver's fallback branch (resolve-call-contact.php:357-387):
+-- Mirrors the resolver's fallback branch as it stood at ac00bfd
+-- (resolve-call-contact.php lines 357-387 there; the branch is removed on
+-- feature/crew-self-times, so the line numbers refer to main, not the branch):
 --   * the call itself is not cancelled and is NOT boss-named (crew on a boss
 --     call skip rungs 1-2 entirely)
 --   * no usable explicit link: none at all, a dangling one, or a self-link

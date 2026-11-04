@@ -24,7 +24,7 @@
 	/*   viewer     resolve each call's contact AS this userID (the ladder skips
 	/*              the viewer). Omit for the view of nobody in particular.
 	/*   scopeUser  also print that user's goat_boss_scope_detail() and
-	/*              goat_time_entry_scope(), intersected with the calls given
+	/*              goat_time_entry_scope_for() over the calls given
 	/*
 	/* TWO LOCKS: an admin session, and the connected database must be
 	/* smartst_test. The second is the one that matters — this prints names and
@@ -89,6 +89,10 @@
 	$out = array(
 		'ok'                => true,
 		'database'          => 'smartst_test',
+
+		/* PHP's zone, for checking goat_call_window() arithmetic: global.php
+		   is meant to set Melbourne; this shows what the box actually uses */
+		'php_timezone'      => date_default_timezone_get(),
 		'have_is_crew_boss' => goat_ccm_have_crew_boss() ? 1 : 0,
 		'viewer'            => $viewer,
 		'calls'             => $calls
@@ -97,7 +101,14 @@
 	if ($scopeUser > 0)
 	{
 		$detail = goat_boss_scope_detail($scopeUser);
-		$entry  = goat_time_entry_scope($scopeUser);
+		$es     = goat_time_entry_scope_for($scopeUser, $ids);
+
+		if (!$es['ok'])
+		{
+			goat_json_error(500, $es['error']);
+		}
+
+		$entry  = $es['call_ids'];
 		$want   = array_flip($ids);
 
 		$d = array();

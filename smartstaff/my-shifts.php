@@ -8,16 +8,20 @@
 	include('cohort.php');
 	include_once('resolve-call-contact.php');
 	/*
-	/* SLICE C2 — THE OPT-IN. Switches rung 2 of the contact hierarchy to prefer
-	/* an explicit call_supervision edge over time overlap.
+	/* SLICE C2 — THE OPT-IN. Gives rung 2 of the contact hierarchy its
+	/* explicit call_supervision link. Since slice B of BRIEF-crew-self-times
+	/* the link is the ONLY way rung 2 finds a boss call (the overlap fallback
+	/* is gone), and it also supplies the tiers behind can_send_times.
 	/*
 	/* THIS LINE LOOKS UNUSED AND IS NOT. Nothing in this file calls into
 	/* supervision-graph.php directly; resolve-call-contact.php reaches it via
 	/* function_exists('goat_supervision_boss_call'), guarded at the call site to
 	/* avoid a circular include (see the comment there). Remove this include and
-	/* the resolver silently falls back to overlap-only — no error, no failed
-	/* test, because overlap is still a valid code path. It just stops finding
-	/* the boss of any call that does not happen to overlap its boss call.
+	/* rung 2 silently finds nothing — no error, no failed test — and every
+	/* crew member on a linked call is handed the Team Lead or the on-site
+	/* contact instead of their Crew Boss. (This file now also calls
+	/* goat_boss_scope() and goat_call_tiers() directly, so removing it would
+	/* now fail loudly as well.)
 	*/
 	include_once('supervision-graph.php');
 	include_once('time-submission-graph.php');   /* slice D: my_submission */
@@ -187,9 +191,11 @@
 	/* returns up to 56 days of them — a visible slowdown on the busiest page in
 	/* Crew Hub. Resolve once, test with in_array() below.
 	/*
-	/*   $bossScope — the calls this user may ACT ON: flagged on the call
-	/*                itself, or a child of a dedicated boss call they are
-	/*                confirmed on.
+	/*   $bossScope — the calls this user may SEE AS A BOSS: carrying the Crew
+	/*                Boss pill or the Team Lead tick on the call itself, or a
+	/*                child of a live dedicated boss call they are confirmed
+	/*                on. (Who may ENTER times is narrower —
+	/*                goat_time_entry_scope(); it is not read here.)
 	/*   $bossCalls — the user's OWN dedicated boss calls. A SEPARATE SET, and
 	/*                the reason is the whole point of this slice: goat_boss_
 	/*                scope() reaches a container ONLY through its direct
@@ -216,7 +222,7 @@
 	/* Same reasoning as $bossScope above.
 	/*
 	/* "Past" means STARTED: goat_call_window()'s start, from the call row, is
-	/* at or before now. That is the same test submit-my-times.php gates on,
+	/* at or before now (and the call has a usable date). That is the same test submit-my-times.php gates on,
 	/* so the button and the endpoint cannot disagree about when a shift is
 	/* sendable.
 	/*
@@ -233,7 +239,10 @@
 	{
 		$rows[] = $r;
 
-		if ($r->event_type == 2 && $r->call_start_date !== null)
+		/* same start test as submit-my-times.php, including its refusal of a
+		   call with no date or an unparseable start (review R6) */
+
+		if ($r->event_type == 2 && $r->call_start_date !== null && (int) $r->call_start_date > 0)
 		{
 			$cw = goat_call_window((object) array(
 				'start_date' => $r->call_start_date,
@@ -241,7 +250,7 @@
 				'est_length' => $r->call_est_length
 			));
 
-			if ($cw['start'] <= $now)
+			if ($cw['start'] !== false && (int) $cw['start'] > 0 && $cw['start'] <= $now)
 			{
 				$startedOf[(int) $r->call_id] = true;
 			}
@@ -250,6 +259,14 @@
 
 	$tierOf  = array();
 	$liveSub = array();
+
+	/*
+	/* NO source COLUMN, NO BUTTON (review R9). submit-my-times.php refuses a
+	/* self write where call_time_submissions.source is missing (slice A not
+	/* run), so offering the button there would only lead to a 500.
+	*/
+
+	$haveSource = goat_ts_have_source();
 
 	if (count($startedOf) > 0)
 	{
@@ -411,8 +428,9 @@
 			/* `contacts` is absent on a finished one.
 			/*
 			/*   can_send_times  1 when the call is tier `self`, has started,
-			/*                   is not approved (times_filled), and the viewer
-			/*                   is not promo-pending on it — the same tests
+			/*                   is not approved (times_filled non-zero), the
+			/*                   viewer is not promo-pending on it, and the
+			/*                   source column exists — the same tests
 			/*                   submit-my-times.php gates on. The per-call Ops
 			/*                   switch is NOT applied here: it lives in
 			/*                   Supabase, and the self-times Edge Function sets
@@ -430,9 +448,12 @@
 			{
 				$promoPendingHere = ($row->promoted_at !== null && $row->promo_acked_at === null);
 
+				/* times_filled: any non-zero value is approved (review R8) */
+
 				$entry['can_send_times'] =
-					((isset($tierOf[$cidNow]) && $tierOf[$cidNow] === 'self')
-					 && (int) $row->times_filled !== 1
+					($haveSource
+					 && (isset($tierOf[$cidNow]) && $tierOf[$cidNow] === 'self')
+					 && (int) $row->times_filled === 0
 					 && !$promoPendingHere)
 						? 1 : 0;
 

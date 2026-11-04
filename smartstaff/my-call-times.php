@@ -62,14 +62,16 @@
 	/*
 	/* ---- SCOPE GATE ----
 	/*
-	/* goat_time_entry_scope(), NOT goat_boss_scope() — CHANGED in slice B of
-	/* BRIEF-crew-self-times. This file feeds the time-entry FORM, so it opens
-	/* for exactly the people submit-call-times.php will accept a submission
-	/* from. A Team Lead on a Crew Boss call still sees the crew through
-	/* my-call-crew.php and Your Crew; they no longer reach this form.
+	/* goat_time_entry_scope_for(), NOT goat_boss_scope() — CHANGED in slice B
+	/* of BRIEF-crew-self-times. This file feeds the time-entry FORM, so it
+	/* opens for exactly the people submit-call-times.php will accept a
+	/* submission from. A Team Lead on a Crew Boss call still sees the crew
+	/* through my-call-crew.php and Your Crew; they no longer reach this form.
+	/*
+	/* Resolved BELOW the Ops test, so an Ops reader costs no tier lookup, and
+	/* only for THIS call (review R2). A failed lookup is a 500, never the 403
+	/* (review R1).
 	*/
-
-	$scope = goat_time_entry_scope($actor);
 
 	/*
 	/* BOSS OF THIS CALL, OR OPS AT A KEYBOARD. The boss reads this to see what
@@ -87,7 +89,7 @@
 	/*
 	/* goat_user_cohort() is the SESSION-ONLY half of that helper — null unless
 	/* $user->checkSession(). A service-key caller cannot satisfy it and falls
-	/* through to goat_boss_scope(), which is the entire fix. Ops lose nothing:
+	/* through to the time-entry scope test, which is the entire fix. Ops lose nothing:
 	/* they open this from THE GOAT on their own SmartStaff session, and THE
 	/* GOAT holds no service key at all, by design (app.py,
 	/* ss_get_call_submissions -> get_ss_session).
@@ -107,9 +109,19 @@
 
 	$is_ops = ($cohort === 'admin' || $cohort === 'leadership' || $cohort === 'operations');
 
-	if (!$is_ops && !in_array($callID, $scope))
+	if (!$is_ops)
 	{
-		goat_json_error(403, 'You are not the person entering times for this call');
+		$es = goat_time_entry_scope_for($actor, array($callID));
+
+		if (!$es['ok'])
+		{
+			goat_json_error(500, 'time-entry scope lookup failed: ' . $es['error']);
+		}
+
+		if (!in_array($callID, $es['call_ids']))
+		{
+			goat_json_error(403, 'You are not the person entering times for this call');
+		}
 	}
 
 	/*

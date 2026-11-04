@@ -165,13 +165,19 @@
 	/* Crew Boss call only the ticked person enters (D21). The tier rules live
 	/* in goat_call_tiers(), supervision-graph.php; nothing here restates them.
 	/*
-	/* Fails closed: a broken lookup returns an empty scope and lands here as
-	/* the same 403.
+	/* goat_time_entry_scope_for() tiers THIS call only (review R2), and a
+	/* failed lookup is a 500, never the 403 below (review R1): "you are not
+	/* the person entering times" must only ever mean exactly that.
 	*/
 
-	$scope = goat_time_entry_scope($actor);
+	$es = goat_time_entry_scope_for($actor, array($callID));
 
-	if (!in_array($callID, $scope))
+	if (!$es['ok'])
+	{
+		sct_fail(500, 'Internal Server Error', 'time-entry scope lookup failed: ' . $es['error'], array());
+	}
+
+	if (!in_array($callID, $es['call_ids']))
 	{
 		sct_fail(403, 'Forbidden', 'You are not the person entering times for this call', array());
 	}
