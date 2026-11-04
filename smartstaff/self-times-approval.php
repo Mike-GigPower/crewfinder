@@ -31,7 +31,8 @@
 	/* accepted_at IS THE LATEST accepted_at AMONG THE CALL'S LIVE SUBMISSIONS
 	/* (not voided, not superseded by a live row), or null. The job uses it as
 	/* the exact approval time when present and the night it first sees
-	/* times_filled = 1 otherwise.
+	/* times_filled = 1 otherwise. times_filled is 1 whenever the column holds
+	/* any non-zero value.
 	/*
 	/* NOTHING WRITES accepted_at TODAY. At ac00bfd no file in smartstaff/ and
 	/* nothing in app.py sets call_time_submissions.accepted_at or accepted_by,
@@ -104,7 +105,10 @@
 
 	try
 	{
-		/* ---- the tick. Cast in PHP, never "= 1" in SQL: SmartStaff writes it ---- */
+		/* ---- the tick. Cast in PHP, never "= 1" in SQL: SmartStaff writes it.
+		   ANY NON-ZERO VALUE IS APPROVED and is reported as 1 — the same rule
+		   submit-my-times.php and my-shifts.php apply (review R8), so the
+		   nightly job never disagrees with the button about an approval. ---- */
 
 		$cs = $pdo->prepare("SELECT `id`, `times_filled` FROM `calls` WHERE `id` IN (" . $marks . ")");
 		$cs->execute($idVals);
@@ -112,7 +116,7 @@
 		foreach ($cs->fetchAll() as $row)
 		{
 			$out[(int) $row['id']] = array(
-				'times_filled' => ((int) $row['times_filled'] === 1) ? 1 : 0,
+				'times_filled' => ((int) $row['times_filled'] !== 0) ? 1 : 0,
 				'accepted_at'  => null
 			);
 		}
