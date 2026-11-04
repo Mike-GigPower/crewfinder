@@ -19,8 +19,9 @@
 	/*                          (Crew Boss pill, else Team Lead tick), else
 	/*                          everyone confirmed on it — promo-pending people
 	/*                          excluded throughout
-	/*   3. in_call_boss      — a confirmed is_call_boss=1 resource on the
-	/*      (role team_lead)    viewer's OWN call (the Team Lead tick). Reached
+	/*   3. in_call_boss      — a confirmed, non-promo-pending is_call_boss=1
+	/*      (role team_lead)    resource on the viewer's OWN call (the Team
+	/*                          Lead tick). Reached
 	/*                          ONLY when rungs 1-2 found nobody, and SKIPPED
 	/*                          when the viewer holds the Crew Boss pill on the
 	/*                          call — a Crew Boss is not pointed at a Team Lead
@@ -323,11 +324,12 @@
 			/* get-booking.php and the other endpoints do. (int) reads the leading
 			/* byte and stops at the null, giving a clean 1 or 0.
 			/*
-			/* An UNANSWERED PROMOTION is skipped for the Crew Boss rung: a backup
-			/* promoted to 5 who has not accepted is not known to be coming, and
-			/* goat_call_tiers() does not count them as the call's Crew Boss
-			/* either; nor does rung 2 (review R4). Rung 3 keeps its old reading of
-			/* status 5 alone, because it is the old rung moved, not a new one.
+			/* AN UNANSWERED PROMOTION IS NEVER A CONTACT, on any boss rung: a
+			/* backup promoted to 5 who has not accepted is not known to be coming,
+			/* and goat_call_tiers() does not count them as Crew Boss or Team Lead
+			/* either. Rung 1 skips them, rung 2 since review R4, and rung 3 since
+			/* review R12 (5 Nov 2026 — smoke test, call 37886: a promo-pending
+			/* Team Lead was handed to crew as their contact).
 			*/
 
 			$r1 = mysql_query("SELECT ccm.userID AS user_id,
@@ -382,7 +384,7 @@
 						$inCallCrewBoss[] = $c;
 					}
 
-					if ((int) $row->is_call_boss === 1)
+					if ((int) $row->is_call_boss === 1 && (int) $row->promo_pending !== 1)
 					{
 						$c = goat_contact_from_user($row, 'in_call_boss', '');
 						$c['role'] = 'team_lead';
