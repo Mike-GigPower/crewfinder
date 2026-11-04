@@ -15,6 +15,21 @@
 	header('Content-Type: application/json');
 
 	/*
+	/* SELF-SUBMIT PROMPTS — OFF until slice H of BRIEF-crew-self-times.
+	/*
+	/* With this false, tier `self` calls (nobody to enter for the crew) push
+	/* nobody, which is exactly what they did before slice B: they had no
+	/* boss. Flip it ONLY once the time-entry-prompts cron hardening has
+	/* landed (lib/cron-batch.ts) — this multiplies the cron's audience from
+	/* the handful of bosses to every crew member on a bossless call.
+	*/
+
+	if (!defined('GOAT_SELF_TIMES_PROMPTS'))
+	{
+		define('GOAT_SELF_TIMES_PROMPTS', false);
+	}
+
+	/*
 	/* THE INVERSION — "given a window of calls, which bosses owe times on
 	/* them". Called by the Vercel time-entry-prompts cron, never by a browser.
 	/*
@@ -235,20 +250,28 @@
 	}
 
 	/*
-	/* ---- 3 of 4: WHO IS THE BOSS ----
+	/* ---- 3 of 4: WHO ENTERS THE TIMES ----
 	/*
-	/* THE INVERSION ITSELF LIVES IN supervision-graph.php, and this endpoint
-	/* is one of its two readers — the Ops "Times outstanding" lane is the
-	/* other. It used to be written out here in two steps; it was lifted the
-	/* day the lane needed the same answer, because a second copy of "who is
-	/* the boss of this call" is how the five supervision-blindness instances
-	/* happened. What it does — direct, container, supervisory, precedence
-	/* direct > container > supervisory, is_call_boss cast in PHP — is
-	/* unchanged and documented there.
+	/* goat_time_entry_people_by_call(), NOT goat_bosses_by_call() — CHANGED
+	/* in slice B of BRIEF-crew-self-times (Nov 2026). The cron pushes the
+	/* person who can CLEAR the prompt, and since slice B that is not always
+	/* everyone who bosses the call: a Team Lead on a call with a Crew Boss
+	/* sees the crew but cannot enter, and pushing them for times the form
+	/* will refuse is nagging they cannot act on. The tier rules live in
+	/* goat_call_tiers(), supervision-graph.php, read also by the Ops lane.
 	/*
-	/* THE TRANSPOSE. The helper answers callID -> bosses, because a call is
+	/* BY TIER:
+	/*
+	/*   crew_boss, team_lead   the entry people, with their `how`
+	/*   ops                    nobody — a Crew Boss call with nobody ticked;
+	/*                          Ops enter its times and the Ops lane flags it
+	/*   self                   each outstanding confirmed crew member, from
+	/*                          goat_outstanding_people_by_call() — DORMANT
+	/*                          until slice H, behind GOAT_SELF_TIMES_PROMPTS
+	/*
+	/* THE TRANSPOSE. The helper answers callID -> people, because a call is
 	/* what the Ops lane draws a row for. The cron needs the opposite index,
-	/* boss -> calls, because a boss is who it pushes to. One nested loop,
+	/* person -> calls, because a person is who it pushes to. One nested loop,
 	/* here, rather than a second traversal of the graph.
 	/*
 	/* ok === false IS A 500, NOT AN EMPTY SET — the file rule at the top,
@@ -257,7 +280,7 @@
 	/* broken query must never be able to say that.
 	*/
 
-	$inversion = goat_bosses_by_call(array_keys($callInfo));
+	$inversion = goat_time_entry_people_by_call(array_keys($callInfo));
 
 	if (!$inversion['ok'])
 	{
@@ -265,10 +288,52 @@
 		die(json_encode(array('error' => $inversion['error'])));
 	}
 
+	$selfCalls = array();
+
+	foreach ($inversion['by_call'] as $cid => $t)
+	{
+		$callInfo[$cid]['tier'] = $t['tier'];
+
+		if ($t['tier'] === 'self')
+		{
+			$selfCalls[] = (int) $cid;
+		}
+	}
+
+	/*
+	/* Tier self: WHO still owes, per person. Asked only when the flag is on,
+	/* so until slice H this endpoint issues no extra query and pushes nobody
+	/* it did not push before (a self call had no boss to push).
+	*/
+
+	$selfOwed = array();
+
+	if (GOAT_SELF_TIMES_PROMPTS && count($selfCalls) > 0)
+	{
+		$selfOwed = goat_outstanding_people_by_call($selfCalls);
+	}
+
 	$holders = array();   /* userID -> callID -> how */
 
-	foreach ($inversion['by_call'] as $cid => $whoMap)
+	foreach ($inversion['by_call'] as $cid => $t)
 	{
+		$whoMap = array();
+
+		if ($t['tier'] === 'self')
+		{
+			if (isset($selfOwed[$cid]))
+			{
+				foreach ($selfOwed[$cid] as $uid)
+				{
+					$whoMap[(int) $uid] = 'self';
+				}
+			}
+		}
+		else
+		{
+			$whoMap = $t['how'];   /* tier ops: empty — no push */
+		}
+
 		foreach ($whoMap as $uid => $how)
 		{
 			if (!isset($holders[$uid]))

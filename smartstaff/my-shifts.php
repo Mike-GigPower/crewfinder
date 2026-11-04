@@ -20,6 +20,7 @@
 	/* the boss of any call that does not happen to overlap its boss call.
 	*/
 	include_once('supervision-graph.php');
+	include_once('time-submission-graph.php');   /* slice D: my_submission */
 
 	/*
 	/* JSON response */
@@ -128,6 +129,10 @@
 			cca.changed_at      AS changed_at,
 			cpa.promoted_at     AS promoted_at,
 			cpa.acked_at        AS promo_acked_at,
+			c.start_date        AS call_start_date,
+			c.start_time        AS call_start_time,
+			c.est_length        AS call_est_length,
+			c.times_filled      AS times_filled,
 			(
 			  SELECT ccb.is_call_boss
 			  FROM call_crew_map ccb
@@ -202,12 +207,71 @@
 	$bossScope = goat_boss_scope($userID);
 	$bossCalls = goat_boss_calls_for_user($userID);
 
+	/*
+	/* SELF-SUBMITTED TIMES — ADDED in slice D of BRIEF-crew-self-times.
+	/*
+	/* The rows are BUFFERED so the two new fields can be resolved for every
+	/* past shift in one pass each — goat_call_tiers() over all of them, and
+	/* one query for the viewer's live submissions — rather than per shift.
+	/* Same reasoning as $bossScope above.
+	/*
+	/* "Past" means STARTED: goat_call_window()'s start, from the call row, is
+	/* at or before now. That is the same test submit-my-times.php gates on,
+	/* so the button and the endpoint cannot disagree about when a shift is
+	/* sendable.
+	/*
+	/* Both resolutions DEGRADE: this is a display. A failed tier lookup makes
+	/* can_send_times 0 everywhere, which hides a button rather than showing
+	/* one that the endpoint would refuse.
+	*/
+
+	$rows      = array();
+	$startedOf = array();   /* callID => true for type-2 rows that have started */
+	$now       = time();
+
+	while ($r = mysql_fetch_object($result))
+	{
+		$rows[] = $r;
+
+		if ($r->event_type == 2 && $r->call_start_date !== null)
+		{
+			$cw = goat_call_window((object) array(
+				'start_date' => $r->call_start_date,
+				'start_time' => $r->call_start_time,
+				'est_length' => $r->call_est_length
+			));
+
+			if ($cw['start'] <= $now)
+			{
+				$startedOf[(int) $r->call_id] = true;
+			}
+		}
+	}
+
+	$tierOf  = array();
+	$liveSub = array();
+
+	if (count($startedOf) > 0)
+	{
+		$tiers = goat_call_tiers(array_keys($startedOf));
+
+		if ($tiers['ok'])
+		{
+			foreach ($tiers['by_call'] as $tcid => $tinfo)
+			{
+				$tierOf[(int) $tcid] = $tinfo['tier'];
+			}
+		}
+
+		$liveSub = goat_live_submissions_for_user($userID, array_keys($startedOf));
+	}
+
 	$shifts   = array();
 	$unavails = array();
 
 	$promoWithdrawMemo = array();   /* promoted_at => promo_declining_withdraws (C5) */
 
-	while ($row = mysql_fetch_object($result))
+	foreach ($rows as $row)
 	{
 		$entry = array(
 			'event_id' => (int) $row->event_id,
@@ -339,6 +403,69 @@
 				}
 
 				$entry['promo_declining_withdraws'] = $promoWithdrawMemo[$pkey];
+			}
+
+			/*
+			/* can_send_times / my_submission — slice D, ADDITIVE, PAST
+			/* (started) SHIFTS ONLY. Absent on an upcoming shift, the way
+			/* `contacts` is absent on a finished one.
+			/*
+			/*   can_send_times  1 when the call is tier `self`, has started,
+			/*                   is not approved (times_filled), and the viewer
+			/*                   is not promo-pending on it — the same tests
+			/*                   submit-my-times.php gates on. The per-call Ops
+			/*                   switch is NOT applied here: it lives in
+			/*                   Supabase, and the self-times Edge Function sets
+			/*                   this to false on the way out where Ops turned
+			/*                   it off.
+			/*   my_submission   the viewer's LIVE submission on the call when it
+			/*                   is a SELF submission (source = 'self'), else
+			/*                   null. A boss-entered row is not "my submission"
+			/*                   even though it is about the viewer.
+			*/
+
+			$cidNow = (int) $row->call_id;
+
+			if (isset($startedOf[$cidNow]))
+			{
+				$promoPendingHere = ($row->promoted_at !== null && $row->promo_acked_at === null);
+
+				$entry['can_send_times'] =
+					((isset($tierOf[$cidNow]) && $tierOf[$cidNow] === 'self')
+					 && (int) $row->times_filled !== 1
+					 && !$promoPendingHere)
+						? 1 : 0;
+
+				$mine = null;
+
+				if (isset($liveSub[$cidNow])
+				    && isset($liveSub[$cidNow]['source'])
+				    && $liveSub[$cidNow]['source'] === 'self')
+				{
+					$s  = $liveSub[$cidNow];
+					$bk = array();
+
+					foreach (goat_time_submission_breaks((int) $s['id']) as $b)
+					{
+						$bk[] = array(
+							'start_time'     => substr((string) $b['start_time'], 0, 5),
+							'start_next_day' => (int) $b['start_next_day'],
+							'duration_mins'  => (int) $b['duration_mins']
+						);
+					}
+
+					$mine = array(
+						'id'           => (int) $s['id'],
+						'on_time'      => substr((string) $s['on_time'], 0, 5),
+						'off_time'     => substr((string) $s['off_time'], 0, 5),
+						'off_next_day' => (int) $s['off_next_day'],
+						'breaks'       => $bk,
+						'note'         => ($s['note'] === null ? '' : $s['note']),
+						'submitted_at' => ($s['submitted_at'] === null ? '' : $s['submitted_at'])
+					);
+				}
+
+				$entry['my_submission'] = $mine;
 			}
 
 			$shifts[] = $entry;

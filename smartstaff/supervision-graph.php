@@ -1,7 +1,9 @@
 <?php
 
 	/*
-	/* Supervision graph helpers — traversal over `call_supervision`.
+	/* Supervision graph helpers — traversal over `call_supervision`, and
+	/* (since slice B of BRIEF-crew-self-times, Nov 2026) the ONE answer to
+	/* "which tier is this call, and who enters its times".
 	/*
 	/* An edge (boss_call -> child_call) means "whoever bosses `boss_call`
 	/* oversees `child_call`".
@@ -25,12 +27,34 @@
 	/* decided one boss call per supervised call. Anyone diffing the two
 	/* tables will read this as a copy-paste error. It is not.
 	/*
+	/* ONLY LIVE CREW BOSS CALLS SUPERVISE (D20, decisions B and C). An edge
+	/* whose boss call fails goat_is_boss_call_name(), or whose boss call is
+	/* cancelled, counts for NOTHING — not scope, not the boss lookup, not the
+	/* tier, not the contact ladder. goat_boss_call_is_live() is the single
+	/* test and every traversal below goes through it. call-supervision.php
+	/* refuses to create such an edge; the test here covers the ones that
+	/* already exist.
+	/*
+	/* THE TWO MARKERS ON call_crew_map, and they are NOT the same role:
+	/*
+	/*   is_crew_boss  tinyint(1). The Crew Boss pill, written by THE GOAT
+	/*                 through set-crew-boss.php (D19). Slice A adds it.
+	/*   is_call_boss  binary(50). Despite its name, the TEAM LEAD tick.
+	/*                 makeboss writes the STRING '1' (byte 0x31, null-padded),
+	/*                 so it is selected and (int)-cast in PHP, NEVER compared
+	/*                 with "= 1" in SQL.
+	/*
+	/* is_crew_boss is read through goat_ccm_have_crew_boss() and reads as 0
+	/* where slice A has not run, so this file deploys safely before the
+	/* ALTER: every call simply has no Crew Boss pill yet.
+	/*
 	/* DEPENDENCY DIRECTION — ONE WAY ONLY.
 	/*
 	/*   supervision-graph.php  ──include_once──▶  resolve-call-contact.php
 	/*
 	/* This file depends on resolve-call-contact.php, for
-	/* goat_is_boss_call_name(). NEVER the reverse. resolve-call-contact.php
+	/* goat_is_boss_call_name(), goat_calls_have_cancelled() and
+	/* goat_ccm_have_crew_boss(). NEVER the reverse. resolve-call-contact.php
 	/* declares its functions at top level with no function_exists guard, so
 	/* an include in the other direction is a fatal redeclare, not a no-op.
 	/* Callers there guard at the CALL SITE instead:
@@ -39,16 +63,21 @@
 	/*               ? goat_supervision_boss_call($callID)
 	/*               : 0;
 	/*
-	/* which makes the Q12 fallback structural: if this file is not loaded,
-	/* resolve-call-contact.php behaves exactly as it does today. The
-	/* fallback is the shape of the dependency, not a branch to remember.
+	/* which makes the fallback structural: if this file is not loaded, the
+	/* contact ladder has no link rung at all.
 	/*
 	/* Every query INNER JOINs `calls`, so edges left dangling by a deleted
 	/* call are invisible. sss::deleteCall does not know this table exists,
 	/* exactly as it does not know about call_feeds.
 	/*
-	/* Every function returns array() or 0 on EVERY failure path — never
-	/* false, never null. Callers count() and in_array() the result.
+	/* THE userID-KEYED HELPERS (scope, boss calls, scope detail) return
+	/* array() or 0 on EVERY failure path — never false, never null. Callers
+	/* count() and in_array() the result.
+	/*
+	/* THE CALL-KEYED HELPERS (goat_bosses_by_call, goat_call_tiers and its
+	/* wrappers) return array('ok', 'error', 'by_call') instead, on purpose:
+	/* for them an empty answer and a broken query are opposite findings, and
+	/* every caller fails hard on ok === false. See goat_bosses_by_call().
 	/*
 	/* PHP 5.x — mysql_*, no ??, no short array syntax.
 	*/
@@ -60,6 +89,12 @@
 
 		/*
 		/* The boss call supervising $childCall, or 0.
+		/*
+		/* THE RAW EDGE. No name test and no cancelled test here — this answers
+		/* "what does call_supervision say", and every consumer then applies
+		/* goat_boss_call_is_live() to the call it names. Keeping the two
+		/* questions apart is what lets call-supervision.php and an audit read
+		/* see an edge the authority paths ignore.
 		/*
 		/* LIMIT 1 is safe because of uniq_child. BOTH ends are INNER JOINed:
 		/* a surviving row pointing at a deleted boss call OR a deleted child
@@ -114,6 +149,9 @@
 		/*
 		/* Every call supervised by $bossCall, ordered by call time so callers
 		/* do not have to re-sort. Empty array on any failure.
+		/*
+		/* Raw, like goat_supervision_boss_call(): the caller has already
+		/* decided whether $bossCall is a live Crew Boss call.
 		*/
 
 		function goat_supervision_children($bossCall)
@@ -144,10 +182,59 @@
 		}
 
 		/*
+		/* MAY THIS CALL SUPERVISE? THE SINGLE TEST FOR DECISIONS B AND C.
+		/*
+		/* A dedicated Crew Boss call (goat_is_boss_call_name()) that has not
+		/* been cancelled. $cancelledAt is the calls.cancelled_at value as
+		/* selected through goat_sg_cancelled_sql() — NULL where the column is
+		/* absent, which reads as "not cancelled", matching the resolver.
+		*/
+
+		function goat_boss_call_is_live($callName, $cancelledAt)
+		{
+			if (!goat_is_boss_call_name((string) $callName))
+			{
+				return false;
+			}
+
+			if ($cancelledAt !== null && (int) $cancelledAt > 0)
+			{
+				return false;
+			}
+
+			return true;
+		}
+
+		/*
+		/* calls.cancelled_at as a SELECT expression, or NULL where the column
+		/* does not exist on this environment. Guarded for the reason the
+		/* resolver gives at goat_calls_have_cancelled(): an unguarded column
+		/* would make every helper here fail on such a box, and the userID-keyed
+		/* helpers fail SILENTLY to empty scope.
+		*/
+
+		function goat_sg_cancelled_sql($alias)
+		{
+			return goat_calls_have_cancelled() ? ($alias . '.cancelled_at') : 'NULL';
+		}
+
+		/* call_crew_map.is_crew_boss as a SELECT expression, or 0 before slice A. */
+
+		function goat_sg_crew_boss_sql($alias)
+		{
+			return goat_ccm_have_crew_boss() ? ($alias . '.is_crew_boss') : '0';
+		}
+
+		/*
 		/* The DEDICATED BOSS CALLS this user is confirmed (status 5) on.
 		/* Slice E groups its response by these — they are containers, not
 		/* act-on calls, so this is deliberately separate from
 		/* goat_boss_scope().
+		/*
+		/* UNCHANGED BY SLICE B. It is a VIEWING helper (my-shifts can_see_crew,
+		/* my-call-crew, Your Crew grouping), and the brief keeps viewing as it
+		/* was: no promo-pending exclusion and no cancelled test are retrofitted
+		/* here.
 		/*
 		/* $userID is a SmartStaff `userID`, NEVER an EIN. Passing an EIN
 		/* silently returns another person's calls — documented regression,
@@ -193,31 +280,60 @@
 		}
 
 		/*
-		/* THE SET OF CALL IDS THIS USER MAY ACT ON. Everything else is built
-		/* on this. Two sources, unioned and deduplicated:
+		/* Keep the stronger of two scope reasons for one call.
+		*/
+
+		function goat_scope_claim(&$detail, $callID, $why)
+		{
+			$rank = array('direct_crew_boss' => 3, 'direct_team_lead' => 2, 'supervisory' => 1);
+
+			$callID = (int) $callID;
+
+			if ($callID <= 0)
+			{
+				return;
+			}
+
+			if (!isset($detail[$callID]) || $rank[$why] > $rank[$detail[$callID]])
+			{
+				$detail[$callID] = $why;
+			}
+		}
+
 		/*
-		/*   DIRECT      — a call they are confirmed on AND flagged
-		/*                 is_call_boss=1 on.
-		/*   SUPERVISORY — every child of a dedicated boss call they are
-		/*                 confirmed on.
+		/* THE CALLS THIS USER MAY SEE AS A BOSS, AND WHY.
+		/*
+		/*   callID => 'direct_crew_boss' | 'direct_team_lead' | 'supervisory'
+		/*
+		/* Three sources, the strongest kept per call:
+		/*
+		/*   DIRECT CREW BOSS  confirmed and carrying the Crew Boss pill
+		/*                     (is_crew_boss = 1) on the call. ADDED slice B.
+		/*   DIRECT TEAM LEAD  confirmed and ticked is_call_boss on the call.
+		/*   SUPERVISORY       every child of a LIVE dedicated boss call they
+		/*                     are confirmed on (goat_boss_call_is_live() —
+		/*                     the cancelled test is new in slice B).
 		/*
 		/* $userID is a SmartStaff `userID`, NEVER an EIN — see
 		/* goat_boss_calls_for_user() above for the v3.4.10 regression.
 		/*
-		/* NEVER FILTER is_call_boss IN SQL. It is binary(50) (A0 confirmed on
-		/* both environments); makeboss writes the STRING '1', stored as byte
-		/* 0x31 null-padded to 50 bytes, so "WHERE is_call_boss = 1" is
-		/* unreliable across MySQL versions. Select it and cast with (int) in
-		/* PHP — the leading byte is read and parsing stops at the null. Same
-		/* discipline as resolve-call-contact.php and get-booking.php.
+		/* NOTE THE ASYMMETRY, IT IS NOT A BUG: the supervisory branch does NOT
+		/* check either marker. Q4 — every confirmed resource on a dedicated boss
+		/* call gets scope, not only the nominated one. Nomination governs who
+		/* the crew RING and who ENTERS TIMES, not who SEES.
+		/*
+		/* "Confirmed" here is status = 5 ONLY, without the promo-pending
+		/* exclusion the time-entry helpers apply. That is deliberate (brief §3,
+		/* "do not retrofit it"): this is viewing, and viewing is unchanged.
+		/* goat_time_entry_scope() applies the exclusion for entry.
 		/*
 		/* This returns ACT-ON calls. A user's own boss call appears here only
-		/* via the direct branch, if they happen to be flagged on it. Slice E
-		/* fetches the boss calls separately, through
-		/* goat_boss_calls_for_user(), as grouping containers.
+		/* via a direct branch, if they happen to carry a marker on it. Slice E
+		/* fetches the boss calls separately, through goat_boss_calls_for_user(),
+		/* as grouping containers.
 		*/
 
-		function goat_boss_scope($userID)
+		function goat_boss_scope_detail($userID)
 		{
 			$userID = (int) $userID;
 
@@ -226,7 +342,11 @@
 				return array();
 			}
 
-			$res = mysql_query("SELECT ccm.callID AS n, ccm.is_call_boss AS is_call_boss, c.call_name AS call_name
+			$res = mysql_query("SELECT ccm.callID AS n,
+			                           ccm.is_call_boss AS is_call_boss,
+			                           " . goat_sg_crew_boss_sql('ccm') . " AS is_crew_boss,
+			                           c.call_name AS call_name,
+			                           " . goat_sg_cancelled_sql('c') . " AS cancelled_at
 			                    FROM call_crew_map ccm
 			                    INNER JOIN calls c ON c.id = ccm.callID
 			                    WHERE ccm.userID = " . $userID . "
@@ -237,9 +357,7 @@
 				return array();
 			}
 
-			/* keyed, so the union dedupes itself — no in_array() in a loop */
-
-			$scope = array();
+			$detail = array();
 
 			while ($row = mysql_fetch_object($res))
 			{
@@ -250,88 +368,88 @@
 					continue;
 				}
 
-				/* ---- DIRECT ---- */
+				if ((int) $row->is_crew_boss === 1)
+				{
+					goat_scope_claim($detail, $callID, 'direct_crew_boss');
+				}
 
 				if ((int) $row->is_call_boss === 1)
 				{
-					$scope[$callID] = true;
+					goat_scope_claim($detail, $callID, 'direct_team_lead');
 				}
 
-				/*
-				/* ---- SUPERVISORY ----
-				/*
-				/* NOTE THE ASYMMETRY, IT IS NOT A BUG: this branch does NOT
-				/* check is_call_boss. Q4 — every confirmed resource on a
-				/* dedicated boss call gets scope, not only the nominated one.
-				/* Nomination governs who the CREW RING (rung 2 of the contact
-				/* ladder, slice C), not who SEES.
-				*/
-
-				if (goat_is_boss_call_name($row->call_name))
+				if (goat_boss_call_is_live($row->call_name, $row->cancelled_at))
 				{
-					$kids = goat_supervision_children($callID);
-
-					foreach ($kids as $kid)
+					foreach (goat_supervision_children($callID) as $kid)
 					{
-						$scope[$kid] = true;
+						goat_scope_claim($detail, (int) $kid, 'supervisory');
 					}
 				}
 			}
 
-			return array_keys($scope);
+			return $detail;
+		}
+
+		/*
+		/* THE SET OF CALL IDS THIS USER MAY SEE AS A BOSS (crew list, contacts,
+		/* emergency card). The keys of goat_boss_scope_detail(), so there is ONE
+		/* implementation of the branches.
+		/*
+		/* It no longer means "may enter times". Since slice B that is
+		/* goat_time_entry_scope(), which is narrower: a Team Lead on a call with
+		/* a Crew Boss keeps their view here (D18) and loses entry there.
+		*/
+
+		function goat_boss_scope($userID)
+		{
+			return array_keys(goat_boss_scope_detail($userID));
 		}
 
 		/*
 		/* THE INVERSION — GIVEN CALLS, WHO IS THE BOSS OF EACH.
 		/*
-		/* Every other helper in this file is keyed on a userID, because every
-		/* crew-facing surface is a person asking about themselves. Two
-		/* surfaces ask the opposite question:
+		/* Every userID-keyed helper above answers a person asking about
+		/* themselves. This answers the opposite question.
 		/*
-		/*   calls-awaiting-times.php   the cron — which bosses owe times
-		/*   ops-times-outstanding.php  the Ops lane — who does Rich ring
+		/* ITS READER SINCE SLICE B IS emergency-scope.php, which uses `how` to
+		/* label the access it granted. calls-awaiting-times.php and
+		/* ops-times-outstanding.php read goat_time_entry_people_by_call()
+		/* instead, because "who bosses this call" and "who enters its times"
+		/* stopped being the same answer when Team Leads lost entry on Crew
+		/* Boss calls. Kept as it was (decision A) so the emergency log's
+		/* vocabulary does not move under it.
 		/*
-		/* It is one question read in opposite directions, and this is the ONE
-		/* answer both of them read. A second implementation of "who is the
-		/* boss of this call" is how the five supervision-blindness instances
-		/* happened; keeping it here means a branch added for one caller
-		/* cannot go missing from the other.
+		/* FOUR BRANCHES:
 		/*
-		/* THREE BRANCHES, and the third is the one that gets forgotten:
+		/*   DIRECT_CREW_BOSS  the row carries is_crew_boss on the call itself.
+		/*                     ADDED slice B, so the access goat_boss_scope()
+		/*                     now grants a Crew Boss can be attributed.
+		/*   DIRECT            the row is flagged is_call_boss on the call itself.
+		/*   CONTAINER         the CALL is a live dedicated boss call and the row
+		/*                     is anyone confirmed on it (Q4).
+		/*   SUPERVISORY       the call is the child of a LIVE boss call, and the
+		/*                     row is anyone confirmed on THAT call. No marker
+		/*                     test: the same asymmetry goat_boss_scope() carries.
 		/*
-		/*   DIRECT       the row is flagged is_call_boss on the call itself.
-		/*   CONTAINER    the CALL is a dedicated boss call and the row is
-		/*                anyone confirmed on it (Q4 — scope belongs to every
-		/*                confirmed resource on a boss call, not only the
-		/*                flagged one, which on test is 18 of 22 containers).
-		/*   SUPERVISORY  the call is the child of a boss call, and the row is
-		/*                anyone confirmed on THAT call. No is_call_boss test:
-		/*                the same asymmetry goat_boss_scope() carries, for the
-		/*                same reason — nomination governs who the crew RING,
-		/*                not who is responsible for the times.
+		/* "Live" — boss-named and not cancelled — is new in slice B for both
+		/* the container and the supervisory branch (decisions B, C).
 		/*
-		/* PRECEDENCE direct > container > supervisory. A boss reachable two
-		/* ways is ONE entry carrying the most specific reason, because `how`
-		/* exists to answer "why is this person responsible" and the weaker
-		/* answer is the less useful one.
+		/* PRECEDENCE direct_crew_boss > direct > container > supervisory. A
+		/* boss reachable two ways is ONE entry carrying the most specific
+		/* reason, because `how` exists to answer "why is this person
+		/* responsible" and the weaker answer is the less useful one.
 		/*
-		/* is_call_boss IS binary(50) — selected and cast in PHP, NEVER
-		/* compared with "= 1" in SQL. makeboss writes the STRING '1', stored
-		/* as byte 0x31 null-padded to 50 bytes.
-		/*
-		/* THE RETURN SHAPE DEPARTS FROM THIS FILE'S array()-ON-FAILURE RULE,
-		/* ON PURPOSE:
+		/* THE RETURN SHAPE DEPARTS FROM THE userID HELPERS' array()-ON-FAILURE
+		/* RULE, ON PURPOSE:
 		/*
 		/*   array('ok' => bool, 'error' => string,
 		/*         'by_call' => array(callID => array(userID => how)))
 		/*
 		/* because the two states that rule conflates are opposite answers
-		/* here. An empty entry for a call that EXISTS is a real and important
-		/* finding — nobody can submit times for it, and the Ops lane draws it
-		/* as its own segment. A broken query is not that, and both callers
-		/* must fail hard rather than report a call as bossless or a boss as
-		/* owing nothing. Still an array on every path, so no caller is handed
-		/* false or null.
+		/* here. An empty entry for a call that EXISTS is a real finding; a
+		/* broken query is not that, and callers must fail hard rather than
+		/* report a call as bossless. Still an array on every path, so no caller
+		/* is handed false or null.
 		/*
 		/* Every call id that exists in `calls` comes back as a key, so
 		/* "bossless" is readable without a second existence check. Ids that
@@ -340,7 +458,7 @@
 
 		function goat_boss_claim(&$byCall, $callID, $userID, $how)
 		{
-			$rank = array('direct' => 3, 'container' => 2, 'supervisory' => 1);
+			$rank = array('direct_crew_boss' => 4, 'direct' => 3, 'container' => 2, 'supervisory' => 1);
 
 			$callID = (int) $callID;
 			$userID = (int) $userID;
@@ -362,31 +480,14 @@
 			$fail = array('ok' => false, 'error' => '', 'by_call' => array());
 			$none = array('ok' => true,  'error' => '', 'by_call' => array());
 
-			if (!is_array($callIDs) || count($callIDs) === 0)
-			{
-				return $none;
-			}
-
-			/* dedupe and sanitise; every id is cast, no string reaches SQL */
-
-			$ids = array();
-
-			foreach ($callIDs as $cid)
-			{
-				$cid = (int) $cid;
-
-				if ($cid > 0)
-				{
-					$ids[$cid] = true;
-				}
-			}
+			$ids = goat_sg_clean_ids($callIDs);
 
 			if (count($ids) === 0)
 			{
 				return $none;
 			}
 
-			$idList = implode(',', array_map('intval', array_keys($ids)));
+			$idList = implode(',', $ids);
 
 			/*
 			/* ---- 1 of 3: THE CALLS THEMSELVES ----
@@ -398,7 +499,9 @@
 			/* bossless.
 			*/
 
-			$nameRes = mysql_query("SELECT id, call_name FROM calls WHERE id IN (" . $idList . ")");
+			$nameRes = mysql_query("SELECT c.id AS id, c.call_name AS call_name,
+			                               " . goat_sg_cancelled_sql('c') . " AS cancelled_at
+			                        FROM calls c WHERE c.id IN (" . $idList . ")");
 
 			if ($nameRes === false)
 			{
@@ -419,7 +522,7 @@
 				}
 
 				$byCall[$cid]     = array();
-				$isBossCall[$cid] = goat_is_boss_call_name($row->call_name);
+				$isBossCall[$cid] = goat_boss_call_is_live($row->call_name, $row->cancelled_at);
 			}
 
 			if (count($byCall) === 0)
@@ -432,13 +535,14 @@
 			/*
 			/* ---- 2 of 3: DIRECT AND CONTAINER ----
 			/*
-			/* One query serves both branches, because both ask the same thing
-			/* of the same table — every confirmed row on the calls — and
-			/* differ only in what makes the row count.
+			/* One query serves all three on-the-call branches, because they ask
+			/* the same thing of the same table — every confirmed row on the
+			/* calls — and differ only in what makes the row count.
 			*/
 
 			$crewRes = mysql_query("SELECT ccm.callID AS call_id, ccm.userID AS user_id,
-			                               ccm.is_call_boss AS is_call_boss
+			                               ccm.is_call_boss AS is_call_boss,
+			                               " . goat_sg_crew_boss_sql('ccm') . " AS is_crew_boss
 			                        FROM call_crew_map ccm
 			                        WHERE ccm.callID IN (" . $liveList . ")
 			                          AND ccm.status = 5");
@@ -453,6 +557,11 @@
 			{
 				$cid = (int) $crow->call_id;
 				$uid = (int) $crow->user_id;
+
+				if ((int) $crow->is_crew_boss === 1)
+				{
+					goat_boss_claim($byCall, $cid, $uid, 'direct_crew_boss');
+				}
 
 				if ((int) $crow->is_call_boss === 1)
 				{
@@ -477,10 +586,14 @@
 			/*
 			/* INNER JOIN calls on the boss call, matching every other
 			/* traversal of this table: an edge left dangling by a deleted call
-			/* resolves to nothing rather than to a boss who does not exist.
+			/* resolves to nothing rather than to a boss who does not exist. An
+			/* edge from a call that is not a live Crew Boss call is skipped
+			/* (decisions B, C).
 			*/
 
-			$edgeRes = mysql_query("SELECT s.boss_call AS boss_call, s.child_call AS child_call
+			$edgeRes = mysql_query("SELECT s.boss_call AS boss_call, s.child_call AS child_call,
+			                               cb.call_name AS boss_call_name,
+			                               " . goat_sg_cancelled_sql('cb') . " AS boss_cancelled_at
 			                        FROM call_supervision s
 			                        INNER JOIN calls cb ON cb.id = s.boss_call
 			                        WHERE s.child_call IN (" . $liveList . ")");
@@ -499,6 +612,11 @@
 				$cc = (int) $erow->child_call;
 
 				if ($bc <= 0 || !isset($byCall[$cc]))
+				{
+					continue;
+				}
+
+				if (!goat_boss_call_is_live($erow->boss_call_name, $erow->boss_cancelled_at))
 				{
 					continue;
 				}
@@ -544,6 +662,600 @@
 			}
 
 			return array('ok' => true, 'error' => '', 'by_call' => $byCall);
+		}
+
+		/*
+		/* ================================================================
+		/* TIERS AND TIME ENTRY — slice B of BRIEF-crew-self-times (Nov 2026)
+		/* ================================================================
+		/*
+		/* "CONFIRMED" IN EVERYTHING BELOW = status 5 AND no call_promo_ack row
+		/* with acked_at IS NULL. A backup promoted to 5 who has not accepted is
+		/* not known to be working, so they can neither make a call a Crew Boss
+		/* call nor enter anyone's times. The helpers ABOVE keep plain status 5,
+		/* because they gate viewing and viewing is unchanged.
+		*/
+
+		/* dedupe and sanitise; every id is cast, no string reaches SQL */
+
+		function goat_sg_clean_ids($callIDs)
+		{
+			$ids = array();
+
+			if (!is_array($callIDs))
+			{
+				return array();
+			}
+
+			foreach ($callIDs as $cid)
+			{
+				$cid = (int) $cid;
+
+				if ($cid > 0)
+				{
+					$ids[$cid] = true;
+				}
+			}
+
+			return array_keys($ids);
+		}
+
+		/*
+		/* The confirmed (non-promo-pending) roster of each call:
+		/*
+		/*   array('ok', 'error', 'by_call' => callID => userID =>
+		/*         array('crew_boss' => 0|1, 'team_lead' => 0|1))
+		/*
+		/* Calls with nobody confirmed are absent.
+		*/
+
+		function goat_sg_confirmed_roster($callIDs)
+		{
+			$ids = goat_sg_clean_ids($callIDs);
+
+			if (count($ids) === 0)
+			{
+				return array('ok' => true, 'error' => '', 'by_call' => array());
+			}
+
+			$res = mysql_query("SELECT ccm.callID AS call_id, ccm.userID AS user_id,
+			                           ccm.is_call_boss AS is_call_boss,
+			                           " . goat_sg_crew_boss_sql('ccm') . " AS is_crew_boss
+			                    FROM call_crew_map ccm
+			                    LEFT JOIN call_promo_ack cpa
+			                           ON cpa.callID = ccm.callID
+			                          AND cpa.userID = ccm.userID
+			                          AND cpa.acked_at IS NULL
+			                    WHERE ccm.callID IN (" . implode(',', $ids) . ")
+			                      AND ccm.status = 5
+			                      AND cpa.id IS NULL");
+
+			if ($res === false)
+			{
+				return array('ok' => false, 'error' => 'roster query failed: ' . mysql_error(), 'by_call' => array());
+			}
+
+			$out = array();
+
+			while ($row = mysql_fetch_object($res))
+			{
+				$cid = (int) $row->call_id;
+				$uid = (int) $row->user_id;
+
+				if ($cid <= 0 || $uid <= 0)
+				{
+					continue;
+				}
+
+				if (!isset($out[$cid]))
+				{
+					$out[$cid] = array();
+				}
+
+				/* MyISAM enforces no uniqueness: OR the markers if a pair repeats */
+
+				$cb = ((int) $row->is_crew_boss === 1) ? 1 : 0;
+				$tl = ((int) $row->is_call_boss === 1) ? 1 : 0;
+
+				if (isset($out[$cid][$uid]))
+				{
+					$cb = max($cb, $out[$cid][$uid]['crew_boss']);
+					$tl = max($tl, $out[$cid][$uid]['team_lead']);
+				}
+
+				$out[$cid][$uid] = array('crew_boss' => $cb, 'team_lead' => $tl);
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $out);
+		}
+
+		/* userIDs on a roster carrying the given marker, ascending */
+
+		function goat_sg_marked($members, $marker)
+		{
+			$out = array();
+
+			foreach ($members as $uid => $m)
+			{
+				if ($m[$marker] === 1)
+				{
+					$out[] = (int) $uid;
+				}
+			}
+
+			sort($out);
+
+			return $out;
+		}
+
+		/*
+		/* D's rule for who is "ticked" on a call: the Crew Boss pill holders,
+		/* else the Team Lead tick holders, else nobody.
+		*/
+
+		function goat_sg_ticked($members)
+		{
+			$cb = goat_sg_marked($members, 'crew_boss');
+
+			if (count($cb) > 0)
+			{
+				return $cb;
+			}
+
+			return goat_sg_marked($members, 'team_lead');
+		}
+
+		/* keep the stronger `how` for one person; same ranks as goat_boss_claim() */
+
+		function goat_sg_entry_claim(&$entry, $userID, $how)
+		{
+			$rank = array('direct_crew_boss' => 4, 'direct' => 3, 'container' => 2, 'supervisory' => 1);
+
+			$userID = (int) $userID;
+
+			if ($userID <= 0)
+			{
+				return;
+			}
+
+			if (!isset($entry[$userID]) || $rank[$how] > $rank[$entry[$userID]])
+			{
+				$entry[$userID] = $how;
+			}
+		}
+
+		/*
+		/* WHICH TIER IS EACH CALL, AND WHO ENTERS ITS TIMES.
+		/*
+		/* THE ONE IMPLEMENTATION (design §4.2). Boss-form access, crew
+		/* self-submission, reminder pushes and the Ops lane's "who to ring" all
+		/* read this, directly or through the wrappers below.
+		/*
+		/*   array('ok' => bool, 'error' => string, 'by_call' => callID => array(
+		/*     'tier'               'crew_boss' | 'team_lead' | 'self' | 'ops',
+		/*     'entry_user_ids'     who may enter times for the whole call,
+		/*     'entry_how'          userID => how, for the same people, in the
+		/*                          goat_bosses_by_call() vocabulary,
+		/*     'crew_boss_user_ids' Crew Boss pill holders on the call, plus the
+		/*                          ticked person(s) on its supervising call,
+		/*     'team_lead_user_ids' Team Lead ticks on the call,
+		/*     'multi_team_lead'    1 when tier is team_lead with 2+ Team Leads,
+		/*     'is_boss_call'       1 when the call is itself a Crew Boss call,
+		/*     'supervised_by'      the live supervising Crew Boss call that
+		/*                          counts (≥1 confirmed on it), else 0,
+		/*     'flags'              'multi_team_lead',
+		/*                          'crew_boss_call_nobody_ticked'
+		/*   ))
+		/*
+		/* RULES, FIRST MATCH WINS (brief §3.1):
+		/*
+		/*   1  The call IS a Crew Boss call (D21). Entry = its Crew Boss pill
+		/*      holders, else its Team Lead tick. Tier crew_boss. Nobody ticked:
+		/*      tier `ops`, nobody enters, flagged. Never `self`.
+		/*   2  A Crew Boss pill on the call, or a link from a LIVE Crew Boss call
+		/*      with ≥1 confirmed person: tier crew_boss. Entry = the pill holders
+		/*      plus the supervising call's ticked person — or, when nobody there
+		/*      is ticked, EVERYONE confirmed on it (today's Q4 behaviour), flagged.
+		/*   3  Team Lead tick(s): tier team_lead, entry = all of them. Two or
+		/*      more breaks D17 and is flagged; every one may still enter (§4.3).
+		/*   4  Otherwise `self`: entry is empty, each person enters their own.
+		/*
+		/* A cancelled call is not special-cased: every row on it is status 9,
+		/* so it has no roster and falls to `ops` (boss call) or `self`. The
+		/* self-submit endpoint refuses it on its confirmed-row gate.
+		/*
+		/* Batch: four queries for any number of calls, never one per call.
+		/* Ids not in `calls` are absent from by_call.
+		*/
+
+		function goat_call_tiers($callIDs)
+		{
+			$fail = array('ok' => false, 'error' => '', 'by_call' => array());
+			$none = array('ok' => true,  'error' => '', 'by_call' => array());
+
+			$ids = goat_sg_clean_ids($callIDs);
+
+			if (count($ids) === 0)
+			{
+				return $none;
+			}
+
+			/* ---- 1 of 4: the calls themselves (also the existence check) ---- */
+
+			$cres = mysql_query("SELECT c.id AS id, c.call_name AS call_name
+			                     FROM calls c
+			                     WHERE c.id IN (" . implode(',', $ids) . ")");
+
+			if ($cres === false)
+			{
+				$fail['error'] = 'call lookup failed: ' . mysql_error();
+				return $fail;
+			}
+
+			$isBoss = array();
+
+			while ($row = mysql_fetch_object($cres))
+			{
+				$cid = (int) $row->id;
+
+				if ($cid > 0)
+				{
+					$isBoss[$cid] = goat_is_boss_call_name((string) $row->call_name);
+				}
+			}
+
+			if (count($isBoss) === 0)
+			{
+				return $none;
+			}
+
+			$live = array_keys($isBoss);
+
+			/* ---- 2 of 4: confirmed roster on the calls ---- */
+
+			$roster = goat_sg_confirmed_roster($live);
+
+			if (!$roster['ok'])
+			{
+				$fail['error'] = $roster['error'];
+				return $fail;
+			}
+
+			$rosterOf = $roster['by_call'];
+
+			/*
+			/* ---- 3 of 4: the supervising edges, live Crew Boss calls only ----
+			/*
+			/* Boss calls are not asked about here — rule 1 decides them from
+			/* their own roster — so their own edges (a boss call supervising a
+			/* boss call is permitted) are not consulted for their tier.
+			*/
+
+			$supOf = array();   /* childCallID -> bossCallID */
+
+			$eres = mysql_query("SELECT s.child_call AS child_call, s.boss_call AS boss_call,
+			                            cb.call_name AS boss_call_name,
+			                            " . goat_sg_cancelled_sql('cb') . " AS boss_cancelled_at
+			                     FROM call_supervision s
+			                     INNER JOIN calls cb ON cb.id = s.boss_call
+			                     WHERE s.child_call IN (" . implode(',', $live) . ")");
+
+			if ($eres === false)
+			{
+				$fail['error'] = 'supervision query failed: ' . mysql_error();
+				return $fail;
+			}
+
+			while ($erow = mysql_fetch_object($eres))
+			{
+				$cc = (int) $erow->child_call;
+				$bc = (int) $erow->boss_call;
+
+				if ($bc <= 0 || $bc === $cc || !isset($isBoss[$cc]))
+				{
+					continue;   /* a call cannot boss itself */
+				}
+
+				if (!goat_boss_call_is_live($erow->boss_call_name, $erow->boss_cancelled_at))
+				{
+					continue;   /* decisions B and C */
+				}
+
+				$supOf[$cc] = $bc;
+			}
+
+			/* ---- 4 of 4: confirmed roster on the supervising calls ---- */
+
+			$need = array();
+
+			foreach ($supOf as $cc => $bc)
+			{
+				if (!isset($rosterOf[$bc]))
+				{
+					$need[$bc] = true;
+				}
+			}
+
+			if (count($need) > 0)
+			{
+				$sup = goat_sg_confirmed_roster(array_keys($need));
+
+				if (!$sup['ok'])
+				{
+					$fail['error'] = $sup['error'];
+					return $fail;
+				}
+
+				foreach ($sup['by_call'] as $bc => $members)
+				{
+					$rosterOf[$bc] = $members;
+				}
+			}
+
+			/* ---- assemble ---- */
+
+			$byCall = array();
+
+			foreach ($isBoss as $cid => $callIsBoss)
+			{
+				$members  = isset($rosterOf[$cid]) ? $rosterOf[$cid] : array();
+				$cbOnCall = goat_sg_marked($members, 'crew_boss');
+				$tlOnCall = goat_sg_marked($members, 'team_lead');
+
+				$tier         = 'self';
+				$entry        = array();
+				$crewBossIDs  = $cbOnCall;
+				$flags        = array();
+				$multi        = 0;
+				$supervisedBy = 0;
+
+				if ($callIsBoss)
+				{
+					/* RULE 1 */
+
+					if (count($cbOnCall) > 0)
+					{
+						$tier = 'crew_boss';
+
+						foreach ($cbOnCall as $uid)
+						{
+							goat_sg_entry_claim($entry, $uid, 'direct_crew_boss');
+						}
+					}
+					else if (count($tlOnCall) > 0)
+					{
+						$tier = 'crew_boss';
+
+						foreach ($tlOnCall as $uid)
+						{
+							goat_sg_entry_claim($entry, $uid, 'direct');
+						}
+					}
+					else
+					{
+						$tier    = 'ops';
+						$flags[] = 'crew_boss_call_nobody_ticked';
+					}
+				}
+				else
+				{
+					$sb        = isset($supOf[$cid]) ? (int) $supOf[$cid] : 0;
+					$sbMembers = ($sb > 0 && isset($rosterOf[$sb])) ? $rosterOf[$sb] : array();
+
+					if (count($sbMembers) === 0)
+					{
+						$sb = 0;   /* a Crew Boss call with nobody confirmed does not count */
+					}
+
+					if (count($cbOnCall) > 0 || $sb > 0)
+					{
+						/* RULE 2 */
+
+						$tier = 'crew_boss';
+
+						foreach ($cbOnCall as $uid)
+						{
+							goat_sg_entry_claim($entry, $uid, 'direct_crew_boss');
+						}
+
+						if ($sb > 0)
+						{
+							$supervisedBy = $sb;
+							$ticked       = goat_sg_ticked($sbMembers);
+
+							if (count($ticked) > 0)
+							{
+								foreach ($ticked as $uid)
+								{
+									goat_sg_entry_claim($entry, $uid, 'supervisory');
+									$crewBossIDs[] = $uid;
+								}
+							}
+							else
+							{
+								/* nobody ticked up there: everyone on it, as today (Q4) */
+
+								foreach ($sbMembers as $uid => $ignored)
+								{
+									goat_sg_entry_claim($entry, $uid, 'supervisory');
+								}
+
+								$flags[] = 'crew_boss_call_nobody_ticked';
+							}
+						}
+					}
+					else if (count($tlOnCall) > 0)
+					{
+						/* RULE 3 */
+
+						$tier = 'team_lead';
+
+						foreach ($tlOnCall as $uid)
+						{
+							goat_sg_entry_claim($entry, $uid, 'direct');
+						}
+
+						if (count($tlOnCall) > 1)
+						{
+							$multi   = 1;
+							$flags[] = 'multi_team_lead';
+						}
+					}
+
+					/* RULE 4 — tier stays 'self', entry stays empty */
+				}
+
+				$crewBossIDs = array_values(array_unique(array_map('intval', $crewBossIDs)));
+				sort($crewBossIDs);
+
+				ksort($entry);
+
+				$byCall[$cid] = array(
+					'tier'               => $tier,
+					'entry_user_ids'     => array_map('intval', array_keys($entry)),
+					'entry_how'          => $entry,
+					'crew_boss_user_ids' => $crewBossIDs,
+					'team_lead_user_ids' => $tlOnCall,
+					'multi_team_lead'    => $multi,
+					'is_boss_call'       => $callIsBoss ? 1 : 0,
+					'supervised_by'      => $supervisedBy,
+					'flags'              => $flags
+				);
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $byCall);
+		}
+
+		/*
+		/* One call. 'tier' is the per-call array above, or null when the call
+		/* does not exist. ok === false is a failed query — never read it as a
+		/* tier.
+		*/
+
+		function goat_call_tier($callID)
+		{
+			$callID = (int) $callID;
+			$r      = goat_call_tiers(array($callID));
+
+			return array(
+				'ok'    => $r['ok'],
+				'error' => $r['error'],
+				'tier'  => isset($r['by_call'][$callID]) ? $r['by_call'][$callID] : null
+			);
+		}
+
+		/*
+		/* GIVEN CALLS, WHO ENTERS EACH ONE'S TIMES — the time-entry inversion,
+		/* read by calls-awaiting-times.php (the push cron) and
+		/* ops-times-outstanding.php (who Rich rings).
+		/*
+		/*   by_call => callID => array('tier', 'entry_user_ids',
+		/*                              'how' => userID => how, 'flags',
+		/*                              'multi_team_lead', 'supervised_by')
+		/*
+		/* For tier `self` it returns the tier and NO PEOPLE. Who on a self call
+		/* still owes times is time-submission-graph.php's question
+		/* (goat_outstanding_people_by_call()), asked at the caller, so this file
+		/* does not take on that include. For tier `ops` nobody enters; the Ops
+		/* lane flags it.
+		*/
+
+		function goat_time_entry_people_by_call($callIDs)
+		{
+			$t = goat_call_tiers($callIDs);
+
+			if (!$t['ok'])
+			{
+				return $t;
+			}
+
+			$out = array();
+
+			foreach ($t['by_call'] as $cid => $info)
+			{
+				$out[$cid] = array(
+					'tier'            => $info['tier'],
+					'entry_user_ids'  => $info['entry_user_ids'],
+					'how'             => $info['entry_how'],
+					'flags'           => $info['flags'],
+					'multi_team_lead' => $info['multi_team_lead'],
+					'supervised_by'   => $info['supervised_by']
+				);
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $out);
+		}
+
+		/*
+		/* THE CALLS THIS USER MAY ENTER TIMES FOR. Gates submit-call-times.php
+		/* and my-call-times.php, and drives can_enter_times on Your Crew.
+		/*
+		/* Candidates are the user's goat_boss_scope_detail() calls — every route
+		/* into entry (a pill, a tick, or confirmed on a supervising call) is
+		/* already a route into scope — narrowed to those whose entry_user_ids
+		/* contain the user, minus calls where the user is promo-pending.
+		/*
+		/* FAILS CLOSED: any failed lookup returns array(), which every caller
+		/* turns into a 403. Same array()-on-failure rule as goat_boss_scope().
+		/*
+		/* Unwindowed, like goat_boss_scope(): callers window or test membership.
+		*/
+
+		function goat_time_entry_scope($userID)
+		{
+			$userID = (int) $userID;
+
+			if ($userID <= 0)
+			{
+				return array();
+			}
+
+			$detail = goat_boss_scope_detail($userID);
+
+			if (count($detail) === 0)
+			{
+				return array();
+			}
+
+			$t = goat_call_tiers(array_keys($detail));
+
+			if (!$t['ok'])
+			{
+				return array();
+			}
+
+			$pending = array();
+
+			$pres = mysql_query("SELECT callID AS n FROM call_promo_ack
+			                     WHERE userID = " . $userID . "
+			                       AND acked_at IS NULL");
+
+			if ($pres === false)
+			{
+				return array();
+			}
+
+			while ($prow = mysql_fetch_object($pres))
+			{
+				$pending[(int) $prow->n] = true;
+			}
+
+			$out = array();
+
+			foreach ($t['by_call'] as $cid => $info)
+			{
+				if (isset($pending[$cid]))
+				{
+					continue;
+				}
+
+				if (isset($info['entry_how'][$userID]))
+				{
+					$out[] = (int) $cid;
+				}
+			}
+
+			return $out;
 		}
 
 	}

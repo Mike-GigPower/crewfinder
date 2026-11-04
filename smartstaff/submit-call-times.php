@@ -32,7 +32,7 @@
 	/* the service key IS the trust anchor: the backend has already
 	/* authenticated the crew member and asserts their userID.
 	/*
-	/* goat_boss_scope() IS RECOMPUTED PER REQUEST. No scope is cached, passed
+	/* goat_time_entry_scope() IS RECOMPUTED PER REQUEST. No scope is cached, passed
 	/* in, or trusted from the client, and there is no parameter that widens
 	/* it. The only question this endpoint asks is "is this call in the scope
 	/* the database says you have, right now".
@@ -40,8 +40,10 @@
 	/* APPEND-ONLY. There is no UPDATE of a submission's contents and no DELETE
 	/* of a break row anywhere in this file. A correction INSERTs a new
 	/* submission with supersedes_id pointing at the row it replaces, plus a
-	/* fresh set of break rows. The single UPDATE below sets voided = 1 and is
-	/* the failure path in section 5.2 — it changes no typed value.
+	/* fresh set of break rows. The single UPDATE involved sets voided = 1 and
+	/* is the failure path in section 5.2 — it changes no typed value. Since
+	/* slice D it lives in time-submission-graph.php (goat_void_submission()),
+	/* with the rest of the write.
 	/*
 	/* ---- UNBOOKED CREW ARE IDENTIFIED BY EIN (decision 21) ----
 	/*
@@ -122,68 +124,14 @@
 	}
 
 	/*
-	/* HH:MM or HH:MM:SS -> HH:MM:SS. '' when the input is not a valid clock
-	/* time. Deliberately rejects 24:00 and anything with a stray character:
-	/* the column is TIME, which would happily accept '25:00' and even
-	/* '838:59:59', and a value nothing else in the estate reads that way is
-	/* worse than a rejection the boss can see and correct.
+	/* sct_time(), sct_minutes() and sct_void() MOVED to time-submission-graph.php
+	/* in slice D of BRIEF-crew-self-times (Nov 2026), as goat_sub_time(),
+	/* goat_sub_minutes() and goat_void_submission(), together with the per-row
+	/* validation, the 60-minute warning and the append-only write below. The
+	/* crew self-submit endpoint (submit-my-times.php) uses the same functions,
+	/* so payroll validation has one copy. Behaviour here is unchanged: same
+	/* errors in the same order, same 422 / 409 / 500 bodies.
 	*/
-
-	function sct_time($v)
-	{
-		if (!is_string($v) && !is_numeric($v))
-		{
-			return '';
-		}
-
-		$v = trim((string) $v);
-
-		if (!preg_match('/^([01][0-9]|2[0-3]):([0-5][0-9])(:([0-5][0-9]))?$/', $v))
-		{
-			return '';
-		}
-
-		if (strlen($v) === 5)
-		{
-			$v .= ':00';
-		}
-
-		return $v;
-	}
-
-	/*
-	/* 'HH:MM:SS' + a next-day flag -> minutes from midnight on the shift's
-	/* FIRST day. This is what makes the break-window test work across
-	/* midnight: a shift 17:00 -> 00:30 next day is 1020 -> 1470, and a break
-	/* at 00:10 next day is 1450, which is inside it. Comparing raw clock
-	/* readings would put that break four hours before the shift started.
-	*/
-
-	function sct_minutes($hms, $nextDay)
-	{
-		$parts = explode(':', $hms);
-
-		if (count($parts) < 2)
-		{
-			return -1;
-		}
-
-		return ((int) $parts[0]) * 60 + ((int) $parts[1]) + ($nextDay ? 1440 : 0);
-	}
-
-	/*
-	/* Section 5.2's failure path. MyISAM has no transactions, so a submission
-	/* whose break rows failed to land is marked voided rather than deleted —
-	/* append-only means the evidence of the failure survives, and every helper
-	/* in time-submission-graph.php already excludes voided rows.
-	*/
-
-	function sct_void($submissionID)
-	{
-		mysql_query("UPDATE call_time_submissions
-		             SET voided = 1
-		             WHERE id = " . (int) $submissionID);
-	}
 
 	/* ---- identity ---- */
 
@@ -207,13 +155,25 @@
 		sct_fail(422, 'Unprocessable Entity', 'callID required', array());
 	}
 
-	/* ---- SCOPE GATE ---- */
+	/*
+	/* ---- SCOPE GATE ----
+	/*
+	/* goat_time_entry_scope(), NOT goat_boss_scope() — CHANGED in slice B of
+	/* BRIEF-crew-self-times (Nov 2026). Seeing a call's crew and entering its
+	/* times stopped being the same right: a Team Lead on a call that has a
+	/* Crew Boss keeps the crew list (D18) and loses entry, and on a dedicated
+	/* Crew Boss call only the ticked person enters (D21). The tier rules live
+	/* in goat_call_tiers(), supervision-graph.php; nothing here restates them.
+	/*
+	/* Fails closed: a broken lookup returns an empty scope and lands here as
+	/* the same 403.
+	*/
 
-	$scope = goat_boss_scope($actor);
+	$scope = goat_time_entry_scope($actor);
 
 	if (!in_array($callID, $scope))
 	{
-		sct_fail(403, 'Forbidden', 'You are not the crew boss for this call', array());
+		sct_fail(403, 'Forbidden', 'You are not the person entering times for this call', array());
 	}
 
 	if (!isset($payload->rows) || !is_array($payload->rows) || count($payload->rows) === 0)
@@ -278,242 +238,25 @@
 
 	foreach ($payload->rows as $i => $row)
 	{
-		$label = 'row ' . $i;
+		$v = goat_validate_submission_row($row, $i, 'row ' . $i, $confirmed, $promoPending);
 
-		if (!is_object($row))
+		/* a FAILED lookup inside validation stops the request at once, as it
+		/* always did — it must never read as a validation error */
+
+		if ($v['fatal'] !== null)
 		{
-			$errors[] = $label . ': not an object';
-			continue;
+			sct_fail($v['fatal'][0], $v['fatal'][1], $v['fatal'][2], $v['fatal'][3]);
 		}
 
-		$unbooked = (isset($row->unbooked) && $row->unbooked) ? 1 : 0;
-		$userID   = isset($row->userID) ? (int) $row->userID : 0;
-		$uname    = isset($row->unbooked_name) ? trim((string) $row->unbooked_name) : '';
-		$note     = isset($row->note) ? trim((string) $row->note) : '';
-		$cover    = isset($row->covering_for) ? (int) $row->covering_for : 0;
-
-		/*
-		/* THE LINE THAT STOPS A BOSS RECORDING HOURS FOR SOMEONE WHO WAS NEVER
-		/* ON THE JOB. A booked row must name a userID confirmed (status 5) on
-		/* this call. Unbooked rows are exempt BY DEFINITION — the whole point
-		/* is that they are not in call_crew_map — which is why unbooked = 1 is
-		/* the only way past this check, and why it is never inferred.
-		*/
-
-		if (!$unbooked)
+		foreach ($v['errors'] as $e)
 		{
-			if ($userID <= 0)
-			{
-				$errors[] = $label . ': userID required unless unbooked';
-			}
-			else if (!isset($confirmed[$userID]))
-			{
-				$errors[] = $label . ': userID ' . $userID . ' is not confirmed on this call';
-			}
-		}
-		else
-		{
-			/*
-			/* UNBOOKED: the EIN is the identity, and it is required. See the
-			/* header for why an unresolved EIN is a control and not fussy
-			/* validation.
-			*/
-
-			$ein = isset($row->ein) ? (int) $row->ein : 0;
-
-			if ($ein <= 0)
-			{
-				$errors[] = $label . ': an unbooked row requires an ein';
-			}
-			else
-			{
-				$ures = mysql_query("SELECT id FROM users WHERE ein = " . $ein . " LIMIT 1");
-
-				/*
-				/* A FAILED LOOKUP IS A 500, NOT "no such EIN". Reporting a
-				/* broken query as an unresolved number would tell the boss
-				/* their crew member is not onboarded, which is both false and
-				/* alarming — and is the same shape as the ccm.id / crewmapID
-				/* failure in call-supervision.php on 18 Aug.
-				*/
-
-				if ($ures === false)
-				{
-					sct_fail(500, 'Internal Server Error',
-					         'EIN lookup failed: ' . mysql_error(), array('row' => $i));
-				}
-
-				$urow = mysql_fetch_object($ures);
-
-				if (!$urow)
-				{
-					$errors[] = $label . ': no crew member found with EIN ' . $ein;
-				}
-				else
-				{
-					$userID = (int) $urow->id;
-				}
-			}
-
-			/*
-			/* unbooked_name is NO LONGER ACCEPTED. Rejected rather than
-			/* ignored: nothing consumes this endpoint yet, so a client sending
-			/* it is built against the superseded contract and should be told
-			/* now, loudly, rather than having the boss's typing silently
-			/* dropped. (Q12c: decided as reject.)
-			*/
-
-			if ($uname !== '')
-			{
-				$errors[] = $label . ': unbooked_name is no longer accepted — supply ein instead';
-			}
+			$errors[] = $e;
 		}
 
-		if ($userID > 0 && isset($confirmed[$userID]) && isset($promoPending[$userID]))
+		if ($v['clean'] !== null)
 		{
-			$errors[] = $label . ': has not accepted their promotion to this call yet, so times cannot be entered for them. If they worked, contact Gig Power Operations';
+			$clean[] = $v['clean'];
 		}
-
-		if (strlen($note) > 255)
-		{
-			$errors[] = $label . ': note exceeds 255 characters';
-		}
-
-		if ($cover > 0 && !isset($confirmed[$cover]))
-		{
-			$errors[] = $label . ': covering_for ' . $cover . ' is not confirmed on this call';
-		}
-
-		$on  = sct_time(isset($row->on_time)  ? $row->on_time  : '');
-		$off = sct_time(isset($row->off_time) ? $row->off_time : '');
-
-		if ($on === '')
-		{
-			$errors[] = $label . ': on_time must be HH:MM or HH:MM:SS';
-		}
-
-		if ($off === '')
-		{
-			$errors[] = $label . ': off_time must be HH:MM or HH:MM:SS';
-		}
-
-		/*
-		/* off_next_day IS TAKEN FROM THE CLIENT AND NEVER INFERRED. The form
-		/* defaults it when the typed finish is earlier than the start and lets
-		/* the boss correct it. Recomputing it here would silently override a
-		/* deliberate correction — a 17:00 start finishing 23:00 THE NEXT DAY
-		/* is unusual but legal, and the boss said so.
-		*/
-
-		$offNext = (isset($row->off_next_day) && $row->off_next_day) ? 1 : 0;
-
-		/*
-		/* ---- the shift window, for the break test below (Q37) ----
-		/*
-		/* Only computable when both times parsed. A window that does not move
-		/* forward is reported as such rather than left to reject every break
-		/* with a misleading "outside the shift" — off_next_day is the field
-		/* the boss actually got wrong in that case, and the message says so.
-		*/
-
-		$onMin  = ($on  === '') ? -1 : sct_minutes($on, 0);
-		$offMin = ($off === '') ? -1 : sct_minutes($off, $offNext);
-
-		if ($onMin >= 0 && $offMin >= 0 && $offMin <= $onMin)
-		{
-			$errors[] = $label . ': off_time is not after on_time — set off_next_day if the shift runs past midnight';
-		}
-
-		/* ---- breaks ---- */
-
-		$breaks    = array();
-		$rawBreaks = (isset($row->breaks) && is_array($row->breaks)) ? $row->breaks : array();
-
-		foreach ($rawBreaks as $bi => $b)
-		{
-			if (!is_object($b))
-			{
-				$errors[] = $label . ' break ' . $bi . ': not an object';
-				continue;
-			}
-
-			$bs = sct_time(isset($b->start_time) ? $b->start_time : '');
-			$dm = isset($b->duration_mins) ? (int) $b->duration_mins : 0;
-
-			/* start_time is required on a break row: slice 3 has to place the
-			/* break inside the shift to split day from night, and a break with
-			/* no position cannot be split. */
-
-			if ($bs === '')
-			{
-				$errors[] = $label . ' break ' . $bi . ': start_time must be HH:MM or HH:MM:SS';
-			}
-
-			/*
-			/* MULTIPLES OF 15, AND ABOVE ZERO. This is the fix for '00:75'.
-			/* call_crew_map.break is varchar(255) holding values typed past an
-			/* input with no validation; '00:75' is live and means FORTY-FIVE
-			/* minutes, not 75 and not 1h15. Constraining the input is what
-			/* stops the next decade of that.
-			*/
-
-			if ($dm <= 0)
-			{
-				$errors[] = $label . ' break ' . $bi . ': duration_mins must be greater than 0';
-			}
-			else if (($dm % 15) !== 0)
-			{
-				$errors[] = $label . ' break ' . $bi . ': duration_mins must be a multiple of 15';
-			}
-
-			$bNext = (isset($b->start_next_day) && $b->start_next_day) ? 1 : 0;
-
-			/*
-			/* Q37, CLOSED 26 Aug 2026: A BREAK OUTSIDE THE SHIFT IS REJECTED,
-			/* NOT SILENTLY DROPPED.
-			/*
-			/* A break is time not worked WITHIN a shift. One outside the shift
-			/* is time nobody was being paid for anyway, so deducting it would
-			/* take the hours away twice — but discarding it quietly hides a
-			/* typo. A break at 08:00 on a 17:00 call is a mistake worth
-			/* surfacing while the boss is still looking at the form.
-			/*
-			/* Both ends are next-day aware, or every overnight shift would
-			/* reject its own perfectly valid breaks.
-			*/
-
-			if ($bs !== '' && $onMin >= 0 && $offMin > $onMin && $dm > 0)
-			{
-				$bStart = sct_minutes($bs, $bNext);
-				$bEnd   = $bStart + $dm;
-
-				if ($bStart < $onMin || $bEnd > $offMin)
-				{
-					$errors[] = $label . ' break ' . $bi . ': falls outside the shift ('
-					          . substr($on, 0, 5) . '-' . substr($off, 0, 5)
-					          . ($offNext ? ' next day' : '') . ')';
-				}
-			}
-
-			$breaks[] = array(
-				'start_time'     => $bs,
-				'start_next_day' => $bNext,
-				'duration_mins'  => $dm
-			);
-		}
-
-		$clean[] = array(
-			'index'          => $i,
-			'userID'         => $userID,
-			'unbooked'       => $unbooked,
-			'unbooked_name'  => $uname,
-			'covering_for'   => $cover,
-			'on_time'        => $on,
-			'off_time'       => $off,
-			'off_next_day'   => $offNext,
-			'note'           => $note,
-			'breaks'         => $breaks
-		);
 	}
 
 	if (count($errors))
@@ -525,41 +268,10 @@
 	/* ---- WARNINGS — overridable with confirm:true ----
 	/*
 	/* 409 IS A RESULT, NOT AN ERROR. Same contract as call-feeds.php and
-	/* call-supervision.php.
-	/*
-	/* PER BREAK, NOT PER DAY'S TOTAL. Two 45-minute breaks is a legitimate 90
-	/* minutes and neither trips this; one 90-minute break does.
-	/*
-	/* THE ENDPOINT RETURNS FACTS, NOT JOKES. The light line Rich asked for is
-	/* picked from a pool by the client in slice 5, so the pool can be edited
-	/* without a SmartStaff deploy and this payload stays stable enough to test
-	/* against. When that pool is written: amused at the DURATION, never at the
-	/* PERSON, never implying slacking — a long break sometimes means someone
-	/* was unwell or there was an incident, and every line has to still read as
-	/* fine if the reason turns out to be an injury.
+	/* call-supervision.php. What trips it is goat_submission_long_break_warnings().
 	*/
 
-	$warnings = array();
-
-	foreach ($clean as $c)
-	{
-		$seq = 1;
-
-		foreach ($c['breaks'] as $b)
-		{
-			if ($b['duration_mins'] > 60)
-			{
-				$warnings[] = array(
-					'type'          => 'long_break',
-					'row'           => $c['index'],
-					'seq'           => $seq,
-					'duration_mins' => $b['duration_mins']
-				);
-			}
-
-			$seq++;
-		}
-	}
+	$warnings = goat_submission_long_break_warnings($clean);
 
 	if (count($warnings) && !$confirm)
 	{
@@ -568,150 +280,26 @@
 		die();
 	}
 
-	/* ---- write ---- */
+	/* ---- write — append-only, breaks counted back, through the shared helper ---- */
 
 	$submitted = array();
 
 	foreach ($clean as $c)
 	{
-		/*
-		/* supersedes_id IS NOT OPTIONAL. slice 1's
-		/* goat_time_submissions_for_call() carries a second dedupe pass in PHP
-		/* specifically in case this line is ever missed: without it the SQL
-		/* NOT EXISTS returns both rows for one person while
-		/* goat_time_submission_for() returns one, and two helpers disagreeing
-		/* about who is live surfaces as a DUPLICATED CREW MEMBER ON A
-		/* TIMESHEET rather than as an error. That guard should never fire.
-		/*
-		/* userID = 0 resolves to 0 — see Q34 in the header.
-		*/
+		$w = goat_write_submission($callID, $c, $actor, 'boss');
 
-		$supersedes = 0;
-
-		if ($c['userID'] > 0)
+		if (!$w['ok'])
 		{
-			$prev = goat_time_submission_for($callID, $c['userID']);
-
-			if (isset($prev['id']))
-			{
-				$supersedes = (int) $prev['id'];
-			}
-		}
-
-		/* unbooked_name is never written — decision 21 replaced it with the
-		/* EIN-resolved userID. The column remains in the schema, nullable and
-		/* unused, so slice 1's fixtures and any pre-amendment row still read. */
-
-		$nameSql = 'NULL';
-		$noteSql = ($c['note'] === '') ? 'NULL' : $db->sc($c['note']);
-
-		$sql = "INSERT INTO call_time_submissions
-		        (callID, userID, unbooked, unbooked_name, covering_for,
-		         on_time, off_time, off_next_day, note,
-		         submitted_by, submitted_at, supersedes_id, voided)
-		        VALUES (
-		          " . $callID . ",
-		          " . (int) $c['userID'] . ",
-		          " . (int) $c['unbooked'] . ",
-		          " . $nameSql . ",
-		          " . (int) $c['covering_for'] . ",
-		          " . $db->sc($c['on_time']) . ",
-		          " . $db->sc($c['off_time']) . ",
-		          " . (int) $c['off_next_day'] . ",
-		          " . $noteSql . ",
-		          " . (int) $actor . ",
-		          NOW(),
-		          " . (int) $supersedes . ",
-		          0
-		        )";
-
-		if (mysql_query($sql) === false)
-		{
-			sct_fail(500, 'Internal Server Error',
-			         'submission insert failed: ' . mysql_error(),
-			         array('row' => $c['index']));
-		}
-
-		$subID = (int) mysql_insert_id();
-
-		if ($subID <= 0)
-		{
-			sct_fail(500, 'Internal Server Error',
-			         'submission insert returned no id',
-			         array('row' => $c['index']));
-		}
-
-		/*
-		/* ---- BREAKS, THEN COUNT THEM BACK ----
-		/*
-		/* MyISAM gives no transaction. The submission is inserted first
-		/* because the break rows need its id, so a failed break insert leaves
-		/* a submission WITH NO BREAKS — and zero break rows is a VALID,
-		/* COMMON state meaning "no break taken" (short calls typically have
-		/* none). The failure is therefore invisible by absence: it looks
-		/* exactly like a legitimate submission, and it is a silent wrong
-		/* number in a payroll input.
-		/*
-		/* So: count them back, and void on mismatch. Append-only makes that
-		/* safe — the voided row stays as the record that something went wrong,
-		/* and every helper already excludes it.
-		*/
-
-		$seq      = 1;
-		$expected = count($c['breaks']);
-
-		foreach ($c['breaks'] as $b)
-		{
-			$bsql = "INSERT INTO call_time_submission_breaks
-			         (submission_id, start_time, start_next_day, duration_mins, seq)
-			         VALUES (
-			           " . $subID . ",
-			           " . $db->sc($b['start_time']) . ",
-			           " . (int) $b['start_next_day'] . ",
-			           " . (int) $b['duration_mins'] . ",
-			           " . $seq . "
-			         )";
-
-			if (mysql_query($bsql) === false)
-			{
-				sct_void($subID);
-				sct_fail(500, 'Internal Server Error',
-				         'break insert failed, submission voided: ' . mysql_error(),
-				         array('row' => $c['index'], 'submission_id' => $subID));
-			}
-
-			$seq++;
-		}
-
-		$bres = mysql_query("SELECT COUNT(*) AS n FROM call_time_submission_breaks
-		                     WHERE submission_id = " . $subID);
-
-		if ($bres === false)
-		{
-			sct_void($subID);
-			sct_fail(500, 'Internal Server Error',
-			         'break count-back failed, submission voided',
-			         array('row' => $c['index'], 'submission_id' => $subID));
-		}
-
-		$brow   = mysql_fetch_object($bres);
-		$actual = $brow ? (int) $brow->n : -1;
-
-		if ($actual !== $expected)
-		{
-			sct_void($subID);
-			sct_fail(500, 'Internal Server Error',
-			         'break count mismatch (' . $actual . ' of ' . $expected . '), submission voided',
-			         array('row' => $c['index'], 'submission_id' => $subID));
+			sct_fail($w['code'], $w['status'], $w['error'], $w['extra']);
 		}
 
 		$submitted[] = array(
 			'row'           => $c['index'],
-			'submission_id' => $subID,
+			'submission_id' => $w['submission_id'],
 			'userID'        => (int) $c['userID'],
 			'unbooked'      => (int) $c['unbooked'],
-			'supersedes_id' => $supersedes,
-			'breaks'        => $expected
+			'supersedes_id' => $w['supersedes_id'],
+			'breaks'        => $w['breaks']
 		);
 	}
 

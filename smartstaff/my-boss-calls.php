@@ -128,16 +128,33 @@
 	/* history pulls three years of rosters.
 	*/
 
-	$scope    = goat_boss_scope($userID);
-	$bossCall = goat_boss_calls_for_user($userID);
+	/*
+	/* goat_boss_scope_detail() rather than goat_boss_scope(), so the
+	/* direct_calls rule below can tell a Crew Boss pill holder from a Team
+	/* Lead. Its keys ARE goat_boss_scope() — one implementation, read twice.
+	/*
+	/* $entrySet — the calls this user may ENTER TIMES for (slice B of
+	/* BRIEF-crew-self-times). Narrower than scope: a Team Lead on a call with
+	/* a Crew Boss sees the crew here (D18) but does not enter, and on a
+	/* dedicated Crew Boss call only the ticked person does. It drives
+	/* can_enter_times on every call emitted, and nothing else — viewing is
+	/* unchanged.
+	*/
+
+	$scopeDetail = goat_boss_scope_detail($userID);
+	$scope       = array_keys($scopeDetail);
+	$bossCall    = goat_boss_calls_for_user($userID);
+	$entryScope  = goat_time_entry_scope($userID);
 
 	/* keyed for O(1) membership tests further down */
 
 	$scopeSet = array();
 	$bossSet  = array();
+	$entrySet = array();
 
-	foreach ($scope    as $cid) { $scopeSet[(int) $cid] = true; }
-	foreach ($bossCall as $cid) { $bossSet[(int) $cid]  = true; }
+	foreach ($scope      as $cid) { $scopeSet[(int) $cid] = true; }
+	foreach ($bossCall   as $cid) { $bossSet[(int) $cid]  = true; }
+	foreach ($entryScope as $cid) { $entrySet[(int) $cid] = true; }
 
 	$wantIDs = array_keys($scopeSet + $bossSet);
 
@@ -428,10 +445,25 @@
 	/* added, the container branch has to be revisited with it.
 	*/
 
-	function goat_boss_leaf_call($info, $crewByCall, $outstandingByCall)
+	/*
+	/* can_enter_times — ADDED in slice B of BRIEF-crew-self-times. May the
+	/* VIEWER enter times for this call (goat_time_entry_scope())? Crew Hub
+	/* shows the "still to enter" badge and the link to the times form ONLY
+	/* when it is 1; a Team Lead on a Crew Boss call keeps the crew list and
+	/* mobiles but sees neither. Always emitted, 1 or 0, so the client can tell
+	/* "may not" from "old PHP that never sent the field".
+	/*
+	/* `outstanding` itself is unchanged and still emitted for every call:
+	/* the brief makes this additive, and the badge rule is the client's to
+	/* apply.
+	*/
+
+	function goat_boss_leaf_call($info, $crewByCall, $outstandingByCall, $entrySet)
 	{
 		$cid  = $info['call_id'];
 		$crew = isset($crewByCall[$cid]) ? $crewByCall[$cid] : array();
+
+		$info['can_enter_times'] = isset($entrySet[$cid]) ? 1 : 0;
 
 		$confirmed = 0;
 		$standby   = 0;
@@ -533,7 +565,7 @@
 
 		$nominated = $callInfo[$bid]['is_nominated'];
 
-		$entry = goat_boss_leaf_call($callInfo[$bid], $crewByCall, $outstandingByCall);
+		$entry = goat_boss_leaf_call($callInfo[$bid], $crewByCall, $outstandingByCall, $entrySet);
 
 		$entry['is_nominated'] = $nominated;
 
@@ -578,7 +610,7 @@
 
 			$emitted[$kid] = true;
 
-			$out[] = goat_boss_leaf_call($callInfo[$kid], $crewByCall, $outstandingByCall);
+			$out[] = goat_boss_leaf_call($callInfo[$kid], $crewByCall, $outstandingByCall, $entrySet);
 		}
 
 		$entry['children'] = $out;
@@ -624,9 +656,17 @@
 	/* question directly, and drops a per-call query on the way.
 	/*
 	/* The is_nominated check stays. A scope call that was not emitted can only
-	/* have arrived via the DIRECT branch, which already requires the flag, but
-	/* the day someone adds a third source to goat_boss_scope() this is the
-	/* line that should stop it leaking.
+	/* have arrived via a DIRECT branch, but the day someone adds another
+	/* source to goat_boss_scope() this is the line that should stop it
+	/* leaking.
+	/*
+	/* THAT DAY CAME IN SLICE B (BRIEF-crew-self-times): the Crew Boss pill is
+	/* a second DIRECT branch, and it is not is_call_boss, so is_nominated is
+	/* false for it. Without the second test below, a Crew Boss pill holder
+	/* would hold scope on the call and see it nowhere — the 37679 failure
+	/* again. So the gate admits a call reached by either direct branch, read
+	/* from goat_boss_scope_detail(), and still nothing reached only
+	/* supervisorily.
 	*/
 
 	$directCalls = array();
@@ -635,9 +675,12 @@
 	{
 		if (!isset($scopeSet[$cid]))          continue;
 		if (isset($emitted[$cid]))            continue;
-		if (!$callInfo[$cid]['is_nominated']) continue;
 
-		$directCalls[] = goat_boss_leaf_call($callInfo[$cid], $crewByCall, $outstandingByCall);
+		$viaPill = (isset($scopeDetail[$cid]) && $scopeDetail[$cid] === 'direct_crew_boss');
+
+		if (!$callInfo[$cid]['is_nominated'] && !$viaPill) continue;
+
+		$directCalls[] = goat_boss_leaf_call($callInfo[$cid], $crewByCall, $outstandingByCall, $entrySet);
 	}
 
 	echo json_encode(array(

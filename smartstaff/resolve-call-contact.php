@@ -5,19 +5,43 @@
 	/* including endpoint has already gated and scoped the request.
 	/*
 	/* Resolves "who does this crew member contact for this call?" — one ladder,
-	/* walked top-down, skipping any rung whose answer IS the viewer:
+	/* walked top-down, skipping any rung whose answer IS the viewer.
 	/*
-	/*   1. in_call_boss — a confirmed is_call_boss=1 resource on the viewer's OWN call
-	/*   2. boss_call    — confirmed resources on dedicated Crew Boss calls in the
-	/*                     same booking whose time window OVERLAPS the viewer's call
-	/*   3. onsite       — bookings.onsiteUserID, falling back to bookings.userID
+	/* REORDERED IN SLICE B OF BRIEF-crew-self-times (Nov 2026, D18 and E):
+	/* a Crew Boss now outranks a Team Lead, and the boss call is found by
+	/* explicit link only.
 	/*
-	/* Rungs 1 and 3 return at most one contact. Rung 2 may return several: where
-	/* two boss calls overlap (e.g. "Crew Boss A" / "Crew Boss B", split crews)
-	/* NOTHING in the data says which crew the viewer is on, so we return both
-	/* rather than silently guessing. Same for a boss call carrying two confirmed
-	/* resources — ops policy is one per boss call; returning both makes a slip
-	/* visible instead of coin-flipping.
+	/*   1. in_call_boss      — a confirmed is_crew_boss=1 resource on the
+	/*      (role crew_boss)    viewer's OWN call (the Crew Boss pill)
+	/*   2. boss_call         — the live Crew Boss call LINKED to the viewer's
+	/*                          call through call_supervision: its ticked person
+	/*                          (Crew Boss pill, else Team Lead tick), else
+	/*                          everyone confirmed on it
+	/*   3. in_call_boss      — a confirmed is_call_boss=1 resource on the
+	/*      (role team_lead)
+	/*                          viewer's OWN call (the Team Lead tick). Reached
+	/*                          ONLY when rungs 1-2 found nobody
+	/*   4. onsite            — bookings.onsiteUserID, falling back to
+	/*                          bookings.userID
+	/*
+	/* THE SAME-BOOKING OVERLAP FALLBACK IS GONE (decision E / D22). It used to
+	/* stand in for rung 2 wherever no link existed, and is how a crew member
+	/* was handed the boss of a crew they were not on. A call with no link now
+	/* goes straight from rung 1 to rung 3. Removing it was preceded by
+	/* PROBE-crew-self-times-2026-11-04.sql P3, which lists the upcoming calls
+	/* that depended on it.
+	/*
+	/* Rungs 1 and 3 may return several when the data is wrong (two pills, two
+	/* ticks); returning all makes the slip visible instead of coin-flipping.
+	/* Rung 4 returns at most one.
+	/*
+	/* WHEN THE VIEWER IS ON A CREW BOSS CALL, rungs 1-3 are skipped and the
+	/* ladder starts at the on-site contact, as it always has.
+	/*
+	/* THE `source` VOCABULARY IS UNCHANGED (in_call_boss, boss_call, onsite),
+	/* because Crew Hub renders from it and lives in another repo. Rungs 1 and
+	/* 3 both report in_call_boss and are told apart by an ADDITIVE `role`
+	/* field ('crew_boss' | 'team_lead'), present on in_call_boss contacts only.
 	/*
 	/* PRIVACY: returns ONLY the resolved contact(s) — name, mobile, phone. Never
 	/* the roster. A crew member cannot enumerate colleagues through this.
@@ -52,8 +76,10 @@
 	/* Boss Cancelled" is live data. The column catches cancellations made from
 	/* now on; this string catches every one made before. Swap one for the other
 	/* and every historical cancellation un-hides at once, each of them able to
-	/* win the overlap below and hand a crew member a contact who is not
-	/* attending.
+	/* supervise again -- through a link, in the scope, tier and contact
+	/* helpers -- and hand a crew member a contact who is not attending. (The
+	/* overlap search this sentence first described was removed in slice B of
+	/* BRIEF-crew-self-times; the rule holds for every reader that remains.)
 	/*
 	/* Nothing NEW may branch on this string -- the column is the machine-readable
 	/* truth. This clause is here to keep faith with the old data, and it should
@@ -124,6 +150,37 @@
 	}
 
 	/*
+	/* Is call_crew_map.is_crew_boss present on this environment?
+	/*
+	/* The Crew Boss pill marker, added by slice A of BRIEF-crew-self-times.
+	/* GUARDED FOR THE SAME REASON AS cancelled_at ABOVE: every read of it in
+	/* this file and in supervision-graph.php would otherwise fail on an
+	/* environment where the ALTER has not run, and most of those reads
+	/* degrade silently (empty scope, on-site contact for everyone). Absent
+	/* column reads as "nobody holds the pill", which is exactly the state
+	/* before slice A.
+	/*
+	/* Lives here, not in supervision-graph.php, because this is the bottom of
+	/* the one-way include chain and both files need it.
+	*/
+
+	if (!function_exists('goat_ccm_have_crew_boss'))
+	{
+		function goat_ccm_have_crew_boss()
+		{
+			static $has = null;
+
+			if ($has === null)
+			{
+				$r   = mysql_query("SHOW COLUMNS FROM call_crew_map LIKE 'is_crew_boss'");
+				$has = ($r !== false && mysql_num_rows($r) > 0);
+			}
+
+			return $has;
+		}
+	}
+
+	/*
 	/* users row -> contact array. Names are stored HTML-ENCODED in `users`, so
 	/* decode on the way out (matches get-booking.php).
 	*/
@@ -140,8 +197,9 @@
 			'phone'  => ($u->phone  === null ? '' : $u->phone)
 		);
 
-		/* only meaningful for rung 2 — lets the portal disambiguate when two
-		   boss calls overlap ("Emil (Crew Boss - Steel) / Joe (Crew Boss - Load Out)") */
+		/* only meaningful for rung 2 — names the linked boss call the contact
+		   comes from ("Emil (Crew Boss - Steel)"). Since slice B rung 2 has
+		   exactly one boss call, but the field shape is unchanged. */
 
 		if ($source === 'boss_call')
 			$c['call_name'] = $callName;
@@ -230,240 +288,205 @@
 
 		$viewerOnBossCall = goat_is_boss_call_name($call->call_name);
 
-		/* A CANCELLED CALL CANNOT SUPERVISE ANYTHING. Applied to both rung-2
-		   lookups below, alongside -- never instead of -- the name test in
+		/* A CANCELLED CALL CANNOT SUPERVISE ANYTHING. Applied to the rung-2
+		   lookup below, alongside -- never instead of -- the name test in
 		   goat_is_boss_call_name(). See the note on that function. */
 
 		$cancelSql = goat_calls_have_cancelled() ? ' AND cancelled_at IS NULL' : '';
+
+		/* The Crew Boss pill, or 0 where slice A has not run — see
+		   goat_ccm_have_crew_boss(). */
+
+		$crewBossCol = goat_ccm_have_crew_boss() ? 'ccm.is_crew_boss' : '0';
 
 		/* resolved once; every rung below skips a contact that IS the viewer,
 		   whether by userID or by the same-human mobile match */
 
 		$viewerMobile = goat_user_mobile($viewerUserID);
 
-		/* ---- RUNG 1 — in-call boss ----
-		   Skipped when the viewer is themselves on a dedicated boss call: the
-		   ladder starts below them. add-call.php's makeboss handler clears
-		   is_call_boss on every other row before setting it, so there is
-		   structurally at most one. */
+		/* Crew on a dedicated boss call skip rungs 1-3: the ladder starts
+		   below them, at the on-site contact. Unchanged by slice B. */
 
 		if (!$viewerOnBossCall)
 		{
+			/*
+			/* ONE READ OF THE VIEWER'S OWN CALL serves rungs 1 and 3, which
+			/* ask the same rows two different questions.
+			/*
 			/* is_call_boss is a binary(50) column — makeboss writes the STRING
-			   '1', stored as byte 0x31 null-padded to 50 bytes. "is_call_boss = 1"
-			   in SQL is unreliable across MySQL versions on that type, so we do
-			   NOT filter on it in SQL: we select it and cast in PHP, exactly as
-			   get-booking.php and the other endpoints do. (int) reads the leading
-			   byte and stops at the null, giving a clean 1 or 0. */
+			/* '1', stored as byte 0x31 null-padded to 50 bytes. "is_call_boss = 1"
+			/* in SQL is unreliable across MySQL versions on that type, so we do
+			/* NOT filter on it in SQL: we select it and cast in PHP, exactly as
+			/* get-booking.php and the other endpoints do. (int) reads the leading
+			/* byte and stops at the null, giving a clean 1 or 0.
+			/*
+			/* An UNANSWERED PROMOTION is skipped for the Crew Boss rung: a backup
+			/* promoted to 5 who has not accepted is not known to be coming, and
+			/* goat_call_tiers() does not count them as the call's Crew Boss
+			/* either. Rung 3 keeps its old reading of status 5 alone, because it
+			/* is the old rung moved, not a new one.
+			*/
 
-			$r1 = mysql_query("SELECT ccm.is_call_boss, u.firstname, u.lastname, u.mobile, u.phone
+			$r1 = mysql_query("SELECT ccm.is_call_boss AS is_call_boss,
+			                          " . $crewBossCol . " AS is_crew_boss,
+			                          (cpa.id IS NOT NULL) AS promo_pending,
+			                          u.firstname, u.lastname, u.mobile, u.phone
 			                   FROM call_crew_map ccm
 			                   LEFT JOIN users u ON u.id = ccm.userID
+			                   LEFT JOIN call_promo_ack cpa
+			                          ON cpa.callID = ccm.callID
+			                         AND cpa.userID = ccm.userID
+			                         AND cpa.acked_at IS NULL
 			                   WHERE ccm.callID  = " . $callID . "
 			                     AND ccm.status  = 5
-			                     AND ccm.userID <> " . $viewerUserID . "");
+			                     AND ccm.userID <> " . $viewerUserID . "
+			                   ORDER BY u.lastname ASC, u.firstname ASC");
+
+			$inCallCrewBoss = array();
+			$inCallTeamLead = array();
 
 			if ($r1 !== false)
 			{
 				while ($row = mysql_fetch_object($r1))
 				{
-					if ((int) $row->is_call_boss !== 1) continue;
 					if ($row->firstname === null) continue;
 					if (goat_same_human($viewerMobile, $row->mobile)) continue;
 
-					$out = array(goat_contact_from_user($row, 'in_call_boss', ''));
-					$cache[$ck] = $out;
-					return $out;
+					if ((int) $row->is_crew_boss === 1 && (int) $row->promo_pending !== 1)
+					{
+						$c = goat_contact_from_user($row, 'in_call_boss', '');
+						$c['role'] = 'crew_boss';
+						$inCallCrewBoss[] = $c;
+					}
+
+					if ((int) $row->is_call_boss === 1)
+					{
+						$c = goat_contact_from_user($row, 'in_call_boss', '');
+						$c['role'] = 'team_lead';
+						$inCallTeamLead[] = $c;
+					}
 				}
 			}
-		}
 
-		/* ---- RUNG 2 — the dedicated boss call(s) supervising this call ----
-		   Two ways to FIND them, and only the finding changed here — turning a
-		   boss call into contacts is the foreach below, moved verbatim.
+			/* ---- RUNG 1 — Crew Boss pill on the viewer's call ---- */
 
-		     EXPLICIT  call_supervision names exactly one boss call. Ops said so.
-		     OVERLAP   no edge: every %boss% call in the booking whose window
-		               overlaps this one. Today's behaviour, byte for byte.
+			if (count($inCallCrewBoss) > 0)
+			{
+				$cache[$ck] = $inCallCrewBoss;
+				return $inCallCrewBoss;
+			}
 
-		   The explicit path deliberately applies NEITHER the name test nor the
-		   overlap test — see the comment on each branch. */
-
-		if (!$viewerOnBossCall)
-		{
-			$out       = array();
-			$bossCalls = array();   /* rows carrying ->id and ->call_name */
-
+			/*
+			/* ---- RUNG 2 — the Crew Boss call LINKED to this call ----
+			/*
+			/* EXPLICIT LINK ONLY (decision E). There is no overlap fallback any
+			/* more: no link, or a link that resolves to nobody, falls to rung 3.
 			/*
 			/* GUARDED AT THE CALL SITE, AND THERE IS NO INCLUDE ABOVE.
-			/*
 			/* supervision-graph.php includes THIS file, for
 			/* goat_is_boss_call_name(), so including it back would be circular —
 			/* and this file declares at top level with no function_exists guard,
-			/* so the redeclare would be fatal rather than a no-op.
+			/* so the redeclare would be fatal rather than a no-op. Wherever
+			/* supervision-graph.php is not loaded, this rung finds nothing.
 			/*
-			/* That makes the fallback structural: wherever supervision-graph.php
-			/* is not loaded, rung 2 is exactly what it was before this change.
-			/* Callers opt in by including supervision-graph.php themselves.
+			/* THE NAME TEST NOW APPLIES (decision B / D20). Only Crew Boss calls
+			/* supervise; a link from any other call is a mistake, which
+			/* call-supervision.php now refuses to create. Until the existing
+			/* ones are cleared (probe P1) they are ignored here, exactly as
+			/* goat_call_tiers() ignores them.
+			/*
+			/* NOT CANCELLED (decision C), and filtered though it looks redundant:
+			/* D12 permits re-adding a cancelled crew member, which can leave a
+			/* cancelled boss call carrying a confirmed resource again.
+			/*
+			/* A call cannot boss itself. Slice B of call-supervision rejects it,
+			/* so this should never fire — it costs one comparison.
 			*/
 
 			$supBoss = function_exists('goat_supervision_boss_call')
 			         ? goat_supervision_boss_call($callID)
 			         : 0;
 
-			/* A call cannot boss itself. Slice B rejects it, so this should never
-			   fire — it costs one comparison and stops a hand-inserted row
-			   resolving a call to its own crew, which is exactly what slice A
-			   testing inserts. */
-
 			if ($supBoss > 0 && $supBoss !== $callID)
 			{
-				/*
-				/* EXPLICIT EDGE — exactly one candidate, and no tests applied.
-				/*
-				/* NO NAME TEST. goat_is_boss_call_name() is a heuristic for
-				/* DISCOVERING boss calls where nothing states which they are. An
-				/* edge is ops stating it outright, and slice B warns-but-permits an
-				/* oddly-named supervisor — so filtering here would silently ignore a
-				/* deliberately-set edge to a call named "Steel Lead".
-				/*
-				/* NO OVERLAP TEST (Q14). A boss call may supervise a call it does
-				/* not overlap. This is not a check dropped by accident: time was the
-				/* thing that did not work, and is the reason this table exists.
-				*/
-
-				/*
-				/* FILTERED, THOUGH IT LOOKS REDUNDANT. A cancelled boss call has
-				/* no confirmed crew -- every row is status 9 -- so the contact
-				/* query below returns nothing and the documented fall-through to
-				/* rung 3 takes over on its own.
-				/*
-				/* But D12 permits re-adding a cancelled crew member, which creates
-				/* a fresh status-0 row that can then be confirmed to 5. A cancelled
-				/* boss call can therefore carry a confirmed resource again, and
-				/* would hand that person out as the contact for a live call.
-				*/
-
 				$sres = mysql_query("SELECT id, call_name FROM calls
 				                     WHERE id = " . ((int) $supBoss) . $cancelSql . " LIMIT 1");
 
-				if ($sres !== false)
+				$bc = ($sres === false) ? false : mysql_fetch_object($sres);
+
+				if ($bc && goat_is_boss_call_name($bc->call_name))
 				{
-					$sbc = mysql_fetch_object($sres);
+					$cres = mysql_query("SELECT ccm.is_call_boss AS is_call_boss,
+					                            " . $crewBossCol . " AS is_crew_boss,
+					                            u.firstname, u.lastname, u.mobile, u.phone
+					                     FROM call_crew_map ccm
+					                     LEFT JOIN users u ON u.id = ccm.userID
+					                     WHERE ccm.callID  = " . ((int) $bc->id) . "
+					                       AND ccm.status  = 5
+					                       AND ccm.userID <> " . $viewerUserID . "
+					                     ORDER BY u.lastname ASC, u.firstname ASC");
 
-					if ($sbc) $bossCalls[] = $sbc;
-				}
-			}
-			else
-			{
-				/* NO EDGE — the Q12 fallback, unchanged. SQL does a cheap
-				   prefilter; goat_is_boss_call_name() is authoritative. */
+					/*
+					/* POC nomination — "the boss of the bosses".
+					/*
+					/* A big call can name several crew bosses on one Crew Boss
+					/* call. The point of contact is the TICKED person, by D's
+					/* rule: the Crew Boss pill holder, else the Team Lead tick
+					/* (makeboss enforces one per call), read with the (int) cast
+					/* for the binary(50) reason above. If NOBODY is ticked we fall
+					/* back to every confirmed boss — the multi-name card is itself
+					/* the prompt to go nominate. One loop collects all three.
+					*/
 
-				$w = goat_call_window($call);
+					$bossAll = array();
+					$bossCB  = array();
+					$bossTL  = array();
 
-				$bres = mysql_query("SELECT id, call_name, start_date, start_time, est_length
-				                     FROM calls
-				                     WHERE bookingID  = " . ((int) $call->bookingID) . "
-				                       AND id        <> " . $callID . "
-				                       AND call_name LIKE '%boss%'" . $cancelSql . "
-				                     ORDER BY start_date ASC, start_time ASC");
-
-				if ($bres !== false)
-				{
-					while ($bc = mysql_fetch_object($bres))
+					if ($cres !== false)
 					{
-						if (!goat_is_boss_call_name($bc->call_name)) continue;
+						while ($cr = mysql_fetch_object($cres))
+						{
+							if ($cr->firstname === null) continue;
+							if (goat_same_human($viewerMobile, $cr->mobile)) continue;
 
-						$bw = goat_call_window($bc);
+							$contact = goat_contact_from_user($cr, 'boss_call', $bc->call_name);
 
-						/* strict overlap — a boss call ending exactly as yours begins
-						   does not count */
+							$bossAll[] = $contact;
 
-						if (!($bw['start'] < $w['end'] && $bw['end'] > $w['start'])) continue;
+							if ((int) $cr->is_crew_boss === 1) $bossCB[] = $contact;
+							if ((int) $cr->is_call_boss === 1) $bossTL[] = $contact;
+						}
+					}
 
-						$bossCalls[] = $bc;
+					if (count($bossCB) > 0)      $out = $bossCB;
+					else if (count($bossTL) > 0) $out = $bossTL;
+					else                         $out = $bossAll;
+
+					if (count($out) > 0)
+					{
+						$cache[$ck] = $out;
+						return $out;
 					}
 				}
 			}
 
-			/* CONTACT RESOLUTION — moved out of the while body above, unchanged
-			   but for one tab of indentation. Confirm with `git diff -w`. */
-
-			foreach ($bossCalls as $bc)
-			{
-				$cres = mysql_query("SELECT ccm.is_call_boss, u.firstname, u.lastname, u.mobile, u.phone
-				                     FROM call_crew_map ccm
-				                     LEFT JOIN users u ON u.id = ccm.userID
-				                     WHERE ccm.callID  = " . ((int) $bc->id) . "
-				                       AND ccm.status  = 5
-				                       AND ccm.userID <> " . $viewerUserID . "
-				                     ORDER BY u.lastname ASC, u.firstname ASC");
-
-				/*
-				/* POC nomination — "the boss of the bosses".
-				/*
-				/* A big call can name several crew bosses on one Crew Boss
-				/* call. Ops nominate one as point-of-contact via the SAME
-				/* is_call_boss flag (makeboss enforces one per call), read
-				/* here with the (int) cast for the binary(50) reason above.
-				/*
-				/* If exactly one is flagged, that person IS the contact for
-				/* this boss call. If NONE is flagged we fall back to every
-				/* confirmed boss — the multi-name card is itself the prompt
-				/* to go nominate. We collect both passes in one loop.
-				*/
-
-				$bossAll  = array();
-				$bossPOC  = array();
-
-				if ($cres !== false)
-				{
-					while ($cr = mysql_fetch_object($cres))
-					{
-						if ($cr->firstname === null) continue;
-						if (goat_same_human($viewerMobile, $cr->mobile)) continue;
-
-						$contact = goat_contact_from_user($cr, 'boss_call', $bc->call_name);
-
-						$bossAll[] = $contact;
-
-						if ((int) $cr->is_call_boss === 1)
-							$bossPOC[] = $contact;
-					}
-				}
-
-				/* nominated POC wins for THIS boss call; else all its bosses */
-
-				$picked = (count($bossPOC) > 0) ? $bossPOC : $bossAll;
-
-				foreach ($picked as $contact)
-					$out[] = $contact;
-			}
-
 			/*
-			/* AN EXPLICIT EDGE THAT RESOLVES TO NOBODY FALLS THROUGH TO RUNG 3,
-			/* NOT BACK TO OVERLAP.
+			/* ---- RUNG 3 — Team Lead tick on the viewer's call ----
 			/*
-			/* If the edge names a boss call carrying no confirmed resource, $out
-			/* is empty and control reaches the on-site contact below. It does NOT
-			/* re-run the overlap loop. That differs from the previous behaviour,
-			/* where an unconfirmed boss call was skipped and a different
-			/* overlapping one could answer.
-			/*
-			/* The edge is a statement of fact about who bosses this call. If that
-			/* person is not confirmed, "go up to the on-site contact" is the right
-			/* answer; "here is a different boss who happens to overlap" is the
-			/* wrong-name failure this feature exists to remove.
+			/* Only reached when nobody holds the Crew Boss pill on this call and
+			/* no linked Crew Boss call produced a contact (D18). add-call.php's
+			/* makeboss handler clears is_call_boss on every other row before
+			/* setting it, so there is normally at most one.
 			*/
 
-			if (count($out) > 0)
+			if (count($inCallTeamLead) > 0)
 			{
-				$cache[$ck] = $out;
-				return $out;
+				$cache[$ck] = $inCallTeamLead;
+				return $inCallTeamLead;
 			}
 		}
 
-		/* ---- RUNG 3 — on-site contact ----
+		/* ---- RUNG 4 — on-site contact ----
 		   onsiteUserID falls back to userID (the booking contact) when blank —
 		   the same fallback create-booking.php applies on write. */
 

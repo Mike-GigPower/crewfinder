@@ -28,10 +28,11 @@
 	/* (see the write below).
 	/*
 	/*   action = "set"   : {action, boss_call, child_calls:[>=1], confirm?}
-	/*                      All calls must be in the SAME booking. Warns (and
-	/*                      requires confirm:true) if the boss call is not
-	/*                      named as one, if it has no confirmed crew, or if a
-	/*                      child is being taken from another boss call.
+	/*                      All calls must be in the SAME booking. REFUSES
+	/*                      (409, not confirmable) a boss call that is not
+	/*                      named as one. Warns (and requires confirm:true) if
+	/*                      it has no confirmed crew, or if a child is being
+	/*                      taken from another boss call.
 	/*   action = "clear" : {action, child_calls:[>=1]}
 	/*   action = "list"  : {action, booking_id}
 	/*
@@ -246,25 +247,40 @@
 		/* their own. There is deliberately no time constraint here.
 		/*
 		/* Nor is a child that is itself boss-named refused. A boss call
-		/* supervising another boss call is unusual, not incoherent — the
-		/* not_boss_named warning below covers the boss end, and nothing covers
-		/* the child end because nothing is wrong with it.
+		/* supervising another boss call is unusual, not incoherent, and
+		/* nothing is wrong with the child end.
 		/*
-		/* WARNINGS — overridable with confirm:true.
+		/* A SUPERVISOR THAT IS NOT A CREW BOSS CALL IS REFUSED — CHANGED in
+		/* slice B of BRIEF-crew-self-times (decision B / D20, Mike 4 Nov 2026).
+		/* This used to be the not_boss_named warning, overridable with
+		/* confirm:true. Only Crew Boss calls supervise now, and every reader of
+		/* the edge (scope, boss lookup, tier, contact) applies
+		/* goat_is_boss_call_name() to the boss call and ignores an edge that
+		/* fails it. Accepting one here would store a link that does nothing,
+		/* which is worse than refusing it.
+		/*
+		/* 409 WITHOUT needs_confirm, so a client that answers every 409 by
+		/* resending with confirm:true still cannot get past it. confirm is not
+		/* read for this check at all.
 		*/
-
-		$warnings = array();
 
 		if (!goat_is_boss_call_name($info[$boss]->call_name))
 		{
-			$warnings[] = array(
+			send_status(409, 'Conflict');
+			echo json_encode(array(
+				'ok'        => false,
+				'error'     => '"' . $info[$boss]->call_name . '" is not a Crew Boss call, so it cannot supervise other calls. '
+				             . 'Only a call with "Boss" in its name can be linked as the supervisor.',
 				'type'      => 'not_boss_named',
 				'call_id'   => $boss,
-				'call_name' => $info[$boss]->call_name,
-				'message'   => '"' . $info[$boss]->call_name . '" is not named as a boss call. '
-				             . 'Assign it as the supervisor anyway?'
-			);
+				'call_name' => $info[$boss]->call_name
+			));
+			die();
 		}
+
+		/* WARNINGS — overridable with confirm:true. */
+
+		$warnings = array();
 
 		/* No confirmed crew on the boss call means the edge resolves to nobody.
 		/* The message states the actual consequence rather than a generic

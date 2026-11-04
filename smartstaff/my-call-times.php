@@ -59,9 +59,17 @@
 		goat_json_error(400, 'callID required');
 	}
 
-	/* ---- SCOPE GATE ---- */
+	/*
+	/* ---- SCOPE GATE ----
+	/*
+	/* goat_time_entry_scope(), NOT goat_boss_scope() — CHANGED in slice B of
+	/* BRIEF-crew-self-times. This file feeds the time-entry FORM, so it opens
+	/* for exactly the people submit-call-times.php will accept a submission
+	/* from. A Team Lead on a Crew Boss call still sees the crew through
+	/* my-call-crew.php and Your Crew; they no longer reach this form.
+	*/
 
-	$scope = goat_boss_scope($actor);
+	$scope = goat_time_entry_scope($actor);
 
 	/*
 	/* BOSS OF THIS CALL, OR OPS AT A KEYBOARD. The boss reads this to see what
@@ -101,7 +109,7 @@
 
 	if (!$is_ops && !in_array($callID, $scope))
 	{
-		goat_json_error(403, 'You are not the crew boss for this call');
+		goat_json_error(403, 'You are not the person entering times for this call');
 	}
 
 	/*

@@ -152,8 +152,9 @@
 
 		/*
 		/* goat_boss_scope() IS the predicate. It already unions DIRECT
-		/* (confirmed and flagged is_call_boss on the call) with SUPERVISORY
-		/* (every child of a dedicated boss call they are confirmed on), it is
+		/* (confirmed and carrying the Crew Boss pill or the Team Lead tick on
+		/* the call -- the pill since slice B, decision F) with SUPERVISORY
+		/* (every child of a live dedicated boss call they are confirmed on), it is
 		/* already correct about the binary(50) trap, and it is already the
 		/* single definition. An earlier draft of the design specified two
 		/* fresh queries for this; that was reinvention.
@@ -224,13 +225,31 @@
 			/* audit column.
 			*/
 
+			/*
+			/* direct_crew_boss (slice B of BRIEF-crew-self-times) IS LOGGED AS
+			/* boss_direct. crew_emergency_access_log.grant_reason carries a
+			/* CHECK constraint listing exactly boss_direct, boss_container,
+			/* boss_supervisory and boss_unattributed, so a fifth value would
+			/* make the log INSERT fail. A Crew Boss pill is a direct marker on
+			/* the call, so boss_direct is the honest existing word for it. If
+			/* the distinction is ever wanted in the log, widen the CHECK in a
+			/* migration first, then drop this mapping.
+			*/
+
 			$reason = 'boss_unattributed';
 			$byCall = goat_bosses_by_call(array($callID));
 
 			if ($byCall['ok']
 			    && isset($byCall['by_call'][$callID][$viewerUserID]))
 			{
-				$reason = 'boss_' . $byCall['by_call'][$callID][$viewerUserID];
+				$how = $byCall['by_call'][$callID][$viewerUserID];
+
+				if ($how === 'direct_crew_boss')
+				{
+					$how = 'direct';
+				}
+
+				$reason = 'boss_' . $how;
 			}
 
 			return goat_emergency_decision(true, $reason, $callID);

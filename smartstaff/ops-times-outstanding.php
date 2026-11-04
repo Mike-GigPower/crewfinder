@@ -19,12 +19,14 @@
 	/* THE GOAT / Ops landing — the "Times outstanding" lane. One row per
 	/* FINISHED call whose times have not arrived, carrying who to chase.
 	/*
-	/* THIS IS THE OTHER READER OF THE INVERSION. calls-awaiting-times.php asks
-	/* the same graph "which bosses owe times" so a cron can push to them; this
-	/* asks "who is the boss of this call" so Rich can ring them. Both go
-	/* through goat_bosses_by_call() in supervision-graph.php, and neither
-	/* resolves a boss for itself. If you are about to add a fourth branch to
-	/* one of these, it belongs in the helper.
+	/* THIS IS THE OTHER READER OF THE TIME-ENTRY INVERSION.
+	/* calls-awaiting-times.php asks the same graph "who owes times" so a cron
+	/* can push to them; this asks "who enters this call's times" so Rich can
+	/* ring them. Both go through goat_time_entry_people_by_call() in
+	/* supervision-graph.php (since slice B of BRIEF-crew-self-times; before
+	/* it, goat_bosses_by_call()), and neither resolves a boss for itself. If
+	/* you are about to add a rule to one of these, it belongs in
+	/* goat_call_tiers().
 	/*
 	/* WHAT MAKES A CALL OUTSTANDING — three conditions, and the second is the
 	/* one that keeps this lane honest:
@@ -527,21 +529,43 @@
 	/*
 	/* ---- 6 of 6: WHO TO CHASE ----
 	/*
-	/* THE INVERSION, through the shared helper. A call with an EMPTY entry is
-	/* the no_boss case and the most important row in the lane: nobody can
-	/* submit for it, so nothing is coming on its own and Rich has to ring
-	/* somebody who was on the call. It is not an edge case and it is never
-	/* folded into "not submitted".
+	/* goat_time_entry_people_by_call(), NOT goat_bosses_by_call() — CHANGED
+	/* in slice B of BRIEF-crew-self-times (Nov 2026). Rich rings the person
+	/* who can actually enter the times. Since slice B that is the call's
+	/* tier's entry person — a Crew Boss before a Team Lead, the ticked person
+	/* on a Crew Boss call — and the same answer the push cron and the
+	/* submit gate read, from goat_call_tiers().
+	/*
+	/* A call with an EMPTY entry is the no_boss case and the most important
+	/* row in the lane: nobody can submit for it, so nothing is coming on its
+	/* own and Rich has to ring somebody who was on the call. It is not an
+	/* edge case and it is never folded into "not submitted". It now arises
+	/* for three tiers, which the row's `tier` tells apart:
+	/*
+	/*   self   no Crew Boss and no Team Lead (crew will enter their own once
+	/*          slice F ships)
+	/*   ops    a Crew Boss call with nobody ticked — flagged
+	/*          'crew_boss_call_nobody_ticked'; Ops enter it themselves
+	/*   (any)  a cancelled paid call, which clears bosses below
 	*/
 
-	$inversion = goat_bosses_by_call(array_keys($callInfo));
+	$inversion = goat_time_entry_people_by_call(array_keys($callInfo));
 
 	if (!$inversion['ok'])
 	{
 		goat_json_error(500, $inversion['error']);
 	}
 
-	$bossOf = $inversion['by_call'];
+	$bossOf  = array();
+	$tierOf  = array();
+	$flagsOf = array();
+
+	foreach ($inversion['by_call'] as $cid => $t)
+	{
+		$bossOf[$cid]  = $t['how'];
+		$tierOf[$cid]  = $t['tier'];
+		$flagsOf[$cid] = $t['flags'];
+	}
 
 	/* names and mobiles for every boss found, in one query */
 
@@ -585,13 +609,18 @@
 	/*
 	/* ---- ASSEMBLE ----
 	/*
-	/* Bosses are ordered by HOW first — direct, then container, then
-	/* supervisory — so the row's first name is the most specific answer to
-	/* "who is responsible", and by name within a rank so two runs over
-	/* unchanged data produce identical output.
+	/* Bosses are ordered by HOW first — Crew Boss pill, then direct, then
+	/* container, then supervisory — so the row's first name is the most
+	/* specific answer to "who is responsible", and by name within a rank so
+	/* two runs over unchanged data produce identical output.
+	/*
+	/* direct_crew_boss is NEW in slice B and must be in this table: an
+	/* unknown `how` here is an undefined index on every row that carries it.
+	/* THE GOAT's opsTimesChase() reads `how !== 'direct'` as "via boss call",
+	/* so it will mislabel a Crew Boss pill holder until slice G updates it.
 	*/
 
-	$rank = array('direct' => 3, 'container' => 2, 'supervisory' => 1);
+	$rank = array('direct_crew_boss' => 4, 'direct' => 3, 'container' => 2, 'supervisory' => 1);
 
 	$rows = array();
 
@@ -711,6 +740,12 @@
 			'bosses'       => array_values($bosses),
 			'sibling_times_pending' => ($sibPending > 0),
 			'sibling_pending_count' => $sibPending,
+			/* slice B, additive: the call's tier ('crew_boss' | 'team_lead' |
+			/* 'self' | 'ops') and its flags ('multi_team_lead' — "No Crew Boss
+			/* — N Team Leads"; 'crew_boss_call_nobody_ticked' — "Crew Boss
+			/* call — nobody ticked"). THE GOAT renders them from slice G. */
+			'tier'         => isset($tierOf[$cid]) ? $tierOf[$cid] : '',
+			'flags'        => isset($flagsOf[$cid]) ? $flagsOf[$cid] : array(),
 			/* a paid cancellation awaiting Rich's check -- label it "Cancelled - paid" */
 			'cancelled'    => $info['cancelled']
 		);
