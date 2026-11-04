@@ -194,7 +194,10 @@
 			*/
 
 			$optionalFields = array('paygradeID', 'tax_file_no_supplied',
-			                        'tax_free_threshold', 'tfn', 'tax_scale');
+			                        'tax_free_threshold', 'tax_scale');
+
+			/* 'tfn' deliberately not accepted: tax file numbers are no longer stored
+			/* in SmartStaff (cleared 4 Nov 2026, G27-95). */
 
 			foreach($optionalFields as $optField)
 			{
