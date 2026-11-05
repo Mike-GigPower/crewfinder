@@ -39,12 +39,19 @@
 	/*   422  bad body
 	/*   500  database failure (detail in the server log, never the body)
 	/*
-	/* WHAT IS WRITTEN. on:1 writes the STRING '1' — what makeboss writes (byte
-	/* 0x31, null-padded by binary(50)), and what every reader's (int) cast
-	/* reads as 1. on:0 writes DEFAULT(is_call_boss), the column's own default:
-	/* the value a row SmartStaff never ticked carries, so SmartStaff's screens
-	/* see it exactly as they see any un-ticked row. (What makeboss writes when
-	/* it CLEARS a row is not known from here — check on test, see the handback.)
+	/* WHAT IS WRITTEN — EXACTLY WHAT makeboss WRITES. on:1 writes the STRING
+	/* '1' (byte 0x31, null-padded by binary(50)); on:0 writes the STRING '0'
+	/* (0x30), which is what makeboss leaves on the rows it clears — observed
+	/* on test, call 37859: 31… -> 30…. Every reader's (int) cast reads them
+	/* as 1 and 0, and SmartStaff's own screens see an untick exactly as they
+	/* see one makeboss made.
+	/*
+	/* NOT DEFAULT(is_call_boss), which the first cut used: the column is
+	/* binary(50) NOT NULL with NO default, so that UPDATE threw and the
+	/* endpoint answered 500 "write failed" (smoke test, call 37891, 5 Nov).
+	/* The failure was reported, not swallowed: ERRMODE_EXCEPTION made the
+	/* UPDATE throw, the catch logged it and answered 500, and nothing was
+	/* written.
 	/*
 	/* A Team Lead tick is NOT the Crew Boss pill. Nothing here reads or writes
 	/* is_crew_boss.
@@ -212,7 +219,11 @@
 		}
 		else
 		{
-			$ws = $pdo->prepare("UPDATE `call_crew_map` SET `is_call_boss` = DEFAULT(`is_call_boss`)
+			/* on:0 never needs the D17 check: an untick can only reduce the
+			   number of Team Leads. Any row status — a tick on a declined or
+			   stood-down row is cleared as well. */
+
+			$ws = $pdo->prepare("UPDATE `call_crew_map` SET `is_call_boss` = '0'
 			                     WHERE `callID` = ? AND `userID` = ?");
 		}
 

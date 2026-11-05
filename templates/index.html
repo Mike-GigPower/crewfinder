@@ -6568,6 +6568,35 @@ function goatChoice(opts){
   });
 }
 
+// goatAsk / goatTell — THE GOAT's own prompt and notice, on goatChoice, for
+// the places that would otherwise reach for window.confirm() / alert() (slice
+// G of BRIEF-crew-self-times: Team Lead, Crew Boss, self-submit switch,
+// supervision Link, timesheet photos). The text is escaped here; a blank line
+// in it starts a new paragraph.
+//
+// goatAsk resolves true on the primary button and false on Cancel, Esc or a
+// click outside. goatTell resolves when dismissed.
+function goatChoiceText(text){
+  return escapeHtml(String(text == null ? '' : text)).replace(/\n/g, '<br>');
+}
+function goatAsk(title, text, okLabel){
+  return goatChoice({
+    title: title,
+    html: goatChoiceText(text),
+    buttons: [
+      {label: 'Cancel', value: false},
+      {label: okLabel || 'OK', value: true, primary: true}
+    ]
+  }).then(function(v){ return v === true; });
+}
+function goatTell(title, text){
+  return goatChoice({
+    title: title,
+    html: goatChoiceText(text),
+    buttons: [{label: 'OK', value: true, primary: true}]
+  });
+}
+
 function overWarningsHtml(warnings){
   return (warnings||[]).map(function(w){
     var call = escapeHtml(decodeEntities(String(w.call_name||'')));
@@ -22149,15 +22178,17 @@ function crewBossControl(c, bookingId, callId, isCancelled){
   // call boss; THE GOAT says Team Lead (Stage 2 Q12) because it has NO charge or
   // pay effect, unlike the row-level Crew Boss.
   //
-  // A Team Lead chip carries an empty remover slot (data-tl-x). callLoadTier
-  // fills it with × only when the call has two or more Team Leads: one of
-  // several can go, a lone Team Lead moves instead (SmartStaff has no unset).
+  // EVERY Team Lead pill carries a red × for Admin (Mike, 5 Nov) — including
+  // the only Team Lead on the call. Unticking goes through set-team-lead.php
+  // on:0, which writes what makeboss writes on a clear ('0') and never needs a
+  // D17 check: an untick can only reduce the number of Team Leads.
   if(c.is_call_boss){
     var x = (window._cohort === 'admin' && c.id && !isCancelled)
-      ? '<span data-tl-x="' + escapeHtml(String(callId)) + '" data-uid="' + Number(c.id) + '"></span>'
+      ? '<span onclick="callRemoveTeamLead(\'' + bookingId + '\',\'' + callId + '\',' + Number(c.id) + ')" '
+        + 'title="Untick this Team Lead" style="color:var(--conflict);cursor:pointer;font-weight:700;margin-left:2px">×</span>'
       : '';
     return ctOnChip('Team Lead', '', "Team Lead: the crew's contact on this call unless it has a Crew Boss. No pay or charge effect."
-      + (window._cohort === 'admin' ? ' To change it, make another crew member Team Lead.' : '')) + x;
+      + (window._cohort === 'admin' ? ' Make another crew member Team Lead to move it, or × to untick it.' : '')) + x;
   }
   if(window._cohort !== 'admin' || !c.id || isCancelled) return '';
   return ctOffBtn('Team Lead', "setCallBoss('" + bookingId + "','" + callId + "'," + c.id + ",this)",
@@ -22182,24 +22213,33 @@ async function setCallBoss(bookingId, callId, userId, btn){
   // would take the makeboss path and silently clear their tick instead of
   // adding alongside it. An older call-tiers.php without the field falls back
   // to team_lead_user_ids.
+  //
   // set-team-lead.php refuses a second Team Lead without a Crew Boss itself,
-  // so this choice is a convenience, not the guard.
+  // so this choice is a convenience, not the guard. Prompts and errors use
+  // goatAsk / goatTell, never window.confirm / alert.
   var ct = _callTier[callId];
   if(!ct){
     await callLoadTier(bookingId, callId);
     ct = _callTier[callId];
   }
-  if(!ct){ alert("Couldn't read this call's Crew Boss / Team Lead state. Try again."); return; }
+  if(!ct){ goatTell('Team Lead', "Couldn't read this call's Crew Boss / Team Lead state. Try again."); return; }
   var d17 = Array.isArray(ct.t.d17_team_lead_user_ids) ? ct.t.d17_team_lead_user_ids : (ct.t.team_lead_user_ids || []);
   var others = d17.filter(function(u){ return Number(u) !== Number(userId); });
+  var hasCrewBoss = Number(ct.t.supervised_by) > 0 || (ct.t.crew_boss_user_ids || []).length > 0;
   var add = false;
   if(others.length === 0){
-    if(!confirm('Make this crew member the team lead for this call?\n\nTheir mobile number will be shown to the crew booked on this call (unless the call has a Crew Boss, who comes first). No pay or charge effect.')) return;
-  } else if(Number(ct.t.supervised_by) > 0 || (ct.t.crew_boss_user_ids || []).length > 0){
-    if(!confirm('Add this crew member as another Team Lead?\n\nThis call has a Crew Boss, so it can have several Team Leads (department leads). The existing Team Lead stays. The Crew Boss enters the times. No pay or charge effect.')) return;
+    if(!(await goatAsk('Make Team Lead?',
+        'Their mobile number will be shown to the crew booked on this call, unless the call has a Crew Boss, who comes first.\n\nNo pay or charge effect.',
+        'Make Team Lead'))) return;
+  } else if(hasCrewBoss){
+    if(!(await goatAsk('Add another Team Lead?',
+        'This call has a Crew Boss, so it can have several Team Leads (department leads). The existing Team Lead stays, and the Crew Boss enters the times.\n\nNo pay or charge effect.',
+        'Add Team Lead'))) return;
     add = true;
   } else {
-    if(!confirm('This call has no Crew Boss, so it can only have one Team Lead. Assign a Crew Boss first, or move the Team Lead.\n\nMove the Team Lead to this crew member? The current Team Lead is cleared.')) return;
+    if(!(await goatAsk('Only one Team Lead on this call',
+        'This call has no Crew Boss, so it can only have one Team Lead. Assign a Crew Boss first, or move the Team Lead.\n\nMove the Team Lead to this crew member? The current Team Lead is cleared.',
+        'Move Team Lead'))) return;
   }
   if(btn) btn.disabled = true;
   try{
@@ -22212,7 +22252,7 @@ async function setCallBoss(bookingId, callId, userId, btn){
     openCallDialog(bookingId, callId);
   }catch(e){
     if(btn) btn.disabled = false;
-    alert('Could not set team lead: '+(e.message||e));
+    goatTell('Could not set the Team Lead', e.message || String(e));
   }
 }
 function entityBtn(label, onclick, opts){
@@ -22564,10 +22604,11 @@ async function callClearOverride(bookingId, callId, uid, retrying){
   // (slice G, D19). A D17 refusal ("would have no Crew Boss and 2 Team Leads")
   // is shown in the editor. If SmartStaff cleared and Supabase failed, Retry
   // runs both again; nothing is rolled back.
-  if(!retrying && !confirm('Remove this row\'s override? It goes back to the Call Type and their own grade.')) return;
+  if(!retrying && !(await goatAsk('Remove this override?',
+      'This row goes back to the Call Type and their own grade.', 'Remove'))) return;
   var j = await callRowPost(bookingId, callId, uid, 'override/' + uid + '/clear');
   if(j.error){
-    if(j.retry && confirm(j.error + '\n\nRetry?')) return callClearOverride(bookingId, callId, uid, true);
+    if(j.retry && (await goatAsk('Half done', j.error + '\n\nRetry?', 'Retry'))) return callClearOverride(bookingId, callId, uid, true);
     callOpenRateEditor(bookingId, callId, uid, j.error);
     return callLoadPricingThenTier(bookingId, callId);
   }
@@ -22584,15 +22625,15 @@ async function callMakeCrewBoss(bookingId, callId, uid, retrying){
   if(!retrying){
     var p = _callPricing[callId];
     var g = p && p.crew_boss && p.crew_boss.grade;
-    if(!confirm('Make this crew member Crew Boss on this call?\n\nTheir row charges at Crew Boss and pays the '
-        + (g ? g.name + ' grade' : 'Crew Boss grade') + ' instead of their own. This is separate from Team Lead.'
-        + ' The Crew Boss enters this call\'s times and is the crew\'s contact.\n\n'
-        + CT_HONESTY)) return;
+    if(!(await goatAsk('Make Crew Boss?',
+        'Their row charges at Crew Boss and pays the ' + (g ? g.name + ' grade' : 'Crew Boss grade')
+        + ' instead of their own. This is separate from Team Lead. The Crew Boss enters this call\'s times and is the crew\'s contact.\n\n'
+        + CT_HONESTY, 'Make Crew Boss'))) return;
   }
   var j = await callRowPost(bookingId, callId, uid, 'crew-boss/' + uid);
   if(j.error){
-    if(j.retry && confirm(j.error + '\n\nRetry?')) return callMakeCrewBoss(bookingId, callId, uid, true);
-    alert('Could not make Crew Boss: ' + j.error);
+    if(j.retry && (await goatAsk('Half done', j.error + '\n\nRetry?', 'Retry'))) return callMakeCrewBoss(bookingId, callId, uid, true);
+    goatTell('Could not make Crew Boss', j.error);
     return callLoadPricingThenTier(bookingId, callId);
   }
   callLoadPricingThenTier(bookingId, callId, j.warning || '');
@@ -22658,7 +22699,6 @@ async function callLoadTier(bookingId, callId){
     if(host.__loadToken !== token || !host.isConnected) return;
   }
   callRenderTier(bookingId, callId, ovr);
-  callRenderTeamLeadRemovers(bookingId, callId);
 }
 
 function callTierNames(names, ids){
@@ -22718,28 +22758,18 @@ async function callSelfSubmitToggle(bookingId, callId, el){
     var j = {};
     try{ j = await r.json(); }catch(_){}
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-    showFeedback(on ? 'Crew send own times: on' : 'Crew send own times: off');
+    goatInfoToast(on ? 'Crew send own times: on' : 'Crew send own times: off', 3000);
   }catch(e){
-    alert('Could not change it: ' + (e.message || e));
+    goatTell('Could not change Crew send own times', e.message || String(e));
   }
   callLoadTier(bookingId, callId);
 }
 
-// × on each Team Lead chip, only when the call has two or more (a Crew Boss
-// call's department leads). Admin only — the slots are only rendered for Admin.
-function callRenderTeamLeadRemovers(bookingId, callId){
-  var ct = _callTier[callId];
-  var leads = (ct && ct.t.team_lead_user_ids) || [];
-  document.querySelectorAll('[data-tl-x="' + String(callId) + '"]').forEach(function(el){
-    var uid = Number(el.getAttribute('data-uid'));
-    el.innerHTML = (leads.length >= 2 && leads.map(Number).indexOf(uid) >= 0)
-      ? '<span onclick="callRemoveTeamLead(\'' + bookingId + '\',\'' + callId + '\',' + uid + ')" title="Remove this Team Lead (the others stay)" style="color:var(--conflict);cursor:pointer;font-weight:700;margin-left:2px">×</span>'
-      : '';
-  });
-}
-
 async function callRemoveTeamLead(bookingId, callId, userId){
-  if(!confirm('Remove this crew member as a Team Lead?\n\nThe other Team Lead(s) on this call stay.')) return;
+  if(!(await goatAsk('Untick this Team Lead?',
+      'They stop being a Team Lead on this call. Any other Team Lead stays.\n\n'
+      + 'If they were the only one, the crew\'s contact falls back to the Crew Boss, or the on-site contact.',
+      'Untick'))) return;
   try{
     var r = await fetch('/api/call/' + bookingId + '/' + callId + '/team-lead/' + userId, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: 0 })
@@ -22747,9 +22777,10 @@ async function callRemoveTeamLead(bookingId, callId, userId){
     var j = {};
     try{ j = await r.json(); }catch(_){}
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    goatInfoToast('Team Lead unticked', 3000);
     openCallDialog(bookingId, callId);
   }catch(e){
-    alert('Could not remove the Team Lead: ' + (e.message || e));
+    goatTell('Could not untick the Team Lead', e.message || String(e));
   }
 }
 
@@ -24188,7 +24219,7 @@ async function _ctPhotoOpen(photoId){
     const p = (j.photos || []).find(function(x){ return Number(x.id) === Number(photoId); });
     url = p ? p.url : null;
   }catch(e){ url = null; }
-  if(!url){ alert('That photo could not be opened. Try again.'); return; }
+  if(!url){ goatTell('Timesheet photo', 'That photo could not be opened. Try again.'); return; }
   const ov = document.createElement('div');
   ov.setAttribute('style', 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;cursor:zoom-out');
   ov.onclick = function(){ ov.remove(); };
@@ -28342,18 +28373,18 @@ async function bkLinkToBoss(bookingId, bossCall, childCall, confirmOverride){
     try{ j = await resp.json(); }catch(_){}
     if(j && j.needs_confirm){
       var lines = (j.warnings || []).map(function(w){ return '• ' + decodeEntities(w.message || ''); }).join('\n');
-      if(confirm(lines + '\n\nLink anyway?')) return bkLinkToBoss(bookingId, bossCall, childCall, true);
+      if(await goatAsk('Link anyway?', lines, 'Link anyway')) return bkLinkToBoss(bookingId, bossCall, childCall, true);
       return;
     }
     if(!resp.ok || (j && j.error)){
-      alert('Could not link: ' + decodeEntities((j && j.error) || ('HTTP ' + resp.status)));
+      goatTell('Could not link', decodeEntities((j && j.error) || ('HTTP ' + resp.status)));
       return;
     }
     goatInfoToast('Linked to Crew Boss call #' + bossCall, 3000);
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
   }catch(e){
-    alert('Could not link: ' + (e.message || e));
+    goatTell('Could not link', e.message || String(e));
   }
 }
 
