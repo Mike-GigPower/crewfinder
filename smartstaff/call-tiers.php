@@ -21,11 +21,23 @@
 	/*   200 {ok: true,
 	/*        by_call: {callID: {tier, entry_user_ids, crew_boss_user_ids,
 	/*                           team_lead_user_ids, multi_team_lead,
-	/*                           is_boss_call, supervised_by, flags}},
+	/*                           is_boss_call, supervised_by, flags,
+	/*                           d17_team_lead_user_ids}},
 	/*        names:   {userID: "First Last"}}
 	/*
 	/* by_call is goat_call_tiers() exactly (supervision-graph.php), minus its
-	/* internal entry_how map. names covers every userID by_call mentions, so the
+	/* internal entry_how map, plus ONE extra field:
+	/*
+	/*   d17_team_lead_user_ids  goat_d17_team_leads() — every Team Lead tick on
+	/*                           a status-5 row, PROMOTION-PENDING INCLUDED
+	/*                           (review R13b). THE GOAT's Team Lead button reads
+	/*                           it to choose between adding a Team Lead and
+	/*                           moving the one there is, so its choice matches
+	/*                           set-team-lead.php's D17 check. team_lead_user_ids
+	/*                           is unchanged: confirmed-and-accepted only, as
+	/*                           every tier field is.
+	/*
+	/* names covers every userID by_call mentions, so the
 	/* call dialog can say "Crew Boss: Anthony Skinner" for a Crew Boss who is on
 	/* a supervising call and not on this call's roster.
 	/*
@@ -68,6 +80,16 @@
 		goat_json_error(500, 'tier lookup failed: ' . $t['error']);
 	}
 
+	/* the D17 Team Lead count, for the same calls — a failure is a 500 too:
+	   the Team Lead button would otherwise choose on a guess */
+
+	$d17 = goat_d17_team_leads(array_keys($t['by_call']));
+
+	if (!$d17['ok'])
+	{
+		goat_json_error(500, 'team lead lookup failed: ' . $d17['error']);
+	}
+
 	$byCall = array();
 	$people = array();
 
@@ -75,9 +97,11 @@
 	{
 		unset($info['entry_how']);
 
+		$info['d17_team_lead_user_ids'] = isset($d17['by_call'][$cid]) ? $d17['by_call'][$cid] : array();
+
 		$byCall[$cid] = $info;
 
-		foreach (array('entry_user_ids', 'crew_boss_user_ids', 'team_lead_user_ids') as $k)
+		foreach (array('entry_user_ids', 'crew_boss_user_ids', 'team_lead_user_ids', 'd17_team_lead_user_ids') as $k)
 		{
 			foreach ($info[$k] as $uid)
 			{

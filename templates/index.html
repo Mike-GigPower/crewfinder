@@ -22174,6 +22174,14 @@ async function setCallBoss(bookingId, callId, userId, btn){
   //                                          department leads, D15
   //   - a Team Lead, and NO Crew Boss     -> refused as a second (D17); the
   //                                          same click can MOVE it (makeboss)
+  //
+  // "A Team Lead" is call-tiers.php's d17_team_lead_user_ids — every tick on
+  // a status-5 row, PROMOTION-PENDING INCLUDED (review R13b), the same count
+  // set-team-lead.php's D17 check uses. NOT team_lead_user_ids (accepted
+  // only): with that, a call whose only Team Lead has an unanswered promotion
+  // would take the makeboss path and silently clear their tick instead of
+  // adding alongside it. An older call-tiers.php without the field falls back
+  // to team_lead_user_ids.
   // set-team-lead.php refuses a second Team Lead without a Crew Boss itself,
   // so this choice is a convenience, not the guard.
   var ct = _callTier[callId];
@@ -22182,7 +22190,8 @@ async function setCallBoss(bookingId, callId, userId, btn){
     ct = _callTier[callId];
   }
   if(!ct){ alert("Couldn't read this call's Crew Boss / Team Lead state. Try again."); return; }
-  var others = (ct.t.team_lead_user_ids || []).filter(function(u){ return Number(u) !== Number(userId); });
+  var d17 = Array.isArray(ct.t.d17_team_lead_user_ids) ? ct.t.d17_team_lead_user_ids : (ct.t.team_lead_user_ids || []);
+  var others = d17.filter(function(u){ return Number(u) !== Number(userId); });
   var add = false;
   if(others.length === 0){
     if(!confirm('Make this crew member the team lead for this call?\n\nTheir mobile number will be shown to the crew booked on this call (unless the call has a Crew Boss, who comes first). No pay or charge effect.')) return;
