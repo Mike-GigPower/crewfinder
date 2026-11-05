@@ -28516,22 +28516,30 @@ async function bkSupClear(bookingId, childId){
   // Keyed on the child alone; no boss_call is sent. Clearing a call that was
   // never supervised is not an error — the caller asked for it to be
   // unsupervised and it is.
-  var st = document.getElementById('bk-sup-status');
-  function fail(m){ if(st){ st.style.color='var(--conflict)'; st.textContent=m; } }
+  //
+  // A REFUSAL IS SHOWN IN goatTell, not only in #bk-sup-status (smoke test,
+  // booking 11827, 5 Nov). call-supervision.php answers 409 when unlinking
+  // would leave a call with no Crew Boss and 2+ Team Leads (D17), naming them,
+  // and app.py passes the 409 through. The status line it used to write is
+  // drawn in more than one place in the booking dialog, so getElementById
+  // could land on a copy that is not on screen, and the refusal showed
+  // nowhere. goatTell sits above the dialog, so it is always seen.
   try{
     var resp = await fetch('/api/calls/supervision/clear', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({child_calls: [childId]})
     });
-    var j = await resp.json();
+    var j = {};
+    try{ j = await resp.json(); }catch(_){}
     if(!resp.ok || (j && j.error)){
-      fail((j && j.error) ? j.error : ('HTTP '+resp.status));
+      var msg = (j && j.error) ? decodeEntities(String(j.error)) : ('HTTP '+resp.status);
+      goatTell(resp.status === 409 ? 'Can’t unlink this call' : 'Couldn’t unlink', msg);
       return;
     }
     delete window._bookingIndex[bookingId];
     openBookingDialog(bookingId);
-  }catch(e){ fail('Clear failed: '+e.message); }
+  }catch(e){ goatTell('Couldn’t unlink', 'Clear failed: '+(e.message||String(e))); }
 }
 
 function renderBookingDialog(bookingId, d, cached){
@@ -31031,7 +31039,7 @@ OPS_STATUS_COLORS.not_submitted   = 'var(--warn)';
 OPS_STATUS_COLORS.no_boss         = 'var(--accent2)';
 OPS_STATUS_LABELS.awaiting_review = 'Submitted, not accepted';
 OPS_STATUS_LABELS.not_submitted   = 'Not submitted';
-OPS_STATUS_LABELS.no_boss         = 'No crew boss';
+OPS_STATUS_LABELS.no_boss         = 'Ops / crew own times';   // slice G: no_boss now covers tiers self and ops
 
 // Lane 1 (calls_to_fill) palette + labels. "Nobody booked" is the urgent case
 // (red), "partly filled" amber. Lead time mirrors age: the nearest call is the
