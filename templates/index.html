@@ -3264,7 +3264,7 @@ async function exitAdmin(){
 
 
 
-// ── Easter egg: Monty and Rich each get a hello when they log on — Mike, 2 Nov 2026
+// ── Easter egg: Monty, Rich and Joe each get a hello when they log on — Mike, 2 Nov 2026 (Joe 5 Nov)
 // Once per login, never on reloads: the server decides who (Monty and Rich, each
 // on their own account and their Admin account) and says so once, as greeting
 // 'monty' or 'rich', on the first /api/whoami after the login. A page that has just loaded may not be
@@ -3272,7 +3272,22 @@ async function exitAdmin(){
 // refuses, the clip waits for the first click or key press instead.
 function goatGreetOnLogin(who){
   try{
-    const clip = {monty: '/static/hello-monty.wav', rich: '/static/hello-rich.wav'}[who];
+    // Joe gets a random pick from his own set (Mike, 5 Nov 2026). The two payday
+    // clips join the pool on Tuesdays only — payday — by this Mac's local date.
+    const joe = [
+      '/static/hello-joe-great-company.wav',
+      '/static/hello-joe-journey.wav',
+      '/static/hello-joe-rome.wav',
+      '/static/hello-joe-customer-right.wav',
+      '/static/hello-joe-patience.wav',
+      '/static/hello-joe-favourites.wav',
+    ];
+    if(new Date().getDay() === 2){   // 0 = Sunday, 2 = Tuesday
+      joe.push('/static/hello-joe-payday-1.wav', '/static/hello-joe-payday-2.wav');
+    }
+    const clip = (who === 'joe')
+      ? joe[Math.floor(Math.random() * joe.length)]
+      : {monty: '/static/hello-monty.wav', rich: '/static/hello-rich.wav'}[who];
     if(!clip) return;
     const a = new Audio(clip);
     const later = function(){

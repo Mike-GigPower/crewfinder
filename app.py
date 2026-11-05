@@ -5657,14 +5657,17 @@ def index():
 
 # Login greetings — Mike, 2 Nov 2026. Admin ids/usernames from SmartStaff `users`
 # (Monty 10258 "Monty", Rich 10259 "Rich"); crew logins are their EINs.
+# Joe (GM) added 5 Nov 2026: matched on his username "Joe" only — Mike, 5 Nov
+# 2026. His user id and EIN are not recorded here yet.
 _LOGIN_GREETINGS = {
     "monty": {"user_ids": {10258}, "usernames": {"monty", "3315"}, "eins": {"3315"}},
     "rich":  {"user_ids": {10259}, "usernames": {"rich", "472"},   "eins": {"472"}},
+    "joe":   {"user_ids": set(),   "usernames": {"joe"},           "eins": set()},
 }
 
 
 def _login_greeting(username, ident):
-    """'monty', 'rich' or '' for the account that has just logged in."""
+    """'monty', 'rich', 'joe' or '' for the account that has just logged in."""
     uname = str(username or "").strip().lower()
     ein = str((ident or {}).get("ein") or "").strip()
     try:
@@ -17337,7 +17340,7 @@ def api_whoami():
         "pref_key":    current_pref_key(),
         # True on the first whoami after a login, then never again for it.
         "just_logged_in": bool(session.pop("just_logged_in", False)),
-        # Which login greeting to play, if any — "monty", "rich" or "". One-shot.
+        # Which login greeting to play, if any — "monty", "rich", "joe" or "". One-shot.
         "greeting":    session.pop("login_greeting", "") or "",
     })
 
