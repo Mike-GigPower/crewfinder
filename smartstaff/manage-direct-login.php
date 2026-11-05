@@ -1,6 +1,6 @@
 <?php
     define('SS_NO_SMARTY', true);
-    include('../../global.php');
+	include('../../global.php');
     include('cohort.php');
     header('Content-Type: application/json');
 
