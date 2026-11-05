@@ -27,12 +27,14 @@
 	/*
 	/*   POST {callID, userID, on: 0|1}
 	/*
-	/*   200  {ok, callID, userID, is_call_boss, team_leads}
+	/*   200  {ok, callID, userID, is_call_boss, team_leads} — team_leads are
+	/*        the ticks that COUNT: confirmed, not promo-pending (R13)
 	/*   403  not an admin session
 	/*   404  no call_crew_map row; for on:1, no CONFIRMED row
 	/*   409  on:1 to a promo-pending person, or
-	/*        on:1 adding a SECOND Team Lead on a call whose tier is not
-	/*        crew_boss — D17: "This call has no Crew Boss, so it can only have
+	/*        on:1 adding a SECOND Team Lead on a call with no Crew Boss (no
+	/*        pill on it, no counting link — R14) — D17: "This call has no Crew
+	/*        Boss, so it can only have
 	/*        one Team Lead. Assign a Crew Boss first, or move the Team Lead."
 	/*   422  bad body
 	/*   500  database failure (detail in the server log, never the body)
@@ -132,6 +134,14 @@
 		}
 	}
 
+	/* A promo-pending person's tick does not count (review R13) — the tiers
+	   ignore it, so "already a Team Lead" must not either. */
+
+	if ($promoPending)
+	{
+		$already = false;
+	}
+
 	if ($on === 1)
 	{
 		if (!$confirmed)
@@ -145,9 +155,16 @@
 		}
 
 		/*
-		/* D17, read through the tier — the same answer the submit gate reads.
-		/* A second Team Lead is allowed only on a crew_boss call (pill on the
-		/* call, or a live linked Crew Boss call with someone confirmed).
+		/* D17, read through the tier. A second Team Lead is allowed only when
+		/* the call HAS A CREW BOSS — goat_tier_has_crew_boss(): a confirmed
+		/* pill on the call, or a supervision link that counts (review R14).
+		/* NOT "tier is crew_boss": a dedicated Crew Boss call is tier
+		/* crew_boss on a Team Lead tick alone, and that is not a Crew Boss.
+		/*
+		/* "Other Team Leads" are the tier's team_lead_user_ids — confirmed,
+		/* NOT promo-pending (review R13). An unanswered promotion's tick is not
+		/* a Team Lead anywhere else in the system, so it does not block one
+		/* here either.
 		*/
 
 		if (!$already)
@@ -167,7 +184,7 @@
 				if ((int) $tl !== $userID) $others++;
 			}
 
-			if ($others >= 1 && $t['tier']['tier'] !== 'crew_boss')
+			if ($others >= 1 && !goat_tier_has_crew_boss($t['tier']))
 			{
 				goat_json_error(409, 'This call has no Crew Boss, so it can only have one Team Lead. Assign a Crew Boss first, or move the Team Lead.');
 			}
@@ -201,7 +218,14 @@
 
 	try
 	{
-		$vs = $pdo->prepare("SELECT `userID`, `status`, `is_call_boss` FROM `call_crew_map` WHERE `callID` = ?");
+		$vs = $pdo->prepare("SELECT ccm.`userID` AS userID, ccm.`status` AS status, ccm.`is_call_boss` AS is_call_boss,
+		                            (cpa.`id` IS NOT NULL) AS promo_pending
+		                     FROM `call_crew_map` ccm
+		                     LEFT JOIN `call_promo_ack` cpa
+		                            ON cpa.`callID` = ccm.`callID`
+		                           AND cpa.`userID` = ccm.`userID`
+		                           AND cpa.`acked_at` IS NULL
+		                     WHERE ccm.`callID` = ?");
 		$vs->execute(array($callID));
 		$after = $vs->fetchAll();
 	}
@@ -227,7 +251,9 @@
 			}
 		}
 
-		if ($tick === 1 && (int) $r['status'] === 5)
+		/* the Team Leads that COUNT: confirmed and not promo-pending (R13) */
+
+		if ($tick === 1 && (int) $r['status'] === 5 && (int) $r['promo_pending'] !== 1)
 		{
 			$leads[(int) $r['userID']] = true;
 		}

@@ -206,10 +206,13 @@
 	/* Supervision edges for this booking, in one query. Same shape as the
 	/* feed maps above: collect first, so the per-call emit is a lookup.
 	/*
-	/* No include of supervision-graph.php. One booking-wide query beats N
-	/* per-call helper calls, and not including it keeps this file free of a
-	/* dependency on that file existing — which is what lets this change ship
-	/* to prod ahead of the migration.
+	/* This one booking-wide query stays INLINE rather than going through
+	/* supervision-graph.php's per-call helpers: one query beats N. The file
+	/* has included supervision-graph.php since slice G of
+	/* BRIEF-crew-self-times (for unlinked_boss_call, below), so it now
+	/* depends on that file being deployed alongside it — the original reason
+	/* for keeping it out (shipping ahead of the supervision migration) no
+	/* longer applies.
 	/*
 	/* BOTH ends INNER JOINed, as in supervision-graph.php and
 	/* call-supervision.php: sss::deleteCall does not know this table exists,
@@ -361,14 +364,17 @@
 	/* booking it overlaps without being linked to, or 0. The rule is
 	/* goat_unlinked_boss_overlap() in supervision-graph.php, the one
 	/* implementation THE GOAT's booking dialog, All Bookings and Ops lane all
-	/* read. A DISPLAY: a failed lookup degrades to 0 everywhere, as the
-	/* supervision maps above do, rather than taking the booking dialog down.
+	/* read. A DISPLAY, so a failed lookup never takes the booking dialog down
+	/* — but it emits NULL on every call, not 0 (review R17), the same as
+	/* get-bookings-bulk.php's unlinked_calls: 0 means "linked or nothing to
+	/* link", null means "unknown", and THE GOAT shows nothing for unknown.
 	*/
 
 	$unlinkedOf = array();
 	$ul = goat_unlinked_boss_overlap(array($bookingID));
+	$ulKnown = $ul['ok'];
 
-	if ($ul['ok'])
+	if ($ulKnown)
 	{
 		$unlinkedOf = $ul['by_call'];
 	}
@@ -534,7 +540,7 @@
 				/* spares the client a null/0 split. */
 				'bossed_by'          => isset($bossOf[$callID])   ? $bossOf[$callID]   : 0,
 				'bosses'             => isset($bossesOf[$callID]) ? $bossesOf[$callID] : array(),
-				'unlinked_boss_call' => isset($unlinkedOf[$callID]) ? (int) $unlinkedOf[$callID] : 0,
+				'unlinked_boss_call' => $ulKnown ? (isset($unlinkedOf[$callID]) ? (int) $unlinkedOf[$callID] : 0) : null,
 				'committed'          => $fc['committed'],
 				'reserved'           => $fc['reserved'],
 				'likely'             => $fc['likely'],

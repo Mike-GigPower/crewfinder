@@ -191,11 +191,12 @@
 	/* tier, and refusing it would leave a stale marker that the nightly
 	/* drift check reports forever — the cleanup this endpoint exists for.
 	/*
-	/* Read through goat_call_tier(), the same answer the submit gate reads,
-	/* so "would have no Crew Boss" means what the tier means: no OTHER
-	/* confirmed pill holder on the call, and no live Crew Boss call above it
-	/* with someone confirmed. A dedicated Crew Boss call is exempt — D21 has
-	/* its own entry rule and it never becomes tier team_lead.
+	/* Read through goat_call_tier(), so "would have no Crew Boss" means what
+	/* goat_tier_has_crew_boss() means (review R14): no OTHER confirmed pill
+	/* holder on the call, and no supervision link that counts. A dedicated
+	/* Crew Boss call is NOT exempt any more: a Team Lead tick there is not a
+	/* Crew Boss, so clearing its last pill with 2+ Team Leads breaks D17 like
+	/* anywhere else.
 	*/
 
 	if ($on === 0 && $countingPill)
@@ -210,7 +211,7 @@
 
 		$tier = $t['tier'];
 
-		if ($tier !== null && (int) $tier['is_boss_call'] !== 1)
+		if ($tier !== null)
 		{
 			/* other pill holders ON THE CALL — the supervising call's ticked
 			   person is in crew_boss_user_ids too, so read the call's own */

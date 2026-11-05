@@ -560,11 +560,14 @@
 	/* "Not linked to its Crew Boss call" per row (slice G, §14.5), from the
 	/* same helper as the booking dialog. A display on a lane whose own rule is
 	/* fail-hard: the lane's job is times, and losing it to a failed warning
-	/* lookup would be the worse failure, so this ONE read degrades to 0.
+	/* lookup would be the worse failure, so this ONE read degrades — to NULL
+	/* on every row, not 0 (review R17), as get-bookings-bulk.php does: 0
+	/* would claim "linked", null says "unknown" and THE GOAT shows nothing.
 	*/
 
-	$ulRows = goat_unlinked_boss_overlap_for_calls(array_keys($callInfo));
-	$ulOf   = $ulRows['ok'] ? $ulRows['by_call'] : array();
+	$ulRows  = goat_unlinked_boss_overlap_for_calls(array_keys($callInfo));
+	$ulKnown = $ulRows['ok'];
+	$ulOf    = $ulKnown ? $ulRows['by_call'] : array();
 
 	$bossOf  = array();
 	$tierOf  = array();
@@ -756,8 +759,9 @@
 			/* call — nobody ticked"). THE GOAT renders them from slice G. */
 			'tier'         => isset($tierOf[$cid]) ? $tierOf[$cid] : '',
 			'flags'        => isset($flagsOf[$cid]) ? $flagsOf[$cid] : array(),
-			/* slice G: the live Crew Boss call this call overlaps unlinked, or 0 */
-			'unlinked_boss_call' => isset($ulOf[$cid]) ? (int) $ulOf[$cid] : 0,
+			/* slice G: the live Crew Boss call this call overlaps unlinked, 0 if
+			   none, null if the lookup failed (unknown) */
+			'unlinked_boss_call' => $ulKnown ? (isset($ulOf[$cid]) ? (int) $ulOf[$cid] : 0) : null,
 			/* a paid cancellation awaiting Rich's check -- label it "Cancelled - paid" */
 			'cancelled'    => $info['cancelled']
 		);

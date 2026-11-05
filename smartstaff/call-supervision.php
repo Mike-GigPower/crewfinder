@@ -36,8 +36,9 @@
 	/*   action = "clear" : {action, child_calls:[>=1]}
 	/*                      REFUSES (409, not confirmable) a clear that would
 	/*                      leave a child with no Crew Boss and 2+ Team Leads
-	/*                      (D17, slice G); `set` onto a boss call with nobody
-	/*                      confirmed is refused the same way.
+	/*                      (D17, slice G); `set` onto a boss call that is
+	/*                      cancelled or has nobody confirmed is refused the
+	/*                      same way.
 	/*   action = "list"  : {action, booking_id}
 	/*
 	/* Admin-only (same gate as call-feeds.php).
@@ -54,8 +55,8 @@
 	/* D17 ON THE WAY OUT — ADDED in slice G of BRIEF-crew-self-times (§14.4).
 	/*
 	/* Refuse a change that would leave a supervised call with NO Crew Boss and
-	/* TWO OR MORE Team Leads: a `clear`, or a `set` onto a boss call with nobody
-	/* confirmed (the link then counts for nothing). The rule lives in
+	/* TWO OR MORE Team Leads: a `clear`, or a `set` onto a boss call that would
+	/* not count — cancelled, or nobody confirmed (review R15). The rule lives in
 	/* goat_d17_if_unlinked() (supervision-graph.php); this only reports it.
 	/*
 	/* 409 WITHOUT needs_confirm — not overridable, like not_boss_named. A
@@ -352,11 +353,31 @@
 		}
 
 		/*
-		/* A BOSS CALL WITH NOBODY CONFIRMED supervises nobody (goat_call_tiers()
-		/* rule 2 needs ≥1 confirmed person), so moving children onto it takes
-		/* their Crew Boss away exactly as a clear does — D17 applies. Confirmed
-		/* here means what the tiers mean: status 5, not promo-pending.
+		/* WILL THE NEW LINK COUNT? (review R15) Only a live Crew Boss call —
+		/* boss-named (checked above), NOT CANCELLED, with at least one confirmed,
+		/* non-promo-pending person — supervises anything (goat_call_tiers()
+		/* rule 2). Moving children onto a call that fails either test takes
+		/* their Crew Boss away exactly as a clear does, so D17 applies.
 		*/
+
+		$bossCancelled = false;
+
+		$bcres = mysql_query("SELECT " . goat_sg_cancelled_sql('c') . " AS cancelled_at
+		                      FROM calls c WHERE c.id = " . (int) $boss . " LIMIT 1");
+
+		if ($bcres === false)
+		{
+			send_status(500, 'Internal Server Error');
+			echo json_encode(array('error' => 'boss call lookup failed: ' . mysql_error()));
+			die();
+		}
+
+		$bcrow = mysql_fetch_object($bcres);
+
+		if ($bcrow && $bcrow->cancelled_at !== null && (int) $bcrow->cancelled_at > 0)
+		{
+			$bossCancelled = true;
+		}
 
 		$bossRoster = goat_sg_confirmed_roster(array($boss));
 
@@ -367,7 +388,9 @@
 			die();
 		}
 
-		if (!isset($bossRoster['by_call'][$boss]) || count($bossRoster['by_call'][$boss]) === 0)
+		$bossEmpty = (!isset($bossRoster['by_call'][$boss]) || count($bossRoster['by_call'][$boss]) === 0);
+
+		if ($bossCancelled || $bossEmpty)
 		{
 			cs_refuse_if_d17($children, $info);
 		}

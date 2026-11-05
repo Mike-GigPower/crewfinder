@@ -1415,6 +1415,32 @@
 		}
 
 		/*
+		/* DOES THIS CALL HAVE A CREW BOSS? (review R14) — the D17 question, and
+		/* NOT the same as "is its tier crew_boss". Tier rule 1 makes a dedicated
+		/* Crew Boss call tier crew_boss on a Team Lead tick alone; for D17 that
+		/* call has no Crew Boss, so it may still have only one Team Lead.
+		/*
+		/* A Crew Boss = a confirmed, non-promo-pending Crew Boss pill ON THE
+		/* CALL, or a supervision link that COUNTS (supervised_by > 0). From a
+		/* goat_call_tiers() entry: with no counting link, crew_boss_user_ids is
+		/* exactly the call's own pills, so either test reads straight off it.
+		/*
+		/* Used by set-team-lead.php (adding a second Team Lead), set-crew-boss.php
+		/* (clearing a pill) and goat_d17_if_unlinked() (losing a link), and
+		/* mirrored by THE GOAT's setCallBoss().
+		*/
+
+		function goat_tier_has_crew_boss($info)
+		{
+			if (!is_array($info))
+			{
+				return false;
+			}
+
+			return ((int) $info['supervised_by'] > 0) || (count($info['crew_boss_user_ids']) > 0);
+		}
+
+		/*
 		/* D17 FOR A LINK THAT IS ABOUT TO GO.
 		/*
 		/* Of $childIDs, the calls that would be left with NO Crew Boss and TWO
@@ -1425,9 +1451,10 @@
 		/*   array('ok', 'error', 'by_call' => childCallID => [team lead userIDs])
 		/*
 		/* Only children whose link COUNTS today (goat_call_tiers() supervised_by
-		/* > 0) can lose a Crew Boss by losing it; a child that is itself a Crew
-		/* Boss call has its own rule (D21) and is skipped; a child with its own
-		/* Crew Boss pill keeps tier crew_boss without the link. Team Leads and
+		/* > 0) can lose a Crew Boss by losing it; a child with its own Crew Boss
+		/* pill keeps one without the link. A child that is itself a Crew Boss
+		/* call is NOT skipped (review R14): D17 asks whether a call has a Crew
+		/* Boss, and a Team Lead tick on a boss call is not one. Team Leads and
 		/* pills read as "confirmed" — status 5, not promo-pending — like the
 		/* tiers they protect.
 		*/
@@ -1459,7 +1486,7 @@
 
 			foreach ($t['by_call'] as $cid => $info)
 			{
-				if ((int) $info['is_boss_call'] === 1 || (int) $info['supervised_by'] <= 0)
+				if ((int) $info['supervised_by'] <= 0)
 				{
 					continue;
 				}
@@ -1490,10 +1517,11 @@
 		/*
 		/* A call is UNLINKED-OVERLAPPING when:
 		/*   - it is not cancelled and not itself a Crew Boss call;
-		/*   - no link to a LIVE Crew Boss call supervises it (a link to a
-		/*     cancelled or non-boss-named call counts for nothing since slice B,
-		/*     so it does not hide the warning either — unlike probe P3, which
-		/*     treated any link as a link);
+		/*   - no link that COUNTS supervises it — goat_call_tiers() supervised_by
+		/*     (review R16): a live, boss-named Crew Boss call with at least one
+		/*     confirmed person. A link to a cancelled, empty or non-boss-named
+		/*     call supervises nothing, so it does not hide the warning either —
+		/*     unlike probe P3, which treated any link as a link;
 		/*   - another call on the SAME booking is a live Crew Boss call
 		/*     (goat_boss_call_is_live()) with at least one confirmed,
 		/*     non-promo-pending person, and STRICTLY overlaps it in time
@@ -1508,7 +1536,7 @@
 		/* Bookings with none are absent from count_by_booking. Callers are
 		/* displays and degrade on ok === false.
 		/*
-		/* Four queries for any number of bookings.
+		/* A handful of batch queries for any number of bookings, never per call.
 		*/
 
 		function goat_unlinked_boss_overlap($bookingIDs)
@@ -1607,29 +1635,46 @@
 				return $fail;
 			}
 
-			/* ---- 3. which calls already have a link that counts ---- */
+			/*
+			/* ---- 3. which calls already have a link that COUNTS (review R16) ----
+			/*
+			/* Asked of goat_call_tiers(), not re-derived: a link counts exactly
+			/* when the tier says so — supervised_by > 0, i.e. a live, boss-named
+			/* Crew Boss call with at least one confirmed, non-promo-pending
+			/* person. A link to an empty, cancelled or non-boss-named call
+			/* supervises nothing, so it does not hide this warning either.
+			/* Only the candidate calls are tiered: live, not themselves boss
+			/* calls, on a booking that has a live boss call.
+			*/
+
+			$cand = array();
+
+			foreach ($calls as $id => $c)
+			{
+				if (!$c['cancelled'] && !$c['is_boss'] && isset($bossBy[$c['booking']]))
+				{
+					$cand[] = $id;
+				}
+			}
 
 			$linked = array();
 
-			$lres = mysql_query("SELECT s.child_call AS child_call, cb.call_name AS boss_call_name,
-			                            " . goat_sg_cancelled_sql('cb') . " AS boss_cancelled_at
-			                     FROM call_supervision s
-			                     INNER JOIN calls cb ON cb.id = s.boss_call
-			                     INNER JOIN calls cc ON cc.id = s.child_call
-			                     WHERE cc.bookingID IN (" . implode(',', array_keys($bossBy)) . ")
-			                       AND s.boss_call <> s.child_call");
-
-			if ($lres === false)
+			if (count($cand) > 0)
 			{
-				$fail['error'] = 'supervision query failed: ' . mysql_error();
-				return $fail;
-			}
+				$t = goat_call_tiers($cand);
 
-			while ($lrow = mysql_fetch_object($lres))
-			{
-				if (goat_boss_call_is_live($lrow->boss_call_name, $lrow->boss_cancelled_at))
+				if (!$t['ok'])
 				{
-					$linked[(int) $lrow->child_call] = true;
+					$fail['error'] = $t['error'];
+					return $fail;
+				}
+
+				foreach ($t['by_call'] as $cid => $info)
+				{
+					if ((int) $info['supervised_by'] > 0)
+					{
+						$linked[(int) $cid] = true;
+					}
 				}
 			}
 

@@ -22164,8 +22164,11 @@ function crewBossControl(c, bookingId, callId, isCancelled){
                   "Make team lead (their number is shown to this call's crew unless it has a Crew Boss)");
 }
 async function setCallBoss(bookingId, callId, userId, btn){
-  // WHICH TEAM LEAD ACTION THIS IS depends on the call's tier (slice G,
-  // BRIEF-crew-self-times §14.3.4, D15/D17), read from call-tiers.php:
+  // WHICH TEAM LEAD ACTION THIS IS depends on whether the call HAS A CREW
+  // BOSS (slice G, BRIEF-crew-self-times §14.3.4, D15/D17), read from
+  // call-tiers.php — a confirmed pill on the call, or a supervision link that
+  // counts (review R14; supervision-graph.php goat_tier_has_crew_boss()). NOT
+  // "tier is crew_boss": a Crew Boss call is that on a Team Lead tick alone.
   //   - no Team Lead yet                  -> makeboss, as always
   //   - a Team Lead, and a Crew Boss      -> ADD this one (set-team-lead.php);
   //                                          department leads, D15
@@ -22183,7 +22186,7 @@ async function setCallBoss(bookingId, callId, userId, btn){
   var add = false;
   if(others.length === 0){
     if(!confirm('Make this crew member the team lead for this call?\n\nTheir mobile number will be shown to the crew booked on this call (unless the call has a Crew Boss, who comes first). No pay or charge effect.')) return;
-  } else if(ct.t.tier === 'crew_boss'){
+  } else if(Number(ct.t.supervised_by) > 0 || (ct.t.crew_boss_user_ids || []).length > 0){
     if(!confirm('Add this crew member as another Team Lead?\n\nThis call has a Crew Boss, so it can have several Team Leads (department leads). The existing Team Lead stays. The Crew Boss enters the times. No pay or charge effect.')) return;
     add = true;
   } else {
@@ -28360,6 +28363,9 @@ function abUnlinkedChip(n){
 function abSetUnlinked(bookingId, d){
   var el = document.getElementById('ab-ul-' + bookingId);
   if(!el || !d || !d.calls) return;
+  // null on any call = get-booking.php's lookup failed (unknown, review R17):
+  // leave the row's chip as it was rather than claim "all linked".
+  if(d.calls.some(function(c){ return c.unlinked_boss_call === null; })) return;
   var n = d.calls.filter(function(c){ return Number(c.unlinked_boss_call) > 0; }).length;
   el.innerHTML = abUnlinkedChip(n);
 }
