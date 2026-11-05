@@ -7,6 +7,7 @@
 	include('../../global.php');
 	include('cohort.php');
 	include('call-graph.php');
+	include_once('supervision-graph.php');   /* slice G: unlinked_boss_call */
 
 	/*
 	/* JSON response */
@@ -354,6 +355,24 @@
 		}
 	}
 
+	/*
+	/* "NOT LINKED TO ITS CREW BOSS CALL" — slice G of BRIEF-crew-self-times
+	/* (§14.5, D24 gate G2). Per call, the id of the live Crew Boss call on this
+	/* booking it overlaps without being linked to, or 0. The rule is
+	/* goat_unlinked_boss_overlap() in supervision-graph.php, the one
+	/* implementation THE GOAT's booking dialog, All Bookings and Ops lane all
+	/* read. A DISPLAY: a failed lookup degrades to 0 everywhere, as the
+	/* supervision maps above do, rather than taking the booking dialog down.
+	*/
+
+	$unlinkedOf = array();
+	$ul = goat_unlinked_boss_overlap(array($bookingID));
+
+	if ($ul['ok'])
+	{
+		$unlinkedOf = $ul['by_call'];
+	}
+
 	$calls = array();
 	$cres = mysql_query("SELECT id, call_name, start_date, start_time, est_length, required, notes, link_group" . $callCancelSel . "
 	                     FROM calls
@@ -515,6 +534,7 @@
 				/* spares the client a null/0 split. */
 				'bossed_by'          => isset($bossOf[$callID])   ? $bossOf[$callID]   : 0,
 				'bosses'             => isset($bossesOf[$callID]) ? $bossesOf[$callID] : array(),
+				'unlinked_boss_call' => isset($unlinkedOf[$callID]) ? (int) $unlinkedOf[$callID] : 0,
 				'committed'          => $fc['committed'],
 				'reserved'           => $fc['reserved'],
 				'likely'             => $fc['likely'],

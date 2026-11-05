@@ -22141,21 +22141,61 @@ async function promoteBackup(bookingId, callId, userId, btn, ackOver){
 // Hub. SmartStaff calls it the call boss; THE GOAT says Team Lead (Stage 2 Q12)
 // because it has NO charge or pay effect, unlike the row-level Crew Boss.
 function crewBossControl(c, bookingId, callId, isCancelled){
+  // Admin-only "Team Lead" button, shown next to any crew member who is NOT a
+  // Team Lead yet. SmartStaff's native makeboss clears is_call_boss on every
+  // other row, so through it a call has ONE Team Lead; setCallBoss decides
+  // whether a click MOVES that one (no Crew Boss — D17) or ADDS another (the
+  // call has a Crew Boss — D15, via set-team-lead.php). SmartStaff calls it the
+  // call boss; THE GOAT says Team Lead (Stage 2 Q12) because it has NO charge or
+  // pay effect, unlike the row-level Crew Boss.
+  //
+  // A Team Lead chip carries an empty remover slot (data-tl-x). callLoadTier
+  // fills it with × only when the call has two or more Team Leads: one of
+  // several can go, a lone Team Lead moves instead (SmartStaff has no unset).
   if(c.is_call_boss){
-    // SmartStaff has no unset: Team Lead moves when another row is made it.
-    return ctOnChip('Team Lead', '', "Team Lead: the crew's contact on this call. No pay or charge effect."
-      + (window._cohort === 'admin' ? ' To change it, make another crew member Team Lead.' : ''));
+    var x = (window._cohort === 'admin' && c.id && !isCancelled)
+      ? '<span data-tl-x="' + escapeHtml(String(callId)) + '" data-uid="' + Number(c.id) + '"></span>'
+      : '';
+    return ctOnChip('Team Lead', '', "Team Lead: the crew's contact on this call unless it has a Crew Boss. No pay or charge effect."
+      + (window._cohort === 'admin' ? ' To change it, make another crew member Team Lead.' : '')) + x;
   }
   if(window._cohort !== 'admin' || !c.id || isCancelled) return '';
   return ctOffBtn('Team Lead', "setCallBoss('" + bookingId + "','" + callId + "'," + c.id + ",this)",
-                  "Make team lead (their number is shown to this call's crew)");
+                  "Make team lead (their number is shown to this call's crew unless it has a Crew Boss)");
 }
 async function setCallBoss(bookingId, callId, userId, btn){
-  if(!confirm('Make this crew member the team lead for this call?\n\nAny existing team lead on this call is cleared. Their mobile number will be shown to the crew booked on this call. No pay or charge effect.')) return;
+  // WHICH TEAM LEAD ACTION THIS IS depends on the call's tier (slice G,
+  // BRIEF-crew-self-times §14.3.4, D15/D17), read from call-tiers.php:
+  //   - no Team Lead yet                  -> makeboss, as always
+  //   - a Team Lead, and a Crew Boss      -> ADD this one (set-team-lead.php);
+  //                                          department leads, D15
+  //   - a Team Lead, and NO Crew Boss     -> refused as a second (D17); the
+  //                                          same click can MOVE it (makeboss)
+  // set-team-lead.php refuses a second Team Lead without a Crew Boss itself,
+  // so this choice is a convenience, not the guard.
+  var ct = _callTier[callId];
+  if(!ct){
+    await callLoadTier(bookingId, callId);
+    ct = _callTier[callId];
+  }
+  if(!ct){ alert("Couldn't read this call's Crew Boss / Team Lead state. Try again."); return; }
+  var others = (ct.t.team_lead_user_ids || []).filter(function(u){ return Number(u) !== Number(userId); });
+  var add = false;
+  if(others.length === 0){
+    if(!confirm('Make this crew member the team lead for this call?\n\nTheir mobile number will be shown to the crew booked on this call (unless the call has a Crew Boss, who comes first). No pay or charge effect.')) return;
+  } else if(ct.t.tier === 'crew_boss'){
+    if(!confirm('Add this crew member as another Team Lead?\n\nThis call has a Crew Boss, so it can have several Team Leads (department leads). The existing Team Lead stays. The Crew Boss enters the times. No pay or charge effect.')) return;
+    add = true;
+  } else {
+    if(!confirm('This call has no Crew Boss, so it can only have one Team Lead. Assign a Crew Boss first, or move the Team Lead.\n\nMove the Team Lead to this crew member? The current Team Lead is cleared.')) return;
+  }
   if(btn) btn.disabled = true;
   try{
-    var r = await fetch('/api/call/'+bookingId+'/'+callId+'/boss/'+userId, {method:'POST'});
-    var j = await r.json();
+    var r = add
+      ? await fetch('/api/call/'+bookingId+'/'+callId+'/team-lead/'+userId, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({on: 1})})
+      : await fetch('/api/call/'+bookingId+'/'+callId+'/boss/'+userId, {method:'POST'});
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
     if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
     openCallDialog(bookingId, callId);
   }catch(e){
@@ -22472,6 +22512,9 @@ function callOpenRateEditor(bookingId, callId, uid, msg){
 }
 
 async function callRowPost(bookingId, callId, uid, path, body){
+  // retry: the route wrote SmartStaff's Crew Boss marker and then the Supabase
+  // pricing record failed (slice G, D19 order). Nothing was rolled back; the
+  // caller offers Retry, and re-running the route is safe.
   try{
     var r = await fetch('/api/call/' + bookingId + '/' + callId + '/' + path, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -22479,7 +22522,7 @@ async function callRowPost(bookingId, callId, uid, path, body){
     });
     var j = {};
     try{ j = await r.json(); }catch(_){}
-    if(!r.ok || j.error) return { error: j.error || ('HTTP ' + r.status) };
+    if(!r.ok || j.error) return { error: j.error || ('HTTP ' + r.status), retry: !!j.retry };
     return j;
   }catch(e){
     return { error: "Couldn't reach the call types service." };
@@ -22493,32 +22536,209 @@ async function callSaveOverride(bookingId, callId, uid){
     return callOpenRateEditor(bookingId, callId, uid,
       'Pick a charge role or a pay grade. To go back to the Call Type and their own grade, Clear.');
   }
+  // On a Crew Boss row this REPLACES the Crew Boss override, so the route
+  // clears SmartStaff's marker first (slice G); its D17 refusal comes back as
+  // the error and is shown in the editor.
   var j = await callRowPost(bookingId, callId, uid, 'override/' + uid,
     { charge_role: charge || null, pay_paygrade_id: pay ? Number(pay) : null });
   if(j.error) return callOpenRateEditor(bookingId, callId, uid, j.error);
   var host = document.getElementById('ct-edit-' + callId + '-' + uid);
   if(host) host.innerHTML = '';
-  callLoadPricing(bookingId, callId, j.warning || '');
+  callLoadPricingThenTier(bookingId, callId, j.warning || '');
 }
 
-async function callClearOverride(bookingId, callId, uid){
-  if(!confirm('Remove this row\'s override? It goes back to the Call Type and their own grade.')) return;
+async function callClearOverride(bookingId, callId, uid, retrying){
+  // SmartStaff's Crew Boss marker is cleared FIRST, then the Supabase record
+  // (slice G, D19). A D17 refusal ("would have no Crew Boss and 2 Team Leads")
+  // is shown in the editor. If SmartStaff cleared and Supabase failed, Retry
+  // runs both again; nothing is rolled back.
+  if(!retrying && !confirm('Remove this row\'s override? It goes back to the Call Type and their own grade.')) return;
   var j = await callRowPost(bookingId, callId, uid, 'override/' + uid + '/clear');
-  if(j.error) return callOpenRateEditor(bookingId, callId, uid, j.error);
+  if(j.error){
+    if(j.retry && confirm(j.error + '\n\nRetry?')) return callClearOverride(bookingId, callId, uid, true);
+    callOpenRateEditor(bookingId, callId, uid, j.error);
+    return callLoadPricingThenTier(bookingId, callId);
+  }
   var host = document.getElementById('ct-edit-' + callId + '-' + uid);
   if(host) host.innerHTML = '';
-  callLoadPricing(bookingId, callId, j.warning || '');
+  callLoadPricingThenTier(bookingId, callId, j.warning || '');
 }
 
-async function callMakeCrewBoss(bookingId, callId, uid){
-  var p = _callPricing[callId];
-  var g = p && p.crew_boss && p.crew_boss.grade;
-  if(!confirm('Make this crew member Crew Boss on this call?\n\nTheir row charges at Crew Boss and pays the '
-      + (g ? g.name + ' grade' : 'Crew Boss grade') + ' instead of their own. This is separate from Team Lead.\n\n'
-      + CT_HONESTY)) return;
+async function callMakeCrewBoss(bookingId, callId, uid, retrying){
+  // SmartStaff's Crew Boss marker FIRST (set-crew-boss.php), then the Supabase
+  // pricing record (slice G, D19). SmartStaff's refusals come back as they are
+  // — not confirmed, or an unanswered promotion. If SmartStaff took it and
+  // Supabase failed, Retry runs both again; nothing is rolled back.
+  if(!retrying){
+    var p = _callPricing[callId];
+    var g = p && p.crew_boss && p.crew_boss.grade;
+    if(!confirm('Make this crew member Crew Boss on this call?\n\nTheir row charges at Crew Boss and pays the '
+        + (g ? g.name + ' grade' : 'Crew Boss grade') + ' instead of their own. This is separate from Team Lead.'
+        + ' The Crew Boss enters this call\'s times and is the crew\'s contact.\n\n'
+        + CT_HONESTY)) return;
+  }
   var j = await callRowPost(bookingId, callId, uid, 'crew-boss/' + uid);
-  if(j.error){ alert('Could not make Crew Boss: ' + j.error); return; }
-  callLoadPricing(bookingId, callId, j.warning || '');
+  if(j.error){
+    if(j.retry && confirm(j.error + '\n\nRetry?')) return callMakeCrewBoss(bookingId, callId, uid, true);
+    alert('Could not make Crew Boss: ' + j.error);
+    return callLoadPricingThenTier(bookingId, callId);
+  }
+  callLoadPricingThenTier(bookingId, callId, j.warning || '');
+}
+
+// ── WHO ENTERS THIS CALL'S TIMES (slice G, BRIEF-crew-self-times §14.3) ─────
+// The tier line under the call's details, from call-tiers.php — the same
+// goat_call_tiers() answer the submit gate, the push cron and the Ops lane
+// read, so this line cannot disagree with who is actually allowed to enter:
+//   crew_boss  "Crew Boss: <name>"   (pill on the call, or the ticked person on
+//                                    the linked Crew Boss call)
+//   team_lead  "Team Lead: <name>"
+//   self       "Crew send own times" (or "— off" where Ops switched it off)
+//   ops        "Crew Boss call — nobody ticked" (Ops enter its times)
+// plus the warning chips for flags: multi_team_lead ("No Crew Boss — N Team
+// Leads", D17) and crew_boss_call_nobody_ticked.
+//
+// The "Crew send own times" switch shows on tier self only, Admin only (Mike,
+// 5 Nov). Off stores an override in Supabase (self-times, via app.py); turning
+// it back on CLEARS the override, returning the call to the default.
+var _callTier = {};   // callId -> { t: tier info, names: { userID: name } }
+
+// ONE SmartStaff request at a time: pricing reads SmartStaff's pay grades and
+// the tier is a SmartStaff read too, so the tier waits for pricing.
+async function callLoadPricingThenTier(bookingId, callId, msg){
+  if(window._cohort === 'admin'){
+    try{ await callLoadPricing(bookingId, callId, msg); }catch(_){}
+  }
+  await callLoadTier(bookingId, callId);
+}
+
+async function callLoadTier(bookingId, callId){
+  var host = document.getElementById('call-tier-wrap-' + callId);
+  if(!host) return;
+  var token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  var info = null, names = {}, err = '';
+  try{
+    var r = await fetch('/api/call-tiers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ call_ids: [Number(callId)] })
+    });
+    var j = await r.json();
+    if(!r.ok || j.error) err = j.error || ('HTTP ' + r.status);
+    else { info = (j.by_call || {})[String(callId)] || null; names = j.names || {}; }
+  }catch(e){ err = e.message || String(e); }
+  if(host.__loadToken !== token || !host.isConnected) return;   // superseded / closed
+  if(!info){
+    delete _callTier[callId];
+    host.innerHTML = entityRow('Times by', '<span style="font-size:11px;color:var(--muted)">Unavailable'
+      + (err ? ' (' + escapeHtml(err) + ')' : '') + '</span>');
+    return;
+  }
+  _callTier[callId] = { t: info, names: names };
+  // The switch state comes from Supabase, after SmartStaff has answered.
+  // undefined = could not be read; null = no override (the default, on).
+  var ovr;
+  if(info.tier === 'self'){
+    try{
+      var r2 = await fetch('/api/call/' + bookingId + '/' + callId + '/self-submit');
+      var j2 = await r2.json();
+      ovr = (!r2.ok || j2.error) ? undefined : (j2.override || null);
+    }catch(_){ ovr = undefined; }
+    if(host.__loadToken !== token || !host.isConnected) return;
+  }
+  callRenderTier(bookingId, callId, ovr);
+  callRenderTeamLeadRemovers(bookingId, callId);
+}
+
+function callTierNames(names, ids){
+  return (ids || []).map(function(u){ return names[String(u)] || ('user ' + u); });
+}
+
+function callRenderTier(bookingId, callId, ovr){
+  var host = document.getElementById('call-tier-wrap-' + callId);
+  var ct = _callTier[callId];
+  if(!host || !ct) return;
+  var t = ct.t, names = ct.names || {}, flags = t.flags || [];
+  var line = '';
+  if(t.tier === 'crew_boss'){
+    var cb = callTierNames(names, t.crew_boss_user_ids);
+    line = cb.length ? ('Crew Boss: ' + cb.join(', '))
+                     : ('Crew Boss call #' + t.supervised_by + ' — everyone on it enters ('
+                        + callTierNames(names, t.entry_user_ids).join(', ') + ')');
+  } else if(t.tier === 'team_lead'){
+    line = 'Team Lead: ' + callTierNames(names, t.team_lead_user_ids).join(', ');
+  } else if(t.tier === 'ops'){
+    line = 'Crew Boss call — nobody ticked';
+  } else {
+    line = 'Crew send own times' + ((ovr && ovr.enabled === false) ? ' — off' : '');
+  }
+  var chips = '';
+  if(flags.indexOf('multi_team_lead') >= 0){
+    chips += ' ' + pcAmber(escapeHtml('No Crew Boss — ' + (t.team_lead_user_ids || []).length + ' Team Leads'),
+      'Without a Crew Boss a call should have one Team Lead (D17). Every Team Lead can enter the times until it is fixed.');
+  }
+  if(t.tier === 'ops'){
+    chips += ' ' + pcAmber('Ops enter these times', 'Nobody on this Crew Boss call holds the Crew Boss pill or the Team Lead tick, so nobody else can enter its times.');
+  } else if(flags.indexOf('crew_boss_call_nobody_ticked') >= 0){
+    chips += ' ' + pcAmber('Crew Boss call — nobody ticked', 'Nobody on the linked Crew Boss call is ticked, so everyone confirmed on it can enter this call\'s times. Tick one of them.');
+  }
+  var sw = '';
+  if(t.tier === 'self'){
+    if(ovr === undefined){
+      sw = ' <span style="font-size:10px;color:var(--muted)">(switch unavailable)</span>';
+    } else if(window._cohort === 'admin'){
+      var on = !(ovr && ovr.enabled === false);
+      sw = ' <label title="Whether crew on this call are offered “Send my times” in Crew Hub. On is the default for a call with no Crew Boss or Team Lead." style="font-size:10px;color:var(--muted);margin-left:8px;cursor:pointer;white-space:nowrap">'
+        + '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="callSelfSubmitToggle(\'' + bookingId + '\',\'' + callId + '\',this)" style="vertical-align:middle"> on</label>';
+    }
+  }
+  host.innerHTML = entityRow('Times by', '<span style="font-size:12px;color:var(--text)">' + escapeHtml(line) + '</span>' + chips + sw);
+}
+
+async function callSelfSubmitToggle(bookingId, callId, el){
+  var on = !!el.checked;
+  el.disabled = true;
+  try{
+    // on = back to the default (clear); off = an override, enabled false
+    var r = await fetch('/api/call/' + bookingId + '/' + callId + '/self-submit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: on ? null : false })
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    showFeedback(on ? 'Crew send own times: on' : 'Crew send own times: off');
+  }catch(e){
+    alert('Could not change it: ' + (e.message || e));
+  }
+  callLoadTier(bookingId, callId);
+}
+
+// × on each Team Lead chip, only when the call has two or more (a Crew Boss
+// call's department leads). Admin only — the slots are only rendered for Admin.
+function callRenderTeamLeadRemovers(bookingId, callId){
+  var ct = _callTier[callId];
+  var leads = (ct && ct.t.team_lead_user_ids) || [];
+  document.querySelectorAll('[data-tl-x="' + String(callId) + '"]').forEach(function(el){
+    var uid = Number(el.getAttribute('data-uid'));
+    el.innerHTML = (leads.length >= 2 && leads.map(Number).indexOf(uid) >= 0)
+      ? '<span onclick="callRemoveTeamLead(\'' + bookingId + '\',\'' + callId + '\',' + uid + ')" title="Remove this Team Lead (the others stay)" style="color:var(--conflict);cursor:pointer;font-weight:700;margin-left:2px">×</span>'
+      : '';
+  });
+}
+
+async function callRemoveTeamLead(bookingId, callId, userId){
+  if(!confirm('Remove this crew member as a Team Lead?\n\nThe other Team Lead(s) on this call stay.')) return;
+  try{
+    var r = await fetch('/api/call/' + bookingId + '/' + callId + '/team-lead/' + userId, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on: 0 })
+    });
+    var j = {};
+    try{ j = await r.json(); }catch(_){}
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+    openCallDialog(bookingId, callId);
+  }catch(e){
+    alert('Could not remove the Team Lead: ' + (e.message || e));
+  }
 }
 
 // ── ALLOWANCE FLAGS (call dialog, Stage 3 §4) ───────────────────────────────
@@ -22862,7 +23082,8 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   _respCtx = null;   // a re-render drops the loaded Responses (§4.3)
   const _notesOk = (window._cohort === 'admin' || window.isReadOnlyCohort());
   const detailsHtml =
-      '<div id="call-ct-wrap-'+callId+'"></div>'
+      '<div id="call-tier-wrap-'+callId+'"></div>'
+    + '<div id="call-ct-wrap-'+callId+'"></div>'
     + '<div id="call-af-wrap-'+callId+'"></div>'
     + entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
@@ -22908,8 +23129,8 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   var _act = entityTabsEl();
   if(_act && _act.getAttribute('data-active') === 'responses') callResponsesLoad(bookingId, callId);
   if(_notesOk) crewNotesInit({ key: _tabsKey, bookingId: bookingId, callId: callId, callIds: [callId] }, _pick.fromCarry);
-  if(window._cohort === 'admin') callLoadPricing(bookingId, callId);   // async, never awaited
-  callLoadFlags(bookingId, callId);                                     // async, never awaited
+  callLoadPricingThenTier(bookingId, callId);   // async, never awaited — pricing (Admin), then the tier
+  callLoadFlags(bookingId, callId);             // async, never awaited — Supabase only
   // FIND CREW AND ENTER TIMES ARE REMOVED ON A CANCELLED CALL.
   //
   // Find Crew is primary-styled, so on a cancelled call the brightest thing on
@@ -23824,6 +24045,10 @@ async function _ctLoadSubmissions(){
   // a claim that somebody worked — so they are listed above it instead.
   s.unbookedSubs = (d.unbooked || []).filter(function(u){ return u && u.submission; });
 
+  // The call's scheduled window, for the "differs from scheduled" flag on
+  // self-submitted rows (slice G). my-call-times.php sends 'Y-m-d H:i'.
+  s.subCall = d.call || null;
+
   s.crew.forEach(function(c){
     const sub = byUser[c.user_id];
     if(!sub) return;
@@ -23850,6 +24075,9 @@ async function _ctLoadSubmissions(){
 function _ctSubHint(c){
   const sub = c._sub;
   if(!sub) return '';
+  // WHO TYPED IT (slice G): a crew member's own times (source 'self') carry a
+  // Self-submitted badge and two informational flags; nothing is refused.
+  const self = (sub.source === 'self');
   const span = [sub.on_time || '', sub.off_time || ''].filter(Boolean).join('–')
              + (sub.off_next_day ? ' (+1d)' : '');
   const brk = (sub.breaks || []).map(function(b){
@@ -23857,12 +24085,106 @@ function _ctSubHint(c){
          + (b.start_next_day ? ' (+1d)' : '');
   }).join(', ');
   const bits = [];
-  if(span) bits.push('boss: ' + span);
+  if(span) bits.push((self ? 'crew: ' : 'boss: ') + span);
   if(brk)  bits.push('breaks ' + brk);
   if(sub.note) bits.push('“' + sub.note + '”');
-  if(!bits.length) return '';
+  if(!bits.length && !self) return '';
+  let tags = '';
+  if(self){
+    tags += pcAmber('SELF-SUBMITTED', 'This crew member entered their own times in Crew Hub');
+    const ph = _ctState && _ctState.photos;
+    if(Array.isArray(ph) && !ph.length) tags += ' ' + pcAmber('No photo', 'No customer timesheet photo was sent for this call');
+    if(_ctDiffersFromScheduled(sub)) tags += ' ' + pcAmber('Differs from scheduled by more than ' + CT_SELF_DIFF_MINS + ' min',
+      'Sign on or sign off is more than ' + CT_SELF_DIFF_MINS + ' minutes from the call\'s scheduled start or end');
+  }
   return '<div style="font-size:10px;color:var(--muted);padding-top:2px;max-width:340px;white-space:normal">'
+       + (tags ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:2px">' + tags + '</div>' : '')
        + escapeHtml(decodeEntities(bits.join(' · '))) + '</div>';
+}
+
+// "Differs from scheduled" threshold (BRIEF-crew-self-times §11 O1 default).
+var CT_SELF_DIFF_MINS = 30;
+
+function _ctHm2min(hm){
+  var m = /^(\d{1,2}):(\d{2})/.exec(String(hm || ''));
+  return m ? (Number(m[1]) * 60 + Number(m[2])) : null;
+}
+
+// Minutes between two clock times, the short way round midnight, so an
+// overnight call's 00:15 sign-off is 15 minutes from a scheduled 00:00.
+function _ctClockGap(a, b){
+  if(a === null || b === null) return 0;
+  var d = Math.abs(a - b) % 1440;
+  return Math.min(d, 1440 - d);
+}
+
+function _ctDiffersFromScheduled(sub){
+  var call = _ctState && _ctState.subCall;
+  if(!call) return false;
+  var st = _ctHm2min(String(call.start || '').slice(11, 16));
+  var en = _ctHm2min(String(call.end || '').slice(11, 16));
+  return _ctClockGap(_ctHm2min(sub.on_time), st) > CT_SELF_DIFF_MINS
+      || _ctClockGap(_ctHm2min(sub.off_time), en) > CT_SELF_DIFF_MINS;
+}
+
+// The call's timesheet photos (self-times, via app.py). null = not asked or
+// unavailable (no flags drawn); [] = none sent. Signed URLs last 10 minutes,
+// so they are fetched on every grid open and again on every enlarge.
+async function _ctLoadPhotos(){
+  const s = _ctState;
+  if(!s) return;
+  s.photos = null;
+  const anySelf = s.crew.some(function(c){ return c._sub && c._sub.source === 'self'; });
+  if(!anySelf) return;
+  try{
+    const r = await fetch('/api/call/' + s.callId + '/self-photos');
+    const j = await r.json();
+    s.photos = (!r.ok || j.error) ? null : (j.photos || []);
+  }catch(e){ s.photos = null; }
+}
+
+function _ctPhotoStrip(){
+  const s = _ctState;
+  const ph = s && s.photos;
+  if(!Array.isArray(ph) || !ph.length) return '';
+  const nameOf = {};
+  (s.crew || []).forEach(function(c){
+    nameOf[c.user_id] = decodeEntities(((c.firstname || '') + ' ' + (c.lastname || '')).trim());
+  });
+  const thumbs = ph.map(function(p){
+    const who = nameOf[p.user_id] || ('user ' + p.user_id);
+    const when = p.uploaded_at ? fmtStamp24(new Date(p.uploaded_at)) : '';
+    if(!p.url) return '';
+    return '<img src="' + escapeHtml(p.url) + '" alt="" onclick="_ctPhotoOpen(' + Number(p.id) + ')" '
+      + 'title="' + escapeHtml(who + (when ? ' · ' + when : '') + ' — click to enlarge') + '" '
+      + 'style="height:64px;width:auto;border:1px solid var(--border);border-radius:3px;cursor:zoom-in;object-fit:cover">';
+  }).join('');
+  return '<div style="padding:0 0 8px"><div style="font-size:10px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;margin-bottom:4px">'
+    + 'Customer timesheet photos (' + ph.length + ')</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px">' + thumbs + '</div></div>';
+}
+
+// Enlarge: re-fetch the photos first, so the URL shown is fresh (the strip's
+// may be close to its 10-minute expiry), then show it over everything.
+async function _ctPhotoOpen(photoId){
+  const s = _ctState;
+  if(!s) return;
+  let url = null;
+  try{
+    const r = await fetch('/api/call/' + s.callId + '/self-photos');
+    const j = await r.json();
+    const p = (j.photos || []).find(function(x){ return Number(x.id) === Number(photoId); });
+    url = p ? p.url : null;
+  }catch(e){ url = null; }
+  if(!url){ alert('That photo could not be opened. Try again.'); return; }
+  const ov = document.createElement('div');
+  ov.setAttribute('style', 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;cursor:zoom-out');
+  ov.onclick = function(){ ov.remove(); };
+  const img = document.createElement('img');
+  img.src = url;
+  img.setAttribute('style', 'max-width:94vw;max-height:94vh;object-fit:contain;border-radius:4px');
+  ov.appendChild(img);
+  document.body.appendChild(ov);
 }
 
 // Submissions for people who are not on the roster. Read-only here on purpose:
@@ -23908,6 +24230,9 @@ async function openCallTimes(bookingId, callId){
     // Sequential and soft: it pre-fills the empty rows and marks them, and a
     // failure leaves the grid exactly as it was before submissions existed.
     await _ctLoadSubmissions();
+    // Then the call's timesheet photos — Supabase, not SmartStaff, so no lock
+    // concern; asked only when a crew member sent their own times (slice G).
+    await _ctLoadPhotos();
     renderCallTimesGrid();
   }catch(e){
     document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load times: '+escapeHtml(e.message)+'</div>';
@@ -24113,6 +24438,7 @@ function renderCallTimesGrid(){
   document.getElementById('entity-modal-body').innerHTML =
       lockNote
     + cancelNote
+    + _ctPhotoStrip()
     + _ctUnbookedNote()
     + '<div id="ct-result" style="font-size:11px;padding:0 0 6px"></div>'
     + '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%">'
@@ -24528,6 +24854,8 @@ function abRow(b){
       // ✉ when every call's crew list is sent and unchanged (D5). Always
       // rendered (empty otherwise) so crewlistRefreshAfterChange can toggle it.
       + '<span id="ab-cl-'+id+'" style="font-size:11px;white-space:nowrap">'+(b.crewlist_all_sent ? '<i class="cl-glyph" title="Crew lists sent for every call">✉</i>' : '')+'</span>'
+      // slice G (§14.5): calls overlapping a Crew Boss call without a link
+      + '<span id="ab-ul-'+id+'">'+abUnlinkedChip(b.unlinked_calls)+'</span>'
       + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">'+ncalls+'</span>'
     + '</div>'
     + '<div id="ab-calls-'+id+'" data-loaded="0" style="display:none;border-top:1px solid var(--border);padding:6px 12px 10px 34px"></div>'
@@ -27448,7 +27776,7 @@ function evOpenCrew(eventId, userId){
 }
 
 function bkCallRow(bookingId, c, maps, smaps){
-  var chips = bkCallTypeChip(bookingId, c) + bkFlagMarkers(bookingId, c) + bkFeedChips(c, maps) + bkSupChips(c, smaps);
+  var chips = bkCallTypeChip(bookingId, c) + bkFlagMarkers(bookingId, c) + bkFeedChips(c, maps) + bkSupChips(c, smaps) + bkUnlinkedChip(bookingId, c);
   var name  = escapeHtml(decodeEntities(c.call_name || 'Call'));
   var when  = _abCallWhen(c.start_date, c.start_time);
   var whenLine = when
@@ -27943,36 +28271,97 @@ function bkSupChips(c, smaps){
 }
 
 function bkSupWarning(calls, smaps){
-  // "N calls have no crew boss assigned." Non-blocking, shown in both modes.
-  // This is the ENTIRE mitigation for calls added after supervision was set
-  // (Q11: warn, don't auto-assign).
+  // "N calls are not linked to their Crew Boss call" — REPLACED in slice G
+  // (BRIEF-crew-self-times §14.5, D24 gate G2). Non-blocking, shown in every
+  // mode and for every cohort.
   //
-  // CONDITIONAL ON A BOSS CALL EXISTING. Rich confirmed 19 Aug 2026 that not
-  // every call has a boss — the five crew sent to the Pro Stage factory have
-  // none, and that is normal work, not an omission. A booking with no
-  // boss-pattern call must therefore produce NO warning at all.
+  // It used to warn whenever a booking had ANY boss-named call and some call
+  // had no link. That is now the stricter rule computed ONCE in PHP
+  // (goat_unlinked_boss_overlap(), supervision-graph.php) and read from
+  // get-booking.php's unlinked_boss_call: a live call, not itself a Crew Boss
+  // call, with no link to a live Crew Boss call, that STRICTLY OVERLAPS a live
+  // Crew Boss call on this booking with somebody confirmed on it. The same
+  // helper feeds All Bookings and the Ops lane, so the three cannot disagree.
   //
-  // Getting that wrong is not a cosmetic slip. A warning that always fires is
-  // worse than no warning: it trains ops to click straight through, which is
-  // exactly how slice B's no_confirmed_boss bug stayed invisible.
-  var list = calls || [];
-  function isBossCall(c){ return goatIsBossCallName(decodeEntities(c.call_name || '')); }
-
-  if(!list.some(isBossCall)) return '';
-
-  var unsupervised = list.filter(function(c){
-    if(isBossCall(c)) return false;
-    return !(smaps.bossOf[String(c.call_id)] || '');
-  });
-  if(!unsupervised.length) return '';
-
-  var n = unsupervised.length;
-  var who = unsupervised.map(function(c){ return decodeEntities(c.call_name || 'Call'); }).join(', ');
+  // Why it matters since slice B: contact and time entry follow explicit
+  // links only (D13/D22). An unlinked call has no Crew Boss as far as the
+  // system is concerned — the Crew Boss can't enter its times, its crew are
+  // told to ring the Team Lead or the on-site contact, and with no Team Lead
+  // it would offer crew "Send my times" once slice F is live.
+  //
+  // Silent on a booking with no such call, so it never trains Ops to ignore it.
+  var list = (calls || []).filter(function(c){ return Number(c.unlinked_boss_call) > 0; });
+  if(!list.length) return '';
+  var n = list.length;
+  var who = list.map(function(c){ return decodeEntities(c.call_name || 'Call'); }).join(', ');
   return '<div title="'+escapeHtml(who)+'" style="display:flex;align-items:flex-start;gap:6px;'
     + 'font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:4px;'
     + 'padding:6px 8px;margin-bottom:6px">'
-    + '<span>\u26a0</span><span>'+n+' call'+(n===1?'':'s')+' ha'+(n===1?'s':'ve')
-    + ' no crew boss assigned.</span></div>';
+    + '<span>⚠</span><span>'+n+' call'+(n===1?'':'s')+' overlap'+(n===1?'s':'')
+    + ' a Crew Boss call but '+(n===1?'isn’t':'aren’t')+' linked to it, so the Crew Boss can’t enter '
+    + (n===1?'its':'their')+' times. Link '+(n===1?'it':'them')+' below.</span></div>';
+}
+
+// The per-call chip for the warning above: "Not linked to Crew Boss call #N",
+// and for Admin a one-click Link — an ordinary call-supervision.php save,
+// with its usual confirmations and refusals.
+function bkUnlinkedChip(bookingId, c){
+  var boss = Number(c.unlinked_boss_call) || 0;
+  if(!boss) return '';
+  var base = 'display:inline-flex;align-items:center;gap:3px;font-size:9px;'
+           + 'font-weight:600;border-radius:3px;padding:1px 5px;margin-left:8px';
+  var link = (window._cohort === 'admin')
+    ? '<span onclick="event.preventDefault();event.stopPropagation();bkLinkToBoss(\'' + bookingId + '\',' + boss + ',' + Number(c.call_id) + ',false)" '
+      + 'title="Link this call to Crew Boss call #' + boss + '" '
+      + 'style="color:var(--accent);cursor:pointer;text-decoration:underline;margin-left:4px">Link</span>'
+    : '';
+  return '<span title="This call overlaps Crew Boss call #' + boss + ' on this booking but is not linked to it. Contact and time entry follow links only." '
+    + 'style="' + base + ';color:#f59e0b;background:rgba(245,158,11,0.12);border:1px solid #f59e0b">'
+    + 'Not linked to Crew Boss call #' + boss + '</span>' + link;
+}
+
+async function bkLinkToBoss(bookingId, bossCall, childCall, confirmOverride){
+  try{
+    var resp = await fetch('/api/calls/supervision/set', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ boss_call: bossCall, child_calls: [childCall], confirm: confirmOverride ? true : false })
+    });
+    var j = {};
+    try{ j = await resp.json(); }catch(_){}
+    if(j && j.needs_confirm){
+      var lines = (j.warnings || []).map(function(w){ return '• ' + decodeEntities(w.message || ''); }).join('\n');
+      if(confirm(lines + '\n\nLink anyway?')) return bkLinkToBoss(bookingId, bossCall, childCall, true);
+      return;
+    }
+    if(!resp.ok || (j && j.error)){
+      alert('Could not link: ' + decodeEntities((j && j.error) || ('HTTP ' + resp.status)));
+      return;
+    }
+    goatInfoToast('Linked to Crew Boss call #' + bossCall, 3000);
+    delete window._bookingIndex[bookingId];
+    openBookingDialog(bookingId);
+  }catch(e){
+    alert('Could not link: ' + (e.message || e));
+  }
+}
+
+// All Bookings' "N calls not linked" chip, from get-bookings-bulk.php's
+// unlinked_calls. null / missing = unknown (the lookup failed) and shows
+// nothing — never 0, which would read as "all linked".
+function abUnlinkedChip(n){
+  if(typeof n !== 'number' || n <= 0) return '';
+  return '<span title="Calls that overlap a Crew Boss call on this booking but are not linked to it" '
+    + 'style="font-size:9px;letter-spacing:.3px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap">'
+    + n + ' call' + (n === 1 ? '' : 's') + ' not linked</span>';
+}
+
+// Keep an All Bookings row's chip in step with the booking dialog: every time
+// a booking's calls arrive there (open, or reopen after a Link), recount.
+function abSetUnlinked(bookingId, d){
+  var el = document.getElementById('ab-ul-' + bookingId);
+  if(!el || !d || !d.calls) return;
+  var n = d.calls.filter(function(c){ return Number(c.unlinked_boss_call) > 0; }).length;
+  el.innerHTML = abUnlinkedChip(n);
 }
 
 function bkSupChildList(bookingId, c, smaps){
@@ -28013,11 +28402,15 @@ function bkToggleSupSel(bookingId, callId, checked){
 
 async function bkSupSave(bookingId, confirmOverride){
   // call-supervision.php returns needs_confirm with warnings for a boss call
-  // not named as one (not_boss_named), a boss call with no confirmed crew
-  // (no_confirmed_boss), and children already bossed elsewhere (reassignment).
-  // All three are overridable — ops legitimately assign a boss before crew
-  // confirm on it — so they are surfaced with "Save anyway" rather than
-  // refused.
+  // with no confirmed crew (no_confirmed_boss) and children already bossed
+  // elsewhere (reassignment). Both are overridable — ops legitimately assign a
+  // boss before crew confirm on it — so they are surfaced with "Save anyway".
+  //
+  // Two things are REFUSED outright since BRIEF-crew-self-times (409, not
+  // confirmable, and app.py passes them through as 409s): a supervisor that is
+  // not a Crew Boss call (not_boss_named, decision B), and a change that would
+  // leave a call with no Crew Boss and 2+ Team Leads (D17). Their text lands
+  // in the error branch below as it came.
   var ids = Object.keys(_bkSupSel);
   var st  = document.getElementById('bk-sup-status');
   function fail(m){ if(st){ st.style.color='var(--conflict)'; st.innerHTML=m; } }
@@ -28098,6 +28491,7 @@ async function bkSupClear(bookingId, childId){
 function renderBookingDialog(bookingId, d, cached){
   entityModalWidth(ENTITY_MODAL_W_BOOKING);   // room for the call notes
   window._curBookingEdit = d || null;
+  abSetUnlinked(bookingId, d);   // slice G: All Bookings' "not linked" chip follows
   var name = (d && d.name) || (cached && cached.name) || 'Booking';
   document.getElementById('entity-modal-title').textContent = name;
   document.getElementById('entity-modal-sub').textContent = 'Booking #'+bookingId;
@@ -32460,7 +32854,22 @@ function opsTimesLabels(o){
   // worked it, so there is nobody to chase: the work is Rich checking the
   // pre-fill in Enter Times, which the row opens.
   if(o.cancelled) L.push('<span class="ops-lbl lbl-sf">Cancelled – paid</span>');
-  if(o.status === 'no_boss') L.push('<span class="ops-lbl lbl-nm">Nobody to chase</span>');
+  // no_boss means nobody else can enter this call's times. WHY, from the
+  // tier (slice G): a call nobody leads (tier self — crew will send their own
+  // once Crew Hub has it), or a Crew Boss call with nobody ticked (tier ops).
+  const flags = o.flags || [];
+  if(o.status === 'no_boss' && !o.cancelled){
+    if(o.tier === 'self')      L.push('<span class="ops-lbl lbl-nm">Crew send own times</span>');
+    else if(o.tier === 'ops')  L.push('<span class="ops-lbl lbl-nm">Crew Boss call — nobody ticked</span>');
+    else                       L.push('<span class="ops-lbl lbl-nm">Nobody to chase</span>');
+  }
+  if(flags.indexOf('multi_team_lead') >= 0)
+    L.push('<span class="ops-lbl lbl-sf" title="Without a Crew Boss a call should have one Team Lead (D17)">No Crew Boss — Team Leads</span>');
+  if(flags.indexOf('crew_boss_call_nobody_ticked') >= 0 && o.tier !== 'ops')
+    L.push('<span class="ops-lbl lbl-sf" title="Nobody on the linked Crew Boss call is ticked, so everyone on it can enter">Crew Boss call — nobody ticked</span>');
+  // Not linked to the Crew Boss call it overlaps (§14.5, D24 gate G2).
+  if(Number(o.unlinked_boss_call) > 0)
+    L.push('<span class="ops-lbl lbl-sf" title="Overlaps a Crew Boss call on the booking but is not linked to it — link it in the booking dialog">Not linked to Crew Boss call #'+Number(o.unlinked_boss_call)+'</span>');
   // The sibling flag (§B.7). derive_times() tops a short engagement up to the
   // four-hour minimum across a continuous block, and where a linked call's real
   // times have not arrived it works from that call's SCHEDULED hours and returns
@@ -32478,6 +32887,16 @@ function opsTimesLabels(o){
 // state (two confirmed on one boss call, split crews) — the most specific one
 // leads and the rest are counted, never silently dropped.
 function opsTimesChase(o){
+  // Who to chase, with the number, because the action is a phone call. Since
+  // slice G the people are the call's TIME-ENTRY people (ops-times-outstanding
+  // reads goat_time_entry_people_by_call()), and each is labelled by `how`:
+  //   direct_crew_boss  "Crew Boss"            the pill on this call
+  //   direct            "Team Lead"            the tick on this call
+  //   container,
+  //   supervisory       "via Crew Boss call"   from the linked Crew Boss call
+  //   self              "Crew member (own times)"
+  // Never "via boss call" for a pill holder. Several people is a real state —
+  // the most specific one leads and the rest are counted, never dropped.
   const bosses = o.bosses || [];
   // The endpoint sends bosses:[] for a cancelled call on purpose. "No crew
   // boss assigned" would read as a staffing problem; it is a check to do.
@@ -32485,16 +32904,20 @@ function opsTimesChase(o){
     return '<span class="ops-offered">Check the pre-filled times in Enter Times</span>';
   }
   if(!bosses.length){
+    if(o.tier === 'self') return '<span class="ops-offered">Crew member (own times) — nobody else enters these</span>';
+    if(o.tier === 'ops')  return '<span class="ops-offered" style="color:var(--accent2)">Ops enter these times — tick someone on the Crew Boss call</span>';
     return '<span class="ops-offered" style="color:var(--accent2)">No crew boss assigned</span>';
   }
+  const HOW = { direct_crew_boss: 'Crew Boss', direct: 'Team Lead', container: 'via Crew Boss call',
+                supervisory: 'via Crew Boss call', self: 'Crew member (own times)' };
   const b    = bosses[0];
   const name = escapeHtml(decodeEntities(b.name || '—'));
   const mob  = (b.mobile || '').trim();
-  const via  = (b.how && b.how !== 'direct') ? ' · via boss call' : '';
+  const role = HOW[b.how] ? (' · ' + HOW[b.how]) : '';
   const more = (bosses.length > 1) ? (' · +' + (bosses.length - 1) + ' more') : '';
   return '<span class="ops-offered">Chase ' + name
        + (mob ? (' · ' + escapeHtml(mob)) : ' · no mobile on file')
-       + escapeHtml(via + more) + '</span>';
+       + escapeHtml(role + more) + '</span>';
 }
 
 // "3 of 8 still need times" — people, not calls. The badge counts calls; these

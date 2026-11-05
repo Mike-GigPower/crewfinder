@@ -6,6 +6,7 @@
 	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
+	include_once('supervision-graph.php');   /* slice G: unlinked_calls */
 
 	/*
 	/* JSON response */
@@ -105,6 +106,31 @@
 			'venue'         => $b->venue,
 			'call_count'    => (int) $b->call_count
 		);
+	}
+
+	/*
+	/* unlinked_calls — slice G of BRIEF-crew-self-times (§14.5, D24 gate G2):
+	/* how many of the booking's calls overlap a live Crew Boss call on it
+	/* without being linked, from goat_unlinked_boss_overlap() — the same rule
+	/* the booking dialog's chips use. One pass over the whole page. A DISPLAY:
+	/* a failed lookup emits null, which THE GOAT reads as "unknown" and shows
+	/* nothing for, never 0, which would read as "all linked".
+	*/
+
+	$pageIDs = array();
+
+	foreach ($bookings as $bk)
+	{
+		$pageIDs[] = $bk['booking_id'];
+	}
+
+	$ul = goat_unlinked_boss_overlap($pageIDs);
+
+	foreach ($bookings as $i => $bk)
+	{
+		$bookings[$i]['unlinked_calls'] = $ul['ok']
+			? (isset($ul['count_by_booking'][$bk['booking_id']]) ? (int) $ul['count_by_booking'][$bk['booking_id']] : 0)
+			: null;
 	}
 
 	echo json_encode(array(

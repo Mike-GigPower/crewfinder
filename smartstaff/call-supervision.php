@@ -34,6 +34,10 @@
 	/*                      it has no confirmed crew, or if a child is being
 	/*                      taken from another boss call.
 	/*   action = "clear" : {action, child_calls:[>=1]}
+	/*                      REFUSES (409, not confirmable) a clear that would
+	/*                      leave a child with no Crew Boss and 2+ Team Leads
+	/*                      (D17, slice G); `set` onto a boss call with nobody
+	/*                      confirmed is refused the same way.
 	/*   action = "list"  : {action, booking_id}
 	/*
 	/* Admin-only (same gate as call-feeds.php).
@@ -44,6 +48,75 @@
 	{
 		$proto = isset($_SERVER['SERVER_PROTOCOL']) ? $_SERVER['SERVER_PROTOCOL'] : 'HTTP/1.1';
 		header($proto . ' ' . $code . ' ' . $msg);
+	}
+
+	/*
+	/* D17 ON THE WAY OUT — ADDED in slice G of BRIEF-crew-self-times (§14.4).
+	/*
+	/* Refuse a change that would leave a supervised call with NO Crew Boss and
+	/* TWO OR MORE Team Leads: a `clear`, or a `set` onto a boss call with nobody
+	/* confirmed (the link then counts for nothing). The rule lives in
+	/* goat_d17_if_unlinked() (supervision-graph.php); this only reports it.
+	/*
+	/* 409 WITHOUT needs_confirm — not overridable, like not_boss_named. A
+	/* failed lookup is a 500: this is an assertion, and "nothing would break"
+	/* must never be what a broken query says.
+	*/
+
+	function cs_refuse_if_d17($childIDs, $info)
+	{
+		$d = goat_d17_if_unlinked($childIDs);
+
+		if (!$d['ok'])
+		{
+			send_status(500, 'Internal Server Error');
+			echo json_encode(array('error' => 'Team Lead check failed: ' . $d['error']));
+			die();
+		}
+
+		if (count($d['by_call']) === 0)
+		{
+			return;
+		}
+
+		$people = array();
+
+		foreach ($d['by_call'] as $cid => $leads)
+		{
+			foreach ($leads as $uid) $people[] = $uid;
+		}
+
+		$names = goat_sg_user_names($people);
+		$calls = array();
+		$lines = array();
+
+		foreach ($d['by_call'] as $cid => $leads)
+		{
+			$nm = array();
+
+			foreach ($leads as $uid)
+			{
+				$nm[] = isset($names[$uid]) ? $names[$uid] : ('user ' . $uid);
+			}
+
+			$callName = (isset($info[$cid]) && isset($info[$cid]->call_name))
+			          ? html_entity_decode((string) $info[$cid]->call_name, ENT_QUOTES)
+			          : ('call ' . $cid);
+
+			$calls[] = array('call_id' => (int) $cid, 'call_name' => $callName, 'team_leads' => $nm);
+			$lines[] = '"' . $callName . '" would have no Crew Boss and ' . count($leads)
+			         . ' Team Leads (' . implode(', ', $nm) . ')';
+		}
+
+		send_status(409, 'Conflict');
+		echo json_encode(array(
+			'ok'    => false,
+			'type'  => 'd17_team_leads',
+			'error' => implode('; ', $lines) . '. Without a Crew Boss a call can only have one Team Lead. '
+			         . 'Clear all but one Team Lead first.',
+			'calls' => $calls
+		));
+		die();
 	}
 
 	/* ---- ADMIN ONLY ---- */
@@ -278,6 +351,27 @@
 			die();
 		}
 
+		/*
+		/* A BOSS CALL WITH NOBODY CONFIRMED supervises nobody (goat_call_tiers()
+		/* rule 2 needs ≥1 confirmed person), so moving children onto it takes
+		/* their Crew Boss away exactly as a clear does — D17 applies. Confirmed
+		/* here means what the tiers mean: status 5, not promo-pending.
+		*/
+
+		$bossRoster = goat_sg_confirmed_roster(array($boss));
+
+		if (!$bossRoster['ok'])
+		{
+			send_status(500, 'Internal Server Error');
+			echo json_encode(array('error' => 'confirmed-crew lookup failed: ' . $bossRoster['error']));
+			die();
+		}
+
+		if (!isset($bossRoster['by_call'][$boss]) || count($bossRoster['by_call'][$boss]) === 0)
+		{
+			cs_refuse_if_d17($children, $info);
+		}
+
 		/* WARNINGS — overridable with confirm:true. */
 
 		$warnings = array();
@@ -420,6 +514,22 @@
 
 	if ($action === 'clear')
 	{
+		/* D17: refuse a clear that would leave a child with no Crew Boss and
+		/* two or more Team Leads (slice G). Names come from `calls`. */
+
+		$cinfo = array();
+		$cnres = mysql_query("SELECT id, call_name FROM calls WHERE id IN (" . implode(',', $children) . ")");
+
+		if ($cnres !== false)
+		{
+			while ($cn = mysql_fetch_object($cnres))
+			{
+				$cinfo[(int) $cn->id] = $cn;
+			}
+		}
+
+		cs_refuse_if_d17($children, $cinfo);
+
 		/* Clearing a child that has no edge is NOT an error — the caller asked
 		/* for that child to be unsupervised and it is. Ids are already
 		/* (int)-cast by the parsing above. */

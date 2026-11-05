@@ -302,6 +302,11 @@
 			'off_next_day' => (int) $s['off_next_day'],
 			'note'         => ($s['note'] === null ? '' : $s['note']),
 			'submitted_at' => ($s['submitted_at'] === null ? '' : $s['submitted_at']),
+
+			/* slice G, additive: who typed it — 'boss' or 'self' (crew member,
+			/* own times). Before slice A the column does not exist and every
+			/* row is a boss row. */
+			'source'       => (isset($s['source']) && $s['source'] === 'self') ? 'self' : 'boss',
 			'breaks'       => mct_breaks((int) $s['id'])
 		);
 	}

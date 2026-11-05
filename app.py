@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.91.0"
+APP_VERSION    = "5.92.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -637,6 +637,11 @@ CREW_HEADSHOTS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat
 # returns the newest full-size photo date per user id (crew_photos OR the
 # onboarding headshot). DESIGN-admin-crew-photo-update-v0_3.md §5.4.
 CREW_PHOTO_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat-crew-photo"
+# Crew self-submitted times (BRIEF-crew-self-times §13.7 / §14): THE GOAT's side
+# only — the per-call "Crew send own times" override and the call's timesheet
+# photos (10-minute signed URLs). Same key discipline as goat-crew-photo:
+# GOAT_RECRUITMENT_KEY in X-Goat-Service-Key, server-side, never in the browser.
+SELF_TIMES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/self-times"
 # Same base URL: the SEALED health answers for ONE candidate — the single most
 # sensitive thing we hold. Its proxy route is gated to the ADMIN cohort ONLY
 # (never operations); the edge function returns just { reference, name, health }.
@@ -4974,6 +4979,78 @@ def ss_call_supervision(ss, action, boss_call=None, child_calls=None,
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
     return data, None
+
+
+def _ss_post_json(ss, endpoint, body, timeout=60):
+    """(status_code, data) for one JSON POST to a GOAT endpoint in
+    smartstaff/. status 0 when the request itself failed. data is always a
+    dict: the decoded body, or {"error": ...} when it could not be read.
+
+    The STATUS is returned rather than folded into an error string because the
+    callers below pass 404 and 409 through to the browser as they came: those
+    are answers ("not on this call", "D17"), not failures."""
+    url = f"{BASE_URL}/ajax/crew/{endpoint}"
+    try:
+        resp = ss.post(url, json=body, timeout=timeout)
+    except Exception as e:
+        return 0, {"error": f"request failed: {e}"}
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        data = {"error": f"HTTP {resp.status_code}: unexpected response"}
+    return resp.status_code, data
+
+
+def ss_set_crew_boss(ss, call_id, user_id, on):
+    """SmartStaff's Crew Boss marker, call_crew_map.is_crew_boss, via
+    set-crew-boss.php (admin session) — slice C of BRIEF-crew-self-times.
+    Written FIRST whenever the Crew Boss pill is set or cleared (D19): it
+    gates who enters times, and time approval is still done in SmartStaff.
+    Returns (status, data)."""
+    return _ss_post_json(ss, "set-crew-boss.php",
+                         {"callID": int(call_id), "userID": int(user_id), "on": 1 if on else 0})
+
+
+def ss_set_team_lead(ss, call_id, user_id, on):
+    """Add or remove ONE Team Lead tick without clearing the others, via
+    set-team-lead.php (admin session) — slice G (§14.3.4). Only for a SECOND
+    Team Lead on a call with a Crew Boss (D15), and removing one of several;
+    moving the single Team Lead stays with SmartStaff's makeboss
+    (ss_set_call_boss). The endpoint refuses a second Team Lead on a call with
+    no Crew Boss (409, D17). Returns (status, data)."""
+    return _ss_post_json(ss, "set-team-lead.php",
+                         {"callID": int(call_id), "userID": int(user_id), "on": 1 if on else 0})
+
+
+def ss_call_tiers(ss, call_ids):
+    """Each call's tier — crew_boss / team_lead / self / ops — with who enters
+    its times and the names, via call-tiers.php (Ops/Admin session). Returns
+    (status, data)."""
+    return _ss_post_json(ss, "call-tiers.php", {"callIDs": [int(c) for c in call_ids]})
+
+
+def _self_times_post(body):
+    """(data, error, status) for one POST to the self-times edge function.
+    The key stays here (GOAT_RECRUITMENT_KEY, as goat-crew-photo)."""
+    if not GOAT_RECRUITMENT_KEY:
+        return None, "Self-times key not configured", 500
+    try:
+        r = http.post(SELF_TIMES_URL, json=body,
+                      headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY}, timeout=15)
+    except Exception as e:
+        print(f"[self-times] request failed: {type(e).__name__}")
+        return None, "Self-times service unavailable", 502
+    try:
+        data = r.json()
+    except Exception:
+        data = None
+    if r.status_code != 200 or not isinstance(data, dict) or not data.get("ok"):
+        msg = data.get("error") if isinstance(data, dict) else None
+        print(f"[self-times] {body.get('mode')} returned {r.status_code}")
+        return None, msg or f"Self-times service error (HTTP {r.status_code})", 502
+    return data, None, 200
 
 
 def ss_update_crew_status(ss, call_id, user_id, status):
@@ -18584,6 +18661,11 @@ def api_calls_supervision_set():
     # Preserve the 409 so the client's needs_confirm branch fires.
     if isinstance(result, dict) and result.get("needs_confirm"):
         return jsonify(result), 409
+    # A REFUSAL is a 409 too (slice G): not_boss_named, and D17's "would have
+    # no Crew Boss and 2 Team Leads". ss_call_supervision hands every 409 back
+    # as a result; it used to reach the browser as a 200 carrying an error.
+    if isinstance(result, dict) and result.get("ok") is False:
+        return jsonify(result), 409
     return jsonify(result)
 
 
@@ -18609,6 +18691,10 @@ def api_calls_supervision_clear():
     result, err = ss_call_supervision(ss, "clear", child_calls=child_calls)
     if err:
         return jsonify({"error": err}), 502
+    # D17 refusal (slice G): clearing would leave a call with no Crew Boss and
+    # two or more Team Leads. A 409 from the endpoint, passed through as one.
+    if isinstance(result, dict) and result.get("ok") is False:
+        return jsonify(result), 409
     return jsonify(result)
 
 
@@ -21114,8 +21200,19 @@ def api_crew_row_override_set(booking_id, call_id, user_id):
         return jsonify({"error": f"'{charge}' isn't on this booking's card or the Standard card."}), 422
     if pay is not None and pay not in {int(p.get("id") or 0) for p in ctx["paygrades"]}:
         return jsonify({"error": "That pay grade isn't in SmartStaff's list."}), 422
-    if call_types.same_override(_current_override(ctx, uid), "manual", charge, pay):
+    cur = _current_override(ctx, uid)
+    if call_types.same_override(cur, "manual", charge, pay):
         return _override_unchanged()
+    # A manual override REPLACES a Crew Boss one, so the row stops being Crew
+    # Boss: clear SmartStaff's marker FIRST (D19), exactly as Clear does. A 409
+    # (D17: the call would have no Crew Boss and 2+ Team Leads) stops the save.
+    if cur and cur.get("kind") == "crew_boss":
+        st, sj = ss_set_crew_boss(get_ss_session(), ctx["call_id"], uid, False)
+        if st == 409:
+            return jsonify({"error": sj.get("error") or "Refused by SmartStaff"}), 409
+        if st not in (200, 404):
+            return jsonify({"error": "SmartStaff's Crew Boss marker didn't clear: "
+                                     + (sj.get("error") or f"HTTP {st}")}), 502
     res, err = save_crew_row_override(ctx["call_id"], uid, ctx["booking_id"], "manual",
                                       charge, pay, current_user_id())
     if err:
@@ -21126,12 +21223,29 @@ def api_crew_row_override_set(booking_id, call_id, user_id):
 @app.route("/api/call/<booking_id>/<call_id>/override/<user_id>/clear", methods=["POST"])
 @require_cohort("admin")
 def api_crew_row_override_clear(booking_id, call_id, user_id):
-    """Remove a row's override, manual or Crew Boss. Logged with the old value."""
+    """Remove a row's override, manual or Crew Boss. Logged with the old value.
+
+    SMARTSTAFF FIRST (D19, slice G): set-crew-boss.php on:0 runs before the
+    Supabase clear, whichever kind the override is — clearing a marker that is
+    not set is a no-op there, and a crew member no longer on the call (404) has
+    nothing to clear. A 409 is D17 and stops the clear. If SmartStaff cleared
+    and Supabase then failed, the reply says so with retry: true; nothing is
+    rolled back, and Retry re-runs both (the first is idempotent)."""
     if call_types.as_call_id(call_id) is None or call_types.as_call_id(user_id) is None:
         return jsonify({"error": "call_id and user_id must be integers"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    st, sj = ss_set_crew_boss(ss, int(call_id), int(user_id), False)
+    if st == 409:
+        return jsonify({"error": sj.get("error") or "Refused by SmartStaff"}), 409
+    if st not in (200, 404):
+        return jsonify({"error": "SmartStaff's Crew Boss marker didn't clear: "
+                                 + (sj.get("error") or f"HTTP {st}")}), 502
     res, err = clear_crew_row_override(int(call_id), int(user_id), current_user_id())
     if err:
-        return jsonify({"error": err}), 502
+        return jsonify({"error": "SmartStaff no longer has this Crew Boss, but the pricing "
+                                 "record didn't clear: " + err, "retry": True}), 502
     return _override_result(res)
 
 
@@ -21141,7 +21255,17 @@ def api_crew_row_crew_boss(booking_id, call_id, user_id):
     """Make Crew Boss (§6.3): a row-level system override, kind crew_boss,
     charging the Standard card's Crew Boss role and paying SmartStaff's Crew
     Boss grade, found by name. Separate from Team Lead (the makeboss tick),
-    and never offered on M&OP bookings (S2-1). Writes nothing to SmartStaff."""
+    and never offered on M&OP bookings (S2-1).
+
+    ORDER (slice G, D19): THE GOAT's own checks first, so nothing is written
+    for a pill that would be refused; then SmartStaff's marker
+    (set-crew-boss.php on:1), because it gates who enters times; then the
+    Supabase override. SmartStaff's 404 / 409 (not confirmed; promo-pending)
+    reach the browser as they came. If Supabase fails after SmartStaff
+    succeeded, nothing is rolled back: the reply carries retry: true, and Retry
+    re-runs both — the SmartStaff write is idempotent. An unchanged Supabase
+    override still re-asserts the SmartStaff marker, which also heals a pill
+    set before set-crew-boss.php existed."""
     ctx, uid, fail = _override_route_ctx(booking_id, call_id, user_id)
     if fail:
         return fail
@@ -21152,14 +21276,130 @@ def api_crew_row_crew_boss(booking_id, call_id, user_id):
     grade, err = call_types.find_crew_boss_grade(ctx["paygrades"])
     if err:
         return jsonify({"error": err}), 422
+    st, sj = ss_set_crew_boss(get_ss_session(), ctx["call_id"], uid, True)
+    if st in (404, 409):
+        return jsonify({"error": sj.get("error") or f"Refused by SmartStaff (HTTP {st})"}), st
+    if st != 200:
+        return jsonify({"error": "SmartStaff didn't take the Crew Boss marker: "
+                                 + (sj.get("error") or f"HTTP {st}")}), 502
     if call_types.same_override(_current_override(ctx, uid), "crew_boss",
                                 call_types.CREW_BOSS_ROLE, grade["id"]):
         return _override_unchanged()
     res, err = save_crew_row_override(ctx["call_id"], uid, ctx["booking_id"], "crew_boss",
                                       call_types.CREW_BOSS_ROLE, grade["id"], current_user_id())
     if err:
-        return jsonify({"error": err}), 502
+        return jsonify({"error": "SmartStaff now has this Crew Boss, but the pricing record "
+                                 "didn't save: " + err, "retry": True}), 502
     return _override_result(res)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/team-lead/<user_id>", methods=["POST"])
+@require_cohort("admin")
+def api_call_team_lead(booking_id, call_id, user_id):
+    """Add (on:1) or remove (on:0) ONE Team Lead tick without touching the
+    others — slice G (§14.3.4). THE GOAT uses it only for a second Team Lead
+    on a call with a Crew Boss (D15), and to remove one of several; moving a
+    single Team Lead stays /api/call/.../boss/<uid> (makeboss). Proxies
+    set-team-lead.php, which refuses a second Team Lead on a call with no Crew
+    Boss (409, D17) — its texts reach the browser as they came."""
+    if call_types.as_call_id(call_id) is None or call_types.as_call_id(user_id) is None:
+        return jsonify({"error": "call_id and user_id must be integers"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body = request.get_json(silent=True) or {}
+    on = bool(body.get("on"))
+    st, sj = ss_set_team_lead(ss, int(call_id), int(user_id), on)
+    if st in (404, 409, 422):
+        return jsonify({"error": sj.get("error") or f"HTTP {st}"}), st
+    if st != 200:
+        return jsonify({"error": sj.get("error") or f"HTTP {st}"}), 502
+    return jsonify(sj)
+
+
+@app.route("/api/call-tiers", methods=["POST"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_call_tiers():
+    """Each call's tier for the call dialog's tier line and the Team Lead
+    button — slice G (§14.1). Body {call_ids:[...]} (at most 200). Proxies
+    call-tiers.php on the operator's own session."""
+    body = request.get_json(silent=True) or {}
+    ids = []
+    for c in (body.get("call_ids") or []):
+        cid = call_types.as_call_id(c)
+        if cid is not None:
+            ids.append(cid)
+    if not ids:
+        return jsonify({"ok": True, "by_call": {}, "names": {}})
+    if len(ids) > 200:
+        return jsonify({"error": "At most 200 calls"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    st, sj = ss_call_tiers(ss, ids)
+    if st != 200:
+        return jsonify({"error": sj.get("error") or f"HTTP {st}"}), 502
+    return jsonify(sj)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/self-submit")
+@require_cohort(*READ_ALL_COHORTS)
+def api_call_self_submit_get(booking_id, call_id):
+    """The call's "Crew send own times" override, for the tier line —
+    slice G (§14.3.2). {override: {enabled, set_by_user_id, set_at} | null};
+    null is the default (on for tier self)."""
+    cid = call_types.as_call_id(call_id)
+    if cid is None:
+        return jsonify({"error": "call_id must be an integer"}), 400
+    data, err, status = _self_times_post({"mode": "override_status", "call_ids": [cid]})
+    if err:
+        return jsonify({"error": err}), status
+    return jsonify({"override": (data.get("overrides") or {}).get(str(cid))})
+
+
+@app.route("/api/call/<booking_id>/<call_id>/self-submit", methods=["POST"])
+@require_cohort("admin")
+def api_call_self_submit_set(booking_id, call_id):
+    """Set or clear the call's "Crew send own times" override — ADMIN ONLY
+    (Mike, 5 Nov). Body {enabled: true|false} stores an override; {enabled:
+    null} clears it, back to the default. Writes Supabase only: the switch is
+    read by Crew Hub's server, never by SmartStaff (D7)."""
+    cid = call_types.as_call_id(call_id)
+    bid = call_types.as_call_id(booking_id)
+    if cid is None or bid is None:
+        return jsonify({"error": "booking_id and call_id must be integers"}), 400
+    body = request.get_json(silent=True) or {}
+    enabled = body.get("enabled", None)
+    if enabled is None:
+        data, err, status = _self_times_post({"mode": "override_clear", "call_id": cid})
+    else:
+        if not isinstance(enabled, bool):
+            return jsonify({"error": "enabled must be true, false or null"}), 400
+        set_by = current_user_id()
+        if set_by is None:
+            return jsonify({"error": "couldn't identify who is setting it (no SmartStaff userID)"}), 400
+        data, err, status = _self_times_post({"mode": "override_set", "call_id": cid,
+                                              "booking_id": bid, "enabled": enabled,
+                                              "set_by": int(set_by)})
+    if err:
+        return jsonify({"error": err}), status
+    return jsonify({"ok": True})
+
+
+@app.route("/api/call/<call_id>/self-photos")
+@require_cohort("admin")
+def api_call_self_photos(call_id):
+    """The customer-timesheet photos crew sent with their own times, for the
+    times grid's photo strip — slice G (§14.6). Signed URLs last 10 minutes,
+    so the grid fetches on every open and never caches. Admin, like the
+    grid's submissions read."""
+    cid = call_types.as_call_id(call_id)
+    if cid is None:
+        return jsonify({"error": "call_id must be an integer"}), 400
+    data, err, status = _self_times_post({"mode": "photos", "call_id": cid})
+    if err:
+        return jsonify({"error": err}), status
+    return jsonify({"photos": data.get("photos") or []})
 
 
 # ─── PRICING CONTEXT (Stage 3 §4–§6) ──────────────────────────────────────────

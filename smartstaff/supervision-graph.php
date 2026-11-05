@@ -1373,6 +1373,365 @@
 			return goat_time_entry_calls($userID, $d['detail'], is_array($callIDs) ? $callIDs : array());
 		}
 
+
+		/*
+		/* ================================================================
+		/* SLICE G HELPERS — read by THE GOAT through call-tiers.php,
+		/* call-supervision.php, set-team-lead.php, get-booking.php,
+		/* get-bookings-bulk.php and ops-times-outstanding.php (Nov 2026).
+		/* ================================================================
+		*/
+
+		/*
+		/* userID => "First Last", HTML-decoded (users stores names encoded, some
+		/* rows and not others). array() on failure — names are display only.
+		*/
+
+		function goat_sg_user_names($userIDs)
+		{
+			$ids = goat_sg_clean_ids($userIDs);
+			$out = array();
+
+			if (count($ids) === 0)
+			{
+				return $out;
+			}
+
+			$res = mysql_query("SELECT id, firstname, lastname FROM users
+			                    WHERE id IN (" . implode(',', $ids) . ")");
+
+			if ($res === false)
+			{
+				return $out;
+			}
+
+			while ($u = mysql_fetch_object($res))
+			{
+				$out[(int) $u->id] = trim(trim(html_entity_decode((string) $u->firstname, ENT_QUOTES))
+				                        . ' ' . trim(html_entity_decode((string) $u->lastname, ENT_QUOTES)));
+			}
+
+			return $out;
+		}
+
+		/*
+		/* D17 FOR A LINK THAT IS ABOUT TO GO.
+		/*
+		/* Of $childIDs, the calls that would be left with NO Crew Boss and TWO
+		/* OR MORE Team Leads if their supervision link stopped counting — the
+		/* state D17 forbids. call-supervision.php refuses a `clear`, or a `set`
+		/* onto a boss call with nobody confirmed, that would cause it.
+		/*
+		/*   array('ok', 'error', 'by_call' => childCallID => [team lead userIDs])
+		/*
+		/* Only children whose link COUNTS today (goat_call_tiers() supervised_by
+		/* > 0) can lose a Crew Boss by losing it; a child that is itself a Crew
+		/* Boss call has its own rule (D21) and is skipped; a child with its own
+		/* Crew Boss pill keeps tier crew_boss without the link. Team Leads and
+		/* pills read as "confirmed" — status 5, not promo-pending — like the
+		/* tiers they protect.
+		*/
+
+		function goat_d17_if_unlinked($childIDs)
+		{
+			$ids = goat_sg_clean_ids($childIDs);
+
+			if (count($ids) === 0)
+			{
+				return array('ok' => true, 'error' => '', 'by_call' => array());
+			}
+
+			$t = goat_call_tiers($ids);
+
+			if (!$t['ok'])
+			{
+				return array('ok' => false, 'error' => $t['error'], 'by_call' => array());
+			}
+
+			$r = goat_sg_confirmed_roster($ids);
+
+			if (!$r['ok'])
+			{
+				return array('ok' => false, 'error' => $r['error'], 'by_call' => array());
+			}
+
+			$out = array();
+
+			foreach ($t['by_call'] as $cid => $info)
+			{
+				if ((int) $info['is_boss_call'] === 1 || (int) $info['supervised_by'] <= 0)
+				{
+					continue;
+				}
+
+				$members = isset($r['by_call'][$cid]) ? $r['by_call'][$cid] : array();
+
+				if (count(goat_sg_marked($members, 'crew_boss')) > 0)
+				{
+					continue;
+				}
+
+				$leads = goat_sg_marked($members, 'team_lead');
+
+				if (count($leads) >= 2)
+				{
+					$out[(int) $cid] = $leads;
+				}
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $out);
+		}
+
+		/*
+		/* "NOT LINKED TO ITS CREW BOSS CALL" (D24, gate G2) — THE ONE
+		/* IMPLEMENTATION. THE GOAT shows it in the booking dialog, All Bookings
+		/* and the Times outstanding lane, and each reads it from here so the
+		/* three cannot disagree.
+		/*
+		/* A call is UNLINKED-OVERLAPPING when:
+		/*   - it is not cancelled and not itself a Crew Boss call;
+		/*   - no link to a LIVE Crew Boss call supervises it (a link to a
+		/*     cancelled or non-boss-named call counts for nothing since slice B,
+		/*     so it does not hide the warning either — unlike probe P3, which
+		/*     treated any link as a link);
+		/*   - another call on the SAME booking is a live Crew Boss call
+		/*     (goat_boss_call_is_live()) with at least one confirmed,
+		/*     non-promo-pending person, and STRICTLY overlaps it in time
+		/*     (goat_call_window(), so DST is handled; ending exactly as the
+		/*     other begins does not count) — probe P3's rule.
+		/*
+		/*   array('ok', 'error',
+		/*         'by_call'          => callID => the overlapping Crew Boss call
+		/*                               (earliest start; lowest id on a tie),
+		/*         'count_by_booking' => bookingID => number of such calls)
+		/*
+		/* Bookings with none are absent from count_by_booking. Callers are
+		/* displays and degrade on ok === false.
+		/*
+		/* Four queries for any number of bookings.
+		*/
+
+		function goat_unlinked_boss_overlap($bookingIDs)
+		{
+			$fail = array('ok' => false, 'error' => '', 'by_call' => array(), 'count_by_booking' => array());
+			$none = array('ok' => true,  'error' => '', 'by_call' => array(), 'count_by_booking' => array());
+
+			$bids = goat_sg_clean_ids($bookingIDs);
+
+			if (count($bids) === 0)
+			{
+				return $none;
+			}
+
+			/* ---- 1. every call on the bookings ---- */
+
+			$cres = mysql_query("SELECT c.id AS id, c.bookingID AS booking_id, c.call_name AS call_name,
+			                            c.start_date AS start_date, c.start_time AS start_time,
+			                            c.est_length AS est_length,
+			                            " . goat_sg_cancelled_sql('c') . " AS cancelled_at
+			                     FROM calls c
+			                     WHERE c.bookingID IN (" . implode(',', $bids) . ")");
+
+			if ($cres === false)
+			{
+				$fail['error'] = 'call lookup failed: ' . mysql_error();
+				return $fail;
+			}
+
+			$calls  = array();   /* id -> info */
+			$bossBy = array();   /* booking -> [live Crew Boss call ids] */
+
+			while ($row = mysql_fetch_object($cres))
+			{
+				$id = (int) $row->id;
+
+				if ($id <= 0 || (int) $row->start_date <= 0)
+				{
+					continue;   /* no date, no window: it cannot overlap anything */
+				}
+
+				$win = goat_call_window($row);
+
+				if ($win['start'] === false)
+				{
+					continue;
+				}
+
+				$cancelled = ($row->cancelled_at !== null && (int) $row->cancelled_at > 0);
+				$isBoss    = goat_is_boss_call_name((string) $row->call_name);
+
+				$calls[$id] = array(
+					'booking'   => (int) $row->booking_id,
+					'start'     => (int) $win['start'],
+					'end'       => (int) $win['end'],
+					'cancelled' => $cancelled,
+					'is_boss'   => $isBoss,
+					'live_boss' => goat_boss_call_is_live($row->call_name, $row->cancelled_at)
+				);
+
+				if ($calls[$id]['live_boss'])
+				{
+					$b = (int) $row->booking_id;
+
+					if (!isset($bossBy[$b]))
+					{
+						$bossBy[$b] = array();
+					}
+
+					$bossBy[$b][] = $id;
+				}
+			}
+
+			if (count($bossBy) === 0)
+			{
+				return $none;
+			}
+
+			/* ---- 2. who is confirmed on the live Crew Boss calls ---- */
+
+			$allBoss = array();
+
+			foreach ($bossBy as $b => $list)
+			{
+				foreach ($list as $id)
+				{
+					$allBoss[] = $id;
+				}
+			}
+
+			$roster = goat_sg_confirmed_roster($allBoss);
+
+			if (!$roster['ok'])
+			{
+				$fail['error'] = $roster['error'];
+				return $fail;
+			}
+
+			/* ---- 3. which calls already have a link that counts ---- */
+
+			$linked = array();
+
+			$lres = mysql_query("SELECT s.child_call AS child_call, cb.call_name AS boss_call_name,
+			                            " . goat_sg_cancelled_sql('cb') . " AS boss_cancelled_at
+			                     FROM call_supervision s
+			                     INNER JOIN calls cb ON cb.id = s.boss_call
+			                     INNER JOIN calls cc ON cc.id = s.child_call
+			                     WHERE cc.bookingID IN (" . implode(',', array_keys($bossBy)) . ")
+			                       AND s.boss_call <> s.child_call");
+
+			if ($lres === false)
+			{
+				$fail['error'] = 'supervision query failed: ' . mysql_error();
+				return $fail;
+			}
+
+			while ($lrow = mysql_fetch_object($lres))
+			{
+				if (goat_boss_call_is_live($lrow->boss_call_name, $lrow->boss_cancelled_at))
+				{
+					$linked[(int) $lrow->child_call] = true;
+				}
+			}
+
+			/* ---- 4. the test ---- */
+
+			$byCall = array();
+			$count  = array();
+
+			foreach ($calls as $id => $c)
+			{
+				if ($c['cancelled'] || $c['is_boss'] || isset($linked[$id]) || !isset($bossBy[$c['booking']]))
+				{
+					continue;
+				}
+
+				$best = 0;
+
+				foreach ($bossBy[$c['booking']] as $bid)
+				{
+					if ($bid === $id || !isset($roster['by_call'][$bid]) || count($roster['by_call'][$bid]) === 0)
+					{
+						continue;
+					}
+
+					$bc = $calls[$bid];
+
+					if (!($bc['start'] < $c['end'] && $bc['end'] > $c['start']))
+					{
+						continue;   /* strict overlap */
+					}
+
+					if ($best === 0
+					    || $bc['start'] < $calls[$best]['start']
+					    || ($bc['start'] === $calls[$best]['start'] && $bid < $best))
+					{
+						$best = $bid;
+					}
+				}
+
+				if ($best > 0)
+				{
+					$byCall[$id] = $best;
+
+					if (!isset($count[$c['booking']]))
+					{
+						$count[$c['booking']] = 0;
+					}
+
+					$count[$c['booking']]++;
+				}
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $byCall, 'count_by_booking' => $count);
+		}
+
+		/* The same, for a set of CALLS (the Ops lane's rows): their bookings, filtered back. */
+
+		function goat_unlinked_boss_overlap_for_calls($callIDs)
+		{
+			$ids = goat_sg_clean_ids($callIDs);
+
+			if (count($ids) === 0)
+			{
+				return array('ok' => true, 'error' => '', 'by_call' => array(), 'count_by_booking' => array());
+			}
+
+			$res = mysql_query("SELECT DISTINCT bookingID AS b FROM calls WHERE id IN (" . implode(',', $ids) . ")");
+
+			if ($res === false)
+			{
+				return array('ok' => false, 'error' => 'booking lookup failed: ' . mysql_error(),
+				             'by_call' => array(), 'count_by_booking' => array());
+			}
+
+			$bids = array();
+
+			while ($r = mysql_fetch_object($res))
+			{
+				$bids[] = (int) $r->b;
+			}
+
+			$all = goat_unlinked_boss_overlap($bids);
+
+			if (!$all['ok'])
+			{
+				return $all;
+			}
+
+			$want = array_flip($ids);
+			$out  = array();
+
+			foreach ($all['by_call'] as $cid => $boss)
+			{
+				if (isset($want[$cid]))
+				{
+					$out[$cid] = $boss;
+				}
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $out, 'count_by_booking' => $all['count_by_booking']);
+		}
+
 	}
 
 ?>
