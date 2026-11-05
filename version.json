@@ -1,6 +1,6 @@
 {
-  "version": "5.91.0",
-  "release_date": "2026-11-02",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.91.0/TheGOAT.dmg",
-  "release_notes": "Times now always use the 24-hour clock, with no am or pm."
+  "version": "5.92.0",
+  "release_date": "2026-11-06",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.92.0/TheGOAT.dmg",
+  "release_notes": "Crew Boss and Team Lead are now separate, and each call shows who enters its times. Calls that overlap a Crew Boss call but aren't linked to it show a Not linked warning with a Link button."
 }
