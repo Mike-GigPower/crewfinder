@@ -1441,6 +1441,80 @@
 		}
 
 		/*
+		/* THE TEAM LEAD COUNT FOR D17 (review R13b, 5 Nov 2026) — ONE
+		/* implementation, read by set-team-lead.php (adding a second),
+		/* set-crew-boss.php (clearing a pill) and goat_d17_if_unlinked()
+		/* (losing a link, call-supervision.php).
+		/*
+		/*   array('ok', 'error', 'by_call' => callID => [userIDs], ascending)
+		/*
+		/* EVERY TICK ON A STATUS-5 ROW, PROMOTION-PENDING INCLUDED — deliberately
+		/* wider than the tiers. A D17 check is about what the call WILL have:
+		/* if A is ticked with an unanswered promotion and B is added, the call
+		/* has two Team Leads the moment A accepts, with nothing left to stop it.
+		/* So for D17 an unanswered promotion's tick counts.
+		/*
+		/* EVERYWHERE ELSE IT DOES NOT: tiers, entry people, contacts, the
+		/* multi_team_lead flag and set-team-lead.php's returned team_leads
+		/* are confirmed-and-accepted only (goat_sg_confirmed_roster()). The
+		/* Crew Boss side of D17 (goat_tier_has_crew_boss()) stays
+		/* confirmed-and-accepted too: a pill on an unanswered promotion is not
+		/* a Crew Boss yet, so it cannot license a second Team Lead.
+		/*
+		/* is_call_boss is binary(50): selected and (int)-cast in PHP, never
+		/* "= 1" in SQL. Calls with no tick are absent.
+		*/
+
+		function goat_d17_team_leads($callIDs)
+		{
+			$ids = goat_sg_clean_ids($callIDs);
+
+			if (count($ids) === 0)
+			{
+				return array('ok' => true, 'error' => '', 'by_call' => array());
+			}
+
+			$res = mysql_query("SELECT callID AS call_id, userID AS user_id, is_call_boss AS is_call_boss
+			                    FROM call_crew_map
+			                    WHERE callID IN (" . implode(',', $ids) . ")
+			                      AND status = 5");
+
+			if ($res === false)
+			{
+				return array('ok' => false, 'error' => 'Team Lead lookup failed: ' . mysql_error(), 'by_call' => array());
+			}
+
+			$out = array();
+
+			while ($row = mysql_fetch_object($res))
+			{
+				$cid = (int) $row->call_id;
+				$uid = (int) $row->user_id;
+
+				if ($cid <= 0 || $uid <= 0 || (int) $row->is_call_boss !== 1)
+				{
+					continue;
+				}
+
+				if (!isset($out[$cid]))
+				{
+					$out[$cid] = array();
+				}
+
+				$out[$cid][$uid] = true;
+			}
+
+			foreach ($out as $cid => $set)
+			{
+				$list = array_keys($set);
+				sort($list);
+				$out[$cid] = $list;
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $out);
+		}
+
+		/*
 		/* D17 FOR A LINK THAT IS ABOUT TO GO.
 		/*
 		/* Of $childIDs, the calls that would be left with NO Crew Boss and TWO
@@ -1454,9 +1528,10 @@
 		/* > 0) can lose a Crew Boss by losing it; a child with its own Crew Boss
 		/* pill keeps one without the link. A child that is itself a Crew Boss
 		/* call is NOT skipped (review R14): D17 asks whether a call has a Crew
-		/* Boss, and a Team Lead tick on a boss call is not one. Team Leads and
-		/* pills read as "confirmed" — status 5, not promo-pending — like the
-		/* tiers they protect.
+		/* Boss, and a Team Lead tick on a boss call is not one. Pills read as
+		/* confirmed-and-accepted (status 5, not promo-pending) like the tiers;
+		/* Team Leads are counted by goat_d17_team_leads() — every status-5
+		/* tick, promotion-pending included (review R13b).
 		*/
 
 		function goat_d17_if_unlinked($childIDs)
@@ -1482,6 +1557,13 @@
 				return array('ok' => false, 'error' => $r['error'], 'by_call' => array());
 			}
 
+			$tl = goat_d17_team_leads($ids);
+
+			if (!$tl['ok'])
+			{
+				return array('ok' => false, 'error' => $tl['error'], 'by_call' => array());
+			}
+
 			$out = array();
 
 			foreach ($t['by_call'] as $cid => $info)
@@ -1498,7 +1580,7 @@
 					continue;
 				}
 
-				$leads = goat_sg_marked($members, 'team_lead');
+				$leads = isset($tl['by_call'][$cid]) ? $tl['by_call'][$cid] : array();
 
 				if (count($leads) >= 2)
 				{

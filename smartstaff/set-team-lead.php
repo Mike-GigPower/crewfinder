@@ -161,10 +161,12 @@
 		/* NOT "tier is crew_boss": a dedicated Crew Boss call is tier
 		/* crew_boss on a Team Lead tick alone, and that is not a Crew Boss.
 		/*
-		/* "Other Team Leads" are the tier's team_lead_user_ids — confirmed,
-		/* NOT promo-pending (review R13). An unanswered promotion's tick is not
-		/* a Team Lead anywhere else in the system, so it does not block one
-		/* here either.
+		/* "Other Team Leads" are counted by goat_d17_team_leads(): EVERY tick
+		/* on a status-5 row, PROMOTION-PENDING INCLUDED (review R13b, reversing
+		/* R13 for this check only). If A is ticked with an unanswered
+		/* promotion and B were added, the call would have two Team Leads the
+		/* moment A accepts. The returned team_leads list below stays
+		/* confirmed-and-accepted only, as the tiers are.
 		*/
 
 		if (!$already)
@@ -177,9 +179,17 @@
 				goat_json_error(500, 'tier lookup failed');
 			}
 
+			$d17 = goat_d17_team_leads(array($callID));
+
+			if (!$d17['ok'])
+			{
+				error_log('set-team-lead: team lead lookup: ' . $d17['error']);
+				goat_json_error(500, 'team lead lookup failed');
+			}
+
 			$others = 0;
 
-			foreach ($t['tier']['team_lead_user_ids'] as $tl)
+			foreach ((isset($d17['by_call'][$callID]) ? $d17['by_call'][$callID] : array()) as $tl)
 			{
 				if ((int) $tl !== $userID) $others++;
 			}

@@ -240,7 +240,19 @@
 				goat_json_error(500, 'pill lookup failed');
 			}
 
-			$leads = $tier['team_lead_user_ids'];
+			/* Team Leads for D17: every status-5 tick, promotion-pending
+			   included (review R13b) — goat_d17_team_leads(), shared with
+			   set-team-lead.php and call-supervision.php. */
+
+			$tl = goat_d17_team_leads(array($callID));
+
+			if (!$tl['ok'])
+			{
+				error_log('set-crew-boss: team lead lookup: ' . $tl['error']);
+				goat_json_error(500, 'team lead lookup failed');
+			}
+
+			$leads = isset($tl['by_call'][$callID]) ? $tl['by_call'][$callID] : array();
 
 			if ($otherPills === 0 && (int) $tier['supervised_by'] === 0 && count($leads) >= 2)
 			{
