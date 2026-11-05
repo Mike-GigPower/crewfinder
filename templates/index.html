@@ -3145,7 +3145,10 @@ async function loadWhoami(){
     window._ssBase = d.ss_base || window._ssBase;
     window._identity = d;
     applyCohort(d);
+    // Named greeting for Monty, Rich or Joe; otherwise the shared clips for any
+    // other admin, on the first whoami after a real login only (Mike, 5 Nov 2026).
     if(d.greeting) goatGreetOnLogin(d.greeting);
+    else if(d.just_logged_in && d.cohort === 'admin') goatGreetOnLogin('admin');
     // Crew Finder layout prefs are keyed by pref_key, so they can only be read
     // once identity has resolved — goatPrefs falls back to 'anon' before that.
     cfRestoreLayoutPrefs();
@@ -3264,30 +3267,54 @@ async function exitAdmin(){
 
 
 
-// ── Easter egg: Monty, Rich and Joe each get a hello when they log on — Mike, 2 Nov 2026 (Joe 5 Nov)
-// Once per login, never on reloads: the server decides who (Monty and Rich, each
-// on their own account and their Admin account) and says so once, as greeting
-// 'monty' or 'rich', on the first /api/whoami after the login. A page that has just loaded may not be
-// allowed to play sound until the user does something, so if the browser
-// refuses, the clip waits for the first click or key press instead.
-function goatGreetOnLogin(who){
+// ── Easter egg: a hello when an admin logs on — Mike, 2 Nov 2026 (pools 5 Nov)
+// Once per login, never on reloads: the server decides who (Monty and Rich on their
+// own account and their Admin account; Joe on username "Joe") and says so once, as
+// greeting 'monty', 'rich' or 'joe', on the first /api/whoami after the login. Any
+// other admin login is passed in as 'admin' by loadWhoami. Monty, Rich and Joe get
+// a random pick from their own clips plus the shared ones; other admins get a
+// shared clip. Day and hour are this Mac's local time. A page that has just
+// loaded may not be allowed to play sound until the user does something, so if
+// the browser refuses, the clip waits for the first click or key press instead.
+// `now` is only for testing.
+function goatGreetOnLogin(who, now){
   try{
-    // Joe gets a random pick from his own set (Mike, 5 Nov 2026). The two payday
-    // clips join the pool on Tuesdays only — payday — by this Mac's local date.
-    const joe = [
-      '/static/hello-joe-great-company.wav',
-      '/static/hello-joe-journey.wav',
-      '/static/hello-joe-rome.wav',
-      '/static/hello-joe-customer-right.wav',
-      '/static/hello-joe-patience.wav',
-      '/static/hello-joe-favourites.wav',
-    ];
-    if(new Date().getDay() === 2){   // 0 = Sunday, 2 = Tuesday
-      joe.push('/static/hello-joe-payday-1.wav', '/static/hello-joe-payday-2.wav');
+    const d = now || new Date();
+    const day = d.getDay(), hour = d.getHours();   // 0 = Sunday, 1 = Monday, 2 = Tuesday
+    const own = {
+      monty: [
+        '/static/hello-monty.wav',
+        '/static/hello-monty-sticks-and-stones.wav',
+      ],
+      rich: [
+        '/static/hello-rich.wav',
+        '/static/hello-rich-forgive-your-enemies.wav',
+      ],
+      joe: [
+        '/static/hello-joe-great-company.wav',
+        '/static/hello-joe-journey.wav',
+        '/static/hello-joe-rome.wav',
+        '/static/hello-joe-customer-right.wav',
+        '/static/hello-joe-patience.wav',
+        '/static/hello-joe-favourites.wav',
+      ],
+      admin: [],
+    };
+    if(day === 2){   // Joe's payday clips, Tuesdays only
+      own.joe.push('/static/hello-joe-payday-1.wav', '/static/hello-joe-payday-2.wav');
     }
-    const clip = (who === 'joe')
-      ? joe[Math.floor(Math.random() * joe.length)]
-      : {monty: '/static/hello-monty.wav', rich: '/static/hello-rich.wav'}[who];
+    const shared = [
+      '/static/hello-all-wander.wav',
+      '/static/hello-all-batteries.wav',
+      '/static/hello-all-in-the-house.wav',
+      '/static/hello-all-in-the-yard.wav',
+      '/static/hello-all-back-again.wav',
+    ];
+    if(day === 1) shared.push('/static/hello-all-monday.wav');             // Mondays only
+    if(hour >= 3 && hour < 8) shared.push('/static/hello-all-early.wav');  // 03:00-07:59
+    if(!own[who]) return;
+    const pool = own[who].concat(shared);
+    const clip = pool[Math.floor(Math.random() * pool.length)];
     if(!clip) return;
     const a = new Audio(clip);
     const later = function(){
