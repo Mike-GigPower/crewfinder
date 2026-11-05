@@ -206,6 +206,7 @@
 			c.est_length  AS est_length,
 			c.required    AS required,
 			c.bookingID   AS booking_id,
+			c.times_filled AS times_filled,
 			b.name        AS booking_name,
 			v.venue       AS venue_name,
 			(
@@ -275,6 +276,17 @@
 			*/
 
 			'is_nominated' => ((int) $row->viewer_is_boss === 1),
+
+			/*
+			/* Have Ops approved this call's times? ADDED for Crew Hub's Your
+			/* Crew (slice F): a finished call whose times are all entered but
+			/* not yet accepted stays on the board as "with Ops". 0|1, and
+			/* ANY NON-ZERO VALUE IS 1 (review R8) — cast in PHP, never compared
+			/* in SQL: SmartStaff's own form writes it as a string. Additive;
+			/* no existing field changes.
+			*/
+
+			'times_filled' => ((int) $row->times_filled !== 0) ? 1 : 0,
 		);
 
 		$order[] = $cid;
