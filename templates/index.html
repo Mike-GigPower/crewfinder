@@ -24395,8 +24395,14 @@ function renderCallTimesGrid(){
     const mark = c._prefilled
       ? 'border-left:2px solid var(--accent);'
       : '';
+    // Who submitted it (slice G): a crew member's own times (source 'self')
+    // read SUBMITTED, not BOSS — the SELF-SUBMITTED badge and the "crew: …"
+    // line under the name already say whose they are. Boss rows keep BOSS.
+    const selfSub = !!(c._sub && c._sub.source === 'self');
     const chip = c._prefilled
-      ? ' <span title="Submitted by the crew boss — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">BOSS</span>'
+      ? (selfSub
+          ? ' <span title="Submitted by the crew member — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">SUBMITTED</span>'
+          : ' <span title="Submitted by the crew boss — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">BOSS</span>')
       : '';
     const badge = paid ? paidChip : (_ctPromoPending(c) ? '' : _ctStatusBadge(c.status));
     return '<tr style="border-bottom:1px solid var(--border);'+mark+rowSt+'"'+rowTt+'>'
