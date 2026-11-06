@@ -194,23 +194,33 @@ GP_PUSH_DEDUP_TTL = 900   # seconds; suppress a repeat push for the same crew+ca
 
 _gp_offer_notified = {}   # (crew_id, call_id) -> last-sent epoch; in-memory dedup
 
-def gp_notify_offer(crew_id, call):
+def gp_notify_offer(crew_id, call, force=False):
     """Fire-and-forget push to the Crew Hub when a crew member is offered a call.
     crew_id = SmartStaff internal userID (the portal resolves it to an EIN).
     Deduped per (crew_id, call_id) for GP_PUSH_DEDUP_TTL seconds. Never raises —
-    the offer (and any SMS) already happened; a push must not break the loop."""
+    the offer (and any SMS) already happened; a push must not break the loop.
+
+    force=True skips the dedup CHECK but still records the send time. Only the
+    re-offer route uses it (DESIGN-reoffer-declined §4): re-inviting someone who
+    declined is deliberate, so an earlier offer push inside the 15-minute window
+    must not swallow it.
+
+    Returns True when the portal accepted the push (HTTP 2xx), False otherwise,
+    including when the dedup suppressed it. The add-crew and send-sms callers
+    ignore the return value, and nothing they see has changed: same dedup, same
+    stamp-before-send, same swallowed errors."""
     try:
         call_id = call.get("call_id")
         key = (str(crew_id), str(call_id))
         now = time.time()
-        if now - _gp_offer_notified.get(key, 0) < GP_PUSH_DEDUP_TTL:
-            return
+        if not force and now - _gp_offer_notified.get(key, 0) < GP_PUSH_DEDUP_TTL:
+            return False
         _gp_offer_notified[key] = now
         if len(_gp_offer_notified) > 5000:                 # bound memory
             cutoff = now - GP_PUSH_DEDUP_TTL
             for k in [k for k, v in list(_gp_offer_notified.items()) if v < cutoff]:
                 _gp_offer_notified.pop(k, None)
-        http.post(
+        r = http.post(
             GP_PUSH_URL,
             json={
                 "user_id":      crew_id,
@@ -224,8 +234,9 @@ def gp_notify_offer(crew_id, call):
             headers={"X-Push-Secret": GP_PUSH_SECRET},
             timeout=4,
         )
+        return 200 <= r.status_code < 300
     except Exception:
-        pass   # never let a push break the offer/SMS loop
+        return False   # never let a push break the offer/SMS loop
 
 GP_PROMOTE_URL = "https://crew.gigpower.com/api/push/promote"
 # Direct message to one crew member (crew record -> Message). Unlike the offer /
@@ -5102,6 +5113,60 @@ def ss_update_crew_status(ss, call_id, user_id, status):
     except Exception as e:
         return None, f"bad JSON: {e}"
     if isinstance(data, dict) and "error" in data:
+        return None, data["error"]
+    return data, None
+
+
+# Refusals reoffer-declined.php answers with 409. Their bodies name the reason
+# (and, for started / cancelled, the call), which the dialog shows.
+_REOFFER_REFUSALS = ("not_declined", "started", "cancelled")
+
+def ss_reoffer_declined(ss, call_id, user_id, dry_run):
+    """Re-offer a DECLINED crew member via reoffer-declined.php (admin-only),
+    DESIGN-reoffer-declined §3. The seed row must be status 6; every declined
+    row in its locked package goes 6 -> 0 with it. No calendar change, no SMS.
+
+    dry_run : True -> what a re-offer would touch, nothing written.
+
+    Returns (result, error), the ss_update_crew_status shape:
+        result : {ok, dry_run, call_id, user_id, responded_at,
+                  calls: [{call_id, call_name, start, started, cancelled,
+                           full, required, confirmed}],
+                  refused, reopened (apply only)}
+                 or, for a 409 refusal, {ok: false, error: not_declined |
+                 started | cancelled, ...} as the RESULT, so the route can
+                 pass it back as a 409.
+        error  : str or None
+    """
+    url = f"{BASE_URL}/ajax/crew/reoffer-declined.php"
+    try:
+        resp = ss.post(url, params={"id": call_id},
+                       json={"userID": user_id, "dry_run": 1 if dry_run else 0},
+                       timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code == 409:
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data.get("error") in _REOFFER_REFUSALS:
+            data["ok"] = False
+            return data, None
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("error", "")
+        except Exception:
+            detail = (resp.text or "")[:200]
+        return None, f"HTTP {resp.status_code}: {detail}"
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "bad JSON: not an object"
+    if "error" in data:
         return None, data["error"]
     return data, None
 
@@ -18762,6 +18827,114 @@ def api_call_crew_status(booking_id, call_id, user_id):
             pass
         gp_notify_promotion(user_id, call)
 
+    return jsonify(result)
+
+
+def _reoffer_push_calls(ss, booking_id, sm_calls, reopened):
+    """The call dicts gp_notify_offer needs, one per RE-OPENED call, in start
+    order. Built from fetch_booking_bulk as the promote branch does:
+
+        call_name    calls[].call_name
+        booking_name name
+        venue        venue.name
+        start_dt     calls[].start_date (midnight epoch) + start_time, as a
+                     naive wall-clock ISO string -- the shape
+                     scrape_call_details gives the add-crew path
+        end_dt       start_dt + calls[].est_length hours
+
+    A package call in ANOTHER booking (a cross-booking feed) is not in this
+    booking's payload; it keeps reoffer-declined.php's own call_name and
+    start, with no venue or end. Best effort throughout: a failed lookup
+    sends the push with blanks, it never blocks the re-offer."""
+    reopened_set = {str(c) for c in (reopened or [])}
+    out = []
+    by_id, booking_name, venue = {}, "", ""
+    try:
+        bdata, berr = fetch_booking_bulk(ss, booking_id)
+        if berr is None and isinstance(bdata, dict):
+            booking_name = bdata.get("name", "") or ""
+            venue = (bdata.get("venue") or {}).get("name", "") or ""
+            for c in (bdata.get("calls") or []):
+                by_id[str(c.get("call_id"))] = c
+    except Exception:
+        pass
+
+    for sc in (sm_calls or []):
+        cid = str(sc.get("call_id"))
+        if cid not in reopened_set:
+            continue
+        call = {"call_id": cid, "call_name": sc.get("call_name", "") or "",
+                "start_dt": sc.get("start", "") or "", "end_dt": ""}
+        bc = by_id.get(cid)
+        if bc is not None:
+            call["booking_name"] = booking_name
+            call["venue"] = venue
+            call["call_name"] = bc.get("call_name", "") or call["call_name"]
+            try:
+                day = datetime.fromtimestamp(int(bc.get("start_date") or 0)).strftime("%Y-%m-%d")
+                start = datetime.strptime(f"{day} {(bc.get('start_time') or '')[:5]}", "%Y-%m-%d %H:%M")
+                call["start_dt"] = start.isoformat()
+                call["end_dt"] = (start + timedelta(hours=float(bc.get("est_length") or 0))).isoformat()
+            except Exception:
+                pass
+        out.append(call)
+    return out
+
+
+@app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/reoffer", methods=["POST"])
+@require_cohort("admin")
+def api_call_crew_reoffer(booking_id, call_id, user_id):
+    """Re-offer a crew member who DECLINED (DESIGN-reoffer-declined §4). The
+    call dialog's "Send offer", after a Declined -> Unconfirmed pick. Same gate
+    as the status route.
+
+    Body {dry_run}. Proxies reoffer-declined.php:
+      dry_run -> its preview, passed through. Nothing written, nobody pushed.
+      apply   -> every declined row in the locked package goes 6 -> 0, then
+                 an offer push per re-opened call with the dedup bypassed
+                 (force=True): a re-invite is deliberate.
+
+    OQ-1 (one push per package, or per call) was not answered from the Crew
+    Hub source, so this matches the add-crew path: one push per re-opened call.
+
+    Returns the endpoint JSON plus push: "sent" | "failed" | "partial".
+    "partial" only when more than one push was sent and some failed. A push
+    failure never turns the response into an error: the rows are re-opened
+    and the dialog tells ops to let them know.
+
+    Refusals (409 not_declined / started / cancelled) pass through with their
+    bodies; nothing was written and nobody is pushed."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    body    = request.get_json(force=True, silent=True) or {}
+    dry_run = bool(body.get("dry_run"))
+
+    result, err = ss_reoffer_declined(ss, call_id, user_id, dry_run)
+    if err:
+        return jsonify({"error": err}), 502
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return jsonify(result or {"error": "bad response"}), 409
+    if dry_run:
+        return jsonify(result)
+
+    reopened = result.get("reopened") or []
+    if not reopened:
+        # The seed row moved between the endpoint's check and its guarded
+        # UPDATE, so nothing was re-opened. Same answer as a stale dialog.
+        result["ok"] = False
+        result["error"] = "not_declined"
+        return jsonify(result), 409
+
+    calls = _reoffer_push_calls(ss, booking_id, result.get("calls"), reopened)
+    sent = [gp_notify_offer(user_id, c, force=True) for c in calls]
+    if sent and all(sent):
+        result["push"] = "sent"
+    elif len(sent) > 1 and any(sent):
+        result["push"] = "partial"
+    else:
+        result["push"] = "failed"
     return jsonify(result)
 
 @app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/promo-ack",

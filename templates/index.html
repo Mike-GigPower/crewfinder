@@ -21596,12 +21596,146 @@ function crewStatusControl(c, bookingId, callId){
   // data-promo-pending: refreshCallCrewSummary() must not count an unanswered
   // promotion as booked, or any status change elsewhere in the dialog would
   // silently put them back in the count (promotion brief §3.4).
+  // data-crew-name: "First Last", for the re-offer prompt and its result
+  // (reofferDeclinedFlow). Decoded here, escaped once for the attribute.
+  var _crewName = (decodeEntities((c && c.firstname) || '').trim() + ' '
+    + decodeEntities((c && c.lastname) || '').trim()).trim() || decodeEntities((c && c.name) || '').trim();
   return '<select id="crew-status-'+callId+'-'+c.id+'" data-prev="'+(promo ? 'promo' : cur)+'"'
+    + ' data-crew-name="'+escapeHtml(_crewName)+'"'
     + (c.promo_pending ? ' data-promo-pending="1"' : '')
     + ' onchange="changeCrewStatus(\''+bookingId+'\',\''+callId+'\','+c.id+',this)"'
     + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+cols[0]+';background:'+cols[1]
     + ';border:1px solid '+cols[0]+';border-radius:3px;padding:2px 6px;font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">'
     + opts + '</select>';
+}
+
+// ── RE-OFFER A DECLINED CREW MEMBER (DESIGN-reoffer-declined v0.1) ──
+// Declined -> Unconfirmed (6 -> 0) from the status dropdown asks first:
+//   Cancel                 the select goes back to Declined, nothing written
+//   Change without sending today's behaviour: this one row, 6 -> 0, no push
+//   Send offer             every declined row in the locked package -> 0,
+//                          then an offer push (POST .../reoffer)
+// The prompt's content is the server's dry run, so it names what Send would
+// re-open, any call already full (they'd go on standby) and, when a call has
+// started or been cancelled, why Send is not offered.
+//
+// Resolves 'plain' when changeCrewStatus should carry on with the ordinary
+// status POST; anything else means this flow has handled the change.
+
+// "2026-11-07T14:00:00" -> "Sat 14:00" (24-hour). Wall-clock as sent: read
+// field by field, never through Date's timezone handling.
+function reofferWhen(iso, withDate){
+  var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso || ''));
+  if(!m) return '';
+  var d = new Date(+m[1], +m[2]-1, +m[3]);
+  var day = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
+  var mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2]-1];
+  return withDate ? (day+' '+(+m[3])+' '+mon+', '+m[4]+':'+m[5]) : (day+' '+m[4]+':'+m[5]);
+}
+
+function reofferRefusalText(ref){
+  var nm = decodeEntities(ref.call_name || ('call '+ref.call_id));
+  return ref.reason === 'cancelled'
+    ? nm+' has been cancelled, so they couldn\'t accept it.'
+    : nm+' has already started, so they couldn\'t accept it.';
+}
+
+async function reofferDeclinedFlow(bookingId, callId, userId, sel){
+  var name = sel.getAttribute('data-crew-name') || 'them';
+  var url  = '/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/reoffer';
+  var buttons = [
+    {label: 'Cancel', value: 'cancel'},
+    {label: 'Change without sending', value: 'plain'}
+  ];
+
+  sel.disabled = true;
+  var preview = null, previewErr = '';
+  try{
+    var r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify({dry_run: true})});
+    var j = await r.json();
+    if(r.status === 409 && j.error === 'not_declined'){
+      sel.disabled = false;
+      alert('They\'re no longer Declined on this call — someone changed it. Reloading.');
+      openCallDialog(bookingId, callId);
+      return 'handled';
+    }
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    preview = j;
+  }catch(e){
+    previewErr = (e && e.message) || String(e);
+  }finally{
+    sel.disabled = false;
+  }
+
+  var html = '';
+  if(!preview){
+    html = '<div>Couldn\'t check what a re-offer would re-open: '+escapeHtml(previewErr)+'</div>'
+      + '<div style="margin-top:8px">You can still change the status without sending.</div>';
+  }else{
+    var when = preview.responded_at ? reofferWhen(preview.responded_at, true) : '';
+    html = '<div>They declined this call'+(when ? ' on '+escapeHtml(when) : '')+'.'
+      + (preview.refused ? '' : ' Sending re-opens it in Crew Hub and pushes a new offer.')+'</div>';
+    var calls = preview.calls || [];
+    var others = calls.filter(function(c){ return String(c.call_id) !== String(callId); });
+    if(others.length){
+      html += '<div style="margin-top:8px"><i>Also re-opens:</i> '
+        + others.map(function(c){
+            var w = reofferWhen(c.start, false);
+            return escapeHtml(decodeEntities(c.call_name || ('call '+c.call_id)))+(w ? ' ('+escapeHtml(w)+')' : '');
+          }).join(', ')
+        + '</div>';
+    }
+    if(preview.refused){
+      html += '<div style="margin-top:8px;color:var(--warn)">'+escapeHtml(reofferRefusalText(preview.refused))+'</div>';
+    }else{
+      calls.filter(function(c){ return c.full; }).forEach(function(c){
+        html += '<div style="margin-top:8px"><i>Full:</i> <b>'+escapeHtml(decodeEntities(c.call_name || ('call '+c.call_id)))+'</b> has '
+          + (+c.confirmed)+' of '+(+c.required)+'. If they accept they\'ll go on standby.</div>';
+      });
+      buttons.push({label: 'Send offer', value: 'send', primary: true});
+    }
+  }
+
+  var choice = await goatChoice({title: 'Send '+name+' a new offer?', html: html, buttons: buttons});
+  if(choice === 'plain') return 'plain';
+  if(choice !== 'send'){
+    sel.value = sel.getAttribute('data-prev');
+    return 'cancel';
+  }
+
+  sel.disabled = true;
+  try{
+    var r2 = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                               body: JSON.stringify({dry_run: false})});
+    var j2 = await r2.json();
+    if(r2.status === 409 && j2.error === 'not_declined'){
+      alert('They\'re no longer Declined on this call — someone changed it. Reloading.');
+      openCallDialog(bookingId, callId);
+      return 'handled';
+    }
+    if(r2.status === 409 && j2.refused){
+      sel.value = sel.getAttribute('data-prev');
+      alert(reofferRefusalText(j2.refused));
+      return 'handled';
+    }
+    if(!r2.ok || j2.error) throw new Error(j2.error || ('HTTP '+r2.status));
+    if(j2.push === 'sent'){
+      goatInfoToast('Offer sent to '+name);
+    }else if(j2.push === 'partial'){
+      alert('Re-opened, but some of the pushes didn\'t go through — let '+name+' know.');
+    }else{
+      alert('Re-opened, but the push didn\'t go through — let '+name+' know.');
+    }
+    openCallDialog(bookingId, callId);
+    return 'sent';
+  }catch(e){
+    sel.value = sel.getAttribute('data-prev');
+    alert('Couldn\'t re-offer: '+((e && e.message) || e));
+    return 'failed';
+  }finally{
+    sel.disabled = false;
+  }
 }
 
 async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
@@ -21622,6 +21756,12 @@ async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
     return;
   }
   if(!promoPrev && next === prev) return;
+  // Declined -> Unconfirmed: ask whether to send a new offer
+  // (DESIGN-reoffer-declined §2). Only 'plain' (Change without sending)
+  // carries on to the ordinary one-row status write below.
+  if(!promoPrev && prev === 6 && next === 0){
+    if((await reofferDeclinedFlow(bookingId, callId, userId, sel)) !== 'plain') return;
+  }
   sel.disabled = true;
   try{
     var r = await fetch('/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/status', {

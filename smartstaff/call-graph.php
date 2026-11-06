@@ -689,6 +689,81 @@
 		}
 
 		/*
+		/* What a RE-OFFER re-opens — the inverse of the decline, as closely as
+		/* the data allows (DESIGN-reoffer-declined §2.1).
+		/*
+		/* The same walk as goat_user_package — locked edges only, treated as
+		/* undirected, through goat_feed_step — but over DECLINED (status 6)
+		/* rows instead of offered ones. A row at any other status (0, 1, 5,
+		/* 7, 8, 9) is not touched and does NOT extend the walk: a confirmed
+		/* upstream call stays confirmed, a cancelled one stays cancelled.
+		/*
+		/* call_crew_map does not record which decline moved a row, so
+		/* declines made separately on linked calls come back together. On a
+		/* locked package they are answered as one unit anyway.
+		/*
+		/* Returns an array of call ids, ALWAYS including $callID itself. The
+		/* caller has already checked that the seed row is status 6.
+		/*
+		/* Not goat_user_package with a status parameter: that function is on
+		/* the live accept path, and a re-offer is not a reason to touch it.
+		*/
+
+		function goat_reoffer_scope($userID, $callID)
+		{
+			$userID = (int) $userID;
+			$callID = (int) $callID;
+
+			if ($userID <= 0 || $callID <= 0)
+			{
+				return array($callID);
+			}
+
+			/* calls this user holds a declined row on */
+
+			$held = array();
+			$res  = mysql_query("SELECT callID FROM call_crew_map
+			                     WHERE userID = " . $userID . " AND status = 6");
+
+			if ($res !== false)
+			{
+				while ($row = mysql_fetch_object($res))
+				{
+					$held[(int) $row->callID] = true;
+				}
+			}
+
+			$seen     = array($callID => true);
+			$frontier = array($callID);
+			$depth    = 0;
+
+			while (count($frontier) && $depth < 10)
+			{
+				/* LOCKED ONLY (the default), exactly as goat_user_package:
+				/* a recommended edge never joins a package. */
+				$next = array_merge(
+					goat_feed_step($frontier, 'down'),
+					goat_feed_step($frontier, 'up')
+				);
+
+				$frontier = array();
+
+				foreach ($next as $n)
+				{
+					if (!isset($seen[$n]) && isset($held[$n]))
+					{
+						$seen[$n]   = true;
+						$frontier[] = $n;
+					}
+				}
+
+				$depth++;
+			}
+
+			return array_keys($seen);
+		}
+
+		/*
 		/* What the crew member loses if they decline this call — the decline
 		/* scope minus the call itself, with enough detail for the Hub to name
 		/* each one and flag which were already accepted.
