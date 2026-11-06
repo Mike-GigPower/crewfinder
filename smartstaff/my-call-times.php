@@ -293,12 +293,29 @@
 	/* and showing them invites someone to think they mean something.
 	*/
 
+	function mct_hhmm($v)
+	{
+		$v = (string) $v;
+
+		if ($v === '')
+		{
+			return '';
+		}
+
+		$out = substr($v, 0, 5);
+
+		return ($out === false) ? '' : $out;
+	}
+
 	function mct_submission($s)
 	{
 		return array(
 			'id'           => (int) $s['id'],
-			'on_time'      => substr((string) $s['on_time'], 0, 5),
-			'off_time'     => substr((string) $s['off_time'], 0, 5),
+			/* (string) + '' guard: a No-show row stores NULL times, and on
+			/* PHP 5.6 substr('', 0, 5) is FALSE, not '' — which reached the
+			/* wire as "on_time": false on test, 6 Nov 2026. Always a string. */
+			'on_time'      => mct_hhmm($s['on_time']),
+			'off_time'     => mct_hhmm($s['off_time']),
 			'off_next_day' => (int) $s['off_next_day'],
 			'note'         => ($s['note'] === null ? '' : $s['note']),
 			'submitted_at' => ($s['submitted_at'] === null ? '' : $s['submitted_at']),
