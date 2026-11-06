@@ -21677,11 +21677,13 @@ async function reofferDeclinedFlow(bookingId, callId, userId, sel){
     html = '<div>They declined this call'+(when ? ' on '+escapeHtml(when) : '')+'.'
       + (preview.refused ? '' : ' Sending re-opens it in Crew Hub and pushes a new offer.')+'</div>';
     var calls = preview.calls || [];
-    var others = calls.filter(function(c){ return String(c.call_id) !== String(callId); });
-    if(others.length){
-      html += '<div style="margin-top:8px"><i>Also re-opens:</i> '
-        + others.map(function(c){
-            var w = reofferWhen(c.start, false);
+    if(calls.length > 1){
+      // Every call Send would re-open, this one first, each with its date.
+      var listed = calls.filter(function(c){ return String(c.call_id) === String(callId); })
+        .concat(calls.filter(function(c){ return String(c.call_id) !== String(callId); }));
+      html += '<div style="margin-top:8px"><i>Re-opens:</i> '
+        + listed.map(function(c){
+            var w = reofferWhen(c.start, true);
             return escapeHtml(decodeEntities(c.call_name || ('call '+c.call_id)))+(w ? ' ('+escapeHtml(w)+')' : '');
           }).join(', ')
         + '</div>';
