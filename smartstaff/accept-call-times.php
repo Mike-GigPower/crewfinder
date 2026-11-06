@@ -6,6 +6,7 @@
 	define('SS_NO_SMARTY', true);
 	include('../../global.php');
 	include('cohort.php');
+	include_once('time-submission-graph.php');
 
 	/*
 	/* JSON response */
@@ -94,6 +95,49 @@
 	{
 		send_status(409, 'Conflict');
 		die('{"error":"Call is locked; unlock it in SmartStaff before accepting times"}');
+	}
+
+	/*
+	/* ---- UNRESOLVED NO-SHOW REPORTS BLOCK THE TICK (BRIEF-boss-no-show, N6) ----
+	/*
+	/* A boss has said someone did not turn up and Ops have not yet confirmed
+	/* it (status 8, update-crew-status.php) or rejected it (void the report).
+	/* Accepting now would say "a human reviewed these times" about a call
+	/* with an open question on it — and on Confirm, the person's status
+	/* changes after the review that was meant to cover it.
+	/*
+	/* 409 IS A RESULT: the list comes back so THE GOAT can show who. The
+	/* message also rides in `error`, because THE GOAT's accept path already
+	/* surfaces data.error.
+	/*
+	/* A FAILED LOOKUP IS A 500, NEVER A PASS. It feeds a refusal; degrading to
+	/* "no reports" would tick the call through exactly the check this exists
+	/* for (the ccm.id / crewmapID lesson, 18 Aug 2026). Checked on every
+	/* accept, including a re-accept of an already-ticked call.
+	*/
+
+	$ns = goat_unresolved_no_shows_by_call(array($callID));
+
+	if (!$ns['ok'])
+	{
+		send_status(500, 'Internal Server Error');
+		echo json_encode(array('ok' => false, 'error' => 'No-show check failed', 'detail' => $ns['error']));
+		die();
+	}
+
+	if (isset($ns['by_call'][$callID]) && count($ns['by_call'][$callID]) > 0)
+	{
+		$n   = count($ns['by_call'][$callID]);
+		$msg = 'Confirm or reject ' . $n . ' No-show report' . ($n === 1 ? '' : 's') . ' first.';
+
+		send_status(409, 'Conflict');
+		echo json_encode(array(
+			'ok'               => false,
+			'needs_resolution' => true,
+			'error'            => $msg,
+			'no_shows'         => $ns['by_call'][$callID]
+		));
+		die();
 	}
 
 	/* ---- the tick ---- */

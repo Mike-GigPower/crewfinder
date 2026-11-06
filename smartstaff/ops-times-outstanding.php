@@ -39,6 +39,11 @@
 	/*      numbers straight into the grid for years, and a lane that only
 	/*      looked at submissions would open with a fortnight of finished work
 	/*      it had no way to clear.
+	/*      OR (BRIEF-boss-no-show) the boss has reported someone as a No-show
+	/*      and Ops have not yet confirmed or rejected it. That person is
+	/*      answered for, so they are not "needing" — but Accept is refused
+	/*      until the report is resolved, so the call is still Ops' work.
+	/*      Such a row can carry needing = 0 with no_show_count >= 1.
 	/*   3. calls.times_filled is not set — the Ops review tick.
 	/*
 	/* WHY BOTH 2 AND 3. Condition 2 alone cannot be satisfied by accepting a
@@ -493,6 +498,53 @@
 		);
 	}
 
+	/*
+	/* UNRESOLVED NO-SHOW REPORTS (BRIEF-boss-no-show, slice 1) — counted per
+	/* call, and A SECOND WAY ONTO THE LANE.
+	/*
+	/* A report is an answer for that person (goat_submitted_by_call() sees a
+	/* live row), so it does not make anyone "needing". Left there, a call whose
+	/* only open item is a report would have needing = 0 and vanish from the
+	/* lane while Ops still have to confirm or reject it — and accept-call-
+	/* times.php refuses the tick until they do. So a call is on the lane when
+	/* needing >= 1 OR no_show_count >= 1 (Mike, 6 Nov 2026).
+	/*
+	/* FAIL HARD. This decides which calls the lane shows, so a failed lookup is
+	/* a 500 like every other membership query in this file — degrading would
+	/* drop exactly the calls it exists to keep.
+	/*
+	/* COUNT ONLY. The lane carries no crew names (see PRIVACY above), and a
+	/* report's note is free text that may name someone; who and why stay in the
+	/* per-call review read, my-call-times.php.
+	/*
+	/* Not asked for cancelled candidates: nobody on a cancelled call is
+	/* status 5, so they cannot have an unresolved report.
+	*/
+
+	$nsIDs = array();
+
+	foreach ($callInfo as $cid => $info)
+	{
+		if (!$info['cancelled'])
+		{
+			$nsIDs[] = $cid;
+		}
+	}
+
+	$nsRows = goat_unresolved_no_shows_by_call($nsIDs);
+
+	if (!$nsRows['ok'])
+	{
+		goat_json_error(500, $nsRows['error']);
+	}
+
+	$nsCountOf = array();   /* callID -> unresolved report count */
+
+	foreach ($nsRows['by_call'] as $cid => $list)
+	{
+		$nsCountOf[(int) $cid] = count($list);
+	}
+
 	foreach ($callInfo as $cid => $info)
 	{
 		/*
@@ -505,13 +557,16 @@
 		         ? (isset($paidOf[$cid]) ? $paidOf[$cid] : 0)
 		         : otl_needing($cid, $confirmedOf, $keyedOf, $submittedOf);
 
-		if ($needing <= 0)
+		$nsCount = isset($nsCountOf[$cid]) ? $nsCountOf[$cid] : 0;
+
+		if ($needing <= 0 && $nsCount <= 0)
 		{
 			unset($callInfo[$cid]);
 			continue;
 		}
 
-		$callInfo[$cid]['needing'] = $needing;
+		$callInfo[$cid]['needing']       = $needing;
+		$callInfo[$cid]['no_show_count'] = $nsCount;
 	}
 
 	if (count($callInfo) === 0)
@@ -762,6 +817,10 @@
 			/* slice G: the live Crew Boss call this call overlaps unlinked, 0 if
 			   none, null if the lookup failed (unknown) */
 			'unlinked_boss_call' => $ulKnown ? (isset($ulOf[$cid]) ? (int) $ulOf[$cid] : 0) : null,
+			/* BRIEF-boss-no-show: unresolved No-show reports on the call — a
+			   COUNT, no names or notes (those are my-call-times.php's). A row
+			   can be here with needing 0 when this is >= 1. */
+			'no_show_count' => (int) $info['no_show_count'],
 			/* a paid cancellation awaiting Rich's check -- label it "Cancelled - paid" */
 			'cancelled'    => $info['cancelled']
 		);

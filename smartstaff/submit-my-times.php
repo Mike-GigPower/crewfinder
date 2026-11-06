@@ -149,6 +149,19 @@
 		         'rows and userID are not accepted — this endpoint records the caller\'s own times only', array());
 	}
 
+	/*
+	/* NO-SHOW IS A BOSS REPORT ONLY (BRIEF-boss-no-show). The row below is built
+	/* here and never copies no_show, so the field could not reach the write
+	/* anyway; it is refused loudly rather than ignored, so a client that sends
+	/* it learns the contract instead of believing it reported something.
+	*/
+
+	if (isset($payload->no_show))
+	{
+		smt_fail(422, 'Unprocessable Entity',
+		         'no_show is not accepted — a No-show can only be reported by the Crew Boss', array());
+	}
+
 	$callID  = (int) $payload->callID;
 	$confirm = (isset($payload->confirm) && $payload->confirm) ? true : false;
 

@@ -519,7 +519,26 @@
 				}
 			}
 
-			/* 2. who already has a live submission */
+			/* 2. who already has a live submission.
+
+			      A NO-SHOW REPORT COUNTS AS ANSWERED HERE (BRIEF-boss-no-show,
+			      slice 1), and that is deliberate, not an accident of the query.
+
+			      WHY: this function answers "what is the BOSS still owing", and
+			      for a person who did not turn up the boss owes nothing more —
+			      there are no times to enter, and "they weren't here" is the
+			      whole answer. Counting them as owed would leave the badge, the
+			      push cron and Crew Hub's list chasing the boss for a row they
+			      have already filled in and cannot fill any other way. Whether
+			      the report is TRUE is an Ops question, and it is held open
+			      somewhere else: accept-call-times.php refuses the tick and the
+			      Times outstanding lane keeps the call until Ops resolve it.
+
+			      HOW: it needs no clause of its own. A report is a live row like
+			      any other, so it lands in $done below. If Ops REJECT it, the row
+			      is voided and the person is owed again; if they CONFIRM it,
+			      status 8 takes the person off the roster in step 1. Do NOT add
+			      "AND no_show = 0" here. */
 
 			$done = array();
 
@@ -769,6 +788,28 @@
 		}
 
 		/*
+		/* Is call_time_submissions.no_show present? Added by slice 1 of
+		/* BRIEF-boss-no-show (Nov 2026). Same shape as goat_ts_have_source(), so
+		/* this PHP deploys safely BEFORE the ALTER: until the column exists every
+		/* read treats every row as no_show = 0 (which is what every row is), and
+		/* a write that asks for a No-show is refused with a 500 rather than
+		/* silently stored as a timeless boss row.
+		*/
+
+		function goat_ts_have_no_show()
+		{
+			static $has = null;
+
+			if ($has === null)
+			{
+				$r   = mysql_query("SHOW COLUMNS FROM call_time_submissions LIKE 'no_show'");
+				$has = ($r !== false && mysql_num_rows($r) > 0);
+			}
+
+			return $has;
+		}
+
+		/*
 		/* HH:MM or HH:MM:SS -> HH:MM:SS. '' when the input is not a valid clock
 		/* time. Deliberately rejects 24:00 and anything with a stray character:
 		/* the column is TIME, which would happily accept '25:00' and even
@@ -957,6 +998,62 @@
 				$errors[] = $label . ': covering_for ' . $cover . ' is not confirmed on this call';
 			}
 
+			/*
+			/* ---- NO-SHOW (BRIEF-boss-no-show, slice 1) ----
+			/*
+			/* The boss saying "this person did not turn up", in place of times.
+			/* A REPORT, not a status change: the person stays status 5 until Ops
+			/* confirm (status 8, update-crew-status.php) or reject (void the row).
+			/*
+			/*   - BOOKED ROWS ONLY. An unbooked row exists because the person
+			/*     worked; an unbooked No-show is a contradiction.
+			/*   - NO on/off, NO breaks. A No-show with times is two answers to one
+			/*     question, and refusing it beats guessing which the boss meant.
+			/*   - The note stays optional (N5).
+			/*
+			/* Returns here so none of the time and break validation below runs
+			/* on a row that has no times by design. Every check ABOVE this point
+			/* (confirmed, promotion pending, note length, covering_for) still
+			/* applies. The self-reporting refusal lives in the endpoints: the
+			/* boss endpoint refuses the boss's own row, the self endpoint refuses
+			/* the field outright.
+			*/
+
+			$noShow = (isset($row->no_show) && $row->no_show) ? 1 : 0;
+
+			if ($noShow)
+			{
+				if ($unbooked)
+				{
+					$errors[] = $label . ': a No-show must be a booked crew member';
+				}
+
+				$hasOn     = isset($row->on_time)  && trim((string) $row->on_time)  !== '';
+				$hasOff    = isset($row->off_time) && trim((string) $row->off_time) !== '';
+				$hasBreaks = isset($row->breaks) && is_array($row->breaks) && count($row->breaks) > 0;
+
+				if ($hasOn || $hasOff || $hasBreaks)
+				{
+					$errors[] = $label . ': a No-show row must not carry on/off times or breaks';
+				}
+
+				$clean = array(
+					'index'          => $i,
+					'userID'         => $userID,
+					'unbooked'       => $unbooked,
+					'unbooked_name'  => $uname,
+					'covering_for'   => $cover,
+					'on_time'        => '',
+					'off_time'       => '',
+					'off_next_day'   => 0,
+					'note'           => $note,
+					'breaks'         => array(),
+					'no_show'        => 1
+				);
+
+				return array('errors' => $errors, 'clean' => $clean, 'fatal' => null);
+			}
+
 			$on  = goat_sub_time(isset($row->on_time)  ? $row->on_time  : '');
 			$off = goat_sub_time(isset($row->off_time) ? $row->off_time : '');
 
@@ -1079,7 +1176,8 @@
 				'off_time'       => $off,
 				'off_next_day'   => $offNext,
 				'note'           => $note,
-				'breaks'         => $breaks
+				'breaks'         => $breaks,
+				'no_show'        => 0
 			);
 
 			return array('errors' => $errors, 'clean' => $clean, 'fatal' => null);
@@ -1103,6 +1201,14 @@
 
 			foreach ($cleanRows as $c)
 			{
+				/* a No-show row has no breaks by validation; skipped by name too,
+				/* so the warning can never be about someone who was not there */
+
+				if (isset($c['no_show']) && $c['no_show'])
+				{
+					continue;
+				}
+
 				$seq = 1;
 
 				foreach ($c['breaks'] as $b)
@@ -1176,6 +1282,23 @@
 			}
 
 			/*
+			/* NO-SHOW (BRIEF-boss-no-show). Without the column a No-show would be
+			/* stored as a boss row with no times — indistinguishable from a broken
+			/* client — so it is refused, as a self row is without `source`.
+			/* Absent the column, an ordinary row omits it; nothing is lost because
+			/* the DEFAULT is 0 once it exists.
+			*/
+
+			$noShow     = (isset($c['no_show']) && $c['no_show']) ? 1 : 0;
+			$haveNoShow = goat_ts_have_no_show();
+
+			if (!$haveNoShow && $noShow)
+			{
+				$fail['error'] = 'call_time_submissions.no_show is missing — run the boss-no-show migration before No-show reports';
+				return $fail;
+			}
+
+			/*
 			/* supersedes_id IS NOT OPTIONAL. goat_time_submissions_for_call()
 			/* carries a second dedupe pass in PHP specifically in case this line
 			/* is ever missed: without it the SQL NOT EXISTS returns both rows for
@@ -1210,24 +1333,34 @@
 			$srcCol = $haveSource ? ', source' : '';
 			$srcVal = $haveSource ? (', ' . $db->sc($source)) : '';
 
+			/* a No-show has no times: on_time / off_time are NULL (both columns
+			/* are TIME NULL), never '' or '00:00:00', which a TIME column would
+			/* store as midnight and a reader would take for a real time */
+
+			$onSql  = $noShow ? 'NULL' : $db->sc($c['on_time']);
+			$offSql = $noShow ? 'NULL' : $db->sc($c['off_time']);
+
+			$nsCol = $haveNoShow ? ', no_show' : '';
+			$nsVal = $haveNoShow ? (', ' . (int) $noShow) : '';
+
 			$sql = "INSERT INTO call_time_submissions
 			        (callID, userID, unbooked, unbooked_name, covering_for,
 			         on_time, off_time, off_next_day, note,
-			         submitted_by, submitted_at, supersedes_id, voided" . $srcCol . ")
+			         submitted_by, submitted_at, supersedes_id, voided" . $srcCol . $nsCol . ")
 			        VALUES (
 			          " . $callID . ",
 			          " . (int) $c['userID'] . ",
 			          " . (int) $c['unbooked'] . ",
 			          " . $nameSql . ",
 			          " . (int) $c['covering_for'] . ",
-			          " . $db->sc($c['on_time']) . ",
-			          " . $db->sc($c['off_time']) . ",
+			          " . $onSql . ",
+			          " . $offSql . ",
 			          " . (int) $c['off_next_day'] . ",
 			          " . $noteSql . ",
 			          " . (int) $actor . ",
 			          NOW(),
 			          " . (int) $supersedes . ",
-			          0" . $srcVal . "
+			          0" . $srcVal . $nsVal . "
 			        )";
 
 			if (mysql_query($sql) === false)
@@ -1255,10 +1388,14 @@
 			/* count them back, and void on mismatch.
 			*/
 
-			$seq      = 1;
-			$expected = count($c['breaks']);
+			/* a No-show writes no breaks — the validator already gave it none;
+			/* this makes the write not depend on that */
 
-			foreach ($c['breaks'] as $b)
+			$toWrite  = $noShow ? array() : $c['breaks'];
+			$seq      = 1;
+			$expected = count($toWrite);
+
+			foreach ($toWrite as $b)
 			{
 				$bsql = "INSERT INTO call_time_submission_breaks
 				         (submission_id, start_time, start_next_day, duration_mins, seq)
@@ -1377,6 +1514,173 @@
 			}
 
 			return $out;
+		}
+
+		/*
+		/* callID -> the UNRESOLVED No-show reports on it (BRIEF-boss-no-show,
+		/* slice 1). A report is unresolved when the person's LATEST LIVE row
+		/* (highest non-voided id, as goat_time_submission_for() resolves it) has
+		/* no_show = 1 AND they are still status 5 on the call:
+		/*
+		/*   confirmed by Ops -> status 8 -> drops out (not status 5)
+		/*   rejected by Ops  -> row voided -> drops out (not live)
+		/*   boss resubmits with times -> a later row wins -> drops out
+		/*
+		/* THIS FEEDS A REFUSAL (accept-call-times.php will not tick times_filled
+		/* while any exist — N6), so array()-on-failure, this file's usual rule,
+		/* is WRONG here: an empty list from a broken query would wave the accept
+		/* through. Same shape as goat_submitted_by_call():
+		/*
+		/*   array('ok' => bool, 'error' => string,
+		/*         'by_call' => array(callID => list of array(
+		/*             'userID', 'submission_id', 'reported_by', 'reported_by_name',
+		/*             'reported_at', 'note')))
+		/*
+		/* Calls with none are ABSENT from by_call. Each list is in userID order.
+		/*
+		/* BEFORE THE MIGRATION the column does not exist, so no report can
+		/* exist either: ok with an empty by_call is the true answer, not a
+		/* degraded one.
+		*/
+
+		function goat_unresolved_no_shows_by_call($callIDs)
+		{
+			$none = array('ok' => true, 'error' => '', 'by_call' => array());
+
+			if (!is_array($callIDs) || count($callIDs) === 0)
+			{
+				return $none;
+			}
+
+			$ids = array();
+
+			foreach ($callIDs as $cid)
+			{
+				$cid = (int) $cid;
+
+				if ($cid > 0)
+				{
+					$ids[$cid] = true;
+				}
+			}
+
+			if (count($ids) === 0 || !goat_ts_have_no_show())
+			{
+				return $none;
+			}
+
+			$idList = implode(',', array_map('intval', array_keys($ids)));
+
+			/*
+			/* Every live row for those calls, ascending, so the last one seen per
+			/* (call, person) is the live one — the same resolution as
+			/* goat_live_submissions_for_user(). Filtering no_show = 1 in SQL
+			/* instead would find a report the boss has since corrected with times.
+			/* The status-5 test is a JOIN, not a second query, so the two cannot
+			/* be read at different moments.
+			*/
+
+			$res = mysql_query("SELECT s.id AS id, s.callID AS callID, s.userID AS userID,
+			                           s.no_show AS no_show, s.submitted_by AS submitted_by,
+			                           s.submitted_at AS submitted_at, s.note AS note,
+			                           ccm.status AS ccm_status
+			                    FROM call_time_submissions s
+			                    INNER JOIN calls c ON c.id = s.callID
+			                    LEFT JOIN call_crew_map ccm
+			                           ON ccm.callID = s.callID
+			                          AND ccm.userID = s.userID
+			                    WHERE s.callID IN (" . $idList . ")
+			                      AND s.voided = 0
+			                      AND s.userID > 0
+			                    ORDER BY s.id ASC");
+
+			if ($res === false)
+			{
+				return array('ok'      => false,
+				             'error'   => 'no-show lookup failed: ' . mysql_error(),
+				             'by_call' => array());
+			}
+
+			$live = array();   /* callID -> userID -> row */
+
+			while ($row = mysql_fetch_assoc($res))
+			{
+				$cid = (int) $row['callID'];
+				$uid = (int) $row['userID'];
+
+				if (!isset($live[$cid]))
+				{
+					$live[$cid] = array();
+				}
+
+				$live[$cid][$uid] = $row;
+			}
+
+			$byCall   = array();
+			$reporter = array();
+
+			foreach ($live as $cid => $people)
+			{
+				ksort($people);
+
+				foreach ($people as $uid => $row)
+				{
+					if ((int) $row['no_show'] !== 1)       continue;
+					if ((int) $row['ccm_status'] !== 5)    continue;
+
+					if (!isset($byCall[$cid]))
+					{
+						$byCall[$cid] = array();
+					}
+
+					$byCall[$cid][] = array(
+						'userID'        => (int) $uid,
+						'submission_id' => (int) $row['id'],
+						'reported_by'   => (int) $row['submitted_by'],
+						'reported_at'   => ($row['submitted_at'] === null ? '' : $row['submitted_at']),
+						'note'          => ($row['note'] === null ? '' : $row['note'])
+					);
+
+					$reporter[(int) $row['submitted_by']] = true;
+				}
+			}
+
+			/*
+			/* Reporter names, for "reported by" on the review row. DEGRADES to ''
+			/* on failure: a name is display, and the refusal above is already
+			/* decided by the list itself.
+			*/
+
+			$names = array();
+			unset($reporter[0]);
+
+			if (count($reporter) > 0)
+			{
+				$nres = mysql_query("SELECT id, firstname, lastname FROM users
+				                     WHERE id IN (" . implode(',', array_map('intval', array_keys($reporter))) . ")");
+
+				if ($nres !== false)
+				{
+					while ($n = mysql_fetch_object($nres))
+					{
+						$first = html_entity_decode((string) $n->firstname, ENT_QUOTES);
+						$last  = html_entity_decode((string) $n->lastname,  ENT_QUOTES);
+
+						$names[(int) $n->id] = trim(trim($first) . ' ' . trim($last));
+					}
+				}
+			}
+
+			foreach ($byCall as $cid => $list)
+			{
+				foreach ($list as $k => $r)
+				{
+					$byCall[$cid][$k]['reported_by_name'] =
+						isset($names[$r['reported_by']]) ? $names[$r['reported_by']] : '';
+				}
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $byCall);
 		}
 
 	}

@@ -307,6 +307,12 @@
 			/* own times). Before slice A the column does not exist and every
 			/* row is a boss row. */
 			'source'       => (isset($s['source']) && $s['source'] === 'self') ? 'self' : 'boss',
+
+			/* BRIEF-boss-no-show, additive: 1 when the boss reported this person
+			/* as a No-show, so the form re-opens as it was left. Before the
+			/* migration the column does not exist and every row is 0. On a
+			/* No-show row on_time / off_time are '' (stored NULL). */
+			'no_show'      => (isset($s['no_show']) && (int) $s['no_show'] === 1) ? 1 : 0,
 			'breaks'       => mct_breaks((int) $s['id'])
 		);
 	}
@@ -438,6 +444,24 @@
 		}
 	}
 
+	/*
+	/* ---- unresolved No-show reports (BRIEF-boss-no-show) ----
+	/*
+	/* For THE GOAT's review grid, which reads this endpoint: the reports Ops
+	/* still have to confirm or reject, with who reported them. DISPLAY, so a
+	/* failed lookup DEGRADES — to null, meaning "unknown", not array(), which
+	/* would claim there are none. The refusal that must not degrade lives in
+	/* accept-call-times.php, which asks the same helper itself.
+	*/
+
+	$ns      = goat_unresolved_no_shows_by_call(array($callID));
+	$noShows = null;
+
+	if ($ns['ok'])
+	{
+		$noShows = isset($ns['by_call'][$callID]) ? $ns['by_call'][$callID] : array();
+	}
+
 	echo json_encode(array(
 		'ok'   => true,
 		'call' => array(
@@ -453,7 +477,8 @@
 		),
 		'crew'        => $crew,
 		'unbooked'    => $unbooked,
-		'outstanding' => $outstanding
+		'outstanding' => $outstanding,
+		'no_shows'    => $noShows
 	));
 
 ?>

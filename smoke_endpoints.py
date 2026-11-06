@@ -251,7 +251,8 @@ def main():
         if tcalls:
             for k in ("call_id", "booking_id", "booking_name", "call_name", "venue",
                       "start", "end", "confirmed", "needing", "submitted",
-                      "status", "age_bucket", "bosses", "sibling_times_pending"):
+                      "status", "age_bucket", "bosses", "sibling_times_pending",
+                      "no_show_count"):
                 check(f"times row carries '{k}'", all(k in c for c in tcalls))
             check("status is one of the three segments",
                   all(c.get("status") in ("awaiting_review", "not_submitted", "no_boss")
@@ -260,9 +261,17 @@ def main():
                   all(c.get("age_bucket") in ("under24", "from24to72", "over72")
                       for c in tcalls))
             # Every row is work: at least one confirmed person with no times by
-            # either route, and never more of them than are on the call.
-            check("needing >= 1 on every row",
-                  all(int(c.get("needing") or 0) >= 1 for c in tcalls))
+            # either route, OR an unresolved No-show report Ops must confirm or
+            # reject (BRIEF-boss-no-show) -- and never more needing than are on
+            # the call. A row with needing 0 is legal only with a report on it.
+            check("needing >= 1 or no_show_count >= 1 on every row",
+                  all(int(c.get("needing") or 0) >= 1 or int(c.get("no_show_count") or 0) >= 1
+                      for c in tcalls))
+            check("no_show_count is a non-negative int on every row",
+                  all(isinstance(c.get("no_show_count"), int) and c.get("no_show_count") >= 0
+                      for c in tcalls))
+            check("lane carries no No-show names or notes",
+                  all("no_shows" not in c for c in tcalls))
             check("needing <= confirmed on every row",
                   all(int(c.get("needing") or 0) <= int(c.get("confirmed") or 0)
                       for c in tcalls))

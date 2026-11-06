@@ -259,6 +259,18 @@
 			$errors[] = $e;
 		}
 
+		/*
+		/* NO-SHOW: NOT FOR YOURSELF (BRIEF-boss-no-show). The validator accepts
+		/* no_show on any booked row; the boss reporting their OWN absence while
+		/* submitting the call's times is not a thing that can be true, and the
+		/* form never offers it on the boss's own row.
+		*/
+
+		if ($v['clean'] !== null && $v['clean']['no_show'] && (int) $v['clean']['userID'] === (int) $actor)
+		{
+			$errors[] = "You can't report yourself as a No-show.";
+		}
+
 		if ($v['clean'] !== null)
 		{
 			$clean[] = $v['clean'];
@@ -274,7 +286,8 @@
 	/* ---- WARNINGS — overridable with confirm:true ----
 	/*
 	/* 409 IS A RESULT, NOT AN ERROR. Same contract as call-feeds.php and
-	/* call-supervision.php. What trips it is goat_submission_long_break_warnings().
+	/* call-supervision.php. What trips it is goat_submission_long_break_warnings(),
+	/* which skips No-show rows (they carry no breaks).
 	*/
 
 	$warnings = goat_submission_long_break_warnings($clean);
