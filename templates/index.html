@@ -7870,7 +7870,7 @@ async function openSessionRoster(id){
   }
   const roster = res.body.roster || [];
   const waitlist = res.body.waitlist || [];
-  const contact = (c) => escapeHtml([c.email, c.phone].filter(Boolean).join(' · ')) || '<span style="color:var(--muted)">—</span>';
+  const contact = (c) => escapeHtml([c.email, c.phone ? fmtPhone(c.phone) : ''].filter(Boolean).join(' · ')) || '<span style="color:var(--muted)">—</span>';
   const bookedRows = roster.length
     ? roster.map((c,i) =>
         '<tr>'
@@ -16295,7 +16295,7 @@ async function ceLoadEmergency(id){
     html += '<div style="padding:9px 0;border-bottom:1px solid var(--border)">'
       + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">Emergency contact</div>'
       + '<div style="font-size:13px;color:var(--text)">'+escapeHtml(contact.name||'')
-      + (contact.phone ? ' &middot; '+escapeHtml(contact.phone) : '') + '</div></div>';
+      + (contact.phone ? ' &middot; '+escapeHtml(fmtPhone(contact.phone)) : '') + '</div></div>';
   }
 
   html += '<div style="font-size:11px;color:var(--muted);padding:10px 0 0;line-height:1.5">'
@@ -17834,7 +17834,7 @@ async function openCustomerEdit(id){
         + contacts.map(function(ct){
             var badge = ct.is_default ? ' <span style="font-size:9px;color:var(--accent);border:1px solid var(--border-gold);border-radius:8px;padding:1px 6px;vertical-align:1px">default</span>' : '';
             var inact = ct.active ? '' : ' <span style="font-size:10px;color:var(--muted)">(inactive)</span>';
-            var sub   = [ct.mobile, ct.email].filter(Boolean).join(' · ');
+            var sub   = [ct.mobile ? fmtPhone(ct.mobile) : '', ct.email].filter(Boolean).join(' · ');
             return '<div style="padding:6px 9px;border-bottom:1px solid var(--border)">'
               + '<div style="font-size:12px;color:var(--text)">'+escapeHtml(ct.name||'')+badge+inact+'</div>'
               + (sub ? '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(sub)+'</div>' : '')
@@ -27046,7 +27046,7 @@ function bkPhoneBits(o){
   if(!o) return '';
   var bits = [];
   if(o.mobile) bits.push('<a href="tel:'+escapeHtml(o.mobile)+'" style="color:var(--accent);text-decoration:none">📱 '+escapeHtml(fmtPhone(o.mobile))+'</a>');
-  if(o.phone)  bits.push('<a href="tel:'+escapeHtml(o.phone)+'" style="color:var(--muted);text-decoration:none">☎ '+escapeHtml(o.phone)+'</a>');
+  if(o.phone)  bits.push('<a href="tel:'+escapeHtml(o.phone)+'" style="color:var(--muted);text-decoration:none">☎ '+escapeHtml(fmtPhone(o.phone))+'</a>');
   return bits.length ? '<div style="margin-top:3px;font-size:11px">'+bits.join(' &nbsp;&nbsp; ')+'</div>' : '';
 }
 
@@ -29453,7 +29453,8 @@ let _fcGroups     = [];
 
 function phoneLink(phone){
   if(!phone) return '<span style="color:var(--muted);font-size:10px">—</span>';
-  return `<a href="tel:${phone}" style="color:var(--muted);font-size:10px;text-decoration:none" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'" title="Call">${phone}</a>`;
+  // href keeps the raw stored value (dialling); the label is fmtPhone()'s display form.
+  return `<a href="tel:${phone}" style="color:var(--muted);font-size:10px;text-decoration:none" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--muted)'" title="Call">${escapeHtml(fmtPhone(phone))}</a>`;
 }
 
 function initForecast(){
