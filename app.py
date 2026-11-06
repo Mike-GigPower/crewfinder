@@ -18894,8 +18894,13 @@ def api_call_crew_reoffer(booking_id, call_id, user_id):
                  an offer push per re-opened call with the dedup bypassed
                  (force=True): a re-invite is deliberate.
 
-    OQ-1 (one push per package, or per call) was not answered from the Crew
-    Hub source, so this matches the add-crew path: one push per re-opened call.
+    OQ-1, answered from the Crew Hub source (website f01cd02): ONE PUSH PER
+    RE-OPENED CALL, as the add-crew path does. /api/push/offer describes one
+    call (call_name, start, end), and it records each send in push_events
+    against that call_id. The Ops lane's offer-outcomes classifier looks up
+    delivery per (ein, call_id). A single push for the seed call would leave
+    every other call in the package "Not attempted" there. The offer card
+    already groups the package by package_id, and each push links to /shifts.
 
     Returns the endpoint JSON plus push: "sent" | "failed" | "partial".
     "partial" only when more than one push was sent and some failed. A push
