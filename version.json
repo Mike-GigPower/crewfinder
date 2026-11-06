@@ -1,6 +1,6 @@
 {
-  "version": "5.92.0",
+  "version": "5.93.0",
   "release_date": "2026-11-06",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.92.0/TheGOAT.dmg",
-  "release_notes": "Crew Boss and Team Lead are now separate, and each call shows who enters its times. Calls that overlap a Crew Boss call but aren't linked to it show a Not linked warning with a Link button."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.93.0/TheGOAT.dmg",
+  "release_notes": "Changing a crew member from Declined to Unconfirmed now asks whether to send them a new offer. Send offer re-opens the call (and any linked calls they declined with it) in Crew Hub and sends the usual offer notification."
 }
