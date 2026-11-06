@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.93.0"
+APP_VERSION    = "5.93.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -4625,7 +4625,7 @@ def ss_create_customer(ss, data):
         "customer_name":     (data.get("customer_name") or "").strip(),
         "customer_username": "",
         "customer_password": "",
-        "phone":             data.get("phone", ""),
+        "phone":             au_phone_local(data.get("phone", "")),
         "email":             data.get("email", ""),
         "active":            "1" if data.get("active", True) else "",
     }
@@ -4639,6 +4639,49 @@ def ss_create_customer(ss, data):
     if m and "fatal error" not in txt.lower():
         return m.group(1), None
     return None, f"Customer creation failed — unexpected response: {txt[:200]}"
+
+def au_phone_local(v):
+    """Australian phone -> '0411 538 575' / '(03) 9376 9500' for storage in
+    SmartStaff. Mirrors fmtPhone() in templates/index.html so what ops see and
+    what is stored are the same shape (the house format already held by the
+    rows backfilled on 18 Sep 2026 — claude/BRIEF-phone-leading-zero.md, Fix B).
+    Anything not confidently Australian is returned UNCHANGED — a badly
+    formatted label beats a corrupted number (see the French-mobile note on
+    fmtPhone; applicant GPX-260824-011). Idempotent: formatting a formatted
+    number returns it as-is."""
+    raw = str(v if v is not None else "").strip()
+    if not raw:
+        return ""
+    compact = re.sub(r"[\s()\-]", "", raw)
+    if not re.match(r"^\+?\d+$", compact):
+        return raw
+    digits = re.sub(r"\D", "", compact)
+    if digits.startswith("61") and len(digits) == 11:
+        digits = "0" + digits[2:]
+    elif len(digits) == 9 and digits[0] in "234578":
+        digits = "0" + digits          # restores a zero already lost upstream
+    if len(digits) != 10 or digits[0] != "0":
+        return raw
+    if digits[1] == "4":
+        return digits[0:4] + " " + digits[4:7] + " " + digits[7:]
+    if digits[1] in "2378":
+        return "(" + digits[0:2] + ") " + digits[2:6] + " " + digits[6:]
+    return raw
+
+
+_PHONE_FIELDS = ("mobile", "phone", "phone_work", "emergency_phone")
+
+
+def _au_phone_fields(d):
+    """Copy of d with every phone field present run through au_phone_local.
+    Fields that are absent stay absent — a partial update must not start
+    writing fields it was not asked to."""
+    out = dict(d or {})
+    for k in _PHONE_FIELDS:
+        if k in out and isinstance(out[k], str):
+            out[k] = au_phone_local(out[k])
+    return out
+
 
 def ss_create_contact(ss, customer_id, data):
     """Quick-add a contact via SmartStaff contact/add (customerID rides in the
@@ -4654,8 +4697,8 @@ def ss_create_contact(ss, customer_id, data):
         "username":  (data.get("username") or "").strip(),
         "firstname": data.get("firstname", ""),
         "lastname":  data.get("lastname", ""),
-        "mobile":    data.get("mobile", ""),
-        "phone":     data.get("phone", ""),
+        "mobile":    au_phone_local(data.get("mobile", "")),
+        "phone":     au_phone_local(data.get("phone", "")),
         "email":     data.get("email", ""),
         "active":    "1" if data.get("active", True) else "",
     }
@@ -4708,7 +4751,7 @@ def ss_create_crew(ss, data, ein, password, photo=None):
         "paygradeID":        str(data.get("paygradeID") or DEFAULT_NEW_CREW_PAYGRADE),
         "firstname":         data.get("firstname", ""),
         "lastname":          data.get("lastname", ""),
-        "mobile":            data.get("mobile", ""),
+        "mobile":            au_phone_local(data.get("mobile", "")),
         "phone":             "",
         "phone_work":        "",
         "dob":               data.get("dob", ""),        # YYYY-MM-DD; add-crew.php strtotime()s it
@@ -4718,7 +4761,7 @@ def ss_create_crew(ss, data, ein, password, photo=None):
         "postcode":          data.get("postcode", ""),
         "email":             data.get("email", ""),
         "emergency_contact": data.get("emergency_contact", ""),
-        "emergency_phone":   data.get("emergency_phone", ""),
+        "emergency_phone":   au_phone_local(data.get("emergency_phone", "")),
         "notes":             data.get("notes", ""),
     }
     # groupsList[] is a repeated key (one per selected crew group id), so build a
@@ -8306,14 +8349,14 @@ def api_recruitment_convert_preview(cand_id):
         "firstname":         first,
         "lastname":          last,
         "email":             email,
-        "mobile":            phone,
+        "mobile":            au_phone_local(phone),
         "dob":               detail.get("dob") or "",
         "street_address":    detail.get("street_address") or "",
         "suburb":            detail.get("suburb") or "",
         "state":             detail.get("state") or "",
         "postcode":          detail.get("postcode") or "",
         "emergency_contact": detail.get("emergency_name") or "",
-        "emergency_phone":   detail.get("emergency_phone") or "",
+        "emergency_phone":   au_phone_local(detail.get("emergency_phone") or ""),
         "notes":             _recruit_compose_notes(ref, notes_list),
     }
     # Work-rights signal for the Convert warning. Non-PII only: whether this is a
@@ -22271,7 +22314,7 @@ def ss_update_crew(ss, crew_id, fields):
     """Update one crew member's record via update-crew.php (form-encoded, so the
     endpoint's $_POST reads it). Returns (data, error)."""
     url = f"{BASE_URL}/ajax/crew/update-crew.php"
-    payload = dict(fields or {})
+    payload = _au_phone_fields(fields)
     payload["id"] = int(crew_id)
     try:
         resp = ss.post(url, data=payload, timeout=60)
@@ -22929,7 +22972,7 @@ def ss_update_customer(ss, customer_id, fields):
     """Update one customer's record via update-customer.php (form-encoded).
     Returns (data, error)."""
     url = f"{BASE_URL}/ajax/crew/update-customer.php"
-    payload = dict(fields or {})
+    payload = _au_phone_fields(fields)
     payload["id"] = int(customer_id)
     try:
         resp = ss.post(url, data=payload, timeout=60)
@@ -23093,7 +23136,7 @@ def ss_update_contact(ss, contact_id, fields):
     """Update one contact's record via update-contact.php (form-encoded).
     Returns (data, error)."""
     url = f"{BASE_URL}/ajax/crew/update-contact.php"
-    payload = dict(fields or {})
+    payload = _au_phone_fields(fields)
     payload["id"] = int(contact_id)
     try:
         resp = ss.post(url, data=payload, timeout=60)
