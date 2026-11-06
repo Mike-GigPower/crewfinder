@@ -475,6 +475,7 @@
 		    mysqli_query($this->connection, $query);
 
 		    $this->queryCount++;
+		    $this->affected_rows = mysqli_affected_rows($this->connection);
 
 		    if($this->debug == 1)
 		    {
