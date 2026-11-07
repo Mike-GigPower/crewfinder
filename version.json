@@ -1,6 +1,6 @@
 {
-  "version": "5.93.1",
-  "release_date": "2026-11-06",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.93.1/TheGOAT.dmg",
-  "release_notes": "Phone numbers are now saved and shown in the standard format, for example 0411 538 575, instead of run together as 0411538575."
+  "version": "5.94.0",
+  "release_date": "2026-11-07",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.94.0/TheGOAT.dmg",
+  "release_notes": "Crew Boss No-show reports now show in Times outstanding, and Ops confirm or reject them in Enter Times. Accept Times is held until every report on the call is resolved."
 }
