@@ -1,6 +1,17 @@
 <?php
 
 	/*
+	/* FUNCTIONS ONLY, for test-my-call-times-unbooked.php. The mct_* functions
+	/* below are declared at the top level, so PHP binds them when the file is
+	/* compiled; returning here leaves them defined and runs none of the
+	/* endpoint (no global.php, no database, no output). */
+
+	if (defined('MCT_FUNCTIONS_ONLY'))
+	{
+		return;
+	}
+
+	/*
 	/* global file */
 
 	define('SS_NO_SMARTY', true);
@@ -334,6 +345,39 @@
 		);
 	}
 
+	/*
+	/* Who goes in `unbooked`: every live submission whose person is NOT in the
+	/* confirmed roster ($matched), EXCEPT a No-show report. A no_show = 1 row
+	/* is never a claim that somebody worked, so it is never "submitted for
+	/* crew who are not booked". Whatever the person's status is now: 8 once
+	/* Ops confirm the report (the 7 Nov 2026 UI pass, where 298 reappeared
+	/* in THE GOAT's grid as "not booked" straight after Confirm), or any
+	/* other status. Before the migration the column is absent and every row
+	/* counts as 0, so nothing changes there. Pure: unit-tested by
+	/* test-my-call-times-unbooked.php. */
+
+	function mct_unbooked_ids($subByUser, $matched)
+	{
+		$ids = array();
+
+		foreach ($subByUser as $uid => $s)
+		{
+			if (isset($matched[$uid]))
+			{
+				continue;
+			}
+
+			if (isset($s['no_show']) && (int) $s['no_show'] === 1)
+			{
+				continue;
+			}
+
+			$ids[] = (int) $uid;
+		}
+
+		return $ids;
+	}
+
 	/* ---- assemble: booked crew ---- */
 
 	$crew        = array();
@@ -388,7 +432,8 @@
 	/* A live submission whose userID is NOT in the confirmed roster is an
 	/* UNBOOKED row. That is exactly what unbooked = 1 means: not booked on
 	/* this call (design §7). It does NOT mean unidentified — slice 3A made the
-	/* EIN mandatory, so every such row carries a real userID.
+	/* EIN mandatory, so every such row carries a real userID. A No-show
+	/* report is never one: see mct_unbooked_ids().
 	/*
 	/* THE MATCH IS ON THE ROSTER, NOT ON THE unbooked FLAG. A row flagged
 	/* unbooked whose person IS confirmed on the call — which slice 3A
@@ -401,15 +446,7 @@
 	/* from query 2, which only sees people who ARE on the call.
 	*/
 
-	$unbookedIDs = array();
-
-	foreach ($subByUser as $uid => $s)
-	{
-		if (!isset($matched[$uid]))
-		{
-			$unbookedIDs[] = (int) $uid;
-		}
-	}
+	$unbookedIDs = mct_unbooked_ids($subByUser, $matched);
 
 	$unbooked = array();
 
