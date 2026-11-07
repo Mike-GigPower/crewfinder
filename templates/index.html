@@ -24260,7 +24260,16 @@ async function _ctLoadSubmissions(){
     d = await r.json();
     if(!d || d.error) d = null;
   }catch(e){ d = null; }
+  // No-show reports (BRIEF-boss-no-show-slice-3). null = UNKNOWN: the fetch
+  // failed, or my-call-times.php's lookup did (it sends null, never [], when
+  // it could not check). The grid says so and leaves Accept enabled, because
+  // accept-call-times.php still refuses if a report is open. The display
+  // degrades; the refusal does not.
+  s.noShows = (d && Array.isArray(d.no_shows)) ? d.no_shows : null;
   if(!d) return;
+
+  const reportOf = {};
+  (s.noShows || []).forEach(function(r){ if(r) reportOf[r.userID] = r; });
 
   const byUser = {};
   (d.crew || []).forEach(function(c){
@@ -24278,8 +24287,24 @@ async function _ctLoadSubmissions(){
 
   s.crew.forEach(function(c){
     const sub = byUser[c.user_id];
+    // The open report on this row. From the list when there is one; when the
+    // list is unknown, from the live row itself (no_show on a status-5
+    // person IS an open report), with no reporter name to show.
+    c._report = reportOf[c.user_id]
+             || ((s.noShows === null && sub && sub.no_show && Number(c.status) === 5)
+                  ? {userID:c.user_id, submission_id:sub.id, reported_by_name:'',
+                     reported_at:sub.submitted_at || '', note:sub.note || ''}
+                  : null);
     if(!sub) return;
     c._sub = sub;                  // shown on every row that has one
+    // Times that came back when Ops rejected a later No-show report: the
+    // boss's earlier entry, pre-filled like any other (it IS the live row),
+    // plus a line saying where it came from.
+    c._restored = !!(s.restoredFor && Number(s.restoredFor[c.user_id]) === Number(sub.id));
+    // A NO-SHOW ROW IS NOT A PRE-FILL. Its times are '' by design. Never
+    // write them into the boxes and never mark the row BOSS/SUBMITTED: the
+    // boss's claim is that this person did not work.
+    if(sub.no_show) return;
     if(!_ctUnkeyed(c)) return;     // an accepted value is NEVER overwritten
     c.on  = sub.on_time  || c.on;
     c.off = sub.off_time || c.off;
@@ -24302,6 +24327,7 @@ async function _ctLoadSubmissions(){
 function _ctSubHint(c){
   const sub = c._sub;
   if(!sub) return '';
+  if(sub.no_show) return '';       // a report: _ctReportLine draws it
   // WHO TYPED IT (slice G): a crew member's own times (source 'self') carry a
   // Self-submitted badge and two informational flags; nothing is refused.
   const self = (sub.source === 'self');
@@ -24326,7 +24352,181 @@ function _ctSubHint(c){
   }
   return '<div style="font-size:10px;color:var(--muted);padding-top:2px;max-width:340px;white-space:normal">'
        + (tags ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:2px">' + tags + '</div>' : '')
-       + escapeHtml(decodeEntities(bits.join(' · '))) + '</div>';
+       + escapeHtml(decodeEntities(bits.join(' · ')))
+       + (c._restored ? '<div style="color:var(--accent)">Restored from the boss\'s earlier entry</div>' : '')
+       + '</div>';
+}
+
+// ── BOSS NO-SHOW REPORTS (BRIEF-boss-no-show-slice-3) ───────────────────────
+// A Crew Boss ticked No-show for this person in Crew Hub. They are still
+// status 5 until Ops decide:
+//   Confirm No-show -> status 8 (update-crew-status.php, as the dropdown)
+//   Not a No-show   -> the report row is voided (reject-no-show.php), and
+//                      any times the boss sent before it come back.
+// Accept is refused by the server until every report is resolved, and is
+// disabled here while the grid knows of one.
+
+// An OPEN report on a confirmed row. Its time boxes are locked: times typed
+// against someone reported absent would be saved before anyone decided.
+function _ctReported(c){ return !!(c && c._report) && Number(c.status) === 5; }
+
+// The rows that take times NOW: editable, and not waiting on a No-show
+// decision. Drives the inputs, the fill-down and the save.
+function _ctTakesTimes(c){ return _ctEditable(c) && !_ctReported(c); }
+
+// The open reports the grid knows of. 0 when the list is unknown (null):
+// Accept stays enabled, and the server is the check.
+function _ctOpenReports(){
+  const s = _ctState;
+  if(!s || !Array.isArray(s.noShows)) return 0;
+  return s.crew.filter(_ctReported).length;
+}
+
+function _ctNoShowMsg(n){
+  return 'Confirm or reject '+n+' No-show report'+(n === 1 ? '' : 's')+' first.';
+}
+
+// '2026-11-06 17:50:35' -> '6 Nov 17:50'. Parsed by hand, not new Date(),
+// which reads a space-separated stamp differently across engines.
+function _ctReportWhen(v){
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(v || ''));
+  if(!m) return '';
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m[2]) - 1] || m[2];
+  return Number(m[3]) + ' ' + mon + ' ' + m[4] + ':' + m[5];
+}
+
+// The tag, the "Reported by" line and the two buttons, under the name.
+function _ctReportLine(c){
+  if(!_ctReported(c)) return '';
+  const r = c._report;
+  const bits = ['Reported by ' + (r.reported_by_name ? decodeEntities(r.reported_by_name) : 'the crew boss')];
+  const when = _ctReportWhen(r.reported_at);
+  if(when) bits.push(when);
+  if(r.note) bits.push('“' + decodeEntities(r.note) + '”');
+  const btn = function(label, fn, title){
+    return '<button type="button" onclick="'+fn+'('+Number(c.user_id)+')" title="'+escapeHtml(title)+'"'
+      + ' style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 8px;'
+      + 'font-family:\'Share Tech Mono\',monospace;font-size:10px;cursor:pointer;color:var(--text)">'+label+'</button>';
+  };
+  const act = (_ctState && !_ctState.locked)
+    ? '<div style="display:flex;gap:6px;margin-top:4px">'
+      + btn('Confirm No-show', 'ctNoShowConfirm', 'They did not turn up: set their status to No-show')
+      + btn('Not a No-show', 'ctNoShowReject', 'They did work: withdraw the report, so their times can be entered')
+      + '</div>'
+    : '';
+  return '<div style="font-size:10px;color:var(--muted);padding-top:2px;max-width:340px;white-space:normal">'
+       + escapeHtml(bits.join(' · ')) + act + '</div>';
+}
+
+function _ctReportedName(c){
+  return decodeEntities(((c.firstname || '') + ' ' + (c.lastname || '')).trim());
+}
+
+// Re-read the grid after a status change or a void, WITHOUT losing what has
+// been typed in the other rows. Every box is read before the refetch and put
+// back afterwards, except on the row that just changed (its values are the
+// server's now). The data itself is refetched, never patched by hand, so a
+// row shows a status only if SmartStaff really holds it.
+async function _ctReload(changedUid){
+  const s = _ctState;
+  if(!s) return;
+  const kept = {};
+  const tail = (changedUid != null) ? ('-' + changedUid) : null;
+  document.querySelectorAll('#entity-modal-body input[id^="ct-"], #entity-modal-body select[id^="ct-"]').forEach(function(el){
+    if(tail && el.id.slice(-tail.length) === tail) return;
+    kept[el.id] = (el.type === 'checkbox') ? {checked: el.checked} : {value: el.value};
+  });
+  try{
+    const res  = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/times');
+    const data = await res.json();
+    if(data.error) throw new Error(data.error);
+    _ctState = _ctNewState(s.bookingId, s.callId, data);
+    _ctState.restoredFor = s.restoredFor || {};
+    await _ctLoadSubmissions();
+    await _ctLoadPhotos();
+    renderCallTimesGrid();
+  }catch(e){
+    goatTell('Times', 'The change was saved, but the times could not be reloaded: ' + (e.message || e) + '\n\nClose and reopen Enter Times.');
+    return;
+  }
+  Object.keys(kept).forEach(function(id){
+    const el = document.getElementById(id);
+    if(!el || el.disabled) return;
+    if('checked' in kept[id]) el.checked = kept[id].checked;
+    else el.value = kept[id].value;
+  });
+  _ctRefreshLane();
+}
+
+// The lane's chip and badge follow a change made here, as after Accept.
+async function _ctRefreshLane(){
+  const lane = OPS_LANES.find(function(l){ return l.key === 'times_outstanding'; });
+  const lst  = lane && _opsLaneState[lane.key];
+  if(lane && lst && lst.status === 'ready') await loadOpsTimes(lane, true);
+}
+
+async function ctNoShowConfirm(userId){
+  const s = _ctState;
+  const c = s && s.crew.find(function(x){ return Number(x.user_id) === Number(userId); });
+  if(!c || !_ctReported(c)) return;
+  const name = _ctReportedName(c);
+  const ok = await goatAsk('Confirm No-show',
+    name + ' will be marked as a No-show on this call (status No-show), the same as choosing No-show in Booked Crew.\n\nNo times are entered for them.',
+    'Confirm No-show');
+  if(!ok) return;
+  try{
+    const r = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/no-show/confirm', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({user_id: Number(userId)})
+    });
+    const j = await r.json();
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+  }catch(e){
+    await goatTell('Confirm No-show', 'Not confirmed: ' + (e.message || e));
+    return;
+  }
+  await _ctReload(userId);
+}
+
+async function ctNoShowReject(userId){
+  const s = _ctState;
+  const c = s && s.crew.find(function(x){ return Number(x.user_id) === Number(userId); });
+  if(!c || !_ctReported(c)) return;
+  const name = _ctReportedName(c);
+  const ok = await goatAsk('Not a No-show',
+    'The crew boss\'s No-show report for ' + name + ' is withdrawn and they stay confirmed.\n\nIf the boss entered times for them before reporting them, those times come back. Otherwise their row is empty and needs times.',
+    'Not a No-show');
+  if(!ok) return;
+  let j = null, r = null;
+  try{
+    r = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/no-show/reject', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({user_id: Number(userId), submission_id: Number(c._report.submission_id)})
+    });
+    j = await r.json();
+  }catch(e){
+    await goatTell('Not a No-show', 'Not changed: ' + (e.message || e));
+    return;
+  }
+  if(r.status === 409){
+    // Refused with a reason (already confirmed, the boss has sent something
+    // newer...). Say it, then reload so the row shows what is true now.
+    await goatTell('Not a No-show', (j && j.error) || 'The report could not be withdrawn.');
+    await _ctReload(userId);
+    return;
+  }
+  if(!r.ok || !j || j.error){
+    await goatTell('Not a No-show', 'Not changed: ' + ((j && j.error) || ('HTTP '+r.status)));
+    return;
+  }
+  // Mark the restored row so it carries "Restored from the boss's earlier
+  // entry" after the reload. Keyed on the submission id, so the note only
+  // shows while that row is still the live one.
+  if(j.restored && !j.restored.no_show){
+    s.restoredFor = s.restoredFor || {};
+    s.restoredFor[userId] = j.restored.submission_id;
+  }
+  await _ctReload(userId);
 }
 
 // "Differs from scheduled" threshold (BRIEF-crew-self-times §11 O1 default).
@@ -24433,6 +24633,14 @@ function _ctUnbookedNote(){
        + '. Book them on the call first if they worked — nothing here can save their times.</div>';
 }
 
+function _ctNewState(bookingId, callId, data){
+  return {bookingId:bookingId, callId:callId, crew:data.crew||[],
+          paygrades:data.paygrades||[], locked:!!data.call_locked, unbookedSubs:[],
+          cancelled:!!data.cancelled, cancelPay:Number(data.cancel_pay)||0,
+          cancelCharge:Number(data.cancel_charge)||0,
+          noShows:null, restoredFor:{}};
+}
+
 async function openCallTimes(bookingId, callId){
   entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
   document.getElementById('entity-modal-title').textContent = 'Enter Times';
@@ -24449,10 +24657,7 @@ async function openCallTimes(bookingId, callId){
     }
     // cancelled / cancel_pay / cancel_charge are get-call-times.php's call
     // fields (absent before the migration, which reads as a live call).
-    _ctState = {bookingId:bookingId, callId:callId, crew:data.crew||[],
-                paygrades:data.paygrades||[], locked:!!data.call_locked, unbookedSubs:[],
-                cancelled:!!data.cancelled, cancelPay:Number(data.cancel_pay)||0,
-                cancelCharge:Number(data.cancel_charge)||0};
+    _ctState = _ctNewState(bookingId, callId, data);
     // Then, separately, what the crew boss submitted — see _ctLoadSubmissions.
     // Sequential and soft: it pre-fills the empty rows and marks them, and a
     // failure leaves the grid exactly as it was before submissions existed.
@@ -24530,6 +24735,7 @@ function renderCallTimesGrid(){
   // rendered read-only and is never included in a save — their stored times
   // stay exactly as they are.
   const editable = s.crew.filter(_ctEditable);
+  const fillable = s.crew.filter(_ctTakesTimes);   // less rows held by a No-show report
   const paidRows = s.crew.filter(_ctIsCancelPaid);
 
   const pgOpts = function(sel){
@@ -24563,9 +24769,11 @@ function renderCallTimesGrid(){
     const uid   = c.user_id;
     const ok    = _ctEditable(c);
     const paid  = _ctIsCancelPaid(c);
-    const dis   = (s.locked || !ok) ? ' disabled' : '';
+    const rep   = _ctReported(c);
+    const dis   = (s.locked || !ok || rep) ? ' disabled' : '';
     const rowSt = ok ? '' : 'opacity:.45;';
-    const rowTt = ok ? '' : (_ctPromoPending(c)
+    const rowTt = rep ? ' title="Reported as a No-show by the crew boss — confirm or reject the report before entering times."'
+      : ok ? '' : (_ctPromoPending(c)
       ? ' title="Promoted off backup and has not accepted — times are locked."'
       : (_ctIsStoodDown(c)
           ? ' title="Stood down — not paid."'
@@ -24588,9 +24796,13 @@ function renderCallTimesGrid(){
           ? ' <span title="Submitted by the crew member — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">SUBMITTED</span>'
           : ' <span title="Submitted by the crew boss — not saved until you accept" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 4px">BOSS</span>')
       : '';
-    const badge = paid ? paidChip : (_ctPromoPending(c) ? '' : _ctStatusBadge(c.status));
-    return '<tr style="border-bottom:1px solid var(--border);'+mark+rowSt+'"'+rowTt+'>'
-      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+badge+_ctPromoChip(c)+chip+_ctSubHint(c)+'</td>'
+    // An open report replaces the Confirmed badge: the person is status 5
+    // only because nobody has decided yet.
+    const badge = rep ? pcAmber('NO-SHOW REPORTED', 'The crew boss reported this person as a No-show. Confirm or reject it.')
+                : paid ? paidChip : (_ctPromoPending(c) ? '' : _ctStatusBadge(c.status));
+    const rmark = rep ? 'border-left:2px solid #f59e0b;' : '';
+    return '<tr style="border-bottom:1px solid var(--border);'+mark+rmark+rowSt+'"'+rowTt+'>'
+      + '<td style="padding:6px 8px;font-size:12px;color:var(--text);white-space:nowrap">'+name+' '+badge+_ctPromoChip(c)+chip+_ctSubHint(c)+_ctReportLine(c)+'</td>'
       + '<td style="padding:6px 4px;text-align:center">'+inp('ct-on-'+uid,   hms2hm(c.on),  'HH:MM', 'clock', dis)+'</td>'
       // Breaks through hms2hm too: pre-filled and reinstated rows come back as
       // the raw TIME column ("00:00:00"), and every box shows HH:MM. Save
@@ -24610,7 +24822,7 @@ function renderCallTimesGrid(){
   // large calls where everyone shares the same times. Shown only when editable
   // and there are >1 such rows to fill.
   const thFill = function(t, col){
-    const arrow = (!s.locked && editable.length > 1)
+    const arrow = (!s.locked && fillable.length > 1)
       ? ' <span onclick="ctFillDown(\''+col+'\')" title="Copy the top row down to all confirmed and paid-cancellation crew (skips anyone whose promotion is not accepted, and anyone stood down and not paid)" style="cursor:pointer;color:var(--accent);font-weight:700">&#8595;</span>'
       : '';
     return '<th style="padding:6px 8px;text-align:left;font-size:9px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;white-space:nowrap">'+t+arrow+'</th>';
@@ -24668,9 +24880,23 @@ function renderCallTimesGrid(){
     ? '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). <b>Save</b> writes the open rows as ordinary hours. Saving every open row at once marks the times checked and takes the call off the Times outstanding lane. It never locks the call — that stays a SmartStaff action.</div>'
     : '<div style="font-size:10px;color:var(--muted);padding:8px 0 0">Times are 24-hour (HH:MM). <b>Save</b> writes times, rate, late and note and leaves the call outstanding. <b>Accept</b> saves and then ticks “Times filled”, which is what clears the call from the Times outstanding lane. Neither ever locks the call — that stays a SmartStaff action.</div>';
 
+  // No-show reports. Unknown (null) is said, not hidden: the reviewer must not
+  // read an absence of tags as "no reports". Accept stays enabled then, and
+  // the server refuses it if one is open.
+  const openReports = _ctOpenReports();
+  const noShowNote = (s.cancelled || s.locked)
+    ? ''
+    : (s.noShows === null
+        ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">Couldn\'t check for No-show reports. Accept will still be refused if one is open.</div>'
+        : (openReports
+            ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">The crew boss reported '+openReports+' No-show'+(openReports === 1 ? '' : 's')
+              + ' on this call. Confirm or reject each on its row. Their times are locked until you do, and Accept is held.</div>'
+            : ''));
+
   document.getElementById('entity-modal-body').innerHTML =
       lockNote
     + cancelNote
+    + noShowNote
     + _ctPhotoStrip()
     + _ctUnbookedNote()
     + '<div id="ct-result" style="font-size:11px;padding:0 0 6px"></div>'
@@ -24694,6 +24920,9 @@ function renderCallTimesGrid(){
   if(s.locked)                         actions = back;
   else if(s.cancelled && !paidRows.length) actions = back;
   else if(s.cancelled)                 actions = entityBtn('Save Times',"saveCallTimes()",{primary:true, id:'ct-save-btn'}) + back;
+  else if(openReports)                 actions = '<span style="font-size:11px;color:#f59e0b;align-self:center">'+_ctNoShowMsg(openReports)+'</span>'
+                                              + entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn', disabled:true, title:_ctNoShowMsg(openReports)})
+                                              + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + back;
   else                                 actions = entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn'}) + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + back;
   document.getElementById('entity-modal-actions').innerHTML = actions;
 }
@@ -24757,8 +24986,9 @@ function ctNormalize(el, type){
 function ctFillDown(col){
   const s = _ctState;
   if(!s || s.locked) return;
-  // Confirmed AND paid-cancellation rows -- the same set the grid opens.
-  const confirmed = s.crew.filter(_ctEditable);
+  // Confirmed AND paid-cancellation rows -- the same set the grid opens --
+  // less any row waiting on a No-show decision (its boxes are locked).
+  const confirmed = s.crew.filter(_ctTakesTimes);
   if(confirmed.length < 2) return;
   const prefix = {on:'ct-on-', break:'ct-brk-', break_night:'ct-brkn-', off:'ct-off-', rate:'ct-pg-'}[col];
   if(!prefix) return;
@@ -24791,7 +25021,11 @@ async function _ctSave(accept){
   // Every editable row in ONE request. On a cancelled call that matters:
   // update-call-times.php sets the done-tick only when every paid row is
   // saved together with none refused.
-  s.crew.filter(_ctEditable).forEach(function(c){
+  //
+  // A row with an open No-show report is NOT saved: its boxes are locked, and
+  // writing blanks over it would be a times decision made before the
+  // No-show decision. It is saved once Ops reject the report.
+  s.crew.filter(_ctTakesTimes).forEach(function(c){
     const uid  = c.user_id;
     const on   = (document.getElementById('ct-on-'+uid)   || {}).value   || '';
     const brk  = (document.getElementById('ct-brk-'+uid)  || {}).value   || '';
@@ -24822,7 +25056,9 @@ async function _ctSave(accept){
     result.style.color = 'var(--conflict)';
     result.innerHTML   = s.cancelled
       ? 'Nobody on this cancelled call is paid — nothing to save.'
-      : 'No confirmed crew on this call — nothing to save.';
+      : (s.crew.some(_ctReported)
+          ? 'Every confirmed crew member has an open No-show report. Confirm or reject those first.'
+          : 'No confirmed crew on this call — nothing to save.');
     return;
   }
 
@@ -24881,6 +25117,20 @@ async function _ctSave(accept){
     // the file lock hangs, it does not fail.
     const ares = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/times/accept', { method:'POST' });
     const adata = await ares.json();
+    // HELD BY A NO-SHOW REPORT the grid did not know about (a boss reported
+    // someone after the grid was opened, or the list could not be read).
+    // Said in a dialog, not in the result line: the line can be scrolled out
+    // of sight, and the slice G unlink lesson is that a refusal nobody sees
+    // reads as success. Then reload, so the report shows on its row.
+    if(ares.status === 409 && adata && adata.needs_resolution){
+      result.style.color = 'var(--conflict)';
+      result.textContent = 'Times saved, but NOT accepted.';
+      await goatTell('Times not accepted',
+        (adata.error || 'A No-show report is still open.')
+        + '\n\nThe times are saved. Confirm or reject the report on its row, then Accept again.');
+      await _ctReload(null);
+      return;
+    }
     if(!ares.ok || (adata && adata.error)){
       // The times ARE saved — say so, rather than letting a failed tick read as
       // a failed save and invite someone to key them all again.
@@ -24903,7 +25153,9 @@ async function _ctSave(accept){
     result.innerHTML   = 'Save failed: '+escapeHtml(e.message);
   }finally{
     if(saveBtn)   saveBtn.disabled   = false;
-    if(acceptBtn) acceptBtn.disabled = false;
+    // Held again if a No-show report is still open: a Save must not quietly
+    // re-enable an Accept the grid disabled for a reason.
+    if(acceptBtn) acceptBtn.disabled = _ctOpenReports() > 0;
   }
 }
 
@@ -33065,14 +33317,17 @@ function opsFilteredTimes(lane){
 
 // Oldest finish first — the mirror of the forward lanes' soonest-first, and for
 // the same reason: the call at the top is the one going cold. Ties broken by the
-// larger shortfall, so the call missing five people's times sits above one
-// missing a single row.
+// larger amount of work, so the call missing five people's times sits above one
+// missing a single row. A No-show to confirm IS work (BRIEF-boss-no-show-slice-3
+// §5): it counts with the shortfall, so a call with needing 0 and an open report
+// never drops below calls that need action.
+function opsTimesWork(o){ return (Number(o.needing) || 0) + (Number(o.no_show_count) || 0); }
 function opsSortTimes(rows){
   return rows.slice().sort(function(a, b){
     const ae = a.end || '', be = b.end || '';
     if(ae < be) return -1;
     if(ae > be) return 1;
-    return (b.needing || 0) - (a.needing || 0);
+    return opsTimesWork(b) - opsTimesWork(a);
   });
 }
 
@@ -33176,6 +33431,19 @@ function opsTimesCard(o, laneKey){
   const pcol   = OPS_STATUS_COLORS[o.status] || 'var(--muted)';
   const need   = (o.needing || 0) + ' of ' + (o.confirmed || 0) + ' still need times';
   const labels = opsTimesLabels(o);
+  // No-show reports (BRIEF-boss-no-show-slice-3 §5). The lane keeps a call
+  // while one is open even when nobody needs times (slice 1, decision 3).
+  // "0 of 6 still need times" would then read as nothing to do, so in that
+  // case the chip is shown alone.
+  const nsc    = Number(o.no_show_count) || 0;
+  const nsChip = nsc > 0
+    ? '<span class="ops-pill" title="The crew boss reported '+nsc+' No-show'+(nsc === 1 ? '' : 's')
+      + '. Open Enter Times to confirm or reject. Accept is held until then."'
+      + ' style="color:#f59e0b;border-color:#f59e0b">'+nsc+' No-show to confirm</span>'
+    : '';
+  const needPill = (nsc > 0 && !(Number(o.needing) > 0))
+    ? ''
+    : '<span class="ops-pill" style="color:'+pcol+';border-color:'+pcol+'">'+escapeHtml(need)+'</span>';
   return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(o.call_id||0)+')">'
     +   '<div class="ops-row-main">'
     +     '<div class="ops-row-title">'
@@ -33185,7 +33453,8 @@ function opsTimesCard(o, laneKey){
     +     '<span class="ops-row-meta">'+meta+'</span>'
     +   '</div>'
     +   '<div class="ops-row-fill">'
-    +     '<span class="ops-pill" style="color:'+pcol+';border-color:'+pcol+'">'+escapeHtml(need)+'</span>'
+    +     needPill
+    +     nsChip
     +     opsTimesChase(o)
     +   '</div>'
     +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')

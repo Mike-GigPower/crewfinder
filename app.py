@@ -19711,6 +19711,19 @@ def ss_accept_call_times(ss, call_id):
         resp = ss.post(url, params={"id": int(call_id)}, timeout=30)
     except Exception as e:
         return None, f"request failed: {e}"
+    # Unresolved No-show reports (BRIEF-boss-no-show, slice 1): the endpoint
+    # refuses with 409 {ok:false, needs_resolution:true, error, no_shows:[...]}.
+    # That body is an ANSWER the grid acts on (who, and why Accept is held),
+    # so it comes back as the RESULT and the route re-issues the 409 -- the
+    # downstream_not_held pattern in ss_update_crew_status(). Flattened into
+    # an error string it would reach the browser as a 502 and lose the list.
+    if resp.status_code == 409:
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data.get("needs_resolution"):
+            return data, None
     if resp.status_code != 200:
         detail = ""
         try:
@@ -19770,7 +19783,88 @@ def api_call_times_accept(booking_id, call_id):
     result, err = ss_accept_call_times(ss, call_id)
     if err:
         return jsonify({"error": err}), 502
+    # Held by unresolved No-show reports: the endpoint's 409, passed through
+    # as one with its body (needs_resolution, error, no_shows).
+    if isinstance(result, dict) and result.get("needs_resolution"):
+        return jsonify(result), 409
     return jsonify(result)
+
+
+# ── BOSS NO-SHOW REPORTS: CONFIRM / REJECT (BRIEF-boss-no-show-slice-3) ──
+# A Crew Boss reports someone as a No-show from Crew Hub. The report is a
+# call_time_submissions row with no_show = 1, and the person stays status 5
+# until Ops decide. Accept is refused until they do (accept-call-times.php).
+#
+#   Confirm  -> status 8, through the SAME update-crew-status.php write as
+#               the Booked Crew dropdown. No second status writer.
+#   Reject   -> reject-no-show.php voids the report row. The person's live
+#               row falls back to any times the boss sent before the report.
+
+def ss_reject_no_show(ss, call_id, user_id, submission_id):
+    """Void one No-show report via reject-no-show.php (admin session).
+    Returns (status, data): 200 {ok, voided_id, restored: {...} | null}, or a
+    409 {error, reason} saying why it was refused."""
+    return _ss_post_json(ss, "reject-no-show.php",
+                         {"callID": int(call_id), "userID": int(user_id),
+                          "submission_id": int(submission_id)})
+
+
+def _no_show_ints(body, *keys):
+    """The named body fields as positive ints, or None if any is missing or bad."""
+    out = []
+    for k in keys:
+        try:
+            v = int(body.get(k))
+        except (TypeError, ValueError):
+            return None
+        if v <= 0:
+            return None
+        out.append(v)
+    return out
+
+
+@app.route("/api/call/<booking_id>/<call_id>/no-show/confirm", methods=["POST"])
+@require_cohort("admin")
+def api_call_no_show_confirm(booking_id, call_id):
+    """Confirm a reported No-show: status 8, via ss_update_crew_status(), which
+    is the same write the Booked Crew status dropdown makes. Body {user_id}.
+    booking_id is for URL symmetry. Once the person is 8, the report drops out
+    of every unresolved list (it needs status 5), so nothing else is written."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    ids = _no_show_ints(request.get_json(silent=True) or {}, "user_id")
+    if ids is None:
+        return jsonify({"error": "Body must be {user_id}"}), 400
+    result, err = ss_update_crew_status(ss, int(call_id), ids[0], 8)
+    if err:
+        return jsonify({"error": err}), 502
+    # update-crew-status.php only answers 409 for a refused Promote, which a
+    # move to 8 never is. Kept so a 409 can never pass as success.
+    if isinstance(result, dict) and result.get("ok") is False:
+        return jsonify(result), 409
+    return jsonify(result)
+
+
+@app.route("/api/call/<booking_id>/<call_id>/no-show/reject", methods=["POST"])
+@require_cohort("admin")
+def api_call_no_show_reject(booking_id, call_id):
+    """Not a No-show: void the report via reject-no-show.php. Body
+    {user_id, submission_id}. A 409 (no longer the latest row, already
+    confirmed, and so on) passes through as 409 with its message and reason,
+    so the grid can show it. It is never flattened into a 502."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    ids = _no_show_ints(request.get_json(silent=True) or {}, "user_id", "submission_id")
+    if ids is None:
+        return jsonify({"error": "Body must be {user_id, submission_id}"}), 400
+    st, data = ss_reject_no_show(ss, int(call_id), ids[0], ids[1])
+    if st in (400, 403, 404, 409, 422):
+        return jsonify(data), st
+    if st != 200:
+        return jsonify({"error": data.get("error") or f"HTTP {st}"}), 502
+    return jsonify(data)
 
 
 def ss_get_bookings_bulk(ss, limit=50, offset=0, q=""):
