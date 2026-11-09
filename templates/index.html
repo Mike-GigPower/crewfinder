@@ -5022,6 +5022,9 @@ function renderResults(result,details,targets){
   // booked/declined filter calls targetRelationship(), which reads _bookedRel.
   const bookedCrew = result.bookedCrew || [];
   _bookedRel = buildBookedRel(bookedCrew);
+  // targetRelationship() now reads _softCallIds too (hard calls only) — set it
+  // here, before anything below asks, not just in the two view renderers.
+  _softCallIds = new Set((result.soft_targets||[]).map(t=>String(t.call_id)));
   // Result-list name filter (3.6.0): narrows the rendered buckets by name
   // substring. Composes with the GOAT filter and the header sort; the counts
   // below recompute off the filtered result so the stats track what's shown.
@@ -5213,13 +5216,43 @@ function buildBookedRel(bookedCrew){
 function targetRelationship(crew){
   const r=_bookedRel.get(_normName(crew.name));
   if(r) return r;
-  const ts=(crew.shifts||[]).filter(s=>s.is_target);
+  // Hard calls only (5.96.1): the server tags shifts on soft (considered) calls
+  // is_target too, and being booked on a call you only ranked against is not a
+  // relationship to the call being filled.
+  const ts=(crew.shifts||[]).filter(s=>s.is_target && !_softCallIds.has(String(s.call_id)));
   if(!ts.length) return null;
   if(ts.some(s=>s.status===5 && !s.promo_pending)) return 'booked';
   if(ts.some(s=>s.status===5)) return 'promo';
   if(ts.some(s=>s.status===6)) return 'declined';
   if(ts.some(s=>s.status===7)) return 'backup';
   return 'waiting';
+}
+
+// How many of the searched (hard) calls this crew member is confirmed on, from
+// their own shift on each call. Drives "BOOKED k/n" in a multi-call search (5.96.1).
+function targetBookedCount(crew, targets){
+  return (targets||[]).filter(t=>(crew.shifts||[]).some(s=>
+    s.is_target && String(s.call_id)===String(t.call_id) && s.status===5 && !s.promo_pending
+  )).length;
+}
+
+// What the results timeline draws for the requested call(s) (5.96.1).
+// The synthetic target bar exists for crew with NO calendar row on the call
+// (waiting/declined, known only from the booked-crew list), and that list is
+// only fetched for a single hard call. So:
+//   single hard call — one synthetic bar, over the hard window only, coloured by
+//                      rel; the crew's own shift on that call is not drawn twice.
+//   several hard calls — no synthetic bars; each target shift is drawn as itself
+//                      by shiftBarState, so each call shows its own status, name
+//                      and times. (Previously one per-crew rel was painted over
+//                      every window, with the first target shift's tooltip.)
+//   windows — [{callId, soft, ...}] as built in renderTimeline.
+function tlTargetPlan(crew, rel, windows){
+  const hard=(windows||[]).filter(w=>!w.soft);
+  if(!rel || hard.length!==1) return {skip:()=>false, bars:[]};
+  const id=String(hard[0].callId);
+  const tgtShift=(crew.shifts||[]).find(s=>s.is_target && String(s.call_id)===id) || null;
+  return {skip:s=>!!s.is_target && String(s.call_id)===id, bars:[{tw:hard[0], tgtShift}]};
 }
 
 // Shift bar classification — the single source of truth for what colour a shift
@@ -5326,7 +5359,16 @@ function statusLabel(crew, targets, rowStatus){
   // bucket — "they declined this call" / "already booked" is the operator's
   // most relevant signal when filling it.
   const rel=targetRelationship(crew);
-  if(rel==='booked')   return '<span class="status-booked">BOOKED</span>';
+  if(rel==='booked'){
+    // Multi-call search: say how many of the searched calls (5.96.1). The
+    // per-call pills underneath show which ones.
+    const n=(targets||[]).length;
+    if(n>1){
+      const k=targetBookedCount(crew,targets);
+      if(k<n) return '<span class="status-booked" title="Booked on '+k+' of '+n+' searched calls">BOOKED '+k+'/'+n+'</span>';
+    }
+    return '<span class="status-booked">BOOKED</span>';
+  }
   if(rel==='promo')    return '<span class="status-waiting" title="Promoted from backup — has not accepted yet">PENDING</span>';
   if(rel==='backup')   return '<span class="status-backup">BACKUP</span>';
   if(rel==='declined') return '<span class="status-declined">DECLINED</span>';
@@ -6143,6 +6185,7 @@ function renderTimeline(result,details,targets){
     endH:dtToH(t.end_dt,targetDate),
     label:(t._soft?'~ ':'')+'#'+(t.call_num||'')+(t.call_name?' '+t.call_name:''),
     soft:!!t._soft,
+    callId:t.call_id,
   }));
 
   // Scrollable bounds: 24h before earliest call start, 24h after latest call end.
@@ -6298,21 +6341,21 @@ function renderTimeline(result,details,targets){
     //    everything else      → blue   (informational only)
     //  The requested-call assignment itself is drawn once, below, from `rel`
     //  (green=booked / grey=waiting / red=declined) — covers waiting/declined
-    //  crew who have no calendar shift row. is_target shifts are skipped here
-    //  when rel is known so we don't double-draw.
+    //  crew who have no calendar shift row. Single hard call only — see
+    //  tlTargetPlan; with several hard calls each target shift draws as itself.
     if(status!=='skipped'){
+      const tplan=tlTargetPlan(crew, rel, targetWindows);
       (crew.shifts||[]).forEach(s=>{
         const sh=dtToH(s.start,targetDate),eh=dtToH(s.end,targetDate);
-        if(s.is_target && rel) return;   // covered by the synthetic target bar below
+        if(tplan.skip(s)) return;   // covered by the synthetic target bar below
         const {barClass, state} = shiftBarState(s, rel);
         addBar(sh,eh,barClass,shiftTip(s,targetDate,sh,eh,state));
       });
 
-      // Synthetic bar(s) for the requested call, coloured by the relationship.
-      if(rel){
+      // Synthetic bar for the requested call, coloured by the relationship.
+      if(tplan.bars.length){
         const {barClass: cls, state} = targetBarState(rel);
-        const tgtShift=(crew.shifts||[]).find(s=>s.is_target);
-        targetWindows.forEach(tw=>{
+        tplan.bars.forEach(({tw, tgtShift})=>{
           let tip;
           if(tgtShift){ tip=shiftTip(tgtShift,targetDate,tw.startH,tw.endH,state); }
           else {
