@@ -18809,6 +18809,80 @@ def api_calls_supervision_clear():
     return jsonify(result)
 
 
+# ─── LINK BUTTON (BRIEF-default-link-self-submit-off, Release 2, C1) ─────────
+# Two proxies, the same way the call-supervision.php routes above work: Admin
+# only (J18), the operator's own SmartStaff session, and the endpoint's 404,
+# 409 and 422 passed through as they came — they are answers ("someone else is
+# linking this booking", "no such booking"), not failures. Anything else that
+# isn't a 200 is a 502 carrying the endpoint's error text.
+
+_LINK_PASS_THROUGH = (200, 404, 409, 422)
+
+
+def _link_proxy(endpoint, body):
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    status, data = _ss_post_json(ss, endpoint, body)
+    if status in _LINK_PASS_THROUGH:
+        return jsonify(data), status
+    return jsonify({"error": data.get("error") or f"HTTP {status}"}), 502
+
+
+def _int_ids(values):
+    """The positive integer ids in a JSON list; anything else is dropped."""
+    out = []
+    for v in values or []:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n > 0 and n not in out:
+            out.append(n)
+    return out
+
+
+@app.route("/api/booking/<booking_id>/link-crew-boss", methods=["POST"])
+@require_cohort("admin")
+def api_booking_link_crew_boss(booking_id):
+    """Link to Crew Boss calls (design v0.6 §4.2). Proxies
+    auto-link-supervision.php. Body {mode: "dry_run"} for the preview, or
+    {mode: "apply", link: [callIDs], mark: [callIDs]}. The endpoint re-checks
+    every call under the booking's lock and answers per call."""
+    try:
+        bid = int(booking_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode")
+    if mode not in ("dry_run", "apply"):
+        return jsonify({"error": "mode must be dry_run or apply"}), 400
+    payload = {"mode": mode, "booking_id": bid}
+    if mode == "apply":
+        payload["link"] = _int_ids(body.get("link"))
+        payload["mark"] = _int_ids(body.get("mark"))
+        if not payload["link"] and not payload["mark"]:
+            return jsonify({"error": "Nothing to link or mark"}), 400
+    return _link_proxy("auto-link-supervision.php", payload)
+
+
+@app.route("/api/calls/no-crew-boss", methods=["POST"])
+@require_cohort("admin")
+def api_calls_no_crew_boss():
+    """Mark calls "No Crew Boss", or clear the mark (Undo) — J7. Proxies
+    no-crew-boss.php. Body {action: "set"|"clear", call_ids: [...]}; the
+    endpoint refuses a call with a link ("Unlink it first.") or one the
+    warning doesn't apply to, per call."""
+    body = request.get_json(silent=True) or {}
+    action = body.get("action")
+    if action not in ("set", "clear"):
+        return jsonify({"error": "action must be set or clear"}), 400
+    ids = _int_ids(body.get("call_ids"))
+    if not ids:
+        return jsonify({"error": "No calls given"}), 400
+    return _link_proxy("no-crew-boss.php", {"action": action, "call_ids": ids})
+
+
 @app.route("/api/call/<booking_id>/<call_id>/crew/<user_id>/status", methods=["POST"])
 @require_cohort("admin")
 def api_call_crew_status(booking_id, call_id, user_id):

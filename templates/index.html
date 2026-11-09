@@ -28264,7 +28264,8 @@ function evOpenCrew(eventId, userId){
 }
 
 function bkCallRow(bookingId, c, maps, smaps){
-  var chips = bkCallTypeChip(bookingId, c) + bkFlagMarkers(bookingId, c) + bkFeedChips(c, maps) + bkSupChips(c, smaps) + bkUnlinkedChip(bookingId, c);
+  var chips = bkCallTypeChip(bookingId, c) + bkFlagMarkers(bookingId, c) + bkFeedChips(c, maps) + bkSupChips(c, smaps) + bkUnlinkedChip(bookingId, c)
+            + bkNoCrewBossChip(bookingId, c);
   var name  = escapeHtml(decodeEntities(c.call_name || 'Call'));
   var when  = _abCallWhen(c.start_date, c.start_time);
   var whenLine = when
@@ -28424,7 +28425,17 @@ function bkCallsSection(bookingId, d){
 
   // Always visible, in every mode and for every cohort — it is advisory, and
   // it stays silent on bookings with no boss call at all. See bkSupWarning.
+  // Admin also gets the bulk Mark: No Crew Boss under it (C3); the banner's
+  // own text and count are not changed here (P1).
   var warn = hasCalls ? bkSupWarning(calls, smaps) : '';
+  if(warn) warn += bkUlActionsHtml(bookingId, calls);
+
+  // The Link button heads the Crew bosses tab (C2, Admin only — the tab is
+  // too). Its dry_run loads once per render of fresh booking data.
+  if(_bkSupMode && hasCalls && window._cohort === 'admin'){
+    header += '<div id="bk-link-bar">' + bkLinkBarHtml(bookingId) + '</div>';
+    bkLinkLoad(bookingId);   // async; a no-op while loading or once loaded
+  }
 
   // In either edit mode with a source/boss chosen, float it to the top so the
   // two-step relationship reads top-down.
@@ -28969,6 +28980,16 @@ async function bkSupClear(bookingId, childId){
   // drawn in more than one place in the booking dialog, so getElementById
   // could land on a copy that is not on screen, and the refusal showed
   // nowhere. goatTell sits above the dialog, so it is always seen.
+  //
+  // UNLINK MARKS "NO CREW BOSS" (J7, BRIEF C3). When the Link button would
+  // offer the call once it is unlinked, call-supervision.php marks it, so it
+  // isn't offered again. The dry_run's unlink_marks says which calls those
+  // are; for them, Ops confirm first. The toast reports what the server
+  // actually marked (marked_no_crew_boss), not the prediction.
+  var dry = _bkLink && String(_bkLink.bookingId) === String(bookingId) && _bkLink.data;
+  var willMark = !!(dry && (dry.unlink_marks || []).map(String).indexOf(String(childId)) >= 0);
+  if(willMark && !(await goatAsk('Unlink and mark No Crew Boss?',
+      'The Link button won’t offer it again.\n\nTo link it later, use the Crew Boss editor on this tab.', 'Unlink'))) return;
   try{
     var resp = await fetch('/api/calls/supervision/clear', {
       method:'POST',
@@ -28982,13 +29003,413 @@ async function bkSupClear(bookingId, childId){
       goatTell(resp.status === 409 ? 'Can’t unlink this call' : 'Couldn’t unlink', msg);
       return;
     }
-    delete window._bookingIndex[bookingId];
-    openBookingDialog(bookingId);
+    var marked = (j && j.marked_no_crew_boss) || [];
+    goatInfoToast(marked.length ? 'Unlinked · marked No Crew Boss' : 'Unlinked', 3000);
+    if(j && j.marker_error) goatTell('Unlinked, but the No Crew Boss mark didn’t save', decodeEntities(String(j.marker_error)));
+    bkLinkReload(bookingId);
   }catch(e){ goatTell('Couldn’t unlink', 'Clear failed: '+(e.message||String(e))); }
+}
+
+// ── LINK BUTTON (BRIEF-default-link-self-submit-off, Release 2, C2/C3) ───────
+// "Link to Crew Boss calls" at the top of the Crew bosses tab: a preview of
+// what auto-link-supervision.php's dry_run would link, then one apply. Every
+// link is an Ops action — no cron, no backfill (design v0.6 §5). Admin only
+// (J18), like the tab and every other write in this dialog.
+//
+// THE RULE IS NEVER RE-DERIVED HERE. Which calls are offered, skipped or
+// marked, and why, comes from goat_auto_link_candidates() through the
+// dry_run (P1); apply re-checks every call on the server under the booking's
+// lock, so a preview that has gone stale can't link the wrong thing — it
+// reports that call as refused.
+//
+// Plus the "No Crew Boss" marker (J7): its chip with Undo on the Calls list,
+// the Unlink confirmation for calls the button would offer, and the amber
+// banner's bulk Mark. The banner's own text and its count are unchanged: the
+// warning skips marked calls on the server (P1), so nothing client-side
+// decides what it shows.
+
+var _bkLink  = null;   // {bookingId, loading, data, error} — the dry_run for the open booking
+var _bkUlSel = {};     // { call_id: true } ticked in the amber banner (bulk Mark)
+
+function bkLinkReset(){ _bkLink = null; _bkUlSel = {}; }
+
+// "Sat 12 Dec 07:00" (24-hour) from the dry_run's Y-m-d and H:i. The date is
+// built locally from its parts, so no timezone shift can move it a day.
+function bkLinkWhen(r){
+  var p = String(r.start_date || '').split('-');
+  if(p.length !== 3) return String(r.start_date || '') + ' ' + String(r.start_time || '');
+  var dt = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  var day = dt.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/,/g, '');
+  return day + ' ' + String(r.start_time || '').slice(0, 5);
+}
+
+function bkLinkCallName(callId){
+  var d = window._curBookingEdit;
+  var c = d && (d.calls || []).find(function(x){ return String(x.call_id) === String(callId); });
+  return c ? decodeEntities(c.call_name || ('Call #' + callId)) : ('Call #' + callId);
+}
+
+async function bkLinkLoad(bookingId){
+  if(window._cohort !== 'admin') return;
+  if(_bkLink && String(_bkLink.bookingId) === String(bookingId) && (_bkLink.loading || _bkLink.data)) return;
+  var me = _bkLink = { bookingId: bookingId, loading: true, data: null, error: '' };
+  try{
+    var resp = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/link-crew-boss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry_run' })
+    });
+    var j = {};
+    try{ j = await resp.json(); }catch(_){}
+    if(!resp.ok || !j || !j.ok) me.error = (j && j.error) ? decodeEntities(String(j.error)) : ('HTTP ' + resp.status);
+    else me.data = j;
+  }catch(e){ me.error = e.message || String(e); }
+  me.loading = false;
+  if(_bkLink === me) bkLinkBarRender(bookingId);   // superseded by a reload: drop it
+}
+
+function bkLinkBarRender(bookingId){
+  var el = document.getElementById('bk-link-bar');
+  if(el) el.innerHTML = bkLinkBarHtml(bookingId);
+}
+
+function bkLinkBarHtml(bookingId){
+  if(window._cohort !== 'admin') return '';
+  var L = _bkLink;
+  var muted = 'font-size:10px;color:var(--muted)';
+  if(!L || String(L.bookingId) !== String(bookingId) || L.loading){
+    return '<div style="' + muted + ';margin-bottom:8px">Checking which calls can be linked…</div>';
+  }
+  if(L.error){
+    return '<div style="' + muted + ';margin-bottom:8px">Link to Crew Boss calls is unavailable (' + escapeHtml(L.error) + '). '
+      + '<span onclick="bkLinkRefresh(\'' + bookingId + '\')" style="color:var(--accent);cursor:pointer;text-decoration:underline">Try again</span></div>';
+  }
+  var d = L.data;
+  if(!d.boss_call_count) return '';   // no Crew Boss call on the booking: nothing to offer, nothing to say
+  var c = d.counts || {};
+  var n = (c.offer || 0) + (c.relink || 0);
+  var bits = [];
+  if(c.skip)   bits.push(c.skip + ' can’t be linked');
+  if(c.marked) bits.push(c.marked + ' marked No Crew Boss');
+  var btn = entityBtn('👷 Link to Crew Boss calls' + (n ? ' (' + n + ')' : ''), "bkLinkPreview('" + bookingId + "')",
+                      { primary: true, disabled: n === 0, title: n ? '' : 'Nothing to link', id: 'bk-link-go' });
+  var more = (n === 0 && (d.candidates || []).length)
+    ? ' <span onclick="bkLinkPreview(\'' + bookingId + '\')" style="color:var(--accent);cursor:pointer;text-decoration:underline">Show the list</span>'
+    : '';
+  return '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">'
+    + btn + '<span style="' + muted + '">' + escapeHtml(bits.join(' · ')) + more + '</span></div>';
+}
+
+function bkLinkRefresh(bookingId){
+  _bkLink = null;
+  bkLinkBarRender(bookingId);
+  bkLinkLoad(bookingId);
+}
+
+// Reopen the booking on the same tab (as bkSupSave does) with a fresh dry_run.
+function bkLinkReload(bookingId){
+  bkLinkReset();
+  delete window._bookingIndex[bookingId];
+  openBookingDialog(bookingId);
+}
+
+// The preview. Its own overlay above the booking dialog, in goatChoice's style,
+// because it needs tick boxes, Undo and a choice — not just buttons.
+function bkLinkPreview(bookingId){
+  var d = _bkLink && _bkLink.data;
+  if(!d) return;
+  var rows   = d.candidates || [];
+  var will   = rows.filter(function(r){ return r.outcome === 'offer' || r.outcome === 'relink'; });
+  var cant   = rows.filter(function(r){ return r.outcome === 'skip'; });
+  var marked = rows.filter(function(r){ return r.outcome === 'marked'; });
+
+  var line = 'display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-bottom:4px;background:var(--surface2)';
+  var head = 'font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 6px';
+  function who(r){
+    return '<span style="color:var(--text)">' + escapeHtml(r.call_name || ('Call #' + r.child_call)) + '</span>'
+      + ' <span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace;font-size:10px">#' + r.child_call + ' · ' + escapeHtml(bkLinkWhen(r)) + '</span>';
+  }
+
+  var html = '';
+  if(will.length){
+    html += '<div style="' + head + '">Will link (' + will.length + ')</div>'
+      + will.map(function(r){
+          var target = r.outcome === 'relink'
+            ? 'Re-link: from #' + r.from_boss_call + (r.from_boss_call_name ? ' ' + escapeHtml(r.from_boss_call_name) : '') + ' (cancelled) to #' + r.boss_call
+            : '→ Crew Boss call #' + r.boss_call;
+          var bossName = r.boss_call_name ? ' ' + escapeHtml(r.boss_call_name) : '';
+          var note = r.note
+            ? '<div style="font-size:10px;color:var(--warn);margin-top:2px">' + escapeHtml(r.note) + '</div>' : '';
+          return '<label style="' + line + ';cursor:pointer">'
+            + '<input type="checkbox" class="bkl-cb" data-cid="' + r.child_call + '" checked style="margin-top:2px">'
+            + '<div style="flex:1;min-width:0;font-size:12px">' + who(r)
+            +   '<div style="font-size:11px;color:var(--accent);margin-top:2px">' + target + bossName + '</div>' + note
+            + '</div></label>';
+        }).join('');
+  }
+  if(cant.length){
+    html += '<div style="' + head + '">Can’t link (' + cant.length + ')</div>'
+      + cant.map(function(r){
+          return '<div style="' + line + '"><div style="flex:1;min-width:0;font-size:12px">' + who(r)
+            + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + escapeHtml(r.reason_text || r.reason || '') + '</div></div></div>';
+        }).join('');
+  }
+  if(marked.length){
+    html += '<div style="' + head + '">Marked No Crew Boss (' + marked.length + ')</div>'
+      + marked.map(function(r){
+          return '<div style="' + line + ';align-items:center"><div style="flex:1;min-width:0;font-size:12px">' + who(r) + '</div>'
+            + '<span class="bkl-undo" data-cid="' + r.child_call + '" style="font-size:11px;color:var(--accent);cursor:pointer;text-decoration:underline">Undo</span></div>';
+        }).join('');
+  }
+  if(will.length){
+    html += '<div style="' + head + '">Calls you untick</div>'
+      + '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-bottom:4px">'
+      +   '<input type="radio" name="bkl-untick" value="leave" checked> Leave them</label>'
+      + '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">'
+      +   '<input type="radio" name="bkl-untick" value="mark"> Mark No Crew Boss — the Link button won’t offer them again</label>';
+  }
+
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99995;'
+    + 'display:flex;align-items:center;justify-content:center;padding:16px';
+  var box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border:1px solid var(--border-gold);border-left:3px solid var(--accent);'
+    + 'border-radius:6px;max-width:600px;width:100%;max-height:85vh;overflow:auto;padding:16px 18px;'
+    + 'box-shadow:0 8px 30px rgba(0,0,0,.5)';
+  box.innerHTML =
+      '<div style="font-size:15px;font-weight:600;color:var(--accent);margin-bottom:4px">Link to Crew Boss calls</div>'
+    + '<div style="font-size:11px;color:var(--muted);line-height:1.5">Calls that overlap exactly one Crew Boss call on this booking. '
+    +   'Untick any that really have no Crew Boss. Linking lets whoever is confirmed on the Crew Boss call see the call and enter its times; it books nobody.</div>'
+    + html
+    + '<div class="bkl-btns" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px"></div>';
+
+  function close(){
+    document.removeEventListener('keydown', onKey, true);
+    ov.remove();
+  }
+  function onKey(e){
+    if(e.key === 'Escape'){ e.preventDefault(); e.stopImmediatePropagation(); close(); }
+  }
+  function btn(label, primary, fn){
+    var el = document.createElement('button');
+    el.type = 'button';
+    el.textContent = label;
+    el.style.cssText = 'font-size:12px;padding:6px 12px;border-radius:4px;cursor:pointer;background:var(--surface2);'
+      + 'border:1px solid ' + (primary ? 'var(--border-gold)' : 'var(--border)') + ';color:' + (primary ? 'var(--accent)' : 'var(--text)');
+    el.onclick = fn;
+    box.querySelector('.bkl-btns').appendChild(el);
+    return el;
+  }
+  function ticked(){
+    return Array.prototype.slice.call(box.querySelectorAll('.bkl-cb'))
+      .filter(function(cb){ return cb.checked; }).map(function(cb){ return Number(cb.getAttribute('data-cid')); });
+  }
+  function untickChoice(){
+    var r = box.querySelector('input[name="bkl-untick"]:checked');
+    return r ? r.value : 'leave';
+  }
+
+  btn('Cancel', false, close);
+  var go = null;
+  function relabel(){
+    if(!go) return;
+    var t = ticked().length;
+    var m = (untickChoice() === 'mark') ? (will.length - t) : 0;
+    go.textContent = 'Link ' + t + ' call' + (t === 1 ? '' : 's') + (m ? ' · mark ' + m : '');
+    go.disabled = (t + m) === 0;
+    go.style.opacity = go.disabled ? '0.45' : '1';
+  }
+  if(will.length){
+    go = btn('', true, async function(){
+      var link = ticked();
+      var mark = [];
+      if(untickChoice() === 'mark'){
+        will.forEach(function(r){ if(link.indexOf(Number(r.child_call)) < 0) mark.push(Number(r.child_call)); });
+      }
+      if(!link.length && !mark.length) return;
+      go.disabled = true;
+      go.textContent = 'Linking…';
+      close();
+      await bkLinkApply(bookingId, link, mark);
+    });
+    relabel();
+    box.addEventListener('change', relabel);
+  }
+  box.querySelectorAll('.bkl-undo').forEach(function(u){
+    u.onclick = function(){ close(); bkNoCrewBossUndo(bookingId, Number(u.getAttribute('data-cid'))); };
+  });
+
+  ov.appendChild(box);
+  ov.addEventListener('click', function(e){ if(e.target === ov) close(); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(ov);
+}
+
+async function bkLinkApply(bookingId, link, mark){
+  try{
+    var resp = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/link-crew-boss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'apply', link: link, mark: mark })
+    });
+    var j = {};
+    try{ j = await resp.json(); }catch(_){}
+    if(resp.status === 409){
+      goatTell('Someone else is linking this booking', decodeEntities((j && j.error) || 'Try again in a moment.'));
+      return;
+    }
+    if(!resp.ok || !j || !j.ok){
+      goatTell('Couldn’t link', decodeEntities((j && j.error) || ('HTTP ' + resp.status)));
+      return;
+    }
+    var c = j.counts || {};
+    var parts = ['Linked ' + (c.linked || 0)];
+    if(c.marked)  parts.push(c.marked + ' marked No Crew Boss');
+    if(c.refused) parts.push(c.refused + ' couldn’t be linked');
+    goatInfoToast(parts.join(' · '), 5000);
+    var refused = (j.results || []).filter(function(r){ return r.result !== 'done'; });
+    var notes   = (j.results || []).filter(function(r){ return r.result === 'done' && r.note && r.action === 'link'
+                                                               && r.note.indexOf('nobody confirmed') < 0; });
+    if(refused.length || notes.length){
+      goatTell(refused.length ? 'Some calls weren’t changed' : 'Linked, with a note',
+        refused.map(function(r){
+          return (r.action === 'mark' ? 'Mark ' : 'Link ') + bkLinkCallName(r.call_id) + ' (#' + r.call_id + '): ' + decodeEntities(r.reason || '');
+        }).concat(notes.map(function(r){
+          return bkLinkCallName(r.call_id) + ' (#' + r.call_id + '): ' + decodeEntities(r.note);
+        })).join('\n'));
+    }
+  }catch(e){
+    goatTell('Couldn’t link', e.message || String(e));
+    return;
+  }
+  bkLinkReload(bookingId);
+}
+
+// ── "No Crew Boss" marker (J7) ──
+function bkNoCrewBossChip(bookingId, c){
+  var m = c.no_crew_boss;
+  if(!m) return '';
+  var base = 'display:inline-flex;align-items:center;gap:3px;font-size:9px;'
+           + 'font-weight:600;border-radius:3px;padding:1px 5px;margin-left:8px';
+  var by = m.set_by_name ? decodeEntities(m.set_by_name) : ('user #' + m.set_by);
+  var when = m.set_at ? new Date(m.set_at * 1000).toLocaleString('en-AU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  var undo = (window._cohort === 'admin')
+    ? '<span onclick="event.preventDefault();event.stopPropagation();bkNoCrewBossUndo(\'' + bookingId + '\',' + Number(c.call_id) + ')" '
+      + 'title="Remove the No Crew Boss mark — the warning and the Link button will see this call again" '
+      + 'style="color:var(--accent);cursor:pointer;text-decoration:underline;margin-left:4px">Undo</span>'
+    : '';
+  return '<span title="Marked as having no Crew Boss' + (when ? ' on ' + escapeHtml(when) : '') + '. The amber warning skips it and the Link button doesn’t offer it. It does not switch on Crew send own times." '
+    + 'style="' + base + ';color:var(--muted);border:1px solid var(--border)">'
+    + 'No Crew Boss · set by ' + escapeHtml(by) + '</span>' + undo;
+}
+
+async function bkNoCrewBossUndo(bookingId, callId){
+  try{
+    var resp = await fetch('/api/calls/no-crew-boss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'clear', call_ids: [callId] })
+    });
+    var j = {};
+    try{ j = await resp.json(); }catch(_){}
+    var r = (j && j.results && j.results[0]) || null;
+    if(!resp.ok || !r || r.result !== 'done'){
+      goatTell('Couldn’t remove the mark', decodeEntities((r && r.reason) || (j && j.error) || ('HTTP ' + resp.status)));
+      return;
+    }
+    goatInfoToast('No Crew Boss mark removed', 3000);
+  }catch(e){
+    goatTell('Couldn’t remove the mark', e.message || String(e));
+    return;
+  }
+  bkLinkReload(bookingId);
+}
+
+// The amber banner's bulk actions (Admin): tick calls, Mark: No Crew Boss, and
+// a way to the Crew bosses tab where the Link button lives. Appended under the
+// banner; the banner itself (bkSupWarning) is untouched.
+function bkUlActionsHtml(bookingId, calls){
+  if(window._cohort !== 'admin') return '';
+  var list = (calls || []).filter(function(c){ return Number(c.unlinked_boss_call) > 0; });
+  if(!list.length) return '';
+  var n = list.filter(function(c){ return _bkUlSel[c.call_id]; }).length;
+  var all = n === list.length;
+  var rows = list.map(function(c){
+    var when = _abCallWhen(c.start_date, c.start_time);
+    return '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">'
+      + '<input type="checkbox" class="bk-ul-cb" data-cid="' + c.call_id + '"' + (_bkUlSel[c.call_id] ? ' checked' : '')
+      + ' onchange="bkUlToggle(\'' + bookingId + '\',\'' + c.call_id + '\',this.checked)">'
+      + escapeHtml(decodeEntities(c.call_name || 'Call')) + (when ? ' <span style="color:var(--muted)">' + escapeHtml(when) + '</span>' : '')
+      + '</label>';
+  }).join('');
+  var goTab = _bkSupMode ? ''
+    : ' <span onclick="entityTabShow(\'bosses\')" style="color:var(--accent);cursor:pointer;text-decoration:underline">Go to Crew bosses tab</span>';
+  return '<div id="bk-ul-actions" style="font-size:10px;color:var(--text);border:1px solid var(--warn);border-top:none;border-radius:0 0 4px 4px;'
+    + 'padding:6px 8px;margin:-7px 0 6px;display:flex;flex-direction:column;gap:4px">'
+    + '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--muted)">'
+    +   '<input type="checkbox"' + (all ? ' checked' : '') + ' onchange="bkUlSelectAll(\'' + bookingId + '\',this.checked)"> Select all</label>'
+    + rows
+    + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:2px">'
+    +   entityBtn('Mark: No Crew Boss' + (n ? ' (' + n + ')' : ''), "bkUlMark('" + bookingId + "')", { id: 'bk-ul-go', disabled: n === 0 })
+    +   '<span style="color:var(--muted)">For calls that really have no Crew Boss. To link them, use the Link button.' + goTab + '</span>'
+    + '</div></div>';
+}
+
+function bkUlToggle(bookingId, callId, checked){
+  if(checked) _bkUlSel[callId] = true; else delete _bkUlSel[callId];
+  bkUlRefresh(bookingId);
+}
+
+function bkUlSelectAll(bookingId, checked){
+  var calls = (window._curBookingEdit && window._curBookingEdit.calls) || [];
+  _bkUlSel = {};
+  if(checked) calls.forEach(function(c){ if(Number(c.unlinked_boss_call) > 0) _bkUlSel[c.call_id] = true; });
+  bkUlRefresh(bookingId);
+}
+
+function bkUlRefresh(bookingId){
+  var el = document.getElementById('bk-ul-actions');
+  if(!el) return;
+  var tmp = document.createElement('div');
+  tmp.innerHTML = bkUlActionsHtml(bookingId, (window._curBookingEdit && window._curBookingEdit.calls) || []);
+  if(tmp.firstChild) el.replaceWith(tmp.firstChild);
+}
+
+async function bkUlMark(bookingId){
+  var ids = Object.keys(_bkUlSel).map(Number);
+  if(!ids.length) return;
+  if(!(await goatAsk('Mark ' + ids.length + ' call' + (ids.length === 1 ? '' : 's') + ' No Crew Boss?',
+      'The amber warning stops showing for ' + (ids.length === 1 ? 'it' : 'them') + ' and the Link button won’t offer '
+      + (ids.length === 1 ? 'it' : 'them') + '.\n\nLinking a call to its Crew Boss call later removes the mark.', 'Mark'))) return;
+  try{
+    var resp = await fetch('/api/calls/no-crew-boss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set', call_ids: ids })
+    });
+    var j = {};
+    try{ j = await resp.json(); }catch(_){}
+    if(!resp.ok || !j || !j.ok){
+      goatTell('Couldn’t mark', decodeEntities((j && j.error) || ('HTTP ' + resp.status)));
+      return;
+    }
+    var done = (j.results || []).filter(function(r){ return r.result === 'done'; }).length;
+    var refused = (j.results || []).filter(function(r){ return r.result !== 'done'; });
+    goatInfoToast('Marked ' + done + ' No Crew Boss' + (refused.length ? ' · ' + refused.length + ' refused' : ''), 4000);
+    if(refused.length){
+      goatTell('Some calls weren’t marked', refused.map(function(r){
+        return bkLinkCallName(r.call_id) + ' (#' + r.call_id + '): ' + decodeEntities(r.reason || '');
+      }).join('\n'));
+    }
+  }catch(e){
+    goatTell('Couldn’t mark', e.message || String(e));
+    return;
+  }
+  bkLinkReload(bookingId);
 }
 
 function renderBookingDialog(bookingId, d, cached){
   entityModalWidth(ENTITY_MODAL_W_BOOKING);   // room for the call notes
+  // Fresh booking data invalidates the Link button's dry_run and the banner's
+  // ticks (C2/C3): a save anywhere may have changed what is linked.
+  var _sameBooking = window._curBookingEdit && String(window._curBookingEdit.booking_id) === String(bookingId);
+  if(d || !_sameBooking) bkLinkReset();
   window._curBookingEdit = d || null;
   abSetUnlinked(bookingId, d);   // slice G: All Bookings' "not linked" chip follows
   var name = (d && d.name) || (cached && cached.name) || 'Booking';

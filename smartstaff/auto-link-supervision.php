@@ -26,7 +26,8 @@
 	/* no CLI path and no service key (design v0.6 §5).
 	/*
 	/*   POST {mode: "dry_run", booking_id}
-	/*     200 {ok, mode, booking_id, boss_call_count, candidates: [row], counts}
+	/*     200 {ok, mode, booking_id, boss_call_count, candidates: [row], counts,
+	/*          unlink_marks: [callIDs]}
 	/*         row = {child_call, call_name, start_date, start_time,
 	/*                boss_call, boss_call_name, boss_calls: [{call_id, call_name}],
 	/*                from_boss_call, from_boss_call_name, outcome, reason,
@@ -239,11 +240,32 @@
 		$names  = alsv_from_names($pdo, $cand['rows']);
 		$rows   = array();
 		$counts = array('offer' => 0, 'relink' => 0, 'marked' => 0, 'skip' => 0);
+		$now    = time();
+
+		/*
+		/* unlink_marks — calls linked to a live Crew Boss call that
+		/* call-supervision.php `clear` WOULD mark "No Crew Boss" if unlinked
+		/* (J7): once the link is gone they overlap exactly one live Crew Boss
+		/* call and have not started, so the button would offer them. THE
+		/* GOAT asks "Unlink and mark No Crew Boss?" for these only (C3). Read
+		/* off the rule's own rows — boss_calls and the Melbourne start — so
+		/* the client never re-derives the overlap (P1). Advisory: `clear`
+		/* decides for itself and reports marked_no_crew_boss.
+		*/
+
+		$unlinkMarks = array();
 
 		foreach ($cand['rows'] as $r)
 		{
 			if ($r['reason'] === 'already_linked')
 			{
+				$st = goat_sg_call_start_melb(strtotime($r['start_date']), $r['start_time']);
+
+				if (count($r['boss_calls']) === 1 && $st !== false && $st > $now)
+				{
+					$unlinkMarks[] = (int) $r['child_call'];
+				}
+
 				continue;
 			}
 
@@ -257,7 +279,8 @@
 			'booking_id'      => $bookingID,
 			'boss_call_count' => (int) $cand['boss_call_count'],
 			'candidates'      => $rows,
-			'counts'          => $counts
+			'counts'          => $counts,
+			'unlink_marks'    => $unlinkMarks
 		));
 	}
 
