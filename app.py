@@ -21664,8 +21664,9 @@ def api_call_tiers():
 @require_cohort(*READ_ALL_COHORTS)
 def api_call_self_submit_get(booking_id, call_id):
     """The call's "Crew send own times" override, for the tier line —
-    slice G (§14.3.2). {override: {enabled, set_by_user_id, set_at} | null};
-    null is the default (on for tier self)."""
+    slice G (§14.3.2). {override: {enabled, set_by_user_id, set_at} | null}.
+    Self-submit is on only when the override exists with enabled true; null
+    (no row) or enabled false is off (J1, DESIGN-default-link-self-submit-off)."""
     cid = call_types.as_call_id(call_id)
     if cid is None:
         return jsonify({"error": "call_id must be an integer"}), 400
@@ -21680,7 +21681,9 @@ def api_call_self_submit_get(booking_id, call_id):
 def api_call_self_submit_set(booking_id, call_id):
     """Set or clear the call's "Crew send own times" override — ADMIN ONLY
     (Mike, 5 Nov). Body {enabled: true|false} stores an override; {enabled:
-    null} clears it, back to the default. Writes Supabase only: the switch is
+    null} clears it, back to the default, which is off (J1). THE GOAT's switch
+    sends true to tick and null to untick, so the table only gains "on" rows.
+    Writes Supabase only: the switch is
     read by Crew Hub's server, never by SmartStaff (D7)."""
     cid = call_types.as_call_id(call_id)
     bid = call_types.as_call_id(booking_id)

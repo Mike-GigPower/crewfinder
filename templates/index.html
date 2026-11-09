@@ -22872,7 +22872,8 @@ async function callLoadTier(bookingId, callId){
   }
   _callTier[callId] = { t: info, names: names };
   // The switch state comes from Supabase, after SmartStaff has answered.
-  // undefined = could not be read; null = no override (the default, on).
+  // undefined = could not be read; null = no override (the default, off).
+  // On only when the override exists with enabled true (J1).
   var ovr;
   if(info.tier === 'self'){
     try{
@@ -22905,7 +22906,8 @@ function callRenderTier(bookingId, callId, ovr){
   } else if(t.tier === 'ops'){
     line = 'Crew Boss call — nobody ticked';
   } else {
-    line = 'Crew send own times' + ((ovr && ovr.enabled === false) ? ' — off' : '');
+    // undefined (unreadable) adds nothing: the switch says it is unavailable.
+    line = 'Crew send own times' + ((ovr !== undefined && !(ovr && ovr.enabled === true)) ? ' — off' : '');
   }
   var chips = '';
   if(flags.indexOf('multi_team_lead') >= 0){
@@ -22922,8 +22924,8 @@ function callRenderTier(bookingId, callId, ovr){
     if(ovr === undefined){
       sw = ' <span style="font-size:10px;color:var(--muted)">(switch unavailable)</span>';
     } else if(window._cohort === 'admin'){
-      var on = !(ovr && ovr.enabled === false);
-      sw = ' <label title="Whether crew on this call are offered “Send my times” in Crew Hub. On is the default for a call with no Crew Boss or Team Lead." style="font-size:10px;color:var(--muted);margin-left:8px;cursor:pointer;white-space:nowrap">'
+      var on = !!(ovr && ovr.enabled === true);
+      sw = ' <label title="Whether crew on this call are offered “Send my times” in Crew Hub. Off unless ticked, on a call with no Crew Boss or Team Lead." style="font-size:10px;color:var(--muted);margin-left:8px;cursor:pointer;white-space:nowrap">'
         + '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="callSelfSubmitToggle(\'' + bookingId + '\',\'' + callId + '\',this)" style="vertical-align:middle"> on</label>';
     }
   }
@@ -22934,10 +22936,11 @@ async function callSelfSubmitToggle(bookingId, callId, el){
   var on = !!el.checked;
   el.disabled = true;
   try{
-    // on = back to the default (clear); off = an override, enabled false
+    // on = an override, enabled true; off = back to the default (clear, no
+    // row = off). The table only gains "on" rows (J1).
     var r = await fetch('/api/call/' + bookingId + '/' + callId + '/self-submit', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: on ? null : false })
+      body: JSON.stringify({ enabled: on ? true : null })
     });
     var j = {};
     try{ j = await r.json(); }catch(_){}
