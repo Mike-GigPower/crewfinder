@@ -29133,8 +29133,12 @@ function bkLinkPreview(bookingId){
   if(will.length){
     html += '<div style="' + head + '">Will link (' + will.length + ')</div>'
       + will.map(function(r){
+          // SmartStaff renames a cancelled call "CANCELLED - …", so only say
+          // "(cancelled)" when the name doesn't already.
+          var fromName = String(r.from_boss_call_name || '').trim();
           var target = r.outcome === 'relink'
-            ? 'Re-link: from #' + r.from_boss_call + (r.from_boss_call_name ? ' ' + escapeHtml(r.from_boss_call_name) : '') + ' (cancelled) to #' + r.boss_call
+            ? 'Re-link: from #' + r.from_boss_call + (fromName ? ' ' + escapeHtml(fromName) : '')
+              + (/^cancelled\b/i.test(fromName) ? '' : ' (cancelled)') + ' to #' + r.boss_call
             : '→ Crew Boss call #' + r.boss_call;
           var bossName = r.boss_call_name ? ' ' + escapeHtml(r.boss_call_name) : '';
           var note = r.note
