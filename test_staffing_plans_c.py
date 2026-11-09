@@ -88,7 +88,7 @@ class FakeC(Fake):
                 mock.patch.object(A, "_finder_assess", self.assess),
                 mock.patch.object(A, "fetch_booking_bulk", self.booking),
                 mock.patch.object(A, "ss_list_crew_experience", self.experience),
-                mock.patch.object(A, "scrape_call_details", self.scrape),
+                mock.patch.object(A, "fetch_call_details", self.scrape),
                 mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None),
                 mock.patch.object(A, "load_induction_catalogue", lambda ss=None: None),
                 mock.patch.object(A, "_plan_call_types", self.call_types)]

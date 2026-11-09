@@ -4754,7 +4754,7 @@ async function buildCallPayload(){
     call_name:  c.call_name,
     start_dt:   detailsArr[i].start_dt,
     end_dt:     detailsArr[i].end_dt,
-    venue:      c.venue || detailsArr[i].venue,  // prefer dashboard venue, fall back to callsheet
+    venue:      c.venue || detailsArr[i].venue,  // prefer dashboard venue, fall back to get-booking.php
   }));
   const softIds = soft.map(c => c.call_id);
   return {calls, detailsArr, callPayload, softIds, hardCount: hard.length};
@@ -6180,12 +6180,15 @@ function renderTimeline(result,details,targets){
   // folded into targets), so the "ALL N CALLS" label stays hard-only.
   const tlTargets=(targets||[]).map(t=>({...t,_soft:false}))
     .concat((result.soft_targets||[]).map(t=>({...t,_soft:true})));
-  const targetWindows=(tlTargets.length?tlTargets:[{start_dt:details.start_dt,end_dt:details.end_dt}]).map(t=>({
+  const targetWindows=(tlTargets.length?tlTargets:[{start_dt:details.start_dt,end_dt:details.end_dt,venue:details.venue}]).map(t=>({
     startH:dtToH(t.start_dt,targetDate),
     endH:dtToH(t.end_dt,targetDate),
     label:(t._soft?'~ ':'')+'#'+(t.call_num||'')+(t.call_name?' '+t.call_name:''),
     soft:!!t._soft,
     callId:t.call_id,
+    // Each window's OWN venue — not the first call's — so a multi-call search
+    // across venues labels every bar correctly.
+    venue:t.venue||'',
   }));
 
   // Scrollable bounds: 24h before earliest call start, 24h after latest call end.
@@ -6362,7 +6365,7 @@ function renderTimeline(result,details,targets){
             const lines=[];
             if(tw.label && tw.label.trim()!=='#') lines.push('Call '+tw.label.trim());
             lines.push(hToLabel(tw.startH,targetDate)+' – '+hToLabel(tw.endH,targetDate));
-            if(details&&details.venue) lines.push('Venue: '+details.venue);
+            if(tw.venue) lines.push('Venue: '+decodeEntities(tw.venue));
             lines.push(state);
             tip=lines.join('\n');
           }

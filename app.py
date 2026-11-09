@@ -2881,49 +2881,57 @@ def scrape_calls(ss, url):
 
     return calls
 
-def scrape_call_details(ss, booking_id, call_id):
-    """Get call date/time/duration/venue from callsheet."""
-    resp = ss.get(f"{BASE_URL}/bookings/{booking_id}/callsheet/{call_id}")
-    soup = BeautifulSoup(resp.text, "html.parser")
+def fetch_call_details(ss, booking_id, call_id):
+    """Date / time / length / venue / crew required for one call, from
+    get-booking.php -- the same JSON the call dialog already reads.
 
-    date_el   = soup.find("input", {"name": "start_date"})
-    time_el   = soup.find("input", {"name": "start_time"})
-    length_el = soup.find("input", {"name": "length"})
-    name_el   = soup.find("input", {"name": "name"})
-    crew_el   = soup.find("input", {"name": "crew_required"})
+    Replaces scrape_call_details (callsheet HTML scrape). That ran
+    detect_venue() over the WHOLE callsheet page and returned the first
+    VENUE_MAP hit, so any stray "MCEC"/"Melbourne Con..." text anywhere on the
+    page beat the booking's real venue (call #39519 showed MCEC instead of
+    AAMI Park, 9 Nov 2026). The callsheet has no venue field at all -- venue
+    belongs to the booking, so it is read from bookings.venueID here.
 
-    date_val   = date_el["value"].strip()   if date_el   else ""
-    time_val   = time_el["value"].strip()   if time_el   else ""
-    length_val = length_el["value"].strip() if length_el else "0"
-    name_val   = name_el["value"].strip()   if name_el   else ""
-    crew_req   = int(crew_el["value"])      if crew_el   else 0
+    venue is the venue NAME ("AAMI Park"), not a VENUE_MAP code ("AAMI"):
+    the availability induction gate (_induction_code_for_venue_name) matches
+    names, and the Unfilled Calls list already sends names.
+
+    Return shape is unchanged from scrape_call_details.
+    """
+    from html import unescape   # local, as elsewhere in this file
+    data, err = fetch_booking_bulk(ss, booking_id)
+    if err:
+        return None, f"Could not load booking {booking_id}: {err}"
+    if not isinstance(data, dict):
+        return None, f"Could not load booking {booking_id}"
+
+    call = None
+    for c in (data.get("calls") or []):
+        if str(c.get("call_id")) == str(call_id):
+            call = c
+            break
+    if call is None:
+        return None, f"Call {call_id} not found in booking {booking_id}"
 
     try:
-        time_clean  = time_val[:5]
-        date_clean  = re.sub(r"\s+", " ", date_val.strip())
-        start_dt    = None
-        for fmt in ("%B %d, %Y %H:%M", "%b %d, %Y %H:%M"):
-            try:    start_dt = datetime.strptime(f"{date_clean} {time_clean}", fmt); break
-            except: continue
-        if not start_dt:
-            return None, f"Could not parse date: {date_clean!r}"
-        end_dt = start_dt + timedelta(hours=float(length_val))
+        # start_date is a midnight epoch, start_time "HH:MM:SS" -- the same
+        # conversion _callout_call_details and _reoffer_push_calls use.
+        day = datetime.fromtimestamp(int(call.get("start_date") or 0)).strftime("%Y-%m-%d")
+        start_dt = datetime.strptime(f"{day} {(call.get('start_time') or '')[:5]}", "%Y-%m-%d %H:%M")
+        length = float(call.get("est_length") or 0)
+        end_dt = start_dt + timedelta(hours=length)
     except Exception as e:
-        return None, str(e)
+        return None, f"Could not read call {call_id} start/length: {e}"
 
-    venue = detect_venue(resp.text) or ""
-
-    # Crew required from banner
-    banner_m = re.search(r"THIS CALL REQUIRES (\d+) CREW", resp.text)
-    crew_required = int(banner_m.group(1)) if banner_m else crew_req
+    venue = unescape(str(((data.get("venue") or {}).get("name")) or "")).strip()
 
     return {
-        "call_name":     name_val,
+        "call_name":     unescape(str(call.get("call_name") or "")).strip(),
         "start_dt":      start_dt.isoformat(),
         "end_dt":        end_dt.isoformat(),
-        "length_hrs":    float(length_val),
+        "length_hrs":    length,
         "venue":         venue,
-        "crew_required": crew_required,
+        "crew_required": int(call.get("required") or 0),
         "date_str":      start_dt.strftime("%A %d %B %Y"),
         "start_str":     start_dt.strftime("%H:%M"),
         "end_str":       end_dt.strftime("%H:%M"),
@@ -6115,7 +6123,7 @@ def api_call_details(booking_id, call_id):
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
-    details, err = scrape_call_details(ss, booking_id, call_id)
+    details, err = fetch_call_details(ss, booking_id, call_id)
     if err:
         return jsonify({"error": err}), 500
     return jsonify(details)
@@ -11166,7 +11174,7 @@ def build_booking_plan(ss, data):
             c = by_sel[cid]
             start_dt, end_dt, venue = c["start_dt"], c["end_dt"], c.get("venue") or ""
         else:
-            det, err = scrape_call_details(ss, bid, cid)
+            det, err = fetch_call_details(ss, bid, cid)
             if err or not det:
                 return None, ("Couldn't read call #%s: %s" % (cid, err), 502)
             start_dt, end_dt, venue = det["start_dt"], det["end_dt"], det.get("venue") or ""
@@ -15934,7 +15942,7 @@ def _goat_plan_staffing(ss, ti, read_back_id=None, last_user=None, answers=None,
 
     body_calls = []
     for cid in call_ids:                    # sequential: the PHP session lock
-        det, err = scrape_call_details(ss, booking_id, cid)
+        det, err = fetch_call_details(ss, booking_id, cid)
         if err or not det:
             return {"error": "Could not read call " + str(cid) + ": " + str(err)}
         body_calls.append({"booking_id": booking_id, "call_id": cid,

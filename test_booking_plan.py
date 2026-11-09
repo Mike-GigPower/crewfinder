@@ -121,7 +121,7 @@ class Fake(object):
         with mock.patch.object(A, "_finder_assess", self.assess), \
              mock.patch.object(A, "fetch_booking_bulk", self.booking), \
              mock.patch.object(A, "ss_list_crew_experience", self.experience), \
-             mock.patch.object(A, "scrape_call_details", self.scrape), \
+             mock.patch.object(A, "fetch_call_details", self.scrape), \
              mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None), \
              mock.patch.object(A, "_plan_call_types", self.call_types):
             return A.build_booking_plan(object(), self.body(cids, plan))
@@ -333,7 +333,7 @@ class BookingPlanTests(unittest.TestCase):
         with mock.patch.object(A, "_finder_assess", assess or f.assess), \
              mock.patch.object(A, "fetch_booking_bulk", f.booking), \
              mock.patch.object(A, "ss_list_crew_experience", f.experience), \
-             mock.patch.object(A, "scrape_call_details", f.scrape), \
+             mock.patch.object(A, "fetch_call_details", f.scrape), \
              mock.patch.object(A, "load_licence_catalogue", lambda ss=None: None), \
              mock.patch.object(A, "load_induction_catalogue", lambda ss=None: None), \
              mock.patch.object(A, "_plan_call_types", f.call_types):
