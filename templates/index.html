@@ -4485,7 +4485,10 @@ function _planRenderStrip(missing){
   const h=[];
   h.push('<div style="font-weight:700;color:var(--accent);margin-bottom:4px">🧩 '+_planEsc(plan.read_back)+'</div>');
   // outcome
-  if(plan.is_boss_call){
+  if(plan.is_boss_call && plan.places===0){
+    // Full boss call: the places line, not "left empty" (BRIEF-plan-full-call-note).
+    h.push('<div>'+_planEsc(_planPlacesText(plan.places, plan.places_breakdown))+'</div>');
+  } else if(plan.is_boss_call){
     const b=plan.picks[0];
     h.push('<div>'+(b ? 'Boss: <b>'+_planEsc(b.name)+'</b> — '+b.past_boss_3y+' boss call'+(b.past_boss_3y===1?'':'s')+' in 3 years'
                       : '<span style="color:'+amber+'">Boss place left empty</span>')+'</div>');

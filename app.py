@@ -10411,6 +10411,19 @@ def _plan_drop_mix_shortfalls(cs):
 _PLAN_LICENCE_GAP_RE = re.compile(r"^Asked for \d+ with |not enough available crew holding |: \d+ holders?, planned on ")
 
 
+# A call with no places has nothing to plan, so the "could fill with a warning"
+# list would only read as the call's options (BRIEF-plan-full-call-note, D1-D3).
+_PLAN_FULL_NOTE = "Call is full — nothing to plan."
+
+
+def _plan_full_call(places, could_fill, notes):
+    """(could_fill, notes) for one call: on a call with 0 places the list is
+    emptied and the full-call note goes first, any other notes kept after it."""
+    if places == 0:
+        return [], [_PLAN_FULL_NOTE] + [n for n in notes if n != _PLAN_FULL_NOTE]
+    return could_fill, notes
+
+
 def _plan_drop_explained_shortfalls(notes):
     """A partly filled licence call: when a licence note already explains the
     gap, the mix's "Asked for N …, found 0" note only repeats it."""
@@ -11014,6 +11027,12 @@ def build_staffing_plan(ss, data):
     rb = _plan_read_back_head(is_boss_call, objective, new_pct, probation_h, licence_mins,
                               required_licences, filters)
     rb.append("Call #%s %s, %d place%s." % (cid, call_name, places, "" if places == 1 else "s"))
+    could_fill, plan_notes = _plan_full_call(places, [{
+        "user_id": c["uid"],
+        "name":    c["name"],
+        "group":   c["group"],
+        "warning": "; ".join(e for e in (by_id.get(str(c["uid"])) or {}).get("conflict_warnings") or []),
+    } for c in sorted(warned, key=lambda c: (c["name"], c["uid"]))], cs.notes)
 
     assessment["plan"] = {
         "call_id":      int(cid),
@@ -11030,14 +11049,9 @@ def build_staffing_plan(ss, data):
         "licence_mins": cs.licence_out,
         "mix":          cs.mix,
         "picks":        [_plan_pick_out(cs, c) for c in cs.picks],
-        "could_fill_warned": [{
-            "user_id": c["uid"],
-            "name":    c["name"],
-            "group":   c["group"],
-            "warning": "; ".join(e for e in (by_id.get(str(c["uid"])) or {}).get("conflict_warnings") or []),
-        } for c in sorted(warned, key=lambda c: (c["name"], c["uid"]))],
+        "could_fill_warned": could_fill,
         "unfilled":            max(0, cs.unfilled),
-        "notes":               cs.notes,
+        "notes":               plan_notes,
         "notes_licence_hints": hints,
         "requirements":        req,
         "experience_as_at":    exp.get("as_at"),
@@ -11663,6 +11677,11 @@ def build_booking_plan(ss, data):
             p = _plan_pick_out(cs, c)
             p["also_on"] = [int(T[j]["cid"]) for j in placed.get(c["uid"], []) if j != i]
             picks.append(p)
+        could_fill, notes = _plan_full_call(cs.places, [{
+            "user_id": c["uid"], "name": c["name"], "group": c["group"],
+            "warning": c["cr"].get("conflict_warning") or "",
+        } for c in sorted(cs.warned, key=lambda c: (c["name"], c["uid"]))],
+            _plan_drop_explained_shortfalls(notes))
         out_calls.append({
             "call_id":          int(t["cid"]),
             "call_name":        t["name"],
@@ -11677,12 +11696,9 @@ def build_booking_plan(ss, data):
             "mix":              cs.mix,
             "licence_mins":     cs.licence_out,
             "picks":            picks,
-            "could_fill_warned": [{
-                "user_id": c["uid"], "name": c["name"], "group": c["group"],
-                "warning": c["cr"].get("conflict_warning") or "",
-            } for c in sorted(cs.warned, key=lambda c: (c["name"], c["uid"]))],
+            "could_fill_warned": could_fill,
             "unfilled":            max(0, cs.unfilled),
-            "notes":               _plan_drop_explained_shortfalls(notes),
+            "notes":               notes,
             "notes_licence_hints": _plan_notes_hints(
                 nodes[i].get("notes"), P["cat"],
                 set(required_licences) | set(P["mins_by_code"])
