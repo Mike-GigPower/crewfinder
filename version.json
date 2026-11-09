@@ -1,6 +1,6 @@
 {
-  "version": "5.94.0",
-  "release_date": "2026-11-07",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.94.0/TheGOAT.dmg",
-  "release_notes": "Crew Boss No-show reports now show in Times outstanding, and Ops confirm or reject them in Enter Times. Accept Times is held until every report on the call is resolved."
+  "version": "5.94.1",
+  "release_date": "2026-11-09",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.94.1/TheGOAT.dmg",
+  "release_notes": "\"Crew send own times\" is now off unless Ops tick it, on calls with no Crew Boss or Team Lead. Ticking turns it on for that call; unticking turns it off."
 }
