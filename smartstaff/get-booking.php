@@ -234,8 +234,14 @@
 
 	$bossOf   = array();   /* child_call -> boss_call id (scalar) */
 	$bossesOf = array();   /* boss_call  -> [child ids], call-time order */
+	$autoOf   = array();   /* child_call -> 1 if the Link button made the link, else 0 */
 
-	$sres = mysql_query("SELECT s.boss_call, s.child_call
+	/* `auto` (BRIEF-default-link-self-submit-off B6), guarded: absent
+	/* before MIGRATION-link-button.sql, when every link reads 0. */
+
+	$autoSel = goat_sg_have_supervision_auto() ? ", s.`auto` AS auto" : ", 0 AS auto";
+
+	$sres = mysql_query("SELECT s.boss_call, s.child_call" . $autoSel . "
 	                     FROM call_supervision s
 	                     INNER JOIN calls cb ON cb.id = s.boss_call
 	                     INNER JOIN calls cc ON cc.id = s.child_call
@@ -256,6 +262,48 @@
 
 			$bossesOf[$bc][] = $cc;
 			$bossOf[$cc]     = $bc;
+			$autoOf[$cc]     = ((int) $srow->auto === 1) ? 1 : 0;
+		}
+	}
+
+	/*
+	/* "NO CREW BOSS" MARKERS (BRIEF-default-link-self-submit-off B6, J7):
+	/* per call, null or {set_by, set_by_name, set_at}. A DISPLAY, so a failed
+	/* lookup degrades to "none marked" and is logged, as the edges above. It
+	/* cannot mislead the warning: goat_unlinked_boss_overlap() reads the same
+	/* table and fails on the same fault, which makes unlinked_boss_call null
+	/* ("unknown") on every call. Guarded: absent before the migration.
+	*/
+
+	$markOf = array();
+
+	if (goat_sg_have_no_crew_boss())
+	{
+		$mres = mysql_query("SELECT n.callID AS call_id, n.set_by AS set_by, n.set_at AS set_at
+		                     FROM call_no_crew_boss n
+		                     INNER JOIN calls c ON c.id = n.callID
+		                     WHERE c.bookingID = " . $bookingID);
+
+		if ($mres === false)
+		{
+			error_log('get-booking: no-crew-boss lookup failed: ' . mysql_error());
+		}
+		else
+		{
+			$setBy = array();
+
+			while ($mrow = mysql_fetch_object($mres))
+			{
+				$markOf[(int) $mrow->call_id] = array('set_by' => (int) $mrow->set_by, 'set_at' => (int) $mrow->set_at);
+				$setBy[] = (int) $mrow->set_by;
+			}
+
+			$setByNames = goat_sg_user_names($setBy);
+
+			foreach ($markOf as $cid => $m)
+			{
+				$markOf[$cid]['set_by_name'] = isset($setByNames[$m['set_by']]) ? $setByNames[$m['set_by']] : '';
+			}
 		}
 	}
 
@@ -539,7 +587,11 @@
 				/* consumer of a supervision value tests truthiness, and 0
 				/* spares the client a null/0 split. */
 				'bossed_by'          => isset($bossOf[$callID])   ? $bossOf[$callID]   : 0,
+				/* 1 = the Link button made this call's link (B6); 0 = by hand, or no link */
+				'bossed_by_auto'     => isset($autoOf[$callID])   ? $autoOf[$callID]   : 0,
 				'bosses'             => isset($bossesOf[$callID]) ? $bossesOf[$callID] : array(),
+				/* null, or {set_by, set_by_name, set_at}: marked "No Crew Boss" (J7) */
+				'no_crew_boss'       => isset($markOf[$callID])   ? $markOf[$callID]   : null,
 				'unlinked_boss_call' => $ulKnown ? (isset($unlinkedOf[$callID]) ? (int) $unlinkedOf[$callID] : 0) : null,
 				'committed'          => $fc['committed'],
 				'reserved'           => $fc['reserved'],

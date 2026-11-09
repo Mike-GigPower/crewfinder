@@ -1592,6 +1592,112 @@
 		}
 
 		/*
+		/* LINK BUTTON SCHEMA (BRIEF-default-link-self-submit-off, Release 2,
+		/* B1). Both reads are GUARDED, for the reason the resolver gives at
+		/* goat_calls_have_cancelled(): this file is included by nearly every
+		/* crew endpoint, and an unguarded table or column would make every
+		/* helper here fail on a box where MIGRATION-link-button.sql has not
+		/* run. Absent reads as "nothing marked" and "every link made by hand",
+		/* which is exactly the state before the migration.
+		*/
+
+		function goat_sg_have_no_crew_boss()
+		{
+			static $has = null;
+
+			if ($has === null)
+			{
+				$r   = mysql_query("SHOW TABLES LIKE 'call_no_crew_boss'");
+				$has = ($r !== false && mysql_num_rows($r) > 0);
+			}
+
+			return $has;
+		}
+
+		function goat_sg_have_supervision_auto()
+		{
+			static $has = null;
+
+			if ($has === null)
+			{
+				$r   = mysql_query("SHOW COLUMNS FROM call_supervision LIKE 'auto'");
+				$has = ($r !== false && mysql_num_rows($r) > 0);
+			}
+
+			return $has;
+		}
+
+		/*
+		/* THE "NO CREW BOSS" MARKERS on these calls (J7, design v0.6 §4.3):
+		/*
+		/*   array('ok', 'error', 'by_call' => callID => array('set_by', 'set_at'))
+		/*
+		/* Unmarked calls are absent. ok with nothing marked before the migration.
+		*/
+
+		function goat_sg_no_crew_boss_marks($callIDs)
+		{
+			$ids = goat_sg_clean_ids($callIDs);
+
+			if (count($ids) === 0 || !goat_sg_have_no_crew_boss())
+			{
+				return array('ok' => true, 'error' => '', 'by_call' => array());
+			}
+
+			$res = mysql_query("SELECT callID AS call_id, set_by, set_at
+			                    FROM call_no_crew_boss
+			                    WHERE callID IN (" . implode(',', $ids) . ")");
+
+			if ($res === false)
+			{
+				return array('ok' => false, 'error' => 'No Crew Boss marker lookup failed: ' . mysql_error(), 'by_call' => array());
+			}
+
+			$out = array();
+
+			while ($row = mysql_fetch_object($res))
+			{
+				$out[(int) $row->call_id] = array('set_by' => (int) $row->set_by, 'set_at' => (int) $row->set_at);
+			}
+
+			return array('ok' => true, 'error' => '', 'by_call' => $out);
+		}
+
+		/*
+		/* STRICT OVERLAP — THE ONE TEST, shared by the "Not linked" warning
+		/* (goat_unlinked_boss_overlap()) and the Link button
+		/* (goat_auto_link_candidates()), so the two cannot drift apart (P1).
+		/* $a and $b carry 'start' / 'end' from goat_call_window(): start plus
+		/* est_length hours, so an overnight call simply runs past midnight and
+		/* there is no end-before-start case. Ending exactly as the other begins
+		/* does not count. Probe P3 applies the same inequalities in SQL.
+		*/
+
+		function goat_sg_strict_overlap($a, $b)
+		{
+			return ($a['start'] < $b['end'] && $a['end'] > $b['start']);
+		}
+
+		/*
+		/* A call's start instant in Melbourne wall-clock time — the SAME
+		/* computation as goat_call_start_ts() in callout.php, which
+		/* callout-sweep.php uses for "has the call started". Taken from a row
+		/* already fetched rather than re-reading `calls` per call. false if the
+		/* time will not parse.
+		*/
+
+		function goat_sg_call_start_melb($startDate, $startTime)
+		{
+			try {
+				$dt = new DateTime(date('Y-m-d', (int) $startDate) . ' ' . $startTime,
+				                   new DateTimeZone('Australia/Melbourne'));
+				return $dt->getTimestamp();
+			} catch (Exception $e) {
+				return false;
+			}
+		}
+
+		/*
 		/* "NOT LINKED TO ITS CREW BOSS CALL" (D24, gate G2) — THE ONE
 		/* IMPLEMENTATION. THE GOAT shows it in the booking dialog, All Bookings
 		/* and the Times outstanding lane, and each reads it from here so the
@@ -1608,7 +1714,10 @@
 		/*     (goat_boss_call_is_live()) with at least one confirmed,
 		/*     non-promo-pending person, and STRICTLY overlaps it in time
 		/*     (goat_call_window(), so DST is handled; ending exactly as the
-		/*     other begins does not count) — probe P3's rule.
+		/*     other begins does not count) — probe P3's rule;
+		/*   - it is NOT marked "No Crew Boss" (call_no_crew_boss, J7 / P1 of
+		/*     BRIEF-default-link-self-submit-off). Excluded HERE, once, so the
+		/*     booking dialog, All Bookings and the Ops lane all stop showing it.
 		/*
 		/*   array('ok', 'error',
 		/*         'by_call'          => callID => the overlapping Crew Boss call
@@ -1760,6 +1869,16 @@
 				}
 			}
 
+			/* ---- 3b. calls marked "No Crew Boss" (J7) — never warned about ---- */
+
+			$marks = goat_sg_no_crew_boss_marks($cand);
+
+			if (!$marks['ok'])
+			{
+				$fail['error'] = $marks['error'];
+				return $fail;
+			}
+
 			/* ---- 4. the test ---- */
 
 			$byCall = array();
@@ -1767,7 +1886,8 @@
 
 			foreach ($calls as $id => $c)
 			{
-				if ($c['cancelled'] || $c['is_boss'] || isset($linked[$id]) || !isset($bossBy[$c['booking']]))
+				if ($c['cancelled'] || $c['is_boss'] || isset($linked[$id]) || !isset($bossBy[$c['booking']])
+				    || isset($marks['by_call'][$id]))
 				{
 					continue;
 				}
@@ -1783,7 +1903,7 @@
 
 					$bc = $calls[$bid];
 
-					if (!($bc['start'] < $c['end'] && $bc['end'] > $c['start']))
+					if (!goat_sg_strict_overlap($bc, $c))
 					{
 						continue;   /* strict overlap */
 					}
@@ -1857,6 +1977,478 @@
 			}
 
 			return array('ok' => true, 'error' => '', 'by_call' => $out, 'count_by_booking' => $all['count_by_booking']);
+		}
+
+		/*
+		/* THE LINK BUTTON'S RULE — ONE IMPLEMENTATION (BRIEF-default-link-self-
+		/* submit-off, Release 2, B2; DESIGN v0.6 §4.1; pre-check decisions
+		/* P1-P6, J16-J18). Read by auto-link-supervision.php (dry_run, and the
+		/* re-validation inside apply), no-crew-boss.php (may this call be
+		/* marked?) and call-supervision.php `clear` (J7: write the marker when
+		/* the button would offer the call just unlinked).
+		/*
+		/* Every live, not-boss-named call on the booking that STRICTLY overlaps
+		/* at least one live Crew Boss call on the same booking gets a row.
+		/* Calls overlapping none are absent: there is nothing to say about them.
+		/*
+		/*   array('ok', 'error', 'booking_id',
+		/*         'boss_call_count' => live Crew Boss calls on the booking,
+		/*         'rows'    => [row, ...] in call-time order,
+		/*         'by_call' => child callID => row)
+		/*
+		/*   row = array('child_call', 'call_name', 'start_date' (Y-m-d),
+		/*               'start_time' (H:i), 'boss_call' | 0, 'boss_call_name',
+		/*               'boss_calls' => [array('call_id', 'call_name')],
+		/*               'from_boss_call' | 0, 'outcome', 'reason',
+		/*               'boss_has_confirmed' => 0|1, 'team_leads' => [userIDs],
+		/*               'linked_to' => the boss call of ANY existing link | 0,
+		/*                              whatever the outcome)
+		/*
+		/*   outcome  offer   no link; overlaps exactly one live Crew Boss call;
+		/*                    not started; set would accept it.
+		/*            relink  as offer, but its link points at a CANCELLED boss
+		/*                    call (J17); from_boss_call names it.
+		/*            marked  marked "No Crew Boss" (rule 5). Listed so the
+		/*                    preview can offer Undo.
+		/*            skip    with reason:
+		/*                      already_linked  a link to a boss call that is not
+		/*                                      cancelled — staffed or not, it is
+		/*                                      left alone (rule 3, J17)
+		/*                      started         rule 6
+		/*                      two_boss_calls  rule 4
+		/*                      team_lead_rule  rule 7: D17 (see below)
+		/*
+		/* Precedence, first match wins: marked, already_linked, started,
+		/* two_boss_calls, team_lead_rule.
+		/*
+		/* THE OVERLAP is goat_sg_strict_overlap() over goat_call_window(), the
+		/* test the "Not linked" warning uses (P1). Unlike the warning, the boss
+		/* call needs NOBODY confirmed (J8): boss_has_confirmed = 0 rows are still
+		/* offered, and the preview says the link takes effect once someone is
+		/* confirmed (J16). "Confirmed" is goat_sg_confirmed_roster() —
+		/* non-promo-pending — the definition under which a link COUNTS.
+		/*
+		/* A LINK is a call_supervision row whose boss end exists (INNER JOIN, as
+		/* goat_supervision_boss_call()): a dangling or self row is no link, and
+		/* the upsert simply replaces it.
+		/*
+		/* "HAS STARTED" is goat_sg_call_start_melb() <= $nowMelb: Melbourne
+		/* wall-clock, as callout-sweep.php. $nowMelb is a unix timestamp
+		/* (time()); the timezone lives in the call's start, not in "now".
+		/*
+		/* RULE 7 — WOULD call-supervision.php `set` REFUSE IT? Its refusals: not
+		/* admin (the caller's gate), calls not found or on different bookings
+		/* (impossible here: every id comes from this booking), a boss call that
+		/* is not boss-named (impossible: B passes goat_boss_call_is_live()), and
+		/* D17 when the boss call is cancelled or has nobody confirmed. D17 is
+		/* re-run here exactly as set runs it — goat_d17_if_unlinked() on the
+		/* call, only when the boss call has nobody confirmed. It cannot fire
+		/* today: that helper only reports calls whose link COUNTS, and an offer
+		/* has no link while a relink's link is to a cancelled call (P2). It
+		/* stays as the safety re-check the brief asks for, so a future change
+		/* to D17 refuses here rather than at the write.
+		/*
+		/* $ignoreMarks: treat marked calls as unmarked (rule 5 off). Used by
+		/* no-crew-boss.php's checks, which ask whether the WARNING applies, not
+		/* whether the button would offer.
+		/*
+		/* A failed lookup is ok === false: every caller either writes on this
+		/* answer or refuses on it, so a broken query must never read as
+		/* "nothing to link".
+		*/
+
+		function goat_auto_link_candidates($bookingID, $nowMelb, $ignoreMarks = false)
+		{
+			$bid  = (int) $bookingID;
+			$now  = (int) $nowMelb;
+			$fail = array('ok' => false, 'error' => '', 'booking_id' => $bid,
+			              'boss_call_count' => 0, 'rows' => array(), 'by_call' => array());
+			$out  = array('ok' => true, 'error' => '', 'booking_id' => $bid,
+			              'boss_call_count' => 0, 'rows' => array(), 'by_call' => array());
+
+			if ($bid <= 0)
+			{
+				$fail['error'] = 'booking_id required';
+				return $fail;
+			}
+
+			/* ---- 1. every call on the booking ---- */
+
+			$cres = mysql_query("SELECT c.id AS id, c.call_name AS call_name,
+			                            c.start_date AS start_date, c.start_time AS start_time,
+			                            c.est_length AS est_length,
+			                            " . goat_sg_cancelled_sql('c') . " AS cancelled_at
+			                     FROM calls c
+			                     WHERE c.bookingID = " . $bid . "
+			                     ORDER BY c.start_date ASC, c.start_time ASC, c.id ASC");
+
+			if ($cres === false)
+			{
+				$fail['error'] = 'call lookup failed: ' . mysql_error();
+				return $fail;
+			}
+
+			$calls   = array();   /* id -> info, call-time order */
+			$bossIDs = array();   /* live Crew Boss calls with a window */
+
+			while ($row = mysql_fetch_object($cres))
+			{
+				$id = (int) $row->id;
+
+				if ($id <= 0 || (int) $row->start_date <= 0)
+				{
+					continue;   /* no date, no window: it cannot overlap anything */
+				}
+
+				$win = goat_call_window($row);
+
+				if ($win['start'] === false)
+				{
+					continue;
+				}
+
+				$calls[$id] = array(
+					'name'       => (string) $row->call_name,
+					'start_date' => date('Y-m-d', (int) $row->start_date),
+					'start_time' => substr((string) $row->start_time, 0, 5),
+					'start'      => (int) $win['start'],
+					'end'        => (int) $win['end'],
+					'start_melb' => goat_sg_call_start_melb($row->start_date, $row->start_time),
+					'cancelled'  => ($row->cancelled_at !== null && (int) $row->cancelled_at > 0),
+					'is_boss'    => goat_is_boss_call_name((string) $row->call_name),
+					'live_boss'  => goat_boss_call_is_live($row->call_name, $row->cancelled_at)
+				);
+
+				if ($calls[$id]['live_boss'])
+				{
+					$bossIDs[] = $id;
+				}
+			}
+
+			$out['boss_call_count'] = count($bossIDs);
+
+			if (count($bossIDs) === 0)
+			{
+				return $out;
+			}
+
+			/* ---- 2. which calls overlap which live Crew Boss calls ---- */
+
+			$overlaps = array();   /* child -> [boss ids], call-time order */
+
+			foreach ($calls as $id => $c)
+			{
+				if ($c['cancelled'] || $c['is_boss'])
+				{
+					continue;
+				}
+
+				foreach ($bossIDs as $b)
+				{
+					if ($b !== $id && goat_sg_strict_overlap($calls[$b], $c))
+					{
+						if (!isset($overlaps[$id]))
+						{
+							$overlaps[$id] = array();
+						}
+
+						$overlaps[$id][] = $b;
+					}
+				}
+			}
+
+			if (count($overlaps) === 0)
+			{
+				return $out;
+			}
+
+			$childIDs = array_keys($overlaps);
+
+			/* ---- 3. existing links: boss end must exist; self rows are no link ---- */
+
+			$links = array();   /* child -> array('boss', 'boss_cancelled') */
+
+			$lres = mysql_query("SELECT s.child_call AS child_call, s.boss_call AS boss_call,
+			                            " . goat_sg_cancelled_sql('cb') . " AS boss_cancelled_at
+			                     FROM call_supervision s
+			                     INNER JOIN calls cb ON cb.id = s.boss_call
+			                     WHERE s.child_call IN (" . implode(',', $childIDs) . ")
+			                       AND s.boss_call <> s.child_call");
+
+			if ($lres === false)
+			{
+				$fail['error'] = 'supervision lookup failed: ' . mysql_error();
+				return $fail;
+			}
+
+			while ($lrow = mysql_fetch_object($lres))
+			{
+				$links[(int) $lrow->child_call] = array(
+					'boss'           => (int) $lrow->boss_call,
+					'boss_cancelled' => ($lrow->boss_cancelled_at !== null && (int) $lrow->boss_cancelled_at > 0)
+				);
+			}
+
+			/* ---- 4. markers, and who is confirmed on the boss calls ---- */
+
+			$marks = array('ok' => true, 'error' => '', 'by_call' => array());
+
+			if (!$ignoreMarks)
+			{
+				$marks = goat_sg_no_crew_boss_marks($childIDs);
+
+				if (!$marks['ok'])
+				{
+					$fail['error'] = $marks['error'];
+					return $fail;
+				}
+			}
+
+			$roster = goat_sg_confirmed_roster($bossIDs);
+
+			if (!$roster['ok'])
+			{
+				$fail['error'] = $roster['error'];
+				return $fail;
+			}
+
+			/* ---- 5. rules 3-6 ---- */
+
+			$d17Ask = array();   /* rule 7 is batched: children of unstaffed boss calls */
+
+			foreach ($overlaps as $id => $bosses)
+			{
+				$c    = $calls[$id];
+				$list = array();
+
+				foreach ($bosses as $b)
+				{
+					$list[] = array('call_id' => $b, 'call_name' => $calls[$b]['name']);
+				}
+
+				$row = array(
+					'child_call'         => $id,
+					'call_name'          => $c['name'],
+					'start_date'         => $c['start_date'],
+					'start_time'         => $c['start_time'],
+					'boss_call'          => 0,
+					'boss_call_name'     => '',
+					'boss_calls'         => $list,
+					'from_boss_call'     => 0,
+					'outcome'            => 'skip',
+					'reason'             => '',
+					'boss_has_confirmed' => 0,
+					'team_leads'         => array()
+				);
+
+				$link    = isset($links[$id]) ? $links[$id] : null;
+				$started = ($c['start_melb'] !== false && $c['start_melb'] <= $now);
+
+				$row['linked_to'] = ($link !== null) ? $link['boss'] : 0;
+
+				if (isset($marks['by_call'][$id]))
+				{
+					$row['outcome'] = 'marked';
+				}
+				else if ($link !== null && !$link['boss_cancelled'])
+				{
+					$row['reason']         = 'already_linked';
+					$row['boss_call']      = $link['boss'];
+					$row['boss_call_name'] = isset($calls[$link['boss']]) ? $calls[$link['boss']]['name'] : '';
+				}
+				else if ($started)
+				{
+					$row['reason'] = 'started';
+				}
+				else if (count($bosses) > 1)
+				{
+					$row['reason'] = 'two_boss_calls';
+				}
+				else
+				{
+					$b = $bosses[0];
+
+					$row['outcome']            = ($link !== null) ? 'relink' : 'offer';
+					$row['from_boss_call']     = ($link !== null) ? $link['boss'] : 0;
+					$row['boss_call']          = $b;
+					$row['boss_call_name']     = $calls[$b]['name'];
+					$row['boss_has_confirmed'] = (isset($roster['by_call'][$b]) && count($roster['by_call'][$b]) > 0) ? 1 : 0;
+
+					if ($row['boss_has_confirmed'] === 0)
+					{
+						$d17Ask[] = $id;
+					}
+				}
+
+				$out['by_call'][$id] = $row;
+			}
+
+			/* ---- 6. rule 7: D17, exactly as call-supervision.php set asks it ---- */
+
+			if (count($d17Ask) > 0)
+			{
+				$d = goat_d17_if_unlinked($d17Ask);
+
+				if (!$d['ok'])
+				{
+					$fail['error'] = $d['error'];
+					return $fail;
+				}
+
+				foreach ($d['by_call'] as $cid => $leads)
+				{
+					$cid = (int) $cid;
+
+					if (isset($out['by_call'][$cid]))
+					{
+						$out['by_call'][$cid]['outcome']    = 'skip';
+						$out['by_call'][$cid]['reason']     = 'team_lead_rule';
+						$out['by_call'][$cid]['team_leads'] = $leads;
+					}
+				}
+			}
+
+			foreach ($calls as $id => $c)
+			{
+				if (isset($out['by_call'][$id]))
+				{
+					$out['rows'][] = $out['by_call'][$id];
+				}
+			}
+
+			return $out;
+		}
+
+		/*
+		/* MAY THESE CALLS BE MARKED "NO CREW BOSS"? (B4 `set`, and B3's `mark`
+		/* list.) A call may be marked only when the "Not linked" warning could
+		/* apply to it:
+		/*
+		/*   - it has no call_supervision link ("Unlink it first.") — a link to
+		/*     a cancelled boss call is still a link here;
+		/*   - it is on a booking, not cancelled, not itself a Crew Boss call,
+		/*     and strictly overlaps a live Crew Boss call on that booking.
+		/*
+		/* Started calls MAY be marked: the marker records a fact about the
+		/* call, and the warning shows on past calls too. An already-marked call
+		/* passes (set replaces the row).
+		/*
+		/*   array('ok', 'error', 'by_call' => callID => '' (may) | refusal text)
+		*/
+
+		function goat_no_crew_boss_refusals($callIDs, $nowMelb)
+		{
+			$ids  = goat_sg_clean_ids($callIDs);
+			$fail = array('ok' => false, 'error' => '', 'by_call' => array());
+			$out  = array('ok' => true, 'error' => '', 'by_call' => array());
+
+			if (count($ids) === 0)
+			{
+				return $out;
+			}
+
+			$res = mysql_query("SELECT id, bookingID AS booking_id FROM calls WHERE id IN (" . implode(',', $ids) . ")");
+
+			if ($res === false)
+			{
+				$fail['error'] = 'call lookup failed: ' . mysql_error();
+				return $fail;
+			}
+
+			$bookingOf = array();
+
+			while ($row = mysql_fetch_object($res))
+			{
+				$bookingOf[(int) $row->id] = (int) $row->booking_id;
+			}
+
+			$byBooking = array();
+
+			foreach ($ids as $cid)
+			{
+				if (!isset($bookingOf[$cid]) || $bookingOf[$cid] <= 0)
+				{
+					$out['by_call'][$cid] = 'Call not found.';
+					continue;
+				}
+
+				$byBooking[$bookingOf[$cid]] = true;
+			}
+
+			foreach (array_keys($byBooking) as $bid)
+			{
+				$cand = goat_auto_link_candidates($bid, $nowMelb, true);
+
+				if (!$cand['ok'])
+				{
+					$fail['error'] = $cand['error'];
+					return $fail;
+				}
+
+				foreach ($ids as $cid)
+				{
+					if (!isset($bookingOf[$cid]) || $bookingOf[$cid] !== $bid)
+					{
+						continue;
+					}
+
+					if (!isset($cand['by_call'][$cid]))
+					{
+						$out['by_call'][$cid] = 'It doesn\'t overlap a Crew Boss call on its booking, '
+						                      . 'or it is cancelled, or it is a Crew Boss call itself.';
+						continue;
+					}
+
+					$row = $cand['by_call'][$cid];
+
+					if ($row['linked_to'] > 0)
+					{
+						$out['by_call'][$cid] = 'It is linked to a Crew Boss call. Unlink it first.';
+						continue;
+					}
+
+					$out['by_call'][$cid] = '';
+				}
+			}
+
+			return $out;
+		}
+
+		/*
+		/* Plain words for a candidate's reason, for refusals and the preview
+		/* (BRIEF C2). One place, so the endpoint and THE GOAT say the same thing.
+		*/
+
+		function goat_auto_link_reason_text($row)
+		{
+			$r = isset($row['reason']) ? $row['reason'] : '';
+
+			if (isset($row['outcome']) && $row['outcome'] === 'marked')
+			{
+				return 'Marked No Crew Boss.';
+			}
+
+			if ($r === 'already_linked')
+			{
+				return 'Already linked to Crew Boss call #' . (int) $row['boss_call'] . '.';
+			}
+
+			if ($r === 'started')
+			{
+				return 'It has already started.';
+			}
+
+			if ($r === 'two_boss_calls')
+			{
+				return 'Overlaps two Crew Boss calls — choose one in the editor below.';
+			}
+
+			if ($r === 'team_lead_rule')
+			{
+				return 'Has ' . count($row['team_leads']) . ' Team Leads and no Crew Boss.';
+			}
+
+			return $r === '' ? '' : ('Can\'t be linked (' . $r . ').');
 		}
 
 	}

@@ -41,6 +41,13 @@
 	/*                      same way.
 	/*   action = "list"  : {action, booking_id}
 	/*
+	/* LINK BUTTON (BRIEF-default-link-self-submit-off, Release 2, B5). `set`
+	/* writes auto = 0 (linked by hand) and clears any "No Crew Boss" marker
+	/* on each child; `clear` marks each child the Link button would now offer
+	/* and returns them as marked_no_crew_boss (J7). Neither changes a refusal,
+	/* a warning or a 409. Both add marker_error ('' when fine) instead of
+	/* failing a write that has already happened.
+	/*
 	/* Admin-only (same gate as call-feeds.php).
 	/* PHP 5.x — no null-coalescing, no short array syntax.
 	*/
@@ -498,20 +505,29 @@
 		/* is no string in this endpoint that reaches SQL.
 		*/
 
-		$set = array();
-		$now = time();
+		/*
+		/* `auto` = 0: linked BY HAND (BRIEF-default-link-self-submit-off B5).
+		/* The Link button's endpoint writes 1; a hand link over a button link
+		/* sets it back to 0, so the column always says who made the CURRENT
+		/* link. Guarded: absent before MIGRATION-link-button.sql.
+		*/
+
+		$set  = array();
+		$now  = time();
+		$auto = goat_sg_have_supervision_auto();
 
 		foreach ($children as $c)
 		{
 			mysql_query("INSERT INTO call_supervision
-			             (booking_id, boss_call, child_call, created, created_by)
+			             (booking_id, boss_call, child_call, created, created_by" . ($auto ? ", `auto`" : "") . ")
 			             VALUES (" . $bookingID . ", " . $boss . ", " . $c . ",
-			                     " . $now . ", " . $actor . ")
+			                     " . $now . ", " . $actor . ($auto ? ", 0" : "") . ")
 			             ON DUPLICATE KEY UPDATE
 			               boss_call  = VALUES(boss_call),
 			               booking_id = VALUES(booking_id),
 			               created    = VALUES(created),
-			               created_by = VALUES(created_by)");
+			               created_by = VALUES(created_by)" . ($auto ? ",
+			               `auto`     = VALUES(`auto`)" : ""));
 
 			if (mysql_error())
 			{
@@ -522,13 +538,35 @@
 			$set[] = $c;
 		}
 
+		/*
+		/* LINKING WINS (J7): a call linked by hand loses any "No Crew Boss"
+		/* marker. After the links, never before — the links are what was
+		/* asked for. A marker that won't clear is reported, not a 500: the
+		/* links ARE saved, and a 500 would tell THE GOAT they were not. A
+		/* linked call is never warned about, so a stale marker on it is
+		/* invisible until it is unlinked.
+		*/
+
+		$markerError = '';
+
+		if (goat_sg_have_no_crew_boss())
+		{
+			mysql_query("DELETE FROM call_no_crew_boss WHERE callID IN (" . implode(',', $set) . ")");
+
+			if (mysql_error())
+			{
+				$markerError = 'No Crew Boss marker not cleared: ' . mysql_error();
+			}
+		}
+
 		echo json_encode(array(
-			'ok'         => true,
-			'action'     => 'set',
-			'booking_id' => $bookingID,
-			'boss_call'  => $boss,
-			'children'   => $set,
-			'warnings'   => $warnings
+			'ok'           => true,
+			'action'       => 'set',
+			'booking_id'   => $bookingID,
+			'boss_call'    => $boss,
+			'children'     => $set,
+			'warnings'     => $warnings,
+			'marker_error' => $markerError
 		));
 		die();
 	}
@@ -566,10 +604,85 @@
 			die('{"error":"supervision delete failed: ' . addslashes(mysql_error()) . '"}');
 		}
 
+		/*
+		/* UNLINKING MARKS "NO CREW BOSS" (J7, BRIEF-default-link-self-submit-
+		/* off B5). A child the Link button would now OFFER — no link (true
+		/* after the delete above, which is rule 3), overlapping exactly one
+		/* live Crew Boss call, not started, not refused — is marked, set_by =
+		/* the actor, so the button doesn't offer it again and the amber warning
+		/* doesn't come back. Asked of goat_auto_link_candidates(), the button's
+		/* own rule, after the delete. Children it would not offer (no overlap,
+		/* two boss calls, started) are left unmarked.
+		/*
+		/* The unlink has HAPPENED by now, so nothing below is a 500: a marker
+		/* that can't be worked out or written comes back as marker_error with
+		/* the children it missed, and THE GOAT reports it.
+		*/
+
+		$marked      = array();
+		$markerError = '';
+
+		if (goat_sg_have_no_crew_boss())
+		{
+			$bres = mysql_query("SELECT id, bookingID AS booking_id FROM calls
+			                     WHERE id IN (" . implode(',', $children) . ")");
+
+			if ($bres === false)
+			{
+				$markerError = 'No Crew Boss check failed: ' . mysql_error();
+			}
+			else
+			{
+				$byBooking = array();
+
+				while ($brow = mysql_fetch_object($bres))
+				{
+					$byBooking[(int) $brow->booking_id][] = (int) $brow->id;
+				}
+
+				$now = time();
+
+				foreach ($byBooking as $bid => $kids)
+				{
+					$cand = goat_auto_link_candidates($bid, $now);
+
+					if (!$cand['ok'])
+					{
+						$markerError = 'No Crew Boss check failed: ' . $cand['error'];
+						continue;
+					}
+
+					foreach ($kids as $kid)
+					{
+						if (!isset($cand['by_call'][$kid]) || $cand['by_call'][$kid]['outcome'] !== 'offer')
+						{
+							continue;
+						}
+
+						mysql_query("INSERT INTO call_no_crew_boss (callID, set_by, set_at)
+						             VALUES (" . $kid . ", " . $actor . ", " . $now . ")
+						             ON DUPLICATE KEY UPDATE
+						               set_by = VALUES(set_by),
+						               set_at = VALUES(set_at)");
+
+						if (mysql_error())
+						{
+							$markerError = 'No Crew Boss marker not saved for call ' . $kid . ': ' . mysql_error();
+							continue;
+						}
+
+						$marked[] = $kid;
+					}
+				}
+			}
+		}
+
 		echo json_encode(array(
-			'ok'       => true,
-			'action'   => 'clear',
-			'children' => $children
+			'ok'                  => true,
+			'action'              => 'clear',
+			'children'            => $children,
+			'marked_no_crew_boss' => $marked,
+			'marker_error'        => $markerError
 		));
 		die();
 	}
