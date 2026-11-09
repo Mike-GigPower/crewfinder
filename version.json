@@ -1,6 +1,6 @@
 {
-  "version": "5.96.0",
+  "version": "5.96.1",
   "release_date": "2026-11-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.96.0/TheGOAT.dmg",
-  "release_notes": "New Prev and Next buttons step between a booking's calls in the call dialog and Enter Times, plus Accept & Next for reviewing times call by call."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.96.1/TheGOAT.dmg",
+  "release_notes": "Crew Finder fix: when you search several calls at once, each call now shows its own booking, and the Availability column says BOOKED 1/2 when someone is booked on only some of them."
 }
