@@ -1,6 +1,6 @@
 {
-  "version": "5.95.0",
+  "version": "5.96.0",
   "release_date": "2026-11-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.95.0/TheGOAT.dmg",
-  "release_notes": "New Link to Crew Boss calls button on a booking's Crew bosses tab, and a No Crew Boss mark for calls that really have none."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.96.0/TheGOAT.dmg",
+  "release_notes": "New Prev and Next buttons step between a booking's calls in the call dialog and Enter Times, plus Accept & Next for reviewing times call by call."
 }
