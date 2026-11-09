@@ -1,6 +1,6 @@
 {
-  "version": "5.96.2",
+  "version": "5.96.3",
   "release_date": "2026-11-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.96.2/TheGOAT.dmg",
-  "release_notes": "Crew Finder fix: the timeline hover now shows each call's real venue (it could show the wrong one, e.g. MCEC for an AAMI Park call). Calls opened by number now get the same induction check as the rest."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.96.3/TheGOAT.dmg",
+  "release_notes": "Crew Finder Plan: a full call now says \"Call is full — nothing to plan.\", and booking plans fold each call to one line so the candidate list stays on screen."
 }
