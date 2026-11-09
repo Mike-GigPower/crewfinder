@@ -1,6 +1,6 @@
 {
-  "version": "5.94.1",
+  "version": "5.95.0",
   "release_date": "2026-11-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.94.1/TheGOAT.dmg",
-  "release_notes": "\"Crew send own times\" is now off unless Ops tick it, on calls with no Crew Boss or Team Lead. Ticking turns it on for that call; unticking turns it off."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.95.0/TheGOAT.dmg",
+  "release_notes": "New Link to Crew Boss calls button on a booking's Crew bosses tab, and a No Crew Boss mark for calls that really have none."
 }
