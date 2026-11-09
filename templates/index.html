@@ -622,6 +622,8 @@ body.cf-sb-collapsed #tab-crew-finder > .sidebar{width:0;min-width:0;border-righ
 .crew-rec-table .rec-contract:hover{text-decoration:underline}
 .crew-rec-table .rec-photo{cursor:pointer;white-space:nowrap}
 .crew-rec-table .rec-photo:hover{text-decoration:underline}
+.crew-rec-table .rec-last{cursor:pointer;white-space:nowrap}
+.crew-rec-table .rec-last:hover{text-decoration:underline}
 /* Admin crew photo update (5.84.0): header photo button + the dialog. */
 .ce-photo-btn{position:relative;display:block;padding:0;border:none;background:none;cursor:pointer;border-radius:6px}
 .ce-photo-ovl{position:absolute;left:0;right:0;bottom:0;padding:4px 0;background:rgba(0,0,0,.72);color:var(--accent);font-family:'Share Tech Mono',monospace;font-size:11px;text-align:center;border-radius:0 0 6px 6px;opacity:0;transition:opacity .15s;pointer-events:none}
@@ -2759,6 +2761,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
           </div>
         </span>
         <button type="button" class="group-chip" id="crew-nocontract-btn" style="font-size:11px;padding:5px 10px" onclick="crewNoContractToggle()">No contract</button>
+        <button type="button" class="group-chip" id="crew-dormant-btn" style="font-size:11px;padding:5px 10px" onclick="crewDormantToggle()">No shift in 12 months</button>
         <div class="ind-actions">
           <button class="btn-logout" style="border-color:var(--accent);color:var(--accent)" onclick="adminAddUser()">+ Add Crew Member</button>
           <button class="btn" id="btn-drive-contracts" style="display:none" onclick="openDriveContractsModal()">Import contracts from Drive</button>
@@ -13549,6 +13552,44 @@ let _crewRecNoContract   = false;   // chip on: keep only c.contract === null
 let _crewListContractOk  = true;    // did the payload's contract lookup actually run
 let _crewListPhotoOk     = true;    // did both photo lookups run (5.84.0)
 
+// "No shift in N months" chip + Last shift column (BRIEF-records-last-shift.md).
+// Same absent-key rule as Contract: c.last_shift absent = unknown, null = never.
+const CREW_REC_DORMANT_MONTHS = 12;
+let _crewRecDormant      = false;   // chip on: no shift in CREW_REC_DORMANT_MONTHS (or never)
+let _crewListLastShiftOk = true;    // did the payload's last-shift lookup run
+
+function crewDormantToggle(){
+  _crewRecDormant = !_crewRecDormant;
+  _renderCrewList();
+}
+
+// Same posture as crewNoContractSyncBtn: disabled only while OFF with no data.
+function crewDormantSyncBtn(){
+  const b = document.getElementById('crew-dormant-btn');
+  if(!b) return;
+  b.textContent = 'No shift in ' + CREW_REC_DORMANT_MONTHS + ' months';
+  b.classList.toggle('active', _crewRecDormant);
+  if(!_crewListLastShiftOk && !_crewRecDormant){
+    b.setAttribute('disabled', '');
+    b.title = 'Shift data is unavailable for this list.';
+  } else {
+    b.removeAttribute('disabled');
+    b.title = 'Show crew with no shift in the last ' + CREW_REC_DORMANT_MONTHS + ' months, including those who have never had one';
+  }
+}
+
+// YYYY-MM-DD, CREW_REC_DORMANT_MONTHS calendar months before today, clamped to
+// the month's last day (31 Mar -> 28/29 Feb), like goat_add_months_clamped.
+function crewDormantCutoff(today){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(today);
+  if(!m) return '';
+  let y = Number(m[1]), mo = Number(m[2]) - CREW_REC_DORMANT_MONTHS;
+  while(mo < 1){ mo += 12; y -= 1; }
+  const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  const d = Math.min(Number(m[3]), last);
+  return y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
+
 function crewNoContractToggle(){
   _crewRecNoContract = !_crewRecNoContract;
   _renderCrewList();
@@ -13682,6 +13723,7 @@ async function _loadCrewList(){
     _crewListLicOk = (d.licences_ok !== false);
     _crewListContractOk = (d.contracts_ok !== false);   // same reading as licences
     _crewListPhotoOk = (d.photos_ok !== false);          // and again for photos
+    _crewListLastShiftOk = (d.last_shift_ok !== false);  // and for last shift
   }catch(e){
     const rows = document.getElementById('crew-list-rows');
     if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load crew: '+escapeHtml(e.message)+'</div>';
@@ -17450,7 +17492,7 @@ async function ceUnavailDelete(id, eventId){
 // Sorting is shared by the three Crew views (crewSort, beside crewFilter).
 // First click on a column: names and EINs A-Z; stars, hours, licences and
 // reliability worst-or-highest first; push "Off" first. A second click reverses.
-const CREW_REC_SORT_FIRST_DIR = { name: 1, ein: 1, rating: -1, hours: -1, lic: -1, rel: -1, push: 1, contract: -1, photo: 1 };
+const CREW_REC_SORT_FIRST_DIR = { name: 1, ein: 1, rating: -1, hours: -1, lic: -1, rel: -1, push: 1, contract: -1, photo: 1, last: 1 };
 let _crewRecLastRows = [];   // what Records last drew, in order, for Export CSV
 function crewRecSortBy(key){ crewSortBy(key); }
 
@@ -17499,6 +17541,10 @@ function crewRecSortVal(c, key, ctx){
     case 'photo':
       if(!_crewListPhotoOk || !('photo' in c)) return '~';
       return (c.photo && c.photo.kind !== 'none' && c.photo.date) ? c.photo.date : '0';
+    // Never first, then oldest to newest, unknown last — the photo scheme.
+    case 'last':
+      if(!_crewListLastShiftOk || !('last_shift' in c)) return '~';
+      return c.last_shift ? (String(c.last_shift.date_iso || '') + ' ' + String(c.last_shift.start_time || '')) : '0';
     default:     return decodeEntities(c.name || '').toLowerCase();
   }
 }
@@ -17609,6 +17655,35 @@ function crewRecPhotoOpen(ev, crewId){
   });
 }
 
+// Last shift column: the date only (D2); booking, call and 24-hour start time in
+// the tooltip. Never / a dash for unknown — unknown never reads as Never. Amber
+// once older than the dormant cutoff. Only a dated cell opens the call.
+function crewRecLastShiftLabel(ls){
+  const b = decodeEntities(ls.booking_name || ''), k = decodeEntities(ls.call_name || '');
+  return (b && k) ? (b + ' \u2014 ' + k) : (b || k);
+}
+function crewRecLastShiftHtml(c, cutoff){
+  if(!_crewListLastShiftOk || !('last_shift' in c))
+    return '<span style="color:var(--muted)" title="Shift data unavailable">\u2014</span>';
+  const ls = c.last_shift;
+  if(ls === null || !ls.date_iso)
+    return '<span style="color:var(--muted)" title="No confirmed shift on record">Never</span>';
+  const date = hoursFmtDate(ls.date_iso);
+  const hhmm = String(ls.start_time || '').slice(0, 5);
+  const label = crewRecLastShiftLabel(ls);
+  const old = cutoff && ls.date_iso < cutoff;
+  const tip = date + (hhmm ? ' \u00b7 ' + hhmm : '') + (label ? ' \u00b7 ' + label : '')
+    + (old ? ' \u2014 over ' + CREW_REC_DORMANT_MONTHS + ' months ago' : '') + ' \u2014 click to open the call';
+  return '<span class="rec-last" style="color:'+(old ? 'var(--warn)' : 'var(--text)')+'" title="'+escapeHtml(tip)+'"'
+    + ' onclick="crewLastShiftOpen(event, '+Number(c.id)+', '+Number(ls.booking_id)+', '+Number(ls.call_id)+')">'
+    + escapeHtml(date) + '</span>';
+}
+function crewLastShiftOpen(ev, crewId, bookingId, callId){
+  if(ev) ev.stopPropagation();          // the row underneath opens Details
+  entityStackPush('crew:'+crewId, 'crew', function(){ openCrewEdit(String(crewId), {tab: 'shifts'}); });
+  openCallDialog(String(bookingId), String(callId));
+}
+
 function crewContractOpen(ev, crewId){
   if(ev) ev.stopPropagation();          // the row underneath opens Details
   openCrewEdit(String(crewId), {tab: 'documents'});
@@ -17625,6 +17700,8 @@ function _renderCrewList(){
   const cnt = document.getElementById('crew-list-count');
   const today = _goatLocalISODate(new Date());
   crewNoContractSyncBtn();
+  crewDormantSyncBtn();
+  const dormantCutoff = crewDormantCutoff(today);
 
   // A licence filter with nothing behind it fails LOUDLY, the same posture as
   // api_availability's guard. Returning everyone (filter silently ignored) and
@@ -17647,6 +17724,15 @@ function _renderCrewList(){
       + 'Contract data is unavailable, so the No contract filter can’t be applied. Clear it to filter without it.</div>';
     return;
   }
+  const dormant = _crewRecDormant;
+  // And again for the No shift chip.
+  if(dormant && !_crewListLastShiftOk){
+    _crewRecLastRows = [];
+    if(cnt) cnt.textContent = '';
+    if(target) target.innerHTML = '<div style="color:var(--conflict);font-size:12px;padding:8px 0">'
+      + 'Shift data is unavailable, so the No shift in ' + CREW_REC_DORMANT_MONTHS + ' months filter can’t be applied. Clear it to filter without it.</div>';
+    return;
+  }
 
   const rows = _crewListData.filter(function(c){
     if(needle
@@ -17656,6 +17742,7 @@ function _renderCrewList(){
     if(crewFilter.group && !((c.groups||[]).includes(crewFilter.group))) return false;
     if((crewFilter.minStars||0) && (Number(c.rating)||0) < crewFilter.minStars) return false;
     if(noContract && c.contract !== null) return false;
+    if(dormant && !(c.last_shift === null || (c.last_shift && c.last_shift.date_iso < dormantCutoff))) return false;
     // AND across ticked codes, matching the group filter and the Crew Finder:
     // two codes means both. Driver classes match upward via expandLicCode.
     if(lic.length){
@@ -17703,21 +17790,25 @@ function _renderCrewList(){
   // on an empty search box — an honest empty result must not read as a failure.
   function emptyMsg(){
     const set = crewFilter.active ? 'active' : 'inactive';
-    if(noContract && !lic.length && !needle && !crewFilter.group && !crewFilter.minStars)
+    const dormTxt = 'no shift in ' + CREW_REC_DORMANT_MONTHS + ' months';
+    if(noContract && !dormant && !lic.length && !needle && !crewFilter.group && !crewFilter.minStars)
       return 'Every ' + set + ' crew member has a contract on file.';
+    if(dormant && !noContract && !lic.length && !needle && !crewFilter.group && !crewFilter.minStars)
+      return 'Every ' + set + ' crew member has had a shift in the last ' + CREW_REC_DORMANT_MONTHS + ' months.';
     const parts = [];
     if(lic.length){
       const names = lic.map(function(c){ return escapeHtml(licChipLabel(c)); }).join(' + ');
       parts.push('No ' + set + ' crew hold ' + names);
     }
     if(noContract) parts.push(parts.length ? 'without a contract' : 'No ' + set + ' crew without a contract');
+    if(dormant) parts.push(parts.length ? 'with ' + dormTxt : 'No ' + set + ' crew with ' + dormTxt);
     if(needle) parts.push(parts.length ? 'and match “' + escapeHtml(q) + '”' : 'No crew match “' + escapeHtml(q) + '”');
     if(crewFilter.group) parts.push('in ' + escapeHtml(crewFilter.group));
     if(crewFilter.minStars) parts.push('with ' + crewFilter.minStars + '\u2605 or more');
     return (parts.length ? parts.join(' ') : 'No crew to show') + '.';
   }
 
-  crewCountLineRender('crew-list-count', rows.length, _crewListData.length, (crewFilter.active ? 'active' : 'inactive') + ' crew', lic.length, noContract);
+  crewCountLineRender('crew-list-count', rows.length, _crewListData.length, (crewFilter.active ? 'active' : 'inactive') + ' crew', lic.length, noContract, dormant);
 
   // Same identity columns as Utilization, then Licences (expired / expiring),
   // Reliability (12 mo), Push, the matched-licence chips while a licence filter
@@ -17725,7 +17816,7 @@ function _renderCrewList(){
   const soon = _goatLocalISODate(new Date(Date.now() + 30*86400000));
   const ctx = { today: today, soon: soon };
   const photoCol = (window._cohort === 'admin');
-  const rs = crewSortFor(['name','rating','ein','lic','rel','push','contract'].concat(photoCol ? ['photo'] : []));
+  const rs = crewSortFor(['name','rating','ein','lic','rel','last','push','contract'].concat(photoCol ? ['photo'] : []));
   const sk = rs.key, sd = rs.dir;
   const sorted = rows.slice().sort(function(a, b){
     const av = crewRecSortVal(a, sk, ctx), bv = crewRecSortVal(b, sk, ctx);
@@ -17748,6 +17839,7 @@ function _renderCrewList(){
       + th('\u2605', 'rating', 'fc-col-stars') + th('EIN', 'ein', 'fc-col-id')
       + th('Licence expiry', 'lic', '', 'width:150px')
       + th('Reliability 12 mo', 'rel', '', 'width:160px')
+      + th('Last shift', 'last', '', 'width:120px')
       + th('Push', 'push', '', 'width:70px')
       + th('Contract', 'contract', '', 'width:110px')
       + (photoCol ? th('Photo', 'photo', '', 'width:130px') : '')
@@ -17765,6 +17857,7 @@ function _renderCrewList(){
           + '<td class="fc-col-id"><span class="fc-id">'+escapeHtml(String(c.ein||''))+'</span></td>'
           + '<td>'+crewRecLicHtml(c, today, soon)+'</td>'
           + '<td>'+crewRecRelHtml(c)+'</td>'
+          + '<td>'+crewRecLastShiftHtml(c, dormantCutoff)+'</td>'
           + '<td>'+crewRecPushHtml(c)+'</td>'
           + '<td>'+crewRecContractHtml(c)+'</td>'
           + (photoCol ? '<td>'+crewRecPhotoHtml(c, today)+'</td>' : '')
@@ -30808,7 +30901,7 @@ function crewRenderVisible(){
 // "12 of 494 crew shown · Filtered by Fork, 4* or more  [Clear filters]".
 // Filters carry across the three views and group / MIN star are remembered, so a
 // narrowed list must always say so, on every view, in the same place.
-function crewCountLineRender(id, shown, total, noun, licCount, noContract){
+function crewCountLineRender(id, shown, total, noun, licCount, noContract, dormant){
   const el = document.getElementById(id);
   crewPersistSave();
   if(!el) return;
@@ -30819,6 +30912,7 @@ function crewCountLineRender(id, shown, total, noun, licCount, noContract){
   if(crewFilter.minStars) f.push('<b>' + crewFilter.minStars + '\u2605 or more</b>');
   if(licCount) f.push('<b>' + licCount + (licCount === 1 ? ' licence' : ' licences') + '</b>');
   if(noContract) f.push('<b>no contract</b>');   // Records only; the other views never pass it
+  if(dormant) f.push('<b>no shift in ' + CREW_REC_DORMANT_MONTHS + ' months</b>');   // Records only
   el.innerHTML = '<span>' + shown + ' of ' + total + ' ' + escapeHtml(noun) + ' shown</span>'
     + (f.length
         ? '<span>\u00b7 Filtered by ' + f.join(', ') + '</span>'
@@ -30837,6 +30931,10 @@ function crewClearFilters(){
   if(typeof _crewRecNoContract !== 'undefined' && _crewRecNoContract){
     _crewRecNoContract = false;
     crewNoContractSyncBtn();
+  }
+  if(typeof _crewRecDormant !== 'undefined' && _crewRecDormant){
+    _crewRecDormant = false;
+    crewDormantSyncBtn();
   }
   ['fc-search', 'ind-name-search', 'crew-list-search'].forEach(function(id){
     const i = document.getElementById(id); if(i) i.value = '';
@@ -30870,6 +30968,15 @@ function exportCrewRecordsCSV(){
     if(p.kind === 'none' || !p.date) return 'none';
     return (p.kind === 'full' ? 'full ' : 'low ') + p.date;
   };
+  // YYYY-MM-DD · Never · Unknown, and the Booking — Call it came from.
+  const lastDateCell = function(c){
+    if(!_crewListLastShiftOk || !('last_shift' in c)) return 'Unknown';
+    return (c.last_shift && c.last_shift.date_iso) ? c.last_shift.date_iso : 'Never';
+  };
+  const lastNameCell = function(c){
+    if(!_crewListLastShiftOk || !('last_shift' in c) || !c.last_shift) return '';
+    return crewRecLastShiftLabel(c.last_shift);
+  };
   const rows = (_crewRecLastRows || []).map(function(c){
     const ls = crewRecLicState(c, today, soon);
     const s  = c.stats;
@@ -30879,6 +30986,7 @@ function exportCrewRecordsCSV(){
       c.active ? 'Active' : 'Inactive',
       ls ? ls.expired.join(' ') : 'Unknown', ls ? ls.expiring.join(' ') : 'Unknown',
       n(s && s.late_12mo), n(s && s.noshow_12mo), n(s && s.late_all), n(s && s.noshow_all),
+      lastDateCell(c), lastNameCell(c),
       c.push_ok === true ? 'On' : (c.push_ok === false ? 'Off' : 'Unknown'),
       contractCell(c), photoCell(c),
       (c.groups || []).join(' ')
@@ -30886,7 +30994,7 @@ function exportCrewRecordsCSV(){
   });
   goatExportCSV('crew-records-' + (crewFilter.active ? 'active' : 'inactive'),
     ['Name', 'EIN', 'Phone', 'Stars', 'Status', 'Licences expired', 'Licences expiring (30 days)',
-     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Crew Hub push', 'Contract signed', 'Photo', 'Groups'],
+     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Last shift date', 'Last shift', 'Crew Hub push', 'Contract signed', 'Photo', 'Groups'],
     rows);
 }
 
