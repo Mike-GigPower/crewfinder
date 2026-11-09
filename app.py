@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.96.3"
+APP_VERSION    = "5.97.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -18335,6 +18335,14 @@ def api_admin_crew_list():
     {kind:"low", date} when only the SmartStaff thumbnail does, else
     {kind:"none"}. Either fails -> the key is ABSENT on every row and
     photos_ok is false, so the column shows unknown rather than a wrong "None".
+
+    `last_shift` follows the same rule once more, from
+    admin-list-last-shift-bulk.php (one call, made AFTER the photo lookups,
+    sequentially): {date_iso, start_time, call_id, booking_id, call_name,
+    booking_name} for the most recent Confirmed shift dated today or earlier
+    (the Hours tab rule), None when there has never been one, and the key ABSENT
+    on every row when the lookup failed. `last_shift_ok` is that flag, so the
+    "No shift in 12 months" chip refuses instead of matching nobody.
     """
     ss = get_ss_session()
     if not ss:
@@ -18356,6 +18364,10 @@ def api_admin_crew_list():
     if p_err:
         print(f"[crew-list] WARNING: photo lookup failed, column will show unknown: {p_err}")
     photos_ok = ss_photos is not None and full_photos is not None
+    # Last shift column: one more SmartStaff request, still sequential.
+    last_shifts, ls_err = ss_list_last_shift_bulk(ss)
+    if ls_err:
+        print(f"[crew-list] WARNING: last-shift lookup failed, column will show unknown: {ls_err}")
     # push_ok is read from the crew cache, which the refresh stamps from Crew Hub.
     # Anything but a real bool (never stamped, Hub down at refresh, inactive crew
     # not in the cache) goes out as None, so the page shows "unknown", not "Off".
@@ -18395,6 +18407,16 @@ def api_admin_crew_list():
                 row["photo"] = {"kind": "low", "date": ss_photos[str(c["id"])]}
             else:
                 row["photo"] = {"kind": "none"}
+        if last_shifts is not None:
+            ls = last_shifts.get(str(c["id"]))
+            row["last_shift"] = None if not ls else {
+                "date_iso":     ls.get("date_iso"),
+                "start_time":   ls.get("start_time"),
+                "call_id":      ls.get("call_id"),
+                "booking_id":   ls.get("booking_id"),
+                "call_name":    ls.get("call_name") or "",
+                "booking_name": ls.get("booking_name") or "",
+            }
         rows.append(row)
     rows.sort(key=lambda r: (r["name"] or "").lower())
     # Judged on the WHOLE fetch, not the filtered rows: every crew member from
@@ -18405,7 +18427,8 @@ def api_admin_crew_list():
     lic_ok = (not crew) or any("licences" in c for c in crew)
     return jsonify({"crew": rows, "licences_ok": lic_ok,
                     "contracts_ok": contracts is not None,
-                    "photos_ok": photos_ok})
+                    "photos_ok": photos_ok,
+                    "last_shift_ok": last_shifts is not None})
 
 
 @app.route("/api/crew-cards")
@@ -24150,6 +24173,36 @@ def ss_list_contracts_bulk(ss):
         # (object), but don't let a [] turn into a crash if it ever doesn't.
         contracts = {}
     return {str(k): (v or {}) for k, v in contracts.items()}, None
+
+
+def ss_list_last_shift_bulk(ss):
+    """Everyone's last worked shift via admin-list-last-shift-bulk.php in one
+    query, or (None, err): {user_id_str: {date_iso, start_time, call_id,
+    booking_id, call_name, booking_name}}. Someone with no qualifying shift is
+    simply absent — for Crew > Records' Last shift column
+    (BRIEF-records-last-shift.md). "Last shift" is the Hours tab rule:
+    Confirmed (status 5), booking not hidden, dated today or earlier.
+
+    Keys are coerced to str so they line up with str(c["id"]) everywhere else.
+    An empty map is a legitimate answer, not a failure. Names come back raw
+    (HTML-encoded, as SmartStaff stores them); the page decodes them."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-list-last-shift-bulk.php", timeout=20)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    shifts = out.get("last_shifts")
+    if not isinstance(shifts, dict):
+        # Same guard as contracts: an empty PHP array encodes as [].
+        shifts = {}
+    return {str(k): (v or {}) for k, v in shifts.items()}, None
 
 
 def ss_list_crew_photos(ss):
