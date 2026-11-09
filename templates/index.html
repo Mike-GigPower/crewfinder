@@ -4541,7 +4541,7 @@ function _planRenderStrip(missing){
 
 function renderBookingPlan(result, opts){
   _activePlan={kind:'booking', plan:result.plan, opts:opts||{}, callKey:_planCallKey(),
-               removed:new Set(), notSent:new Set(), sending:false};
+               removed:new Set(), notSent:new Set(), sending:false, open:new Set()};
   _planClearTicks();
   _bookingPlanRender();
 }
@@ -4589,6 +4589,24 @@ function bookingPlanRemove(uid, cid){
   _bookingPlanRender();
 }
 
+// Each call in a booking plan folds to one line so the candidate list keeps
+// its room (Mike, 9 Nov 2026). Folded by default; the open set survives a
+// re-render (× removal, send), and Clear plan drops it with _activePlan.
+function bookingPlanToggle(cid){
+  if(!_activePlan||_activePlan.kind!=='booking') return;
+  const k=String(cid), o=_activePlan.open;
+  if(o.has(k)) o.delete(k); else o.add(k);
+  _bookingPlanRender();
+}
+
+function bookingPlanToggleAll(){
+  if(!_activePlan||_activePlan.kind!=='booking') return;
+  const ids=(_activePlan.plan.calls||[]).map(c => String(c.call_id));
+  const allOpen=ids.length && ids.every(k => _activePlan.open.has(k));
+  _activePlan.open=allOpen ? new Set() : new Set(ids);
+  _bookingPlanRender();
+}
+
 function _bookingPlanRender(){
   const el=document.getElementById('plan-strip'); if(!el||!_activePlan) return;
   const plan=_activePlan.plan, removed=_activePlan.removed;
@@ -4611,7 +4629,12 @@ function _bookingPlanRender(){
     +'<button type="button" class="btn" id="bp-confirm"'+busy+' onclick="bookingPlanSend(true)">Add &amp; Confirm plan</button>'
     +'<button type="button" class="btn"'+busy+' onclick="planClear()">Clear plan</button>'
     +'<span style="font-size:10px;color:var(--muted)">Ticks aren’t used for booking plans — review and send below. Hours as at '
-    +_planEsc(plan.experience_as_at||'')+'.</span></div>');
+    +_planEsc(plan.experience_as_at||'')+'.</span>'
+    +(function(){ const ids=(plan.calls||[]).map(c => String(c.call_id));
+        const allOpen=ids.length && ids.every(k => _activePlan.open.has(k));
+        return '<button type="button" onclick="bookingPlanToggleAll()" style="border:none;background:none;color:var(--accent);cursor:pointer;text-decoration:underline;font-size:11px">'
+          +(allOpen?'Collapse all':'Expand all')+'</button>'; })()
+    +'</div>');
   if(_activePlan.notSent.size){
     h.push('<div style="color:'+amber+';font-weight:600;margin-top:4px">Not sent: '+[..._activePlan.notSent].map(_planEsc).join('; ')+'</div>');
   }
@@ -4620,12 +4643,24 @@ function _bookingPlanRender(){
     const when=isNaN(d) ? '' : d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})
       +' '+d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
     const picks=(c.picks||[]).filter(p => !removed.has(p.user_id+':'+c.call_id));
-    h.push('<div style="margin-top:10px;padding-top:6px;border-top:1px solid var(--border)">'
+    const isOpen=_activePlan.open.has(String(c.call_id));
+    const pt=_planPlacesText(c.places, c.places_breakdown);
+    const placesLine=(c.places===0 ? pt : picks.length+' of '+pt);
+    // Folded: one line with what needs a look — places short and warned crew.
+    const short=c.places>0 ? Math.max(0, (c.is_boss_call ? Math.min(c.places,1) : c.places)-picks.length) : 0;
+    const nWarn=(c.could_fill_warned||[]).length;
+    h.push('<div onclick="bookingPlanToggle('+Number(c.call_id)+')" title="'+(isOpen?'Hide':'Show')+' this call’s plan"'
+      +' style="margin-top:'+(isOpen?'10':'4')+'px;padding-top:'+(isOpen?'6':'4')+'px;border-top:1px solid var(--border);cursor:pointer">'
+      +'<span style="display:inline-block;width:12px;color:var(--muted)">'+(isOpen?'&#9662;':'&#9656;')+'</span>'
       +'<b>#'+_planEsc(c.call_id)+' '+_planEsc(c.call_name)+'</b> <span style="color:var(--muted)">'+_planEsc(when)+'</span>'
       +(c.carried?chip('carried','var(--accent)','Crew placed on the call that feeds it are booked here too'):'')
-      +(c.is_boss_call?chip('Crew Boss','var(--accent)'):'')+'</div>');
-    const pt=_planPlacesText(c.places, c.places_breakdown);
-    h.push('<div>'+(c.places===0 ? pt : picks.length+' of '+pt)+'</div>');
+      +(c.is_boss_call?chip('Crew Boss','var(--accent)'):'')
+      +(isOpen ? '' : ' <span style="color:var(--muted)">· '+_planEsc(placesLine)+'</span>'
+          +(short?chip(short+' short',amber):'')
+          +(nWarn?chip(nWarn+' could fill with a warning',amber):''))
+      +'</div>');
+    if(!isOpen) return;
+    h.push('<div>'+placesLine+'</div>');
     h.push(_planReqReviewHtml(c.requirements));
     picks.forEach(p => {
       const live=people.find(x => String(x.user_id)===String(p.user_id));

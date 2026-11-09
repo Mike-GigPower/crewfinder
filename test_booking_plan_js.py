@@ -13,7 +13,7 @@ import js_harness as H
 FUNCS = H.extract(
     "_planPlacesText", "_planEsc", "_planClearTicks", "_planCallKey", "renderBookingPlan", "_bpCall",
     "_bookingPlanPeople", "bookingPlanRemove", "_bookingPlanRender", "bookingPlanSend",
-    "_planReqReviewHtml",
+    "_planReqReviewHtml", "bookingPlanToggle", "bookingPlanToggleAll",
 ) if H.NODE else ""
 
 PLAN = r"""
@@ -82,11 +82,53 @@ console.log(JSON.stringify({a:a, b:b, c:c, html:_el('plan-strip').innerHTML.inde
         out = H.run(H.DOM_PRELUDE + FUNCS + PLAN + r"""
 plan.calls[1].picks[0].flags = ['\u2709 Rule 2 - 9hr shift needs 6hr gap (only 2.0hrs)'];
 renderBookingPlan({plan:plan}, {});
+bookingPlanToggle(2);
 var h = _el('plan-strip').innerHTML;
 var at = h.indexOf('\u2709 Rule 2');
 console.log(JSON.stringify({chip: at >= 0 && h.lastIndexOf('<span', at) > h.lastIndexOf('Ann', at)}));
 """)
         self.assertTrue(out["chip"])
+
+    @unittest.skipUnless(H.NODE, "node not installed")
+    def test_calls_fold_to_one_line(self):
+        """Folded by default (Mike, 9 Nov 2026): no picks, a summary line with
+        the places, a short chip and a warned count. One call opens on its
+        own; Expand all / Collapse all flip every call; × keeps what's open."""
+        out = H.run(H.DOM_PRELUDE + FUNCS + PLAN + r"""
+plan.calls[2].picks.pop();
+plan.calls[0].could_fill_warned = [{user_id:20,name:'Di',warning:'Rule 4'}];
+renderBookingPlan({plan:plan}, {});
+var el = _el('plan-strip');
+var folded = el.innerHTML;
+bookingPlanToggle(1);
+var one = el.innerHTML;
+bookingPlanRemove(11, 1);
+var afterRemove = el.innerHTML;
+bookingPlanToggleAll();
+var all = el.innerHTML;
+bookingPlanToggleAll();
+var none = el.innerHTML;
+function n(h, s){ return h.split(s).length - 1; }
+console.log(JSON.stringify({
+  foldedPicks: n(folded, 'Take '), foldedExpand: folded.indexOf('>Expand all<') >= 0,
+  foldedWarn: folded.indexOf('1 could fill with a warning') >= 0, foldedShort: folded.indexOf('1 short') >= 0,
+  foldedPlaces: folded.indexOf('2 of 2 places') >= 0,
+  onePicks: n(one, 'Take '), oneWarnName: one.indexOf('>Di<') >= 0,
+  removeKeepsOpen: n(afterRemove, 'Take ') >= 1 && afterRemove.indexOf('&#9662;') >= 0,
+  allCollapse: all.indexOf('>Collapse all<') >= 0, allOpen: n(all, '&#9662;'),
+  noneOpen: n(none, '&#9662;')}));
+""")
+        self.assertEqual(out["foldedPicks"], 0)
+        self.assertTrue(out["foldedExpand"])
+        self.assertTrue(out["foldedWarn"])
+        self.assertTrue(out["foldedShort"])
+        self.assertTrue(out["foldedPlaces"])
+        self.assertEqual(out["onePicks"], 2)
+        self.assertTrue(out["oneWarnName"])
+        self.assertTrue(out["removeKeepsOpen"])
+        self.assertTrue(out["allCollapse"])
+        self.assertEqual(out["allOpen"], 3)
+        self.assertEqual(out["noneOpen"], 0)
 
     @unittest.skipUnless(H.NODE, "node not installed")
     def test_send_groups_and_over_cancel(self):

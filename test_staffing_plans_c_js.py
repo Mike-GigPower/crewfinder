@@ -12,6 +12,7 @@ import js_harness as H
 FUNCS = H.extract(
     "_planEsc", "_planPlacesText", "_planCallKey", "_planClearTicks", "_planReqBlockHtml", "_planReqOpen",
     "_planReqReviewHtml", "renderBookingPlan", "_bpCall", "_bookingPlanPeople", "_bookingPlanRender",
+    "bookingPlanToggleAll",
 ) if H.NODE else ""
 
 REQS = r"""
@@ -62,6 +63,7 @@ var plan = {kind:'booking', booking_id:700, read_back:'RB', notes:[], experience
           picks:[], notes:[]}],
   people:[{user_id:10,name:'Ann',calls:[1],root_calls:[1]}]};
 renderBookingPlan({plan:plan}, {});
+bookingPlanToggleAll();
 var h = _el('plan-strip').innerHTML;
 console.log(JSON.stringify({review: h.indexOf('Requires Forklift truck · 1 of 1 hold it') >= 0,
   unmatched: h.indexOf('special licence') >= 0,
