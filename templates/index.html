@@ -20681,7 +20681,7 @@ function entityJumpTo(i){
   function hook(){
     var t = document.getElementById('entity-modal-title');
     if(!t || !window.MutationObserver) return;
-    new MutationObserver(function(){ entityRenderTrail(); })
+    new MutationObserver(function(){ entityRenderTrail(); callNavSync(); })
       .observe(t, {childList: true, characterData: true, subtree: true});
   }
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', hook);
@@ -20715,18 +20715,29 @@ function ceIsDirty(){
   return now !== null && window._ceSnapshot != null && now !== window._ceSnapshot;
 }
 
+// Two kinds of pending edit share the strip (5.96.0): crew Details ('ce') and
+// the Enter Times grid ('ct'). Only one can be on screen at a time.
 function entityLeave(fn, mode){
-  if(!ceIsDirty()){ fn(); return; }
+  var ce = ceIsDirty();
+  if(!ce && !ctIsDirty()){ fn(); return; }
   var acts = document.getElementById('entity-modal-actions');
   if(!acts) { fn(); return; }
   window._ceLeavePending = fn;
+  window._leaveKind = ce ? 'ce' : 'ct';
   if(!document.getElementById('ce-leave-strip')){           // Esc twice must not save the strip as "original"
     window._ceLeaveActions = acts.innerHTML;
   }
-  var who = (window._crewEditName || '').split(' ')[0];
+  var what;
+  if(ce){
+    var who = (window._crewEditName || '').split(' ')[0];
+    what = 'Unsaved changes to ' + escapeHtml(who ? who + '’s' : 'these') + ' details';
+  }else{
+    var cs = _ctState, sib = cs && window._callSiblings[String(cs.bookingId)];
+    var me = sib ? sib.calls[_callNavFind(sib, cs.callId)] : null;
+    what = 'Unsaved times on ' + escapeHtml((me && me.call_name) || 'this call');
+  }
   acts.innerHTML =
-      '<div id="ce-leave-strip" style="flex:1;align-self:center;font-size:11px;color:#f59e0b">Unsaved changes to '
-    +   escapeHtml(who ? who + '’s' : 'these') + ' details</div>'
+      '<div id="ce-leave-strip" style="flex:1;align-self:center;font-size:11px;color:#f59e0b">' + what + '</div>'
     + entityBtn('Stay', 'ceLeaveStay()')
     + entityBtn('Discard', 'ceLeaveDiscard()')
     + entityBtn(mode === 'close' ? 'Save and close' : 'Save and continue', 'ceLeaveSave()', {primary: true, id: 'ce-leave-save'});
@@ -20753,6 +20764,7 @@ function ceLeaveDiscard(){
   var fn = window._ceLeavePending;
   window._ceLeavePending = null; window._ceLeaveActions = null;
   window._ceSnapshot = null;
+  window._ctSnapshot = null;
   _ceStripPin(false);
   if(fn) fn();
 }
@@ -20760,8 +20772,9 @@ async function ceLeaveSave(){
   var fn = window._ceLeavePending;
   var btn = document.getElementById('ce-leave-save');
   if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
-  var ok = await _ceSaveDetails(window._ceEditId);
-  if(!ok){ window._ceLeavePending = null; _ceLeaveRestore(); return; }   // error is in #ce-error
+  // Enter Times saves with Save, never Accept (design §3.4).
+  var ok = (window._leaveKind === 'ct') ? await saveCallTimes() : await _ceSaveDetails(window._ceEditId);
+  if(!ok){ window._ceLeavePending = null; _ceLeaveRestore(); return; }   // error is in #ce-error / #ct-result
   window._ceLeavePending = null; window._ceLeaveActions = null;
   _ceStripPin(false);
   if(fn) fn();
@@ -20949,9 +20962,187 @@ function closeEntityModal(){
   window._entityTabRestore = null;
   window._entityTabCarry = null;
   window._entityRestoreScroll = null;
+  window._ctSnapshot = null;
+  callNavHide();
   entityRenderTrail();
   document.getElementById('entity-modal').style.display = 'none';
   goatHarryStop();
+}
+
+// ── Prev / Next call (5.96.0, DESIGN-call-prev-next v0.2) ───────────────────
+// Steps between a booking's calls in get-booking.php order (start date, then
+// time), landing on the same view: the call dialog on the same tab and Booked
+// Crew view, or Enter Times. A sideways move never stacks: Back from the fifth
+// call goes where Back from the first would have. Navigation only -- the one
+// write is the leave strip's "Save and continue", which is the existing Save.
+//
+// The nav lives in the shell header and is bound to the title it was drawn
+// for (like a crumb): any other view hides it just by setting its title.
+window._callSiblings = window._callSiblings || {};
+window._callNav = null;
+var _callNavFetching = {};
+
+// The sequence from a get-booking.php payload. cancelled_at is the call's own
+// cancelled state; the call's `cancelled` field is a count of stood-down crew.
+function callNavStore(bookingId, bData){
+  if(!bData || !Array.isArray(bData.calls)) return;
+  window._callSiblings[String(bookingId)] = {
+    name: bData.name ? decodeEntities(String(bData.name)) : '',
+    calls: bData.calls.map(function(c){
+      return { call_id: String(c.call_id), call_name: decodeEntities(String(c.call_name || '')),
+               start_date: c.start_date, start_time: c.start_time,
+               cancelled: c.cancelled_at != null };
+    })
+  };
+}
+
+// The sequence for a view that did not fetch the booking (Enter Times from the
+// Times outstanding lane). Never rejects: a failure leaves the nav hidden.
+function callNavEnsure(bookingId){
+  var k = String(bookingId);
+  if(window._callSiblings[k]) return Promise.resolve(window._callSiblings[k]);
+  if(_callNavFetching[k]) return _callNavFetching[k];
+  var p = fetch('/api/booking/' + k)
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if(d && !d.error) callNavStore(k, d); return window._callSiblings[k] || null; })
+    .catch(function(){ return null; })
+    .then(function(v){ delete _callNavFetching[k]; return v; });
+  _callNavFetching[k] = p;
+  return p;
+}
+
+function _callNavWhen(c){
+  if(!c || !c.start_date) return '';
+  var d = new Date(Number(c.start_date) * 1000);
+  if(isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { weekday:'short', day:'numeric', month:'short' })
+    + (c.start_time ? ' ' + String(c.start_time).slice(0, 5) : '');
+}
+function _callNavLabel(c){
+  var w = _callNavWhen(c);
+  return (c.call_name || 'Call') + (w ? ' · ' + w : '') + (c.cancelled ? ' (cancelled)' : '');
+}
+function _callNavFind(sib, callId){
+  if(!sib) return -1;
+  for(var i = 0; i < sib.calls.length; i++) if(sib.calls[i].call_id === String(callId)) return i;
+  return -1;
+}
+
+function callNavHide(){
+  var el = document.getElementById('entity-modal-nav');
+  if(el){ el.style.display = 'none'; el.textContent = ''; }
+  window._callNav = null;
+}
+
+// Title observer hook: a view that is not the one the nav was drawn for hides it.
+// Not while a move is loading -- the nav stays put, disabled, so the header does
+// not jump and a second click cannot start a second load.
+function callNavSync(){
+  var n = window._callNav;
+  if(!n || n.moving) return;
+  var t = document.getElementById('entity-modal-title');
+  if(!t || t.textContent !== n.title) callNavHide();
+}
+
+function _callNavBusy(){
+  var el = document.getElementById('entity-modal-nav');
+  if(el) el.querySelectorAll('button').forEach(function(b){ b.disabled = true; b.style.opacity = '.35'; b.style.cursor = 'default'; });
+}
+
+// view: 'call' | 'times'. Built from DOM nodes with listeners, never an HTML
+// string with onclick=: the tooltips carry call names (same rule as the trail).
+function callNavRender(bookingId, callId, view){
+  var sib = window._callSiblings[String(bookingId)];
+  var idx = _callNavFind(sib, callId);
+  if(view === 'times') _callNavTimesExtras(bookingId, callId, sib, idx);
+  var el = document.getElementById('entity-modal-nav');
+  if(!el || !sib || sib.calls.length < 2 || idx < 0){ callNavHide(); return; }
+  var t = document.getElementById('entity-modal-title');
+  window._callNav = { bookingId: String(bookingId), callId: String(callId), view: view, idx: idx,
+                      seq: sib.calls, name: sib.name, title: t ? t.textContent : '', moving: false };
+  el.textContent = '';
+  function btn(text, dir){
+    var target = sib.calls[idx + dir];
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = text;
+    b.disabled = !target;
+    b.title = target ? (dir < 0 ? 'Previous: ' : 'Next: ') + _callNavLabel(target)
+                     : (dir < 0 ? 'First call on this booking' : 'Last call on this booking');
+    b.style.cssText = "background:none;border:1px solid var(--border);border-radius:3px;padding:2px 8px;"
+      + "font:inherit;white-space:nowrap;color:var(--text);cursor:" + (target ? 'pointer' : 'default')
+      + ";opacity:" + (target ? '1' : '.35');
+    if(target){
+      b.addEventListener('mouseenter', function(){ if(!b.disabled) b.style.color = 'var(--accent)'; });
+      b.addEventListener('mouseleave', function(){ b.style.color = 'var(--text)'; });
+      b.addEventListener('click', function(){ callNavGo(dir); });
+    }
+    el.appendChild(b);
+  }
+  btn('‹ Prev', -1);
+  var pos = document.createElement('span');
+  pos.textContent = (idx + 1) + ' of ' + sib.calls.length;
+  pos.style.whiteSpace = 'nowrap';
+  el.appendChild(pos);
+  btn('Next ›', 1);
+  el.style.display = 'flex';
+}
+
+// Enter Times only: every grid is titled "Enter Times", so the sub-line names
+// the call; and the Accept & Next slot fills when there is a next call.
+function _callNavTimesExtras(bookingId, callId, sib, idx){
+  var me = (sib && idx >= 0) ? sib.calls[idx] : null;
+  var sub = document.getElementById('entity-modal-sub');
+  if(sub && me){
+    var w = _callNavWhen(me);
+    sub.textContent = (me.call_name || 'Call') + (w ? ' · ' + w : '') + ' · Call #' + callId + ' · Booking #' + bookingId;
+  }
+  var slot = document.getElementById('ct-next-slot');
+  if(!slot) return;
+  var nx = me ? sib.calls[idx + 1] : null;
+  if(!nx){ slot.innerHTML = ''; slot.style.display = 'none'; return; }
+  var held = _ctOpenReports();
+  slot.innerHTML = entityBtn('✓ Accept &amp; Next ›', 'ctAcceptNext()', {
+    id: 'ct-accept-next-btn', disabled: held > 0,
+    title: held > 0 ? _ctNoShowMsg(held) : 'Accept these times, then open ' + _callNavLabel(nx) });
+  slot.style.display = 'contents';
+}
+
+function callNavGo(dir){
+  if(window._keypay && window._keypay.writing) return;    // as ✕ and Close
+  var n = window._callNav;
+  if(!n || n.moving) return;
+  var t = n.seq[n.idx + dir];
+  if(!t) return;
+  entityLeave(function(){ _callNavMove(n.bookingId, n.callId, t.call_id, n.view); }, 'nav');
+}
+
+function _callNavMove(b, cur, next, view){
+  var n = window._callNav;
+  if(n){ n.moving = true; _callNavBusy(); }
+  if(view === 'times'){
+    // openCallTimes pushes a call:<b>:<c> frame. Rename the one under us to the
+    // next call instead, so its push finds itself already on top and the stack
+    // never grows. Its tab and Booked Crew view are kept: Back to call opens
+    // the new call on the tab last used.
+    var top = entityStackTop();
+    if(top && top.key === 'call:' + b + ':' + cur){
+      var sib = window._callSiblings[b];
+      var tc = sib ? sib.calls[_callNavFind(sib, next)] : null;
+      top.key    = 'call:' + b + ':' + next;
+      top.reopen = function(){ openCallDialog(b, next); };
+      top.scroll = 0;
+      top.name   = ((sib && sib.name) ? sib.name + ' · ' : '') + ((tc && tc.call_name) || 'Call');
+      entityRenderTrail();
+    }
+    openCallTimes(b, next);
+    return;
+  }
+  // The carry inside openCallDialog is keyed to the NEW call and finds nothing
+  // on screen; hand it this call's tab and Booked Crew view instead (Q-N5).
+  var st = entityTabsState('call:' + b + ':' + cur);
+  window._entityTabRestore = st ? { key: 'call:' + b + ':' + next, tab: st.tab, crewView: st.crewView } : null;
+  openCallDialog(b, next);
 }
 
 // Ops detail window owns Esc only when it is the topmost modal. Registered
@@ -23127,6 +23318,7 @@ async function openCallDialog(bookingId, callId){
       document.getElementById('entity-modal-actions').innerHTML =
           (_errBack ? entityBtn('‹ Back to '+escapeHtml(_errBack.name || _errBack.label), 'entityBack()') : '')
         + entityBtn('↗ SmartStaff', "openSmartStaffCall('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
+      callNavRender(bookingId, callId, 'call');   // a call that won't load can be stepped past
       return;
     }
     // Prefer the booking endpoint's per-call crew (carries mobile + status);
@@ -23142,6 +23334,7 @@ async function openCallDialog(bookingId, callId){
         if(bData.name) window._curCallBookingName = decodeEntities(String(bData.name));
         if(bData.venue && bData.venue.name) bookingVenue = bData.venue.name;
         if(bData.venue && Number(bData.venue.id) > 0) window._curCallVenue = { id: Number(bData.venue.id), name: decodeEntities(String(bData.venue.name || '')) };
+        callNavStore(bookingId, bData);    // Prev / Next sequence (5.96.0)
         if(bData.calls){
           const match = bData.calls.find(function(c){ return String(c.call_id) === String(callId); });
           if(match){
@@ -23162,6 +23355,7 @@ async function openCallDialog(bookingId, callId){
   }catch(e){
     document.getElementById('entity-modal-body').innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load call: '+escapeHtml(e.message)+'</div>';
     document.getElementById('entity-modal-actions').innerHTML = entityBtn('Close','closeEntityModal()');
+    callNavRender(bookingId, callId, 'call');
   }
 }
 
@@ -23401,6 +23595,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     // offered on a cancelled call: who was stood down and when they had
     // accepted is exactly what someone asks afterwards.
     + entityBtn('Close', 'closeEntityModal()');
+  callNavRender(bookingId, callId, 'call');
 }
 
 
@@ -24656,6 +24851,7 @@ async function openCallTimes(bookingId, callId){
     if(data.error){
       document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">'+escapeHtml(data.error)+'</div>';
       document.getElementById('entity-modal-actions').innerHTML = entityBtn('‹ Back to call',"openCallDialog('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
+      callNavRender(bookingId, callId, 'times');   // a grid that won't load can be stepped past
       return;
     }
     // cancelled / cancel_pay / cancel_charge are get-call-times.php's call
@@ -24672,6 +24868,7 @@ async function openCallTimes(bookingId, callId){
   }catch(e){
     document.getElementById('entity-modal-body').innerHTML    = '<div style="color:var(--conflict);font-size:12px">Couldn\'t load times: '+escapeHtml(e.message)+'</div>';
     document.getElementById('entity-modal-actions').innerHTML = entityBtn('‹ Back to call',"openCallDialog('"+bookingId+"','"+callId+"')") + entityBtn('Close','closeEntityModal()');
+    callNavRender(bookingId, callId, 'times');
   }
 }
 
@@ -24918,16 +25115,83 @@ function renderCallTimesGrid(){
   // and it is the only thing that clears the lane. On a cancelled call Save
   // alone does both (see cancelNote), and with no paid rows there is nothing
   // to save at all.
-  const back  = entityBtn('‹ Back to call',"openCallDialog('"+s.bookingId+"','"+s.callId+"')") + entityBtn('Close','closeEntityModal()');
+  // Back and Close go through the unsaved-times guard (5.96.0, Q-N2), as ✕,
+  // Esc and the backdrop already do through entityBack.
+  const back  = entityBtn('‹ Back to call','ctBackToCall()') + entityBtn('Close','ctClose()');
+  // ✓ Accept & Next › (Q-N3) fills this slot once the booking's call list is
+  // known and there is a next call (callNavRender). Only where Accept shows.
+  const nextSlot = '<span id="ct-next-slot" style="display:none"></span>';
   let actions;
   if(s.locked)                         actions = back;
   else if(s.cancelled && !paidRows.length) actions = back;
   else if(s.cancelled)                 actions = entityBtn('Save Times',"saveCallTimes()",{primary:true, id:'ct-save-btn'}) + back;
   else if(openReports)                 actions = '<span style="font-size:11px;color:#f59e0b;align-self:center">'+_ctNoShowMsg(openReports)+'</span>'
                                               + entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn', disabled:true, title:_ctNoShowMsg(openReports)})
+                                              + nextSlot
                                               + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + back;
-  else                                 actions = entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn'}) + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + back;
+  else                                 actions = entityBtn('✓ Accept Times',"acceptCallTimes()",{primary:true, id:'ct-accept-btn'}) + nextSlot + entityBtn('Save Times',"saveCallTimes()",{id:'ct-save-btn'}) + back;
   document.getElementById('entity-modal-actions').innerHTML = actions;
+  ctSnapshot();
+  callNavRender(s.bookingId, s.callId, 'times');
+  if(!window._callSiblings[String(s.bookingId)]){
+    // Opened without the booking (the Times outstanding lane): the grid never
+    // waits for it. The nav, sub-line and Accept & Next appear when it lands,
+    // if this grid is still the one on screen.
+    const b = s.bookingId, c = s.callId;
+    callNavEnsure(b).then(function(sib){
+      const t = document.getElementById('entity-modal-title');
+      if(sib && _ctState && _ctState.bookingId === b && _ctState.callId === c
+         && t && t.textContent === 'Enter Times' && document.getElementById('ct-result')) callNavRender(b, c, 'times');
+    });
+  }
+}
+
+function ctBackToCall(){
+  const s = _ctState;
+  if(!s) return;
+  entityLeave(function(){ openCallDialog(s.bookingId, s.callId); }, 'nav');
+}
+function ctClose(){ entityLeave(closeEntityModal, 'close'); }
+
+// ── Unsaved times (5.96.0) ──────────────────────────────────────────────────
+// The grid as typed: every ct- input, select and textarea in the body. null
+// when the grid is not on screen (#ct-result is the grid's own result line).
+function _ctGridState(){
+  if(!document.getElementById('ct-result')) return null;
+  const b = document.getElementById('entity-modal-body');
+  if(!b) return null;
+  const parts = [];
+  b.querySelectorAll('input[id^="ct-"], select[id^="ct-"], textarea[id^="ct-"]').forEach(function(el){
+    let v = el.value;
+    // Compare what the save would send, not the spelling: ctNormalize rewrites
+    // a pre-filled "7:00" as "07:00" on blur, and that is not an edit.
+    if(/^ct-(on|off)-/.test(el.id))    { const p = _ctParseClock(v);    if(p) v = p; }
+    else if(/^ct-brkn?-/.test(el.id))  { const q = _ctParseDuration(v); if(q) v = q; }
+    parts.push(el.id + '=' + ((el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? '1' : '0') : v));
+  });
+  return parts.join('\u0001');
+}
+function ctSnapshot(){ window._ctSnapshot = _ctGridState(); }
+function ctIsDirty(){
+  const m = document.getElementById('entity-modal');
+  if(!m || m.style.display !== 'flex') return false;
+  const now = _ctGridState();
+  return now !== null && window._ctSnapshot != null && now !== window._ctSnapshot;
+}
+
+// ✓ Accept & Next › -- moves on only if the accept fully succeeded; anything
+// else stays on the grid with its result line.
+async function ctAcceptNext(){
+  const s = _ctState;
+  if(!s) return;
+  const b = s.bookingId, c = s.callId;
+  const ok = await acceptCallTimes();
+  if(!ok) return;
+  const n = window._callNav;
+  if(!n || n.bookingId !== String(b) || n.callId !== String(c) || !_ctState || _ctState.callId !== c) return;   // moved away meanwhile
+  const t = n.seq[n.idx + 1];
+  if(!t) return;
+  _callNavMove(String(b), String(c), t.call_id, 'times');   // the snapshot is clean after a good accept: no strip
 }
 
 function _ctPad(n){ return (n < 10 ? '0' : '') + n; }
@@ -25016,7 +25280,7 @@ async function acceptCallTimes(){ return _ctSave(true);  }
 
 async function _ctSave(accept){
   const s = _ctState;
-  if(!s || s.locked) return;
+  if(!s || s.locked) return false;
   const result = document.getElementById('ct-result');
 
   const rows = [];
@@ -25052,7 +25316,7 @@ async function _ctSave(accept){
   if(bad.length){
     result.style.color = 'var(--conflict)';
     result.innerHTML   = 'Couldn\'t read these — On/Off take 24-hour times like 15:00 or 1500, breaks take 1:30 · 1.5: '+escapeHtml(bad.join('; '));
-    return;
+    return false;
   }
 
   if(!rows.length){
@@ -25062,7 +25326,7 @@ async function _ctSave(accept){
       : (s.crew.some(_ctReported)
           ? 'Every confirmed crew member has an open No-show report. Confirm or reject those first.'
           : 'No confirmed crew on this call — nothing to save.');
-    return;
+    return false;
   }
 
   result.style.color = 'var(--muted)';
@@ -25074,6 +25338,12 @@ async function _ctSave(accept){
   const acceptBtn = document.getElementById('ct-accept-btn');
   if(saveBtn)   saveBtn.disabled   = true;
   if(acceptBtn) acceptBtn.disabled = true;
+  const nextBtn = document.getElementById('ct-accept-next-btn');
+  if(nextBtn)   nextBtn.disabled   = true;
+  // What is being sent. On a clean save this becomes the snapshot, so the
+  // unsaved-times guard (5.96.0) does not ask about numbers already saved --
+  // and anything typed while the save was in flight still counts as unsaved.
+  const sent = _ctGridState();
 
   try{
     const res = await fetch('/api/call/'+s.bookingId+'/'+s.callId+'/times', {
@@ -25085,7 +25355,7 @@ async function _ctSave(accept){
       result.style.color = 'var(--conflict)';
       result.innerHTML   = escapeHtml(data.error);
       if(saveBtn) saveBtn.disabled = false;
-      return;
+      return false;
     }
     const fails = (data.rows||[]).filter(function(r){ return !r.ok; });
     if(fails.length){
@@ -25095,7 +25365,7 @@ async function _ctSave(accept){
       result.style.color = 'var(--conflict)';
       result.innerHTML   = 'Saved with issues'+(accept ? ' — NOT accepted' : '')+': '
                          + escapeHtml(fails.map(function(r){ return r.user_id+': '+r.error; }).join('; '));
-      return;
+      return false;
     }
     if(!accept && s.cancelled){
       // cancel_times_confirmed is update-call-times.php saying it set the
@@ -25109,12 +25379,14 @@ async function _ctSave(accept){
         const lst  = lane && _opsLaneState[lane.key];
         if(lane && lst && lst.status === 'ready') await loadOpsTimes(lane, true);
       }
-      return;
+      window._ctSnapshot = sent;
+      return true;
     }
     if(!accept){
       result.style.color = 'var(--ok,#10b981)';
       result.innerHTML   = '✓ Times saved for '+(data.rows||[]).length+' crew.';
-      return;
+      window._ctSnapshot = sent;
+      return true;
     }
     // The second request, only once the first has returned. Never concurrent:
     // the file lock hangs, it does not fail.
@@ -25132,7 +25404,7 @@ async function _ctSave(accept){
         (adata.error || 'A No-show report is still open.')
         + '\n\nThe times are saved. Confirm or reject the report on its row, then Accept again.');
       await _ctReload(null);
-      return;
+      return false;
     }
     if(!ares.ok || (adata && adata.error)){
       // The times ARE saved — say so, rather than letting a failed tick read as
@@ -25141,7 +25413,8 @@ async function _ctSave(accept){
       result.innerHTML   = 'Times saved, but accepting failed: '
                          + escapeHtml((adata && adata.error) || ('HTTP '+ares.status))
                          + '. The call is still in the Times outstanding lane.';
-      return;
+      window._ctSnapshot = sent;   // the times ARE saved
+      return false;
     }
     result.style.color = 'var(--ok,#10b981)';
     result.innerHTML   = '✓ Times saved for '+(data.rows||[]).length+' crew and accepted'
@@ -25151,14 +25424,18 @@ async function _ctSave(accept){
     const lane = OPS_LANES.find(function(l){ return l.key === 'times_outstanding'; });
     const lst  = lane && _opsLaneState[lane.key];
     if(lane && lst && lst.status === 'ready') await loadOpsTimes(lane, true);
+    window._ctSnapshot = sent;
+    return true;
   }catch(e){
     result.style.color = 'var(--conflict)';
     result.innerHTML   = 'Save failed: '+escapeHtml(e.message);
+    return false;
   }finally{
     if(saveBtn)   saveBtn.disabled   = false;
     // Held again if a No-show report is still open: a Save must not quietly
     // re-enable an Accept the grid disabled for a reason.
     if(acceptBtn) acceptBtn.disabled = _ctOpenReports() > 0;
+    if(nextBtn)   nextBtn.disabled   = _ctOpenReports() > 0;
   }
 }
 
@@ -28603,7 +28880,7 @@ async function bkFeedSave(bookingId, confirmOverride){
 
     // Reopen on the same tab (§3.3 rule 1): the mode follows the tab, and the
     // render clears the selection so the saved chips show.
-    delete window._bookingIndex[bookingId];
+    delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];
     openBookingDialog(bookingId);
   }catch(e){
     fail('Save failed: '+escapeHtml(e.message));
@@ -28627,7 +28904,7 @@ async function bkFeedRemove(bookingId, sourceId, targetId){
       fail((j && j.error) ? j.error : ('HTTP '+resp.status));
       return;
     }
-    delete window._bookingIndex[bookingId];
+    delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];
     openBookingDialog(bookingId);
   }catch(e){ fail('Remove failed: '+e.message); }
 }
@@ -28692,7 +28969,7 @@ async function bkFeedDeleteAll(bookingId){
     }catch(e){ failed++; }
   }
 
-  delete window._bookingIndex[bookingId];
+  delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];
   await openBookingDialog(bookingId);
   if(failed){
     goatInfoToast('Removed '+removed+' of '+total+' feeds. '+failed+' '
@@ -28837,7 +29114,7 @@ async function bkLinkToBoss(bookingId, bossCall, childCall, confirmOverride){
       return;
     }
     goatInfoToast('Linked to Crew Boss call #' + bossCall, 3000);
-    delete window._bookingIndex[bookingId];
+    delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];
     openBookingDialog(bookingId);
   }catch(e){
     goatTell('Could not link', e.message || String(e));
@@ -28960,7 +29237,7 @@ async function bkSupSave(bookingId, confirmOverride){
     }
 
     // Reopen on the same tab (§3.3 rule 1), as bkFeedSave does.
-    delete window._bookingIndex[bookingId];
+    delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];
     openBookingDialog(bookingId);
   }catch(e){
     fail('Save failed: '+escapeHtml(e.message));
@@ -29108,7 +29385,7 @@ function bkLinkRefresh(bookingId){
 // Reopen the booking on the same tab (as bkSupSave does) with a fresh dry_run.
 function bkLinkReload(bookingId){
   bkLinkReset();
-  delete window._bookingIndex[bookingId];
+  delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];
   openBookingDialog(bookingId);
 }
 
@@ -29928,7 +30205,7 @@ async function saveBookingEdit(bookingId){
       if(btn) btn.disabled = false;
       return;
     }
-    delete window._bookingIndex[bookingId];   // drop stale cached name/venue
+    delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];   // drop stale cached name/venue
     openBookingDialog(bookingId);             // re-fetch + show fresh view
   }catch(e){
     fail('Save failed: '+e.message);
@@ -30109,7 +30386,7 @@ async function saveAddCall(bookingId){
       if(btn) btn.disabled = false;
       return;
     }
-    delete window._bookingIndex[bookingId];   // cached call list is now stale
+    delete window._bookingIndex[bookingId]; delete window._callSiblings[bookingId];   // cached call list is now stale
     // The call exists; its type didn't save. Loud, like the import's banner:
     // it shows a type from its name until an Admin sets it on the call.
     if(j && j.call_type_error) alert(j.call_type_error);
@@ -38730,6 +39007,8 @@ function applyGoldRows(){
         <div id="entity-modal-title" style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:.06em;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
         <div id="entity-modal-sub" style="font-size:11px;color:var(--muted);font-family:'Share Tech Mono',monospace"></div>
       </div>
+      <div id="entity-modal-nav" style="display:none;align-items:center;gap:10px;flex-shrink:0;margin-left:auto;padding-left:12px;
+           font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)"></div>
       <button onclick="entityBack()" style="background:none;border:none;color:var(--muted);
               font-size:20px;cursor:pointer;line-height:1;flex-shrink:0;margin-left:12px">✕</button>
     </div>
