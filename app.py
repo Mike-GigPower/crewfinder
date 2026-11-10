@@ -183,7 +183,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.97.0"
+APP_VERSION    = "5.98.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -18343,6 +18343,13 @@ def api_admin_crew_list():
     (the Hours tab rule), None when there has never been one, and the key ABSENT
     on every row when the lookup failed. `last_shift_ok` is that flag, so the
     "No shift in 12 months" chip refuses instead of matching nobody.
+
+    `no_response` follows the same rule, from admin-list-noresponse-bulk.php
+    (one call, made AFTER the last-shift lookup, sequentially): {n_12mo, n_all}
+    from offer_history (outcome no_response only). Someone absent from the
+    result has none, so they get zeros, not unknown; the key is ABSENT on every
+    row when the lookup failed. `no_response_ok` is that flag, so Reliability
+    shows "No resp —" rather than a wrong 0 (offer reminders slice 4 §4).
     """
     ss = get_ss_session()
     if not ss:
@@ -18368,6 +18375,10 @@ def api_admin_crew_list():
     last_shifts, ls_err = ss_list_last_shift_bulk(ss)
     if ls_err:
         print(f"[crew-list] WARNING: last-shift lookup failed, column will show unknown: {ls_err}")
+    # No Response (Reliability): one more SmartStaff request, still sequential.
+    no_resp, nr_err = ss_list_noresponse_bulk(ss)
+    if nr_err:
+        print(f"[crew-list] WARNING: no-response lookup failed, column will show unknown: {nr_err}")
     # push_ok is read from the crew cache, which the refresh stamps from Crew Hub.
     # Anything but a real bool (never stamped, Hub down at refresh, inactive crew
     # not in the cache) goes out as None, so the page shows "unknown", not "Off".
@@ -18417,6 +18428,11 @@ def api_admin_crew_list():
                 "call_name":    ls.get("call_name") or "",
                 "booking_name": ls.get("booking_name") or "",
             }
+        if no_resp is not None:
+            # Absent from the result = none (0), not unknown.
+            nr = no_resp.get(str(c["id"])) or {}
+            row["no_response"] = {"n_12mo": int(nr.get("n_12mo") or 0),
+                                  "n_all":  int(nr.get("n_all") or 0)}
         rows.append(row)
     rows.sort(key=lambda r: (r["name"] or "").lower())
     # Judged on the WHOLE fetch, not the filtered rows: every crew member from
@@ -18428,7 +18444,8 @@ def api_admin_crew_list():
     return jsonify({"crew": rows, "licences_ok": lic_ok,
                     "contracts_ok": contracts is not None,
                     "photos_ok": photos_ok,
-                    "last_shift_ok": last_shifts is not None})
+                    "last_shift_ok": last_shifts is not None,
+                    "no_response_ok": no_resp is not None})
 
 
 @app.route("/api/crew-cards")
@@ -24203,6 +24220,35 @@ def ss_list_last_shift_bulk(ss):
         # Same guard as contracts: an empty PHP array encodes as [].
         shifts = {}
     return {str(k): (v or {}) for k, v in shifts.items()}, None
+
+
+def ss_list_noresponse_bulk(ss):
+    """Everyone's No Response count via admin-list-noresponse-bulk.php in one
+    query, or (None, err): {user_id_str: {n_12mo, n_all, last_iso}}. Read from
+    offer_history, so a No Response survives a re-offer (offer reminders D12).
+    Only outcome = 'no_response' counts; Not delivered and Withdrawn never do
+    (D2, D3). Someone with none is simply absent — for Crew > Records'
+    Reliability column (BRIEF-offer-reminders-slice4.md §4).
+
+    Keys are coerced to str so they line up with str(c["id"]) everywhere else.
+    An empty map is a legitimate answer, not a failure."""
+    if not ss:
+        return None, "Not logged in"
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/admin-list-noresponse-bulk.php", timeout=20)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    try:
+        out = json.loads(resp.text or "{}")
+    except Exception:
+        return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+    if not (isinstance(out, dict) and out.get("ok")):
+        return None, (isinstance(out, dict) and out.get("error")) or f"HTTP {resp.status_code}"
+    no_resp = out.get("no_response")
+    if not isinstance(no_resp, dict):
+        # Same guard as contracts: an empty PHP array encodes as [].
+        no_resp = {}
+    return {str(k): (v or {}) for k, v in no_resp.items()}, None
 
 
 def ss_list_crew_photos(ss):
