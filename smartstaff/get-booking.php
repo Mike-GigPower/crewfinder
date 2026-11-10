@@ -450,7 +450,8 @@
 			                             call_crew_map.status, call_crew_map.is_call_boss" . $prevSel . $paidSel . ",
 			                             cca.id AS change_ack_id,
 			                             cpa.promoted_at AS promo_at,
-			                             cpa.acked_at    AS promo_acked_at
+			                             cpa.acked_at    AS promo_acked_at,
+			                             COALESCE(ohx.n, 0) AS expired_rounds
 			                      FROM call_crew_map" . $paidJoin . "
 			                      LEFT JOIN users ON call_crew_map.userID = users.id
 			                      LEFT JOIN call_change_ack cca
@@ -459,6 +460,11 @@
 			                      LEFT JOIN call_promo_ack cpa
 			                             ON cpa.callID = call_crew_map.callID
 			                            AND cpa.userID = call_crew_map.userID
+			                      LEFT JOIN (SELECT userID, COUNT(*) AS n
+			                                   FROM offer_history
+			                                  WHERE callID = " . $callID . "
+			                                  GROUP BY userID) ohx
+			                             ON ohx.userID = call_crew_map.userID
 			                      WHERE call_crew_map.callID = " . $callID . "
 			                      ORDER BY users.lastname ASC, users.firstname ASC");
 
@@ -537,6 +543,9 @@
 						'is_call_boss'   => (int) $cr->is_call_boss,
 						'change_pending' => $changePending,
 						'promo_pending'  => $promoPending,
+						/* Earlier rounds of this offer withdrawn by the reminder cron
+						/* (offer_history). Drives THE GOAT's "2nd offer" tag. */
+						'expired_rounds' => (int) $cr->expired_rounds,
 						/* The promotion's group key (its promoted_at) while pending,
 						/* else null. Rows sharing it were promoted together, so the
 						/* dialog can say "promoted with the load-out" (brief Part A). */
