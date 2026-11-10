@@ -8587,6 +8587,11 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
             print(f"[recruitment] convert-update visa push crashed: {e}")
             visa_result = {"ok": False, "error": "visa push crashed"}
 
+    # 7b. Dietary requirements from the application form, best-effort (§1.4 of
+    #     BRIEF-dietary-requirements). A failure is a warning, never a failed
+    #     conversion. Inert until the apply side sends detail["dietary"].
+    dietary_warning = _push_candidate_dietary(ss, target_id, detail.get("dietary"))
+
     # 8. Contract — REPLACE the stored one (D5).
     try:
         contract_result = _push_candidate_contract(ss, target_id, detail.get("contract"),
@@ -8633,6 +8638,7 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         "warning":  stamp_warning,
         "updated_fields": updated_fields,
         "reactivated": was_inactive,
+        "dietary_warning": dietary_warning,
         "licences": licence_results,
         "inductions": induction_results,
         "contract": contract_result,
@@ -8921,6 +8927,13 @@ def api_recruitment_convert(cand_id):
             print(f"[recruitment] convert visa push crashed: {e}")
             visa_result = {"ok": False, "error": "visa push crashed"}
 
+    # 11b. Dietary requirements from the application form (BRIEF-dietary-
+    #      requirements §1.4): stored with source "apply" and the candidate's own
+    #      consent_at. Best-effort -- a failure is a warning in the response,
+    #      never a failed conversion. Inert until the apply side sends
+    #      detail["dietary"] (Session 3).
+    dietary_warning = _push_candidate_dietary(ss, uid, detail.get("dietary"))
+
     # 12. The welcome email: the crew member's EIN (their Crew Hub username) and
     #     the temp password we just set, sent to the address on their application.
     #     LAST on purpose — every SmartStaff write is done by now, so the email
@@ -8952,6 +8965,7 @@ def api_recruitment_convert(cand_id):
         "status":   RECRUITMENT_CONVERTED_STATUS,
         "temp_password": NEW_CREW_TEMP_PASSWORD,
         "warning":  stamp_warning,
+        "dietary_warning": dietary_warning,
         "licences": licence_results,
         "inductions": induction_results,
         "contract": contract_result,
@@ -23928,6 +23942,207 @@ def api_admin_emergency_flags():
     if err:
         return jsonify({"error": err}), 502
     return jsonify({"flags": flags})
+
+
+# ── Dietary requirements (Manage Crew -> Dietary tab, list icons, crew list) ──
+# Three routes proxying smartstaff/dietary-*.php on the OPERATOR'S OWN SmartStaff
+# session. Gated here to admin + operations, and again in PHP by
+# goat_dietary_can_view_others(), which reads the cohort from that session.
+#
+# NOT READ_ALL_COHORTS. That tuple includes `leadership`, which this feature
+# deliberately refuses (BRIEF-dietary-requirements D10). Widening this to the
+# familiar constant would silently hand every leadership user the estate's
+# dietary data -- and the crew list would start printing it for them.
+#
+# No viewing log (D9), so the emergency card's elevation reason does not apply
+# to reads. It DOES apply to the write: dietary-set.php stamps updated_by from
+# the session, and an elevated session is the admin account's -- so the POST
+# alone refuses while elevated. GET and flags do not need to.
+#
+# NEVER SENT TO THE CLAUDE API (D8). Nothing in Ask the GOAT reads these routes
+# or the PHP behind them; keep it that way.
+
+
+def _dietary_elevation_block():
+    """409 while this session is elevated, else None. Write path only."""
+    if session.get("sid") in _pre_elevation:
+        return jsonify({
+            "error": "Drop admin elevation before editing dietary requirements "
+                     "— the record has to name you, not the admin account."
+        }), 409
+    return None
+
+
+def _ss_dietary_response(resp):
+    """Shared (dict, error, status) decoding for the dietary PHP endpoints. A
+    PHP error body ({"error": ...}) is passed through verbatim so validation
+    messages ("Add a note saying what the food allergy or intolerance is")
+    reach the operator as written. status is PHP's HTTP status, or 502 when
+    the body could not be read."""
+    if resp.status_code == 403:
+        return None, "Not permitted", 403
+    try:
+        data = resp.json()
+    except Exception as e:
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}: {(resp.text or '')[:200]}", 502
+        return None, f"bad JSON: {e}", 502
+    if resp.status_code != 200 or (isinstance(data, dict) and data.get("error")):
+        msg = data.get("error") if isinstance(data, dict) else ""
+        return None, (msg or f"HTTP {resp.status_code}"), (resp.status_code if resp.status_code != 200 else 502)
+    return data, None, 200
+
+
+def ss_dietary_get(ss, subject_id):
+    """One crew member's dietary record via dietary-get.php. Returns
+    (dict, error). No row comes back as state "not_answered"."""
+    url = f"{BASE_URL}/ajax/crew/dietary-get.php"
+    try:
+        resp = ss.get(url, params={"subject": int(subject_id)}, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    data, err, _status = _ss_dietary_response(resp)
+    return data, err
+
+
+def ss_dietary_set(ss, payload, with_status=False):
+    """Write one crew member's dietary record via dietary-set.php on the
+    operator's session (the OPS path). Returns (dict, error); error is the PHP
+    message for a validation refusal. with_status=True adds PHP's HTTP status
+    as a third value, so the route can tell a 400 refusal from a 5xx.
+
+    payload: {subject, state, options, note, source, consent_at?}. source is
+    "goat", or "apply" from convert (which may carry the candidate's
+    consent_at)."""
+    url = f"{BASE_URL}/ajax/crew/dietary-set.php"
+    try:
+        resp = ss.post(url, json=payload, timeout=30)
+    except Exception as e:
+        out = (None, f"request failed: {e}", 502)
+    else:
+        out = _ss_dietary_response(resp)
+    return out if with_status else out[:2]
+
+
+def ss_dietary_flags(ss, user_ids):
+    """{user_id: {state, options, note, consented}} for many crew. Ids with no
+    row are absent (= not_answered). Returns (dict, error)."""
+    url = f"{BASE_URL}/ajax/crew/dietary-flags.php"
+    ids = []
+    for raw in (user_ids or []):
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            ids.append(n)
+    if not ids:
+        return {}, None
+    try:
+        resp = ss.post(url, json={"user_ids": ids}, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    data, err, _status = _ss_dietary_response(resp)
+    if err:
+        return None, err
+    flags = data.get("flags") if isinstance(data, dict) else None
+    return (flags if isinstance(flags, dict) else {}), None
+
+
+@app.route("/api/admin/crew/<crew_id>/dietary", methods=["GET"])
+@require_cohort("admin", "operations")
+def api_admin_crew_dietary(crew_id):
+    """One crew member's dietary requirements for the Dietary tab."""
+    if not str(crew_id or "").isdigit():
+        return jsonify({"error": "Bad crew id"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_dietary_get(ss, crew_id)
+    if err:
+        return jsonify({"error": err}), (403 if err == "Not permitted" else 502)
+    return jsonify(data)
+
+
+@app.route("/api/admin/crew/<crew_id>/dietary", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_admin_crew_dietary_set(crew_id):
+    """Save one crew member's dietary requirements from the Dietary tab. The
+    subject is the URL's crew id and the source is always "goat" -- the body
+    supplies only state, options and note."""
+    blocked = _dietary_elevation_block()
+    if blocked:
+        return blocked
+    if not str(crew_id or "").isdigit():
+        return jsonify({"error": "Bad crew id"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body = request.get_json(silent=True) or {}
+    payload = {
+        "subject": int(crew_id),
+        "state":   body.get("state"),
+        "options": body.get("options") if isinstance(body.get("options"), list) else [],
+        "note":    body.get("note") or "",
+        "source":  "goat",
+    }
+    data, err, status = ss_dietary_set(ss, payload, with_status=True)
+    if err:
+        # A PHP refusal is the operator's to fix (missing note, nothing ticked):
+        # its own 4xx and message, not a 502 that reads as breakage.
+        return jsonify({"error": err}), (status if 400 <= status < 500 else 502)
+    return jsonify(data)
+
+
+@app.route("/api/admin/dietary-flags", methods=["POST"])
+@require_cohort("admin", "operations")
+def api_admin_dietary_flags():
+    """Dietary content for many crew at once (icons, crew list). Its own path
+    rather than /api/admin/crew/<crew_id>/... so it can never be shadowed by
+    the string <crew_id> rule above it."""
+    body = request.get_json(silent=True) or {}
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    flags, err = ss_dietary_flags(ss, body.get("user_ids"))
+    if err:
+        return jsonify({"error": err}), (403 if err == "Not permitted" else 502)
+    return jsonify({"flags": flags})
+
+
+def _push_candidate_dietary(ss, crew_id, dietary):
+    """Convert: carry the candidate's application-form dietary answer onto the
+    crew record (BRIEF-dietary-requirements §1.4). Returns a warning string or
+    None. NEVER RAISES and never fails the conversion -- it runs after the
+    SmartStaff crew write, and nothing after that write may fail the request.
+
+    Inert until the apply side supplies detail["dietary"] (Session 3): with no
+    key, or state not_answered, it does nothing."""
+    try:
+        if not isinstance(dietary, dict):
+            return None
+        state = str(dietary.get("state") or "").strip()
+        if not state or state == "not_answered":
+            return None
+        payload = {
+            "subject": int(crew_id),
+            "state":   state,
+            "options": dietary.get("options") if isinstance(dietary.get("options"), list) else [],
+            "note":    dietary.get("note") or "",
+            "source":  "apply",
+        }
+        if dietary.get("consent_at"):
+            payload["consent_at"] = str(dietary.get("consent_at"))
+        _data, err = ss_dietary_set(ss, payload)
+        if err:
+            print(f"[recruitment] convert dietary push failed: {err}")
+            return (f"Dietary requirements from the application weren't saved "
+                    f"({err}). Add them on the crew record's Dietary tab.")
+        return None
+    except Exception as e:
+        print(f"[recruitment] convert dietary push crashed: {e}")
+        return ("Dietary requirements from the application weren't saved. "
+                "Add them on the crew record's Dietary tab.")
 
 
 # Admin licence CRUD for the Manage Crew -> Licences tab. Each route proxies to
