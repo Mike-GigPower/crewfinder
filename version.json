@@ -1,6 +1,6 @@
 {
-  "version": "5.98.0",
+  "version": "5.99.0",
   "release_date": "2026-11-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.98.0/TheGOAT.dmg",
-  "release_notes": "Crew now show as No response, Not delivered or Withdrawn when an unanswered offer is withdrawn, and No response can be re-offered from the call dialog. Records adds No response to Reliability and a Last shift column."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.99.0/TheGOAT.dmg",
+  "release_notes": "The Today dashboard is split into Bookings & Calls and Crew Metrics, with a count on each tab so nothing waiting on the other one is missed."
 }
