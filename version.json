@@ -1,6 +1,6 @@
 {
-  "version": "5.96.3",
-  "release_date": "2026-11-09",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.96.3/TheGOAT.dmg",
-  "release_notes": "Crew Finder Plan: a full call now says \"Call is full — nothing to plan.\", and booking plans fold each call to one line so the candidate list stays on screen."
+  "version": "5.98.0",
+  "release_date": "2026-11-10",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.98.0/TheGOAT.dmg",
+  "release_notes": "Crew now show as No response, Not delivered or Withdrawn when an unanswered offer is withdrawn, and No response can be re-offered from the call dialog. Records adds No response to Reliability and a Last shift column."
 }
