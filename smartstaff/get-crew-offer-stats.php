@@ -23,8 +23,15 @@
 	/* status churn cannot retro-edit history and the two reconciliation
 	/* identities always hold:
 	/*
-	/*     offered   = responded + didnt_respond + pending
+	/*     offered   = responded + didnt_respond + pending + withdrawn
 	/*     responded = accepted  + declined            (accepted includes no_show)
+	/*
+	/* withdrawn = 11 Not delivered + 12 withdrawn at call start (offer
+	/* reminders, slice 2 §4.5). It never counts against the person and stays
+	/* out of response_rate's denominator. 10 No Response is didnt_respond.
+	/*
+	/* Both passes exclude hidden bookings (test and cancelled jobs) and rows
+	/* whose call no longer exists, so the identities hold (Q13, 10 Nov).
 	/*
 	/* A CANCELLED row (status 9) is classified by prev_status — we stood them
 	/* down, they did not decline — so the identities hold across a cancellation
@@ -254,8 +261,11 @@
 			SUM($timed_when)                                                                            AS timed_sample
 
 		FROM call_crew_map ccm
-		INNER JOIN users u ON u.id = ccm.userID
+		INNER JOIN users u    ON u.id = ccm.userID
+		INNER JOIN calls c    ON c.id = ccm.callID
+		LEFT  JOIN bookings b ON b.id = c.bookingID
 		WHERE u.usergroupID = 3
+		  AND (b.hidden IS NULL OR b.hidden = 0)
 		  AND (
 		        (ccm.offered_at  >= '$sql_start' AND ccm.offered_at  < '$sql_end')
 		     OR (ccm.offered_at IS NULL
@@ -305,6 +315,7 @@
 			'responded'      => (int) $row->responded,
 			'didnt_respond'  => 0,
 			'pending'        => 0,
+			'withdrawn'      => 0,
 
 			'accepted'       => (int) $row->accepted,
 			'declined'       => (int) $row->declined,
@@ -361,8 +372,12 @@
 	$sql2 = "
 		SELECT
 			ccm.userID AS user_id,
-			SUM( (c.start_date + COALESCE(TIME_TO_SEC(c.start_time), 0)) <  $now_i ) AS didnt_respond,
-			SUM( (c.start_date + COALESCE(TIME_TO_SEC(c.start_time), 0)) >= $now_i ) AS pending
+			SUM( ccm.status = 10
+			     OR (ccm.status NOT IN (10,11,12)
+			         AND (c.start_date + COALESCE(TIME_TO_SEC(c.start_time), 0)) <  $now_i) ) AS didnt_respond,
+			SUM( ccm.status NOT IN (10,11,12)
+			     AND (c.start_date + COALESCE(TIME_TO_SEC(c.start_time), 0)) >= $now_i )   AS pending,
+			SUM( ccm.status IN (11,12) )                                                   AS withdrawn
 		FROM call_crew_map ccm
 		INNER JOIN calls c    ON c.id = ccm.callID
 		LEFT  JOIN bookings b ON b.id = c.bookingID
@@ -394,6 +409,7 @@
 
 		$crew[$uid]['didnt_respond'] = (int) $row->didnt_respond;
 		$crew[$uid]['pending']       = (int) $row->pending;
+		$crew[$uid]['withdrawn']     = (int) $row->withdrawn;
 	}
 
 	mysql_free_result($res2);

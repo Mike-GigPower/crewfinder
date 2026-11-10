@@ -109,7 +109,7 @@
 	$GOAT_PERF_TOP_CUSTOMERS = 8;
 
 	/* call_crew_map.status values that never represent delivered work. */
-	$GOAT_PERF_EXCLUDED_CREW_STATUS = array(6, 8);
+	$GOAT_PERF_EXCLUDED_CREW_STATUS = array(6, 8, 10, 11, 12);
 
 	/*
 	/* call_crew_map.status that counts as SECURED on a forward call — a crew

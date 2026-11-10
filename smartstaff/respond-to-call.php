@@ -130,6 +130,25 @@
 			die();
 		}
 
+		/*
+		/* OFFER WITHDRAWN by the reminder cron — 10 No Response, 11 Not
+		/* delivered, 12 call started (DESIGN-offer-reminders v0.3). The offer
+		/* list no longer shows it, so this is a stale card or notification.
+		/* 410, not 409: the offer is gone, not contested. Nothing is written.
+		*/
+
+		if ($cur >= 10 && $cur <= 12)
+		{
+			http_response_code(410);
+			echo json_encode(array(
+				'error'          => 'This offer has expired and has been withdrawn.',
+				'expired'        => true,
+				'callID'         => $callID,
+				'current_status' => $cur
+			));
+			die();
+		}
+
 		/* genuine conflict — e.g. declining a call they are confirmed on */
 
 		http_response_code(409);

@@ -693,7 +693,8 @@
 		/* the data allows (DESIGN-reoffer-declined §2.1).
 		/*
 		/* The same walk as goat_user_package — locked edges only, treated as
-		/* undirected, through goat_feed_step — but over DECLINED (status 6)
+		/* undirected, through goat_feed_step — but over DECLINED (6) or
+		/* NO RESPONSE (10)
 		/* rows instead of offered ones. A row at any other status (0, 1, 5,
 		/* 7, 8, 9) is not touched and does NOT extend the walk: a confirmed
 		/* upstream call stays confirmed, a cancelled one stays cancelled.
@@ -703,7 +704,7 @@
 		/* locked package they are answered as one unit anyway.
 		/*
 		/* Returns an array of call ids, ALWAYS including $callID itself. The
-		/* caller has already checked that the seed row is status 6.
+		/* caller has already checked that the seed row is status 6 or 10.
 		/*
 		/* Not goat_user_package with a status parameter: that function is on
 		/* the live accept path, and a re-offer is not a reason to touch it.
@@ -719,11 +720,11 @@
 				return array($callID);
 			}
 
-			/* calls this user holds a declined row on */
+			/* calls this user holds a declined or No Response row on */
 
 			$held = array();
 			$res  = mysql_query("SELECT callID FROM call_crew_map
-			                     WHERE userID = " . $userID . " AND status = 6");
+			                     WHERE userID = " . $userID . " AND status IN (6, 10)");
 
 			if ($res !== false)
 			{

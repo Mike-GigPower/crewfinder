@@ -96,7 +96,7 @@
 	/* corrupt crew response-rate stats, which read 6 as a crew DECISION.
 	*/
 
-	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 7 => 'backup', 9 => 'cancelled', 0 => 'unconfirmed');
+	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 7 => 'backup', 9 => 'cancelled', 0 => 'unconfirmed', 10 => 'noresponse', 11 => 'notdelivered', 12 => 'withdrawn');
 
 	/*
 	/* Capability checks for the cancellation columns, mirroring

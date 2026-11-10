@@ -18,10 +18,11 @@
 	/* RE-OFFER A DECLINED CREW MEMBER (DESIGN-reoffer-declined v0.1 §3).
 	/*
 	/* Ops change someone from Declined to Unconfirmed in THE GOAT and choose
-	/* "Send offer". This endpoint re-opens the declined row on this call AND
-	/* every declined row in its locked package (goat_reoffer_scope), so a
-	/* package declined as one unit comes back as one offer. THE GOAT then
-	/* sends the offer push; nothing here talks to Crew Hub.
+	/* "Send offer". This endpoint re-opens the declined or No Response row on
+	/* this call AND every declined or No Response row in its locked package
+	/* (goat_reoffer_scope), so a package declined as one unit comes back as
+	/* one offer. THE GOAT then sends the offer push; nothing here talks to
+	/* Crew Hub.
 	/*
 	/*   ?id={callID}   body {userID, dry_run}
 	/*
@@ -30,10 +31,10 @@
 	/*                calls:[{call_id, call_name, start, started, cancelled,
 	/*                        full, required, confirmed}], refused}
 	/*   apply     : refuse on started / cancelled (409, nothing written);
-	/*               otherwise 6 -> 0 on every package row still at 6
+	/*               otherwise 6/10 -> 0 on every package row still at 6 or 10
 	/*               {ok, dry_run:false, ..., calls, reopened:[call ids]}
 	/*
-	/* 409 not_declined when the seed row is missing or not status 6 -- a
+	/* 409 not_declined when the seed row is missing or not status 6 or 10 -- a
 	/* stale dialog, or someone else already moved it.
 	/*
 	/* NO CALENDAR CHANGE: nobody becomes confirmed. NO responded_src TAGGING:
@@ -166,7 +167,7 @@
 
 	$seed = mysqli_fetch_object($sres);
 
-	if (!$seed || (int) $seed->status !== 6)
+	if (!$seed || !in_array((int) $seed->status, array(6, 10), true))
 	{
 		reoffer_fail(409, 'Conflict', array(
 			'ok'     => false,
@@ -316,7 +317,7 @@
 	mysqli_query($link, "UPDATE call_crew_map SET status = 0
 	                     WHERE userID = " . $userID . "
 	                       AND callID IN (" . $idList . ")
-	                       AND status = 6");
+	                       AND status IN (6, 10)");
 
 	if (mysqli_error($link) !== '')
 	{
