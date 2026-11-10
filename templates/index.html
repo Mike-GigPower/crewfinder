@@ -12387,7 +12387,7 @@ function renderInductionTable(){
   crew.forEach(c=>{
     const tr=document.createElement('tr');
     const nameTd=document.createElement('td');
-    nameTd.innerHTML=crewNameHoverHtml(c, false, '');
+    nameTd.innerHTML=crewNameHoverHtml(c, false, '', true);   // opted in to the card's emergency/dietary icons
     tr.appendChild(nameTd);
     const phTd=document.createElement('td');
     phTd.className='cid-phone';
@@ -16495,10 +16495,16 @@ async function ceMarkEmergency(id){
     if((d.flags||{})[String(id)] !== 'declared') return;
   }catch(e){ return; }
 
-  slot.innerHTML =
-      '<span onclick="ceShowTab(\'' + String(id) + '\',\'emergency\')" '
-    + 'title="Emergency information recorded — click to open" '
-    + 'style="cursor:pointer;display:inline-flex;align-items:center;margin-left:10px;vertical-align:-4px">'
+  slot.innerHTML = emergencyIconHtml("ceShowTab('" + String(id) + "','emergency')", 10);
+}
+
+// The emergency mark — the ONE copy, used by the crew record header and the
+// crew hover card. With onclick it opens the tab; without, it is a plain
+// marker (the hover card hides on mousedown, so a click there could never land).
+function emergencyIconHtml(onclick, marginLeft){
+  return '<span' + (onclick ? ' onclick="' + onclick + '"' : '')
+    + ' title="Emergency information recorded' + (onclick ? ' — click to open' : '') + '"'
+    + ' style="' + (onclick ? 'cursor:pointer;' : 'cursor:help;') + 'display:inline-flex;align-items:center;margin-left:' + (marginLeft == null ? 10 : marginLeft) + 'px;vertical-align:-4px">'
     // WHITE CROSS ON GREEN — the ISO 7010 first-aid mark, NOT a red cross on
     // white. That one is the Red Cross emblem, protected under the Geneva
     // Conventions and in Australian law; nobody would come after an internal
@@ -18110,7 +18116,7 @@ function _renderCrewList(){
           ? '<span style="color:var(--ok,#10b981);font-size:11px">Active</span>'
           : '<span style="color:var(--muted);font-size:11px">Inactive</span>';
         return '<tr onclick="openCrewEdit(\''+String(c.id)+'\')">'
-          + '<td class="fc-col-name">'+crewNameHoverHtml(c, !c.active, 'Click to open their record')+'</td>'
+          + '<td class="fc-col-name">'+crewNameHoverHtml(c, !c.active, 'Click to open their record', true)+'</td>'
           + '<td class="fc-col-phone"><span onclick="event.stopPropagation()">'+phoneLink(c.phone)+'</span></td>'
           + '<td class="fc-col-stars">'+crewStarsHtml(c.rating)+'</td>'
           + '<td class="fc-col-id"><span class="fc-id">'+escapeHtml(String(c.ein||''))+'</span></td>'
@@ -31476,20 +31482,24 @@ function crewStarsHtml(rating){
 
 // The name text is the hover TRIGGER (not the cell), the Crew Finder rule from
 // 21 Sep 2026, so chips beside it never open the card. The card anchors to the cell.
-function crewNameHoverHtml(c, inactive, hint){
+// `flags` opts this list in to the emergency/dietary icons on the card. ONLY for
+// lists that do not drive selection (Crew → Records, Inductions) — never the
+// schedule, the Utilization forecast or anything that decides who gets work.
+function crewNameHoverHtml(c, inactive, hint, flags){
   const label = c.name || c.ein || c.id || '';
   return '<span class="fc-name" tabindex="0" style="text-decoration:underline;text-decoration-color:rgba(212,175,55,0.3);text-underline-offset:2px"'
     + ' data-cc-id="'+escapeHtml(String(c.id||''))+'"'
     + ' data-cc-name="'+escapeHtml(String(c.name||''))+'"'
     + (inactive ? ' data-cc-inactive="1"' : '')
     + (hint ? ' data-cc-hint="'+escapeHtml(hint)+'"' : '')
+    + (flags ? ' data-cc-flags="1"' : '')
     + '>'+escapeHtml(decodeEntities(String(label)))+'</span>';
 }
 
 // Card data comes from /api/crew-cards: one roster read plus one shift read,
 // fetched on the first hover and kept for five minutes per active/inactive set.
 // A failed fetch is not kept, so the next hover tries again.
-const _ccView = { data: {}, token: 0, open: false, pending: false };
+const _ccView = { data: {}, emg: {}, diet: {}, token: 0, open: false, pending: false };
 const CC_VIEW_TTL_MS = 5*60*1000;
 
 function crewViewCardData(inactive){
@@ -31513,7 +31523,48 @@ function crewViewCardData(inactive){
   return p;
 }
 // Called when a crew record opens, so notes edited there are re-read on the next hover.
-function crewViewCardInvalidate(){ _ccView.data = {}; }
+// The emergency/dietary flags go too: the record is where they get edited.
+function crewViewCardInvalidate(){ _ccView.data = {}; _ccView.emg = {}; _ccView.diet = {}; }
+
+// One crew member's entry from emergency-flags or dietary-flags, cached per id
+// for the card-data TTL. A failed fetch is not kept, as with the card data.
+function _ccViewFlag(cache, url, id){
+  const e = cache[id];
+  if(e && (Date.now() - e.at) < CC_VIEW_TTL_MS) return e.p;
+  const p = fetch(url, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ user_ids: [Number(id)] })
+    })
+    .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(function(d){ return ((d && d.flags) || {})[id] || null; });
+  cache[id] = { at: Date.now(), p: p };
+  p.catch(function(){ if(cache[id] && cache[id].p === p) delete cache[id]; });
+  return p;
+}
+
+// Emergency and dietary icons beside the name, after the card has rendered.
+// emergency-flags is PRESENCE ONLY and writes no access-log row; the emergency
+// card endpoint (/api/admin/crew/<id>/emergency) is a logged disclosure and
+// must NEVER be called from a hover. Admin + operations only, matching the
+// routes. Not clickable. Silent on every failure — no icon is the safe reading.
+function crewViewCardMarkFlags(el, anchor, id, tok){
+  if(window._cohort !== 'admin' && window._cohort !== 'operations') return;
+  if(!/^[0-9]+$/.test(id) || Number(id) <= 0) return;
+  const put = function(cls, html){
+    if(tok !== _ccView.token) return;          // moved on to another name, or left
+    const slot = el.querySelector('.cc-view-flags .' + cls);   // gone if Crew Finder's card repainted
+    if(!slot) return;
+    slot.innerHTML = html;
+    _positionCrewCard(el, anchor);
+  };
+  _ccViewFlag(_ccView.emg, '/api/admin/emergency-flags', id).then(function(f){
+    if(f === 'declared') put('cc-view-emg', emergencyIconHtml('', 8));
+  }, function(){});
+  _ccViewFlag(_ccView.diet, '/api/admin/dietary-flags', id).then(function(f){
+    if(f && f.state === 'declared') put('cc-view-diet', dietaryIconHtml(f, '', 6));
+  }, function(){});
+}
 
 function crewViewCardBody(st){
   if(st.loading) return '<div class="cc-sh-empty">Loading\u2026</div>';
@@ -31538,12 +31589,15 @@ function crewViewCardShow(t, tok){
   const name     = t.getAttribute('data-cc-name') || t.textContent || '';
   const inactive = t.getAttribute('data-cc-inactive') === '1';
   const hint     = t.getAttribute('data-cc-hint') || '';
+  const flags    = t.getAttribute('data-cc-flags') === '1';   // opt-in per list, see crewNameHoverHtml
   const anchor   = t.closest('td') || t;
   const el = _ensureCrewCardEl();
   const photo = id
     ? '<img class="cc-photo" src="'+crewPhotoSrc(id)+'" alt="" onerror="this.outerHTML=\'<div class=&quot;cc-photo-ph&quot;>No photo on file</div>\'">'
     : '<div class="cc-photo-ph">No photo on file</div>';
-  el.innerHTML = '<div class="cc-name">'+escapeHtml(decodeEntities(name))+'</div>' + photo
+  el.innerHTML = '<div class="cc-name">'+escapeHtml(decodeEntities(name))
+    + (flags ? '<span class="cc-view-flags"><span class="cc-view-emg"></span><span class="cc-view-diet"></span></span>' : '')
+    + '</div>' + photo
     + '<div class="cc-view-body">'+crewViewCardBody({loading: true})+'</div>'
     + (hint ? '<div class="cc-hint">'+escapeHtml(hint)+'</div>' : '');
   el.style.display = 'block';
@@ -31560,6 +31614,7 @@ function crewViewCardShow(t, tok){
     function(d){ fill({ card: d.cards[String(id)], span: d.span, shifts_ok: d.shifts_ok }); },
     function(){ fill({ error: true }); }
   );
+  if(flags) crewViewCardMarkFlags(el, anchor, id, tok);   // async, never awaited, never blocks the card
 }
 
 function crewViewCardHide(){
