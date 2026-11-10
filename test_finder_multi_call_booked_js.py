@@ -6,14 +6,27 @@ both tooltips said "Load Out 14:00 – 19:00", and the row said BOOKED.
 
 Runs the page's own functions under node (js_harness). Skips without node."""
 
+import re
 import unittest
 
 import js_harness as H
 
-FUNCS = H.extract(
+
+def _var(name):
+    """A top-level `var NAME = …;` line from the page (extract() takes functions only)."""
+    m = re.search(r"^var " + re.escape(name) + r"\b.*$", H.page(), re.M)
+    if not m:
+        raise LookupError(f"var {name} not found in index.html")
+    return m.group(0)
+
+
+# relFromStatusWord calls crewStatusIsWithdrawn, which reads CREW_WITHDRAWN_WORDS
+# (offer reminders slice 4, Q18).
+FUNCS = (_var("CREW_WITHDRAWN_WORDS") + "\n\n" + H.extract(
+    "crewStatusIsWithdrawn",
     "relFromStatusWord", "buildBookedRel", "_normName", "targetRelationship",
     "targetBookedCount", "tlTargetPlan", "statusLabel", "_rankLine",
-) if H.NODE else ""
+)) if H.NODE else ""
 
 SETUP = r"""
 var _bookedRel = new Map(), _softCallIds = new Set(), _showRanking = false;
@@ -82,6 +95,29 @@ var sage = {name:'Novak, Sage', shifts:[loadOut]};
 console.log(JSON.stringify(targetRelationship(sage)));
 """)
         self.assertIsNone(out)
+
+    @unittest.skipUnless(H.NODE, "node not installed")
+    def test_offer_withdrawn_statuses_map_to_declined(self):
+        # Offer reminders Q18: an offer withdrawn by the reminder cron is settled,
+        # not coming. Existing words keep their mapping.
+        out = H.run(H.DOM_PRELUDE + FUNCS + SETUP + r"""
+var words = ['noresponse','notdelivered','withdrawn','NoResponse',
+             'declined','confirmed','backup','unconfirmed','sent','noshow','cancelled',''];
+var m = {};
+words.forEach(function(w){ m[w] = relFromStatusWord(w); });
+_bookedRel = buildBookedRel([{name:'Sage Novak', status:'noresponse'}]);
+m.panel = targetRelationship({name:'Novak, Sage', shifts:[]});
+console.log(JSON.stringify(m));
+""")
+        self.assertEqual(out["noresponse"], "declined")
+        self.assertEqual(out["notdelivered"], "declined")
+        self.assertEqual(out["withdrawn"], "declined")
+        self.assertEqual(out["panel"], "declined")      # ALREADY BOOKED panel
+        self.assertEqual(out["declined"], "declined")
+        self.assertEqual(out["confirmed"], "booked")
+        self.assertEqual(out["backup"], "backup")
+        for w in ("unconfirmed", "sent", "noshow", "cancelled", ""):
+            self.assertEqual(out[w], "waiting", w)
 
 
 if __name__ == "__main__":

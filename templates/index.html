@@ -5235,10 +5235,12 @@ function _normName(n){return String(n||'').toLowerCase().replace(/,/g,' ').split
 // cfShouldHideSettled (the hide filter), so the two cannot drift apart.
 // 'noshow' and 'cancelled' deliberately fall through to 'waiting': neither is a
 // settled answer to an offer, and both should stay visible.
+// noresponse / notdelivered / withdrawn (offer withdrawn by the reminder cron)
+// map to 'declined': settled, not coming (offer reminders Q18).
 function relFromStatusWord(s){
   return s==='confirmed' ? 'booked'
        : s==='backup'    ? 'backup'
-       : s==='declined'  ? 'declined'
+       : s==='declined' || crewStatusIsWithdrawn(s) ? 'declined'
        : 'waiting';   // unconfirmed / waiting / sent / noshow / cancelled
 }
 
@@ -13557,6 +13559,7 @@ let _crewListPhotoOk     = true;    // did both photo lookups run (5.84.0)
 const CREW_REC_DORMANT_MONTHS = 12;
 let _crewRecDormant      = false;   // chip on: no shift in CREW_REC_DORMANT_MONTHS (or never)
 let _crewListLastShiftOk = true;    // did the payload's last-shift lookup run
+let _crewListNoRespOk    = true;    // did the payload's No Response lookup run (offer reminders)
 
 function crewDormantToggle(){
   _crewRecDormant = !_crewRecDormant;
@@ -13724,6 +13727,7 @@ async function _loadCrewList(){
     _crewListContractOk = (d.contracts_ok !== false);   // same reading as licences
     _crewListPhotoOk = (d.photos_ok !== false);          // and again for photos
     _crewListLastShiftOk = (d.last_shift_ok !== false);  // and for last shift
+    _crewListNoRespOk    = (d.no_response_ok !== false); // and for No Response
   }catch(e){
     const rows = document.getElementById('crew-list-rows');
     if(rows) rows.innerHTML = '<div style="color:var(--conflict);font-size:12px">Couldn&#39;t load crew: '+escapeHtml(e.message)+'</div>';
@@ -17528,9 +17532,12 @@ function crewRecSortVal(c, key, ctx){
       const s = crewRecLicState(c, ctx.today, ctx.soon);
       return s ? s.expired.length * 1000 + s.expiring.length : -1;
     }
+    // Worst first: no-shows, then late, then No Response (offer reminders Q4).
+    // An unknown No Response figure sorts as 0, never as a count.
     case 'rel': {
       const s = c.stats;
-      return s ? (Number(s.noshow_12mo) || 0) * 1000 + (Number(s.late_12mo) || 0) : -1;
+      const nr = (_crewListNoRespOk && c.no_response) ? (Number(c.no_response.n_12mo) || 0) : 0;
+      return s ? (Number(s.noshow_12mo) || 0) * 1e6 + (Number(s.late_12mo) || 0) * 1e3 + nr : -1;
     }
     case 'push': return c.push_ok === false ? 0 : (c.push_ok === true ? 2 : 1);
     // None 2, on file 1, unknown -1: first click (desc) puts None first.
@@ -17581,8 +17588,16 @@ function crewRecRelHtml(c){
   const cell = function(label, v, col){
     return '<span style="color:'+(n(v) ? col : 'var(--muted)')+';font-weight:'+(n(v) ? '600' : '400')+'">'+label+' '+n(v)+'</span>';
   };
-  return '<span title="Last 12 months. All time: Late '+n(s.late_all)+', No-show '+n(s.noshow_all)+'">'
-    + cell('Late', s.late_12mo, 'var(--warn)') + ' &nbsp;' + cell('No-show', s.noshow_12mo, 'var(--conflict)') + '</span>';
+  // No resp (offer reminders): from offer_history via no_response. Unknown is a
+  // muted dash, never a 0. Only outcome no_response counts (D2, D3).
+  const nrKnown = !!(_crewListNoRespOk && c.no_response);
+  const nr12 = nrKnown ? c.no_response.n_12mo : 0;
+  return '<span title="Last 12 months. All time: Late '+n(s.late_all)+', No-show '+n(s.noshow_all)
+    + (nrKnown ? ', No response '+n(c.no_response.n_all) : '')+'">'
+    + cell('Late', s.late_12mo, 'var(--warn)') + ' &nbsp;' + cell('No-show', s.noshow_12mo, 'var(--conflict)')
+    + ' &nbsp;' + (nrKnown ? cell('No resp', nr12, 'var(--conflict)')
+                           : '<span style="color:var(--muted)" title="No Response data unavailable">No resp \u2014</span>')
+    + '</span>';
 }
 
 // push_ok comes from the crew cache's Crew Hub stamp (refreshed with the cache).
@@ -21863,6 +21878,15 @@ function entityNotesValue(raw){
     : '<span style="color:var(--muted)">—</span>';
 }
 
+// Offer-reminder outcomes (DESIGN-offer-reminders v0.3 §3). Set ONLY by the
+// Crew Hub cron through expire-offer.php — never offered as a dropdown target.
+//   10 noresponse   30 h passed, a push reached them     -> counts against them
+//   11 notdelivered 30 h passed, no push ever reached them
+//   12 withdrawn    short-notice offer, call started unanswered
+var CREW_WITHDRAWN_WORDS = {noresponse: 10, notdelivered: 11, withdrawn: 12};
+var CREW_WITHDRAWN_LABEL = {10: 'No response', 11: 'Not delivered', 12: 'Withdrawn'};
+function crewStatusIsWithdrawn(s){ return CREW_WITHDRAWN_WORDS.hasOwnProperty(String(s||'').toLowerCase()); }
+
 function crewStatusBadge(status){
   const s = (status||'').toLowerCase();
   let color='var(--muted)', bg='var(--surface2)';
@@ -21874,7 +21898,11 @@ function crewStatusBadge(status){
   // The default is also what an unrecognised status gets, and "cancelled" must
   // not be indistinguishable from "this UI does not know what this value is".
   else if(s==='cancelled'){ color='#64748b'; bg='rgba(100,116,139,0.14)'; }
-  return '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+color+';background:'+bg+';border-radius:3px;padding:2px 7px">'+escapeHtml(status||'—')+'</span>';
+  // Offer withdrawn by the reminder cron: No response counts against them (red,
+  // like Declined); Not delivered / Withdrawn do not (slate, like Cancelled).
+  else if(s==='noresponse'){ color='var(--conflict)'; bg='var(--conf-bg)'; }
+  else if(s==='notdelivered'||s==='withdrawn'){ color='#64748b'; bg='rgba(100,116,139,0.14)'; }
+  return '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+color+';background:'+bg+';border-radius:3px;padding:2px 7px">'+escapeHtml(crewStatusIsWithdrawn(s) ? CREW_WITHDRAWN_LABEL[CREW_WITHDRAWN_WORDS[s]] : (status||'—'))+'</span>';
 }
 // ── Crew status editing (admin only) ─────────────────────────
 // Status labels <-> SmartStaff call_crew_map.status ints. The endpoint owns the
@@ -21903,6 +21931,7 @@ function crewStatusInt(status){
   if(s==='declined')              return 6;
   if(s==='noshow'||s==='no-show') return 8;
   if(s==='cancelled')             return 9;
+  if(CREW_WITHDRAWN_WORDS.hasOwnProperty(s)) return CREW_WITHDRAWN_WORDS[s];
   return 0;   // unconfirmed / waiting / unknown
 }
 
@@ -21923,6 +21952,8 @@ function crewStatusColors(v){
   if(v===7)        return ['#14b8a6','rgba(20,184,166,0.12)'];
   if(v===6||v===8) return ['var(--conflict)','var(--conf-bg)'];
   if(v===1||v===0) return ['#f59e0b','rgba(245,158,11,0.12)'];
+  if(v===10)            return ['var(--conflict)','var(--conf-bg)'];       // No response
+  if(v===11 || v===12)  return ['#64748b','rgba(100,116,139,0.14)'];       // Not delivered / Withdrawn
   if(v===9)        return ['#64748b','rgba(100,116,139,0.14)'];   // cancelled
   return ['var(--muted)','var(--surface2)'];
 }
@@ -21961,6 +21992,14 @@ function crewStatusControl(c, bookingId, callId){
     if(promo && o[0] === 1) return '<option value="promo" selected>Pending</option>';
     return '<option value="'+o[0]+'"'+((!promo && o[0]===cur)?' selected':'')+'>'+o[1]+'</option>';
   }).join('');
+  // 10-12 (offer withdrawn by the reminder cron) are never targets, so they are
+  // not in CREW_STATUS_OPTS. Without an option for cur the <select> would show
+  // its FIRST option and label the row "Confirmed" (the cancelled problem
+  // above). One current-value-only option, disabled so it can't be re-picked;
+  // every ordinary option stays selectable (Q17).
+  var curOpt = (cur >= 10 && cur <= 12)
+    ? '<option value="'+cur+'" selected disabled>'+CREW_WITHDRAWN_LABEL[cur]+'</option>'
+    : '';
   // data-promo-pending: refreshCallCrewSummary() must not count an unanswered
   // promotion as booked, or any status change elsewhere in the dialog would
   // silently put them back in the count (promotion brief §3.4).
@@ -21974,11 +22013,14 @@ function crewStatusControl(c, bookingId, callId){
     + ' onchange="changeCrewStatus(\''+bookingId+'\',\''+callId+'\','+c.id+',this)"'
     + ' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+cols[0]+';background:'+cols[1]
     + ';border:1px solid '+cols[0]+';border-radius:3px;padding:2px 6px;font-family:\'Share Tech Mono\',monospace;cursor:pointer;outline:none">'
-    + opts + '</select>';
+    + curOpt + opts + '</select>';
 }
 
 // ── RE-OFFER A DECLINED CREW MEMBER (DESIGN-reoffer-declined v0.1) ──
-// Declined -> Unconfirmed (6 -> 0) from the status dropdown asks first:
+// Declined -> Unconfirmed (6 -> 0) from the status dropdown asks first. No
+// response -> Unconfirmed (10 -> 0) asks the same way (offer reminders D12);
+// prev only changes the wording. Not delivered (11) and Withdrawn (12) are
+// not re-offerable (Q11): their changes are ordinary status writes, no push.
 //   Cancel                 the select goes back to Declined, nothing written
 //   Change without sending today's behaviour: this one row, 6 -> 0, no push
 //   Send offer             every declined row in the locked package -> 0,
@@ -22008,7 +22050,7 @@ function reofferRefusalText(ref){
     : nm+' has already started, so they couldn\'t accept it.';
 }
 
-async function reofferDeclinedFlow(bookingId, callId, userId, sel){
+async function reofferDeclinedFlow(bookingId, callId, userId, sel, prev){
   var name = sel.getAttribute('data-crew-name') || 'them';
   var url  = '/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/reoffer';
   var buttons = [
@@ -22024,7 +22066,7 @@ async function reofferDeclinedFlow(bookingId, callId, userId, sel){
     var j = await r.json();
     if(r.status === 409 && j.error === 'not_declined'){
       sel.disabled = false;
-      alert('They\'re no longer Declined on this call — someone changed it. Reloading.');
+      alert("They're no longer " + (prev === 10 ? 'No response' : 'Declined') + " on this call — someone changed it. Reloading.");
       openCallDialog(bookingId, callId);
       return 'handled';
     }
@@ -22042,7 +22084,10 @@ async function reofferDeclinedFlow(bookingId, callId, userId, sel){
       + '<div style="margin-top:8px">You can still change the status without sending.</div>';
   }else{
     var when = preview.responded_at ? reofferWhen(preview.responded_at, true) : '';
-    html = '<div>They declined this call'+(when ? ' on '+escapeHtml(when) : '')+'.'
+    // A No response row has no responded_at (a withdrawal never stamps it).
+    html = '<div>'+(prev === 10
+        ? 'They didn\'t respond to this offer (withdrawn after 30 hours).'
+        : 'They declined this call'+(when ? ' on '+escapeHtml(when) : '')+'.')
       + (preview.refused ? '' : ' Sending re-opens it in Crew Hub and pushes a new offer.')+'</div>';
     var calls = preview.calls || [];
     if(calls.length > 1){
@@ -22080,7 +22125,7 @@ async function reofferDeclinedFlow(bookingId, callId, userId, sel){
                                body: JSON.stringify({dry_run: false})});
     var j2 = await r2.json();
     if(r2.status === 409 && j2.error === 'not_declined'){
-      alert('They\'re no longer Declined on this call — someone changed it. Reloading.');
+      alert("They're no longer " + (prev === 10 ? 'No response' : 'Declined') + " on this call — someone changed it. Reloading.");
       openCallDialog(bookingId, callId);
       return 'handled';
     }
@@ -22126,11 +22171,12 @@ async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
     return;
   }
   if(!promoPrev && next === prev) return;
-  // Declined -> Unconfirmed: ask whether to send a new offer
-  // (DESIGN-reoffer-declined §2). Only 'plain' (Change without sending)
-  // carries on to the ordinary one-row status write below.
-  if(!promoPrev && prev === 6 && next === 0){
-    if((await reofferDeclinedFlow(bookingId, callId, userId, sel)) !== 'plain') return;
+  // Declined or No response -> Unconfirmed: ask whether to send a new offer
+  // (DESIGN-reoffer-declined §2; offer reminders D12). Only 'plain' (Change
+  // without sending) carries on to the ordinary one-row status write below.
+  // 11/12 -> anything, and 10 -> anything but 0, are ordinary writes (Q17).
+  if(!promoPrev && (prev === 6 || prev === 10) && next === 0){
+    if((await reofferDeclinedFlow(bookingId, callId, userId, sel, prev)) !== 'plain') return;
   }
   sel.disabled = true;
   try{
@@ -22211,7 +22257,7 @@ function refreshCallCrewSummary(callId){
 //
 // Chip order. Promoted-not-yet-accepted crew are status Confirmed and count
 // there, as on the Crew line.
-var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show']];
+var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show'],[10,'No response'],[11,'Not delivered'],[12,'Withdrawn']];
 var CALL_CREW_ORDERS = [['status','Status'],['name','Name']];
 
 // Sort key for a Booked Crew row: surname first, then first name, lowercased
@@ -23655,6 +23701,15 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         // (get-booking.php callout_member, guarded to status 1). Amber, the
         // promotion pill's family (brief E2).
         if(c.callout_member) promo += ' <span title="Called out from standby — has not answered yet" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">called out</span>';
+        // Round badge (offer reminders Q19): an open offer that the reminder
+        // cron already withdrew N time(s) for no response (get-booking.php
+        // expired_rounds, from offer_history). "2nd offer" for N=1, and so on.
+        var _xr = (c.expired_rounds|0), _xst = crewStatusInt(c.status);
+        if(_xr > 0 && (_xst === 0 || _xst === 1)){
+          var _xo = _xr + 1, _xm = _xo % 100;
+          var _xsuf = (_xm >= 11 && _xm <= 13) ? 'th' : (['th','st','nd','rd'][_xo % 10] || 'th');
+          promo += ' <span title="Withdrawn '+_xr+' time'+(_xr === 1 ? '' : 's')+' before for not responding" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">'+_xo+_xsuf+' offer</span>';
+        }
         // Admin only: the crew record is /api/admin/crew. The fallback roster
         // (/api/booked-crew) carries no id, so those names stay plain text.
         var nm = escapeHtml(callCrewDisplayName(c));
@@ -23802,18 +23857,19 @@ async function openCallStandDown(bookingId, callId){
   }catch(e){}
   window._standDownCrew = crew;
 
-  // Everyone still holding a live assignment. Declined (6) and no-show (8) are
-  // shown greyed for completeness but are not people to ring about a shift they
-  // were never coming to.
+  // Everyone still holding a live assignment. Declined (6), no-show (8) and
+  // offers withdrawn by the reminder cron (10-12) are shown greyed for
+  // completeness but are not people to ring about a shift they were never
+  // coming to.
   const live = crew.filter(function(c){
     const s = (c.status||'').toLowerCase();
-    return s !== 'declined' && s !== 'noshow' && s !== 'no-show' && s !== 'cancelled';
+    return s !== 'declined' && s !== 'noshow' && s !== 'no-show' && s !== 'cancelled' && !crewStatusIsWithdrawn(s);
   });
 
   const roster = crew.length
     ? crew.map(function(c){
         const s    = (c.status||'').toLowerCase();
-        const dim  = (s==='declined'||s==='noshow'||s==='no-show');
+        const dim  = (s==='declined'||s==='noshow'||s==='no-show'||crewStatusIsWithdrawn(s));
         const mob  = c.mobile ? '<span style="color:var(--muted);margin-left:8px">'+escapeHtml(fmtPhone(c.mobile))+'</span>' : '';
         return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)'+(dim?';opacity:.45':'')+'">'
              +   '<span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+mob+'</span>'
@@ -24340,7 +24396,7 @@ function renderCallResponses(bookingId, callId){
 // Status int -> the label crewStatusBadge() understands. The reverse of
 // crewStatusInt(); this endpoint returns ints where get-booking.php returns
 // strings.
-var CREW_STATUS_LABEL_BY_INT = {0:'unconfirmed',1:'pending',5:'confirmed',6:'declined',7:'backup',8:'noshow',9:'cancelled'};
+var CREW_STATUS_LABEL_BY_INT = {0:'unconfirmed',1:'pending',5:'confirmed',6:'declined',7:'backup',8:'noshow',9:'cancelled',10:'noresponse',11:'notdelivered',12:'withdrawn'};
 
 // ── WHO WAS ACTUALLY TOLD ───────────────────────────────────────────────────
 // Shared by the Stand down and Reinstate result panels. Both ask the same
@@ -26987,8 +27043,9 @@ async function crewlistRefreshAfterChange(bookingId){
 function _clKeepCrew(c, who){
   const st = (c.status||'').toLowerCase();
   if(who === 'confirmed') return st === 'confirmed';
-  // 'rostered' = everyone assigned except declined / no-shows / backups
-  return st !== 'declined' && st !== 'noshow' && st !== 'backup';
+  // 'rostered' = everyone assigned except declined / no-shows / backups, and
+  // offers withdrawn by the reminder cron (10-12)
+  return st !== 'declined' && st !== 'noshow' && st !== 'backup' && !crewStatusIsWithdrawn(st);
 }
 
 // "Wednesday Jul 8, 2026 / 08:00" from unix start_date + HH:MM(:SS) start_time
@@ -30981,11 +31038,12 @@ function exportCrewRecordsCSV(){
     const ls = crewRecLicState(c, today, soon);
     const s  = c.stats;
     const n  = function(v){ return s ? (Number(v) || 0) : ''; };
+    const nr = function(k){ return (_crewListNoRespOk && c.no_response) ? (Number(c.no_response[k]) || 0) : ''; };
     return [
       decodeEntities(c.name || ''), c.ein || '', c.phone || '', Number(c.rating) || 0,
       c.active ? 'Active' : 'Inactive',
       ls ? ls.expired.join(' ') : 'Unknown', ls ? ls.expiring.join(' ') : 'Unknown',
-      n(s && s.late_12mo), n(s && s.noshow_12mo), n(s && s.late_all), n(s && s.noshow_all),
+      n(s && s.late_12mo), n(s && s.noshow_12mo), nr('n_12mo'), n(s && s.late_all), n(s && s.noshow_all), nr('n_all'),
       lastDateCell(c), lastNameCell(c),
       c.push_ok === true ? 'On' : (c.push_ok === false ? 'Off' : 'Unknown'),
       contractCell(c), photoCell(c),
@@ -30994,7 +31052,7 @@ function exportCrewRecordsCSV(){
   });
   goatExportCSV('crew-records-' + (crewFilter.active ? 'active' : 'inactive'),
     ['Name', 'EIN', 'Phone', 'Stars', 'Status', 'Licences expired', 'Licences expiring (30 days)',
-     'Late 12 mo', 'No-show 12 mo', 'Late all time', 'No-show all time', 'Last shift date', 'Last shift', 'Crew Hub push', 'Contract signed', 'Photo', 'Groups'],
+     'Late 12 mo', 'No-show 12 mo', 'No response 12 mo', 'Late all time', 'No-show all time', 'No response all time', 'Last shift date', 'Last shift', 'Crew Hub push', 'Contract signed', 'Photo', 'Groups'],
     rows);
 }
 
@@ -38546,7 +38604,9 @@ function renderCallStatusBadge(el, data, callMeta){
   // Counts derive from the real roster (data.crew) — D1: the scraped banner is a
   // fallback only when the roster is empty. get-booking.php emits status as a LABEL
   // string, not an int (5→'confirmed', 1→'sent', 6→'declined', 8→'noshow',
-  // 7→'backup', anything else →'unconfirmed').
+  // 7→'backup', 9→'cancelled', 10→'noresponse', 11→'notdelivered',
+  // 12→'withdrawn', anything else →'unconfirmed'). 10-12 are offers withdrawn
+  // by the reminder cron: not waiting, so not counted below.
   const roster = Array.isArray(data.crew) ? data.crew : [];
   const useRoster = roster.length > 0;
   const st = s => String(s || '').toLowerCase();
