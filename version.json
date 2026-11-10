@@ -1,6 +1,6 @@
 {
-  "version": "5.99.0",
+  "version": "5.100.0",
   "release_date": "2026-11-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.99.0/TheGOAT.dmg",
-  "release_notes": "The Today dashboard is split into Bookings & Calls and Crew Metrics, with a count on each tab so nothing waiting on the other one is missed."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.100.0/TheGOAT.dmg",
+  "release_notes": "Crew records have a new Dietary tab, with a fork-and-knife icon on the crew record and in Booked Crew, and crew lists now print dietary requirements with a count per call."
 }
