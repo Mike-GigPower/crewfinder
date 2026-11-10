@@ -43,7 +43,7 @@ The dark bar under the top nav holds five groups: **⚡ Today**, **📅 Bookings
 
 | Group | What lives there |
 |---|---|
-| ⚡ Today | Operations (the landing page — what needs chasing right now) and Performance |
+| ⚡ Today | **Bookings & Calls** and **Crew Metrics** (the landing dashboards — what needs chasing right now) and Performance |
 | 📅 Bookings | Schedule, Crew Finder, All Bookings, Create Booking |
 | 👥 Crew | Utilization, Inductions, Records |
 | 🧑‍💼 Recruitment | Operations, Dashboard, Sessions |

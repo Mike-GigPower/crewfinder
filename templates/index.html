@@ -1572,6 +1572,9 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-lane-caret{color:var(--muted);font-size:11px;width:12px;flex-shrink:0}
 .ops-lane-label{font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:600;color:var(--text)}
 .ops-lane-badge{margin-left:auto;min-width:26px;text-align:center;font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--accent);background:var(--accent-bg);border:1px solid var(--border);border-radius:12px;padding:2px 9px}
+.ops-tabcount{margin-left:6px;font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:0;color:var(--accent);background:var(--accent-bg);border:1px solid var(--border);border-radius:10px;padding:1px 7px}
+.ops-tabcount:empty{display:none}
+.tab-btn.active .ops-tabcount{color:inherit;background:transparent;border-color:currentColor}   /* active tab is filled with the accent — the pill must not vanish into it */
 .ops-lane-body{padding:4px 14px 14px}
 /* A lane with no rows behind it (loading, empty, unavailable) has nothing to
    reveal — hide its caret and make the head inert. */
@@ -1995,7 +1998,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 
 <div class="subtab-bar" id="subtab-bar">
   <div class="subtab-group" id="subtab-today">
-    <button class="tab-btn" id="tab-btn-ops"         onclick="switchTab('ops')">Operations</button>
+    <button class="tab-btn" id="tab-btn-ops"         data-label="Bookings & Calls" onclick="switchTab('ops')">Bookings &amp; Calls<span class="ops-tabcount" id="ops-tabcount-calls"></span></button>
+    <button class="tab-btn" id="tab-btn-ops-crew"    data-label="Crew Metrics" onclick="switchTab('ops-crew')">Crew Metrics<span class="ops-tabcount" id="ops-tabcount-crew"></span></button>
     <button class="tab-btn" id="tab-btn-performance" onclick="switchTab('performance')">Performance</button>
   </div>
   <div class="subtab-group" id="subtab-bookings">
@@ -2221,11 +2225,25 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   <div class="tab-panel" id="tab-ops">
     <div class="ops-panel">
       <div class="ops-toolbar">
-        <span class="section-label" style="margin:0">OPS</span>
+        <span class="section-label" style="margin:0">BOOKINGS &amp; CALLS</span>
         <span class="ops-asat" id="ops-asat">as at —:—</span>
         <button class="btn" onclick="loadOps(true)" style="margin-left:auto">⟳ Refresh</button>
       </div>
       <div class="ops-lanes" id="ops-lanes">
+        <div class="ops-lane-status">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CREW METRICS (DESIGN-ops-two-dashboards-v0_2) — same lane frame, second board ── -->
+  <div class="tab-panel" id="tab-ops-crew">
+    <div class="ops-panel">
+      <div class="ops-toolbar">
+        <span class="section-label" style="margin:0">CREW METRICS</span>
+        <span class="ops-asat" id="ops-asat-crew">as at —:—</span>
+        <button class="btn" onclick="loadOps(true)" style="margin-left:auto">⟳ Refresh</button>
+      </div>
+      <div class="ops-lanes" id="ops-lanes-crew">
         <div class="ops-lane-status">Loading…</div>
       </div>
     </div>
@@ -3535,6 +3553,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   const cohort = await loadWhoami();        // identity + cohort-aware nav
   if(cohort === 'crew'){ loadMyStatus(); return; }   // crew: personal view only — no tab bar, ignore any hash
   // admin + leadership
+  opsApplyBoardVisibility(); // hide a Today board with no lane this cohort can see (before the group check)
   applyGroupVisibility();   // hide group buttons whose children are all cohort-hidden (after applyCohort)
   // Chained, not fired alongside: both land on /ajax/crew/*, and the per-session
   // PHP file lock makes two concurrent calls there hang. Neither is on the critical
@@ -6860,7 +6879,7 @@ async function sendSMS(ackOver){
 // My Status is deliberately NOT here — it moved to the identity nav, so
 // groupOfTab('my-status') returns null and it sits outside the group structure.
 const TAB_GROUPS = {
-  today:       ['ops', 'performance'],
+  today:       ['ops', 'ops-crew', 'performance'],
   bookings:    ['schedule', 'crew-finder', 'all-bookings', 'import'],
   crew:        ['forecast', 'induction-checker', 'crew-records'],
   recruitment: ['recruitment', 'recruitment-dashboard', 'recruitment-sessions'],
@@ -6907,6 +6926,7 @@ function applyGroupVisibility(){
 // ── TABS ──
 function switchTab(tab){
   cfToggleFocus(false);   // a pop-out or palette jump must never land with nav hidden
+  const prev = _activeTab;   // read before reassigning: the Today boards share one load
   _activeTab = tab;   // source of truth for pop-out (nav My Status isn't a .tab-btn)
   // Match buttons/panels by id, not list position — robust to hidden/added tabs
   // (the positional version broke when the My Status tab was added).
@@ -6916,7 +6936,13 @@ function switchTab(tab){
   document.querySelectorAll('.tab-panel').forEach(p=>{
     p.classList.toggle('active', p.id==='tab-'+tab);
   });
-  if(tab==='ops') loadOps();
+  if(tab==='ops' || tab==='ops-crew'){
+    // Both boards are filled by ONE cycle, so moving between them never refetches
+    // (design §3.3). Arriving from any other tab, or re-entering the same board,
+    // reloads as before.
+    const sibling = (prev==='ops' || prev==='ops-crew') && prev !== tab;
+    if(!sibling) loadOps();
+  }
   if(tab==='performance') loadPerformance();
   if(tab==='induction-checker' && !_indData) loadInductions();
   if(tab==='import'){ loadImportHistory(); initManualBooking(); }
@@ -21601,6 +21627,7 @@ const PALETTE_ALIASES = {
   'all-bookings':      ['bookings'],
   'administration':    ['admin', 'settings', 'manage'],
   'ops':               ['today', 'home', 'landing', 'ops'],
+  'ops-crew':          ['crew metrics', 'crew dashboard', 'red zone', 'shadowlands', 'probation'],
   'my-status':         ['me', 'my shifts'],
   'docs':              ['help', 'guide', 'guides', 'manual', 'documentation',
                        'patch notes', 'changelog', 'release notes'],
@@ -21618,7 +21645,7 @@ function buildPaletteIndex(){
   rows.push({key:'docs', group:''});        // nav destination, like My Status
   return rows.map(r=>{
     const btn = document.getElementById('tab-btn-' + r.key);
-    const label = btn ? btn.textContent.trim() : r.key;
+    const label = btn ? (btn.dataset.label || btn.textContent.trim()) : r.key;   // data-label: keeps tab counts out of the palette
     return {key:r.key, group:r.group, label, aliases:(PALETTE_ALIASES[r.key]||[])};
   });
 }
@@ -32262,27 +32289,31 @@ function toggleSchedBack(){
 // dims carry only strings, so no const is referenced before it exists.
 // `list` names the lane's row-list renderer; it is called ONLY by the detail
 // window (opsSyncDetail) — the card itself draws graphics only.
+// `board` says which Today dashboard the card sits on ('calls' = Bookings &
+// Calls, 'crew' = Crew Metrics; see OPS_BOARDS). Array order is STILL the load
+// order for both boards — never reorder to group by board. `inTabCount:false`
+// keeps a lane's badge out of its sub-tab count (DESIGN-ops-two-dashboards D5).
 const OPS_LANES = [
-  { key:'confirmations', label:'Confirmations to chase',
+  { key:'confirmations', board:'calls', label:'Confirmations to chase',
     load: loadOpsOffers, render: renderOpsOffers, list: renderOpsList, dims:['lead','delivery'] },
   // 'day' is a dimension with no donut: the calendar view sets it when a date is
   // clicked. Declaring it here is what makes the chips bar, the window subhead
   // and the clear-on-close in closeOpsDetail handle it without naming it.
-  { key:'calls_to_fill', label:'Calls to fill',
+  { key:'calls_to_fill', board:'calls', label:'Calls to fill',
     load: loadOpsCalls, render: renderOpsCalls, list: renderOpsCallsList, dims:['fill','lead','day'] },
   // Crew lists to send (DESIGN-crewlist-sent-v0_2 §8). Admin only: a row's main
   // action is Create Crew Lists, which only admins can mark (D9). Rows open the
   // call dialog through the default opsRowTarget, so no `target`.
-  { key:'crewlists', label:'Crew lists to send',
+  { key:'crewlists', board:'calls', label:'Crew lists to send',
     cohorts:['admin'],
     load: loadOpsCrewlists, render: renderOpsCrewlists, list: renderOpsCrewlistsList,
     dims:['due','why'] },
-  { key:'acks', label:'Acknowledgements outstanding',
+  { key:'acks', board:'calls', label:'Acknowledgements outstanding',
     load: loadOpsAcks, render: renderOpsAcks, list: renderOpsAcksList, dims:['kind','lead'] },
   // The backward-looking lane, sitting with the other work queues rather than
   // with the induction pair. `target` overrides the drill-down destination: this
   // row opens the times grid, not the call dialog (addendum 1, Q42).
-  { key:'times_outstanding', label:'Times outstanding',
+  { key:'times_outstanding', board:'calls', label:'Times outstanding',
     load: loadOpsTimes, render: renderOpsTimes, list: renderOpsTimesList,
     target: opsTimesTarget, dims:['status','age'] },
 
@@ -32303,25 +32334,25 @@ const OPS_LANES = [
   // mode=incidents, behind the same READ_ALL_COHORTS gate as the rest of the
   // lane. No new destination and no widened gate, so the screen cannot behave
   // differently for two people looking at it together.
-  { key:'red_zone', label:'Crew Reliability Red Zone',
+  { key:'red_zone', board:'crew', inTabCount:false, label:'Crew Reliability Red Zone',
     load: loadOpsRedZone, render: renderOpsRedZone, list: renderOpsRedZoneList,
     dims:['profile','band'] },
   // Lanes A and B share ONE fetch (source:'induction'): both blocks come back in
   // a single response, so declaring a source instead of a load lets loadOps fetch
   // once and render both. Load order A-before-B is preserved by array order.
-  { key:'bookings_at_risk', label:'Bookings at risk', source:'induction',
+  { key:'bookings_at_risk', board:'calls', label:'Bookings at risk', source:'induction',
     render: renderOpsAtRisk, list: renderOpsAtRiskList, dims:['risk','lead'] },
-  { key:'inductions_expiring', label:'Inductions expiring', source:'induction',
+  { key:'inductions_expiring', board:'crew', label:'Inductions expiring', source:'induction',
     render: renderOpsExpiring, list: renderOpsExpiringList, dims:['lead','venue'] },
   // Last in the array deliberately: this is the only lane that makes TWO
   // SmartStaff calls (the active roster, then the confirmed shifts), so the six
   // ahead of it fill first. The frame is progressive — nothing waits on it.
-  { key:'push_gaps', label:'Shadowlands',
+  { key:'push_gaps', board:'crew', label:'Shadowlands',
     load: loadOpsPush, render: renderOpsPush, list: renderOpsPushList, dims:['lead','exposure','reason'] },
   // Probation — 144 hours (BRIEF-crew-hours-probation §6). Admin only: a row
   // opens the crew record, which is admin-only. Before Recruitment, which stays
   // last; this lane is normally a saved-result file read (see its loader).
-  { key:'probation', label:'Probation — 144 hours',
+  { key:'probation', board:'crew', label:'Probation — 144 hours',
     cohorts:['admin'],
     load: loadOpsProbation, render: renderOpsProbation, list: renderOpsProbationList,
     target: opsProbationTarget, dims:['group'] },
@@ -32334,7 +32365,7 @@ const OPS_LANES = [
   //             (not an error card). Lanes without `cohorts` are unchanged.
   //   open    — what a head click does instead of opsOpenDetail. This lane has no
   //             detail window: the work happens in the Recruitment tab.
-  { key:'recruit_waiting', label:'Recruitment — waiting on us',
+  { key:'recruit_waiting', board:'crew', label:'Recruitment — waiting on us',
     cohorts:['admin','operations'],
     load: loadOpsRecruitWaiting, render: renderOpsRecruitWaiting,
     open: opsOpenRecruitWaiting, dims:['action','wait'] }
@@ -32363,6 +32394,24 @@ function opsLaneHeadClick(key){
 // so two lanes declaring the same source trigger exactly ONE fetch. loadOps
 // clears this once per cycle when force=true, so a Refresh refetches once (the
 // first source lane triggers it, the second reuses the same promise).
+// The two Today dashboards (DESIGN-ops-two-dashboards-v0_2). Each board is a
+// tab key, the lane grid its cards are built into, and its sub-tab count pill.
+const OPS_BOARDS = {
+  calls: { tab:'ops',      wrap:'ops-lanes',      count:'ops-tabcount-calls' },
+  crew:  { tab:'ops-crew', wrap:'ops-lanes-crew', count:'ops-tabcount-crew' }
+};
+// Hide a board's sub-tab when the viewer's cohort can see none of its lanes, so
+// a future lane gate can never leave an empty dashboard. Runs at startup BEFORE
+// applyGroupVisibility, which then reads the result.
+function opsApplyBoardVisibility(){
+  Object.keys(OPS_BOARDS).forEach(function(b){
+    const btn = document.getElementById('tab-btn-' + OPS_BOARDS[b].tab);
+    if(!btn) return;
+    const any = OPS_LANES.some(function(l){ return l.board === b && opsLaneVisible(l); });
+    if(!any) btn.style.display = 'none';
+  });
+}
+
 const OPS_SOURCES = { induction: { url:'/api/ops/induction-exceptions' } };
 const _opsSourceCache = {};
 function opsFetchSource(name){
@@ -32588,6 +32637,10 @@ async function loadOps(force){
 
 async function loadOpsCycle(force){
   renderOpsFrame();
+  // Mark every lane loading up front so both sub-tab counts read '…' until their
+  // own lanes resolve (status is otherwise only set as each lane is reached).
+  OPS_LANES.forEach(function(l){ if(_opsLaneState[l.key]) _opsLaneState[l.key].status = 'loading'; });
+  opsUpdateTabCounts();
   setOpsAsAt(null);                 // stamp the moment we asked; server time overwrites on resolve
   // One cache clear per cycle so a forced Refresh refetches each shared source
   // exactly once (not once per lane that reads it).
@@ -32631,15 +32684,13 @@ async function loadOpsCycle(force){
       st.error  = (e && e.message) || 'load failed';
       renderOpsUnavailable(lane);         // isolate: this lane failed, the next still runs
     }
+    opsUpdateTabCounts();   // status changes don't always touch the badge text
   }
+  opsUpdateTabCounts();
 }
 
 // Build the lane shells once; refreshes reuse them and just reset each body.
-function renderOpsFrame(){
-  const wrap = document.getElementById('ops-lanes');
-  if(!wrap) return;
-  if(wrap.dataset.built === '1') return;
-  wrap.innerHTML = OPS_LANES.map(function(lane){
+function opsLaneShellHtml(lane){
     return ''
       + '<div class="ops-lane" id="ops-lane-'+lane.key+'">'
       +   '<div class="ops-lane-head" onclick="opsLaneHeadClick(\''+lane.key+'\')"'
@@ -32652,8 +32703,61 @@ function renderOpsFrame(){
       +     '<div class="ops-lane-status">Loading…</div>'
       +   '</div>'
       + '</div>';
-  }).join('');
-  wrap.dataset.built = '1';
+}
+
+// Build each board's lane shells once, into that board's grid; refreshes reuse
+// them and just reset each body. Renderers address cards by id, never by grid,
+// so which board a card sits on is invisible to them.
+function renderOpsFrame(){
+  Object.keys(OPS_BOARDS).forEach(function(b){
+    const wrap = document.getElementById(OPS_BOARDS[b].wrap);
+    if(!wrap || wrap.dataset.built === '1') return;
+    wrap.innerHTML = OPS_LANES.filter(function(l){ return l.board === b; })
+                              .map(opsLaneShellHtml).join('');
+    wrap.dataset.built = '1';
+    opsObserveBadges(wrap);
+  });
+}
+
+// Sub-tab counts (design §3.4): the sum of a board's tile badges, '…' while any
+// of them is still loading, empty at zero. Lanes hidden for this cohort (or by a
+// 403), unavailable lanes and inTabCount:false lanes are left out.
+function opsUpdateTabCounts(){
+  Object.keys(OPS_BOARDS).forEach(function(b){
+    const out = document.getElementById(OPS_BOARDS[b].count);
+    if(!out) return;
+    let loading = false, sum = 0;
+    OPS_LANES.forEach(function(l){
+      if(l.board !== b || l.inTabCount === false || !opsLaneVisible(l)) return;
+      const card = document.getElementById('ops-lane-' + l.key);
+      if(card && card.style.display === 'none') return;
+      const st = _opsLaneState[l.key];
+      if(!st || st.status === 'loading'){ loading = true; return; }
+      if(st.status !== 'ready') return;
+      const badge = document.getElementById('ops-badge-' + l.key);
+      const n = parseInt(badge ? badge.textContent : '', 10);
+      if(!isNaN(n)) sum += n;
+    });
+    const txt = loading ? '…' : (sum > 0 ? String(sum) : '');
+    if(out.textContent !== txt) out.textContent = txt;
+  });
+}
+// Follow badge changes made outside a load cycle (a crew list marked sent, an
+// acknowledgement cleared) without touching any renderer. rAF-debounced.
+let _opsTabCountRaf = 0;
+function opsQueueTabCounts(){
+  if(_opsTabCountRaf) return;
+  _opsTabCountRaf = requestAnimationFrame(function(){ _opsTabCountRaf = 0; opsUpdateTabCounts(); });
+}
+function opsObserveBadges(wrap){
+  if(typeof MutationObserver === 'undefined') return;
+  new MutationObserver(function(muts){
+    for(let i = 0; i < muts.length; i++){
+      let n = muts[i].target;
+      if(n && n.nodeType !== 1) n = n.parentNode;
+      if(n && n.closest && n.closest('.ops-lane-badge')){ opsQueueTabCounts(); return; }
+    }
+  }).observe(wrap, { childList:true, characterData:true, subtree:true });
 }
 
 function setOpsLaneLoading(lane){
@@ -32666,8 +32770,8 @@ function setOpsLaneLoading(lane){
 }
 
 function setOpsAsAt(iso){
-  const el = document.getElementById('ops-asat');
-  if(!el) return;
+  const els = document.querySelectorAll('.ops-asat');   // one stamp per board, always in step
+  if(!els.length) return;
   let hhmm;
   if(iso && typeof iso === 'string' && iso.indexOf('T') > 0 && iso.length >= 16){
     hhmm = iso.slice(11, 16);            // server snapshot (Melbourne) — the truthful "as at"
@@ -32675,7 +32779,7 @@ function setOpsAsAt(iso){
     const n = new Date();
     hhmm = String(n.getHours()).padStart(2,'0') + ':' + String(n.getMinutes()).padStart(2,'0');
   }
-  el.textContent = 'as at ' + hhmm;
+  els.forEach(function(el){ el.textContent = 'as at ' + hhmm; });
 }
 
 // Loading, empty and unavailable lanes have nothing to reveal: caret hidden,
