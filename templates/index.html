@@ -1112,6 +1112,7 @@ body.cohort-readonly #unavail-add-section{display:none}
    unreachable. Override both for this tab only. */
 #tab-administration{overflow-y:auto;flex-direction:column}
 #tab-administration .admin-hub{max-width:880px;margin:0 auto;padding:26px 22px 40px}
+#tab-invoicing .admin-hub,#tab-payroll .admin-hub,#tab-accounting-dashboard .admin-hub{max-width:880px;margin:0 auto;padding:26px 22px 40px}
 .admin-hub-head{margin-bottom:8px}
 .admin-hub-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
 .admin-hub-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin-top:6px;max-width:560px}
@@ -1987,6 +1988,9 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   <button class="tab-grp" id="tab-grp-crew"        onclick="switchGroup('crew')">👥 Crew</button>
   <button class="tab-grp" id="tab-grp-recruitment" onclick="switchGroup('recruitment')">🧑‍💼 Recruitment</button>
   <button class="tab-grp" id="tab-grp-admin"       onclick="switchGroup('admin')">⚙️ Admin</button>
+  <!-- Accounting: hidden in the markup, revealed by loadWhoami only when
+       whoami.accounting is true (ACCOUNTING_USERS in app.py). Fails closed. -->
+  <button class="tab-grp" id="tab-grp-accounting"  onclick="switchGroup('accounting')" style="display:none">💰 Accounting</button>
   <button class="tab-grp" id="btn-tab-popout" style="margin-left:auto"
           title="Open the current tab in a new window"
           onclick="popOutCurrentTab()">⧉ New window</button>
@@ -2020,6 +2024,11 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   </div>
   <div class="subtab-group" id="subtab-admin">
     <button class="tab-btn" id="tab-btn-administration" onclick="switchTab('administration')">Administration</button>
+  </div>
+  <div class="subtab-group" id="subtab-accounting">
+    <button class="tab-btn" id="tab-btn-invoicing"            onclick="switchTab('invoicing')"            style="display:none">Invoicing</button>
+    <button class="tab-btn" id="tab-btn-payroll"              onclick="switchTab('payroll')"              style="display:none">Payroll</button>
+    <button class="tab-btn" id="tab-btn-accounting-dashboard" onclick="switchTab('accounting-dashboard')" style="display:none">Dashboard</button>
   </div>
 </div>
 <div class="main">
@@ -2909,6 +2918,34 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
     </div>
   </div>
 
+  <!-- ── ACCOUNTING (Mike only for now — ACCOUNTING_USERS) ── -->
+  <!-- Placeholders. Contents are built over the coming weeks; each will need
+       its own server-side gate, not just this tab's visibility. -->
+  <div class="tab-panel" id="tab-invoicing">
+    <div class="admin-hub">
+      <div class="admin-hub-head">
+        <div class="admin-hub-title">Invoicing</div>
+        <div class="admin-hub-sub">Coming soon.</div>
+      </div>
+    </div>
+  </div>
+  <div class="tab-panel" id="tab-payroll">
+    <div class="admin-hub">
+      <div class="admin-hub-head">
+        <div class="admin-hub-title">Payroll</div>
+        <div class="admin-hub-sub">Coming soon.</div>
+      </div>
+    </div>
+  </div>
+  <div class="tab-panel" id="tab-accounting-dashboard">
+    <div class="admin-hub">
+      <div class="admin-hub-head">
+        <div class="admin-hub-title">Accounting Dashboard</div>
+        <div class="admin-hub-sub">Coming soon.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── ADMINISTRATION (admin-only hub) ── -->
   <div class="tab-panel" id="tab-administration">
     <div class="admin-hub">
@@ -3166,6 +3203,15 @@ async function loadWhoami(){
     window._ssBase = d.ss_base || window._ssBase;
     window._identity = d;
     applyCohort(d);
+    // Accounting children ship hidden; reveal them only on an explicit true.
+    // applyGroupVisibility() (run after this resolves) then shows the group
+    // button because it now has visible children. Anything else — missing
+    // field, older server, fetch failure — leaves it hidden.
+    if(d.accounting === true){
+      ['invoicing','payroll','accounting-dashboard'].forEach(function(k){
+        const b = document.getElementById('tab-btn-' + k); if(b) b.style.display = '';
+      });
+    }
     // Named greeting for Monty, Rich or Joe; otherwise the shared clips for any
     // other admin, on the first whoami after a real login only (Mike, 5 Nov 2026).
     if(d.greeting) goatGreetOnLogin(d.greeting);
@@ -6884,6 +6930,7 @@ const TAB_GROUPS = {
   crew:        ['forecast', 'induction-checker', 'crew-records'],
   recruitment: ['recruitment', 'recruitment-dashboard', 'recruitment-sessions'],
   admin:       ['administration'],
+  accounting:  ['invoicing', 'payroll', 'accounting-dashboard'],
 };
 
 let _activeTab = 'schedule';   // set by switchTab; the source of truth for pop-out
@@ -21838,6 +21885,7 @@ document.addEventListener('keydown', function(e){
 const PALETTE_GROUP_LABELS = {
   today: '⚡ Today', bookings: '📅 Bookings', crew: '👥 Crew',
   recruitment: '🧑‍💼 Recruitment', admin: '⚙️ Admin',
+  accounting: '💰 Accounting',
 };
 // Aliases: the labels are not what people say. Both spellings of "utilisation"
 // are required — the tab is labelled the US way, Rich and Monty type the AU way.
@@ -21853,6 +21901,9 @@ const PALETTE_ALIASES = {
   'ops':               ['today', 'home', 'landing', 'ops'],
   'ops-crew':          ['crew metrics', 'crew dashboard', 'red zone', 'shadowlands', 'probation'],
   'my-status':         ['me', 'my shifts'],
+  'invoicing':         ['accounting', 'invoices', 'billing'],
+  'payroll':           ['accounting', 'pay run', 'pay'],
+  'accounting-dashboard': ['accounting', 'finance'],
   'docs':              ['help', 'guide', 'guides', 'manual', 'documentation',
                        'patch notes', 'changelog', 'release notes'],
 };

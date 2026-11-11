@@ -767,6 +767,34 @@ def current_checkin_switcher_id():
         return None
     return uid if uid in CHECKIN_PILOT_SWITCHERS else None
 
+# ─── ACCOUNTING TAB (Invoicing · Payroll · Dashboard) ─────────────────────────
+# A new top-level group, visible to one person while its contents are built
+# (Mike, 11 Nov 2026). Keyed on SmartStaff userID for exactly the reasons set out
+# at CHECKIN_PILOT_SWITCHERS above: admin accounts return ein "0", and the id
+# that counts is the account the operator SIGNS IN WITH. 10261 is Mike's admin
+# login; his crew record (9734) is deliberately absent.
+#
+# Elevating with a SHARED admin account replaces the session identity, so the
+# tab disappears while elevated that way — expected, not a bug.
+#
+# Today this only drives whoami.accounting (the tab's visibility). Every
+# /api/accounting/* route added later MUST also refuse unless
+# current_accounting_user_id() is not None — hiding a tab is not access control.
+ACCOUNTING_USERS = {10261}
+
+def current_accounting_user_id():
+    """The session's SmartStaff userID if it may see Accounting, else None.
+    Same defensive coercion as current_checkin_switcher_id()."""
+    ident = current_identity() or {}
+    raw = ident.get("user_id")
+    if raw in (None, "", 0, "0"):
+        return None
+    try:
+        uid = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return uid if uid in ACCOUNTING_USERS else None
+
 # ─── BOOKING RATE CARD (C7–C9) ────────────────────────────────────────────────
 # Each booking's two answers — MOPT? and, when MOPT, a mandatory Australian Open
 # Yes / No — live in THE GOAT's Supabase (booking_rate_card), reached only
@@ -17480,6 +17508,8 @@ def api_whoami():
         "cohort":      ident.get("cohort", "crew"),
         "can_elevate": bool(ident.get("can_elevate", False)),
         "elevated":    session.get("sid") in _pre_elevation,
+        # Accounting group visibility (ACCOUNTING_USERS). Visibility only.
+        "accounting":  current_accounting_user_id() is not None,
         "ss_base":     BASE_URL,
         # Opaque per-person id for UI preferences. Safe to expose: a one-way
         # digest, no name or username in it, and it grants nothing on its own.
