@@ -1,6 +1,6 @@
 {
-  "version": "5.101.0",
+  "version": "5.101.1",
   "release_date": "2026-11-11",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.101.0/TheGOAT.dmg",
-  "release_notes": "Hovering a crew member's name on Records and the Inductions grid now shows the first-aid and fork-and-knife icons when they have emergency information or dietary requirements."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.101.1/TheGOAT.dmg",
+  "release_notes": "The tabs on a crew record are reordered so Calls comes straight after Details, followed by Inductions and the rest as before."
 }
