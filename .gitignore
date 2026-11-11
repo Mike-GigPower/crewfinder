@@ -53,3 +53,10 @@ fixtures/
 tests/fixtures/*
 !tests/fixtures/plan_golden/
 import_log.json
+
+# Booking figures test fixtures — a LITERAL get-booking-figures.php response
+# for booking #12220: real customer money (invoiced, crew pay, margin) and real
+# SmartStaff user IDs. This repo is PUBLIC. Same reasoning as fixtures/ above:
+# the tests skipUnless the file is present, so it lives on the build machine
+# and the Air and is never committed.
+test_fixtures/
