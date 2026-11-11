@@ -61,6 +61,7 @@ import docs_source
 import public_holidays
 import pricing_rules
 import call_types
+import invoice_expect
 import name_match
 import drive_contracts
 import accred_names
@@ -183,7 +184,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.101.1"
+APP_VERSION    = "5.102.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -21191,6 +21192,413 @@ def api_booking_crew_notes(booking_id):
     if not isinstance(notes, list):
         return jsonify({"error": "Crew notes service error"}), 502
     return jsonify({"notes": notes})
+
+
+# ─── BOOKING DOCUMENTS & FIGURES ──────────────────────────────────────────────
+# BRIEF-booking-documents-figures.md §6 (v0.2).
+#
+# Documents proxies the goat-booking-docs edge function server-side, with
+# GOAT_BOOKING_DOCS_KEY in the X-Goat-Service-Key header. The key stays in
+# Python; index.html never sees it.
+#
+# THE DECORATOR IS THE ACCESS CONTROL. Hiding a button is not. Documents is
+# readable by READ_ALL_COHORTS and changed by Admins only; Figures is Admin
+# throughout, to view as well as to change, because it is money.
+#
+# IDENTITY: every user_id sent upstream comes from current_user_id() — the
+# session's SmartStaff userID, server-side. It is never read from the browser.
+
+GOAT_BOOKING_DOCS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/goat-booking-docs"
+# Its own secret, revocable alone — the same reasoning as GOAT_CREW_NOTES_KEY.
+GOAT_BOOKING_DOCS_KEY = (os.environ.get("GOAT_BOOKING_DOCS_KEY", "")
+                         or load_config().get("goat_booking_docs_key", ""))
+
+BOOKING_DOC_MAX_BYTES = 20 * 1024 * 1024          # Q4, and the bucket's own limit
+BOOKING_DOC_CATEGORIES = ("quote", "invoice", "requirements",
+                          "special_conditions", "site_info", "other")
+
+# extension -> (mime, magic prefixes). The magic bytes are checked as well as
+# the extension, so a .exe renamed .pdf is refused before anything is stored
+# (§12 test 7). docx and xlsx are zip containers, hence PK\x03\x04.
+BOOKING_DOC_TYPES = {
+    "pdf":  ("application/pdf", (b"%PDF",)),
+    "jpg":  ("image/jpeg", (b"\xff\xd8\xff",)),
+    "jpeg": ("image/jpeg", (b"\xff\xd8\xff",)),
+    "png":  ("image/png", (b"\x89PNG\r\n\x1a\n",)),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+             (b"PK\x03\x04",)),
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+             (b"PK\x03\x04",)),
+}
+
+
+def _booking_docs_call(mode, payload, timeout=20):
+    """One POST to goat-booking-docs. Returns (data, error, status).
+
+    A missing key is said plainly (the 5.78.0 rule): nothing left this machine,
+    so the service's own logs would show nothing wrong. The function's own
+    error text is passed through when it sends one, because it is written for
+    an operator to read — the 409 on a frozen quote is the example that matters.
+    """
+    if not GOAT_BOOKING_DOCS_KEY:
+        return None, "no booking documents key on this machine", 500
+    body = dict(payload)
+    body["mode"] = mode
+    try:
+        r = http.post(GOAT_BOOKING_DOCS_URL, json=body,
+                      headers={"X-Goat-Service-Key": GOAT_BOOKING_DOCS_KEY},
+                      timeout=timeout)
+    except Exception as e:
+        print(f"[booking-docs] {mode} request failed: {e}")
+        return None, "Booking documents service error", 502
+    try:
+        data = r.json()
+    except Exception:
+        print(f"[booking-docs] {mode} returned non-JSON, HTTP {r.status_code}")
+        return None, "Booking documents service error", 502
+    if r.status_code != 200:
+        msg = (data or {}).get("error") or "Booking documents service error"
+        # 409 and 400 are the function telling us something true about the
+        # request; anything else is reported as an upstream failure.
+        status = r.status_code if r.status_code in (400, 404, 409) else 502
+        return None, msg, status
+    return data, None, 200
+
+
+@app.route("/api/booking/<booking_id>/documents", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_documents(booking_id):
+    """The booking's live documents, plus its quote row.
+
+    NON-ADMINS GET THE QUOTE'S NUMBER AND SOURCE, NEVER ITS MONEY (§6). That
+    is what lets the Documents tab show the Estimator quote row to everyone who
+    can open the booking while Figures stays Admin-only.
+    """
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+
+    data, err, status = _booking_docs_call("list", {"booking_id": bid})
+    if err:
+        return jsonify({"error": err}), status
+    documents = data.get("documents")
+    if not isinstance(documents, list):
+        return jsonify({"error": "Booking documents service error"}), 502
+
+    # "Added by" for the signed-in user's own rows. Resolved HERE rather than
+    # in the browser because the SmartStaff userID is server-side identity and
+    # /api/whoami deliberately does not carry it — widening that to put a name
+    # on a row would be the wrong trade. Anyone else's row stays a #id until
+    # there is a real name lookup to use.
+    me = current_user_id()
+    my_name = (current_identity() or {}).get("name") or ""
+    if me is not None and my_name:
+        for doc in documents:
+            if doc.get("added_by_user_id") == me:
+                doc["added_by_name"] = my_name
+
+    quote, qerr, _ = _booking_docs_call("quote_get", {"booking_id": bid})
+    # A failed quote read must not take the document list down with it: the tab
+    # shows its own red line for the quote and still lists the documents.
+    quote_row = (quote or {}).get("quote") if not qerr else None
+
+    if quote_row and current_cohort() != "admin":
+        quote_row = {"source": quote_row.get("source"),
+                     "quote_number": quote_row.get("quote_number")}
+
+    out = {"documents": documents, "quote": quote_row}
+    if qerr:
+        out["quote_error"] = qerr
+    return jsonify(out)
+
+
+@app.route("/api/booking/<booking_id>/documents/link", methods=["POST"])
+@require_cohort("admin")
+def api_booking_documents_add_link(booking_id):
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "couldn't identify who is adding this "
+                                 "(no SmartStaff userID)"}), 400
+
+    body = request.get_json(silent=True) or {}
+    category = (body.get("category") or "").strip()
+    if category not in BOOKING_DOC_CATEGORIES:
+        return jsonify({"error": "Choose a category"}), 400
+    title = (body.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "Give it a title"}), 400
+    url = (body.get("url") or "").strip()
+    if not url.startswith("https://"):
+        return jsonify({"error": "The link must start with https://"}), 400
+
+    data, err, status = _booking_docs_call("add_link", {
+        "booking_id": bid, "category": category, "title": title,
+        "note": (body.get("note") or "").strip() or None,
+        "url": url, "user_id": uid,
+    })
+    if err:
+        return jsonify({"error": err}), status
+    return jsonify({"document": data.get("document")})
+
+
+@app.route("/api/booking/<booking_id>/documents/file", methods=["POST"])
+@require_cohort("admin")
+def api_booking_documents_add_file(booking_id):
+    """Multipart upload: check it here, get a signed URL, PUT it, record it.
+
+    THE BYTES ARE CHECKED BEFORE ANYTHING IS STORED — extension, magic bytes
+    and size. The bucket enforces type and size again server-side, so this is
+    the first of three gates, not the only one.
+    """
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "couldn't identify who is adding this "
+                                 "(no SmartStaff userID)"}), 400
+
+    f = request.files.get("file")
+    if f is None or not (f.filename or "").strip():
+        return jsonify({"error": "Choose a file"}), 400
+    category = (request.form.get("category") or "").strip()
+    if category not in BOOKING_DOC_CATEGORIES:
+        return jsonify({"error": "Choose a category"}), 400
+
+    filename = os.path.basename((f.filename or "").strip())
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in BOOKING_DOC_TYPES:
+        return jsonify({"error": "File type not allowed. PDF, JPEG, PNG, "
+                                 "DOCX or XLSX only."}), 400
+    mime, magics = BOOKING_DOC_TYPES[ext]
+
+    blob = f.read()
+    if not blob:
+        return jsonify({"error": "That file is empty"}), 400
+    if len(blob) > BOOKING_DOC_MAX_BYTES:
+        return jsonify({"error": "That file is larger than 20 MB"}), 400
+    if not any(blob.startswith(m) for m in magics):
+        # The one that catches a renamed executable.
+        return jsonify({"error": f"That file isn't really a .{ext}"}), 400
+
+    title = (request.form.get("title") or "").strip() or filename.rsplit(".", 1)[0]
+
+    signed, err, status = _booking_docs_call("upload_url", {
+        "booking_id": bid, "filename": filename, "mime_type": mime,
+        "size_bytes": len(blob), "user_id": uid,
+    })
+    if err:
+        return jsonify({"error": err}), status
+    upload_url = (signed or {}).get("upload_url")
+    path = (signed or {}).get("path")
+    if not upload_url or not path:
+        return jsonify({"error": "Booking documents service error"}), 502
+
+    try:
+        put = http.put(upload_url, data=blob,
+                       headers={"Content-Type": mime}, timeout=120)
+    except Exception as e:
+        print(f"[booking-docs] upload PUT failed: {e}")
+        return jsonify({"error": "The upload didn't finish. Nothing was saved."}), 502
+    if put.status_code not in (200, 201):
+        print(f"[booking-docs] upload PUT returned {put.status_code}")
+        return jsonify({"error": "The upload didn't finish. Nothing was saved."}), 502
+
+    data, err, status = _booking_docs_call("add_file", {
+        "booking_id": bid, "category": category, "title": title,
+        "note": (request.form.get("note") or "").strip() or None,
+        "path": path, "mime_type": mime, "size_bytes": len(blob), "user_id": uid,
+    })
+    if err:
+        # SAID PLAINLY (§6): the object is uploaded but no row points at it.
+        # It is orphaned, not lost, and nothing was destroyed to tell them so.
+        print(f"[booking-docs] add_file failed after upload, orphan at {path}")
+        return jsonify({"error": "The file uploaded but couldn't be recorded. "
+                                 "It is not lost — tell Mike the booking number "
+                                 "and try again."}), status
+    return jsonify({"document": data.get("document")})
+
+
+@app.route("/api/booking/<booking_id>/documents/<doc_id>/open", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_documents_open(booking_id, doc_id):
+    """A 300-second signed download URL. The browser window.opens it."""
+    if _checkin_booking_id(booking_id) is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    data, err, status = _booking_docs_call("sign", {"document_id": doc_id})
+    if err:
+        return jsonify({"error": err}), status
+    return jsonify({"url": data.get("url")})
+
+
+@app.route("/api/booking/<booking_id>/documents/<doc_id>/remove", methods=["POST"])
+@require_cohort("admin")
+def api_booking_documents_remove(booking_id, doc_id):
+    """Soft delete (Q6): the row is hidden, the file is kept."""
+    if _checkin_booking_id(booking_id) is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "couldn't identify who is removing this "
+                                 "(no SmartStaff userID)"}), 400
+    data, err, status = _booking_docs_call("remove", {"document_id": doc_id,
+                                                      "user_id": uid})
+    if err:
+        return jsonify({"error": err}), status
+    return jsonify({"ok": True})
+
+
+@app.route("/api/booking/<booking_id>/quote", methods=["POST"])
+@require_cohort("admin")
+def api_booking_quote_set(booking_id):
+    """Set the Quoted figure by hand. Refused on an Estimator-imported row."""
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "couldn't identify who is setting this "
+                                 "(no SmartStaff userID)"}), 400
+
+    body = request.get_json(silent=True) or {}
+    raw = body.get("total_ex_gst")
+    try:
+        total = float(str(raw).strip().replace(",", "").lstrip("$"))
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({"error": "Enter an amount of $0 or more"}), 400
+    if not (total >= 0):
+        return jsonify({"error": "Enter an amount of $0 or more"}), 400
+
+    data, err, status = _booking_docs_call("quote_set", {
+        "booking_id": bid, "total_ex_gst": round(total, 2), "user_id": uid,
+    })
+    if err:
+        if status == 409:
+            return jsonify({"error": "This booking's quote came from the "
+                                     "Estimator and can't be overwritten"}), 409
+        return jsonify({"error": err}), status
+    return jsonify({"quote": data.get("quote")})
+
+
+@app.route("/api/booking/<booking_id>/figures", methods=["GET"])
+@require_cohort("admin")
+def api_booking_figures(booking_id):
+    """Everything the Figures tab shows. Admin only — this is money.
+
+    EVERY PIECE FAILS ON ITS OWN (§7.3). SmartStaff, the rules, the rate card
+    and the quote are fetched separately and each failure becomes its own named
+    error in the payload while the rest still renders. Nothing is ever reported
+    as $0 because a fetch failed: missing is missing, with a reason.
+    """
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+
+    out = {"booking_id": bid, "errors": {}}
+
+    # 1. SmartStaff. Without this there is no tab, so it is the one hard error.
+    ss = get_ss_session()
+    if ss is None:
+        return jsonify({"error": "Not signed in to SmartStaff"}), 401
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/get-booking-figures.php",
+                      params={"id": bid}, allow_redirects=True, timeout=60)
+    except Exception as e:
+        print(f"[booking-figures] request failed: {e}")
+        return jsonify({"error": "SmartStaff financials unavailable"}), 502
+    if resp.status_code == 403:
+        return jsonify({"error": "Admin only"}), 403
+    if resp.status_code != 200:
+        print(f"[booking-figures] get-booking-figures.php returned {resp.status_code}")
+        return jsonify({"error": "SmartStaff financials unavailable"}), 502
+    try:
+        figures = json.loads(resp.text or "{}")
+    except Exception as e:
+        print(f"[booking-figures] bad JSON: {e}")
+        return jsonify({"error": "SmartStaff financials unavailable"}), 502
+    if isinstance(figures, dict) and figures.get("error"):
+        return jsonify({"error": figures["error"]}), 502
+
+    out["figures"] = figures
+
+    # 2. The booking's card.
+    set_code, rc_err = booking_set_code(bid)
+    if rc_err:
+        msg, _ = rate_card_read_failure(rc_err)
+        out["errors"]["rate_card"] = msg
+        set_code = None
+
+    # 3. The rules.
+    rules, meta = pricing_rules.load_rules()
+    if not rules:
+        out["errors"]["rules"] = "rules unavailable"
+
+    # 4. Expected invoice. Only with both a card and the rules — never a stale
+    #    guess (§5.1).
+    if rules and set_code:
+        try:
+            out["expected"] = invoice_expect.expected_for_booking(
+                figures, rules, set_code)
+        except Exception as e:
+            print(f"[booking-figures] expected failed: {e}")
+            out["errors"]["expected"] = "Expected invoice couldn't be worked out"
+    else:
+        out["expected"] = None
+
+    out["set_code"] = set_code
+    out["rules_as_of"] = (meta or {}).get("last_changed")
+    out["rules_label"] = pricing_rules.SET_LABELS.get(set_code, "Standard")
+
+    # §7.5's amber note, the same one the Details tab's rate-card block shows:
+    # the booking's card and the customer's listed card disagree. #11770 is
+    # "MOPT OPS" and priced as Standard, which is exactly what this is for —
+    # the figure is not wrong, but it was worked out on a card the customer may
+    # not be on, and the header should say so rather than let it pass.
+    # customer_id comes from the dialog, as the rate-card route takes it.
+    try:
+        out["customer_note"] = rate_card_customer_note(
+            set_code, request.args.get("customer_id"), rules)
+    except Exception as e:
+        print(f"[booking-figures] customer note failed: {e}")
+        out["customer_note"] = None
+
+    # 5. Call types, for the hours-by-call-type table.
+    try:
+        stored, ct_err = fetch_call_types(booking_ids=[bid])
+    except Exception as e:
+        print(f"[booking-figures] call types failed: {e}")
+        stored, ct_err = None, "call types unavailable"
+    if ct_err:
+        out["errors"]["call_types"] = "Call types unavailable"
+    types = {}
+    if rules and set_code:
+        rows = (stored or {}).get(int(bid)) if isinstance(stored, dict) else None
+        by_call = {}
+        for r in (rows or []):
+            cid = call_types.as_call_id(r.get("call_id"))
+            if cid is not None:
+                by_call[cid] = r
+        for call in (figures.get("calls") or []):
+            cid = int(call["call_id"])
+            try:
+                types[str(cid)] = call_types.effective_call_type(
+                    call.get("call_name"), set_code, rules, by_call.get(cid))
+            except Exception:
+                types[str(cid)] = {"role": None, "source": None, "status": "not_set"}
+    out["call_types"] = types
+
+    # 6. The quote. Its own line if it fails.
+    quote, q_err, _ = _booking_docs_call("quote_get", {"booking_id": bid})
+    if q_err:
+        out["errors"]["quote"] = q_err
+        out["quote"] = None
+    else:
+        out["quote"] = (quote or {}).get("quote")
+
+    return jsonify(out)
 
 
 # ─── LIVE CHECK-IN PILOT MODE (booking dialog switch) ─────────────────────────
