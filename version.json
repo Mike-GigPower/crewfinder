@@ -1,6 +1,6 @@
 {
-  "version": "5.100.0",
-  "release_date": "2026-11-10",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.100.0/TheGOAT.dmg",
-  "release_notes": "Crew records have a new Dietary tab, with a fork-and-knife icon on the crew record and in Booked Crew, and crew lists now print dietary requirements with a count per call."
+  "version": "5.101.0",
+  "release_date": "2026-11-11",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.101.0/TheGOAT.dmg",
+  "release_notes": "Hovering a crew member's name on Records and the Inductions grid now shows the first-aid and fork-and-knife icons when they have emergency information or dietary requirements."
 }
