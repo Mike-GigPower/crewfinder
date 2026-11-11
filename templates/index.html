@@ -30368,6 +30368,12 @@ function renderBookingDialog(bookingId, d, cached){
   var tab = bkIntentTab(bookingId, _pick.tab, d);
   if(tab === 'feeds' && !_hasModes) tab = 'calls';
   if(tab === 'bosses' && !(_hasModes && window._cohort === 'admin')) tab = 'calls';
+  // Same guard for Financials (A9: the tab id stays `figures`). entityTabsPick
+  // remembers the last tab per booking, so someone who viewed it as an Admin
+  // and comes back on a read-only cohort would otherwise select a tab that is
+  // not in the list. Documents needs no guard: every cohort that can open the
+  // dialog gets it.
+  if(tab === 'figures' && window._cohort !== 'admin') tab = 'calls';
   bkModeForTab(tab);   // the tab is the mode; the selection always starts clear
   var rows;
   if(d){
@@ -30409,8 +30415,29 @@ function renderBookingDialog(bookingId, d, cached){
     tabs.push({ id: 'feeds', label: 'Call feeds', html: tab === 'feeds' ? callsWrap : '' });
     if(window._cohort === 'admin') tabs.push({ id: 'bosses', label: 'Crew bosses', html: tab === 'bosses' ? callsWrap : '' });
   }
+  // A8 (§15): Documents and Financials are the LAST TWO tabs, after the two
+  // edit-mode ones. Mike's choice, and it deliberately sets aside 5.79.0's P8
+  // ("edit-mode tabs go last") for this dialog — so if P8 is ever reasserted
+  // elsewhere, this is the exception and not an oversight.
+  //
+  // Documents is for everyone who can open the booking; Financials is money,
+  // so Admin only. Both are VIEWS and both load on first show.
+  //
+  // A9: the LABEL is "Financials". The id stays `figures`, as do
+  // bk-figures-host, /api/booking/<id>/figures and every bkFigures* function —
+  // a rename behind the scenes would buy nothing and break the saved tab
+  // choice in entityTabsPick for anyone mid-booking.
+  tabs.push({ id: 'docs', label: 'Documents', count: null,
+              html: '<div id="bk-docs-host" data-booking="'+bookingId+'"></div>' });
+  if(window._cohort === 'admin')
+    tabs.push({ id: 'figures', label: 'Financials',
+                html: '<div id="bk-figures-host" data-booking="'+bookingId+'"></div>' });
   document.getElementById('entity-modal-body').innerHTML = entityTabs(_tabsKey, tabs, tab);
   window._entityTabOnShow = function(id, prev){
+    // The two 5.102.0 tabs load on FIRST show. They do not need `d`: both
+    // read from their own routes, so they still work on a cached booking.
+    if(id === 'docs')    bkDocsLoad(bookingId);
+    if(id === 'figures') bkFiguresLoad(bookingId);
     if(!d) return;   // the cached list has no modes, and bkCallsSection(null) would blank it
     if(BK_CALL_TABS[id]) bkShowCallsTab(bookingId, id);
     else if(BK_CALL_TABS[prev] && prev !== 'calls') bkShowCallsTab(bookingId, 'calls');   // leaving a mode is Done
@@ -39320,6 +39347,588 @@ function openCrewNotes(bookingId, callId){
 // ctx: {key, bookingId, callId (call dialog only), callIds, callOrder
 //       (booking dialog: [{id, name}] in the Calls tab's order)}
 var _crewNotes = null;   // {key, ctx, notes, error, loading, token}
+
+// ─── BOOKING DOCUMENTS & FIGURES TABS ─────────────────────────────────────────
+// BRIEF-booking-documents-figures.md §7 (v0.2).
+//
+// Both tabs are VIEWS (the 5.79.0 rule): the tab bar changes nothing, and the
+// Add / Remove controls live INSIDE the Documents tab, as on Crew bosses and
+// Call feeds. Both load on FIRST SHOW, not on every dialog open.
+//
+// Hiding a button is not access control — every route carries its own
+// @require_cohort. The cohort checks here only keep the UI honest.
+
+var BK_DOC_CATEGORIES = [
+  ['quote',              'Quote'],
+  ['invoice',            'Invoice'],
+  ['requirements',       'Requirements'],
+  ['special_conditions', 'Special conditions'],
+  ['site_info',          'Site / venue info'],
+  ['other',              'Other']
+];
+
+function bkDocCatLabel(code){
+  for(var i=0;i<BK_DOC_CATEGORIES.length;i++)
+    if(BK_DOC_CATEGORIES[i][0] === code) return BK_DOC_CATEGORIES[i][1];
+  return code || '—';
+}
+
+// Dates are `ddd d MMM yyyy` and times are 24-hour, as everywhere else.
+function bkDocWhen(iso){
+  if(!iso) return '';
+  var d = new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',year:'numeric'})
+       + ' ' + d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+}
+
+function bkMoney(n){
+  if(n === null || n === undefined || isNaN(n)) return '—';
+  return '$' + Number(n).toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+function bkDocIcon(doc){
+  if(doc.kind === 'link') return '🔗';
+  var m = doc.mime_type || '';
+  if(m.indexOf('pdf') >= 0) return '📕';
+  if(m.indexOf('image/') === 0) return '🖼';
+  return '📎';
+}
+
+// Every SmartStaff-sourced string goes through decodeEntities() then escapeHtml().
+function bkSafe(s){ return escapeHtml(decodeEntities(String(s === null || s === undefined ? '' : s))); }
+
+function bkDocErr(hostId, msg){
+  var el = document.getElementById(hostId);
+  if(el) el.innerHTML = '<div style="color:var(--danger,#ef4444);font-size:12px;padding:8px 0">'
+                      + bkSafe(msg) + '</div>';
+}
+
+// ── Documents ────────────────────────────────────────────────────────────────
+
+function bkDocsLoad(bookingId){
+  var host = document.getElementById('bk-docs-host');
+  if(!host) return;
+  if(host.getAttribute('data-loaded') === '1') return;   // first show only
+  host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading documents…</div>';
+  fetch('/api/booking/'+encodeURIComponent(bookingId)+'/documents')
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      if(!res.ok){ bkDocErr('bk-docs-host', (res.j && res.j.error) || 'Could not load documents'); return; }
+      host.setAttribute('data-loaded','1');
+      window._bkDocs = window._bkDocs || {};
+      window._bkDocs[bookingId] = res.j;
+      bkDocsRender(bookingId);
+    })
+    .catch(function(e){ bkDocErr('bk-docs-host', 'Could not load documents: '+e); });
+}
+
+function bkDocsRender(bookingId){
+  var host = document.getElementById('bk-docs-host');
+  if(!host) return;
+  var data  = (window._bkDocs||{})[bookingId] || {};
+  var docs  = data.documents || [];
+  var quote = data.quote || null;
+  var admin = window._cohort === 'admin';
+  var h = '';
+
+  // Always present, for every cohort: where this tab's errors are shown, so
+  // nothing has to fall back to an alert.
+  h += '<div id="bk-doc-msg"></div>';
+
+  if(data.quote_error)
+    h += '<div style="color:var(--danger,#ef4444);font-size:11px;padding:4px 0">'
+       + bkSafe('Quote row: ' + data.quote_error) + '</div>';
+
+  // The Estimator quote is a fixed first row, so nobody has to add it by hand.
+  // Unlinked until the Estimator supports ?quote=<estimate_id> (Q5).
+  if(quote && quote.source === 'estimate_import'){
+    h += '<div style="display:flex;align-items:center;gap:8px;padding:8px 9px;border:1px solid var(--border);'
+       + 'border-radius:4px;margin-bottom:6px;background:var(--surface2)">'
+       + '<span>📄</span><span style="font-size:12px;color:var(--text)">Estimator quote <b>'
+       + bkSafe(quote.quote_number || '—') + '</b></span></div>';
+  }
+
+  if(admin){
+    h += '<div style="display:flex;gap:6px;margin-bottom:8px">'
+       + '<button class="btn" style="font-size:11px" onclick="bkDocForm(\''+bookingId+'\',\'file\')">+ Add file</button>'
+       + '<button class="btn" style="font-size:11px" onclick="bkDocForm(\''+bookingId+'\',\'link\')">+ Add link</button>'
+       + '</div><div id="bk-doc-form"></div>';
+  }
+
+  if(!docs.length){
+    h += '<div style="color:var(--muted);font-size:12px;padding:6px 0">No documents yet.'
+       + (admin ? ' Add a file or a link.' : '') + '</div>';
+  } else {
+    for(var i=0;i<docs.length;i++){
+      var dcu = docs[i];
+      // added_by_name is filled in by the route when the row was added by the
+      // signed-in user; the SmartStaff userID never reaches the browser, so a
+      // #id is the honest fallback for anyone else.
+      var who = dcu.added_by_name
+                  ? dcu.added_by_name
+                  : (dcu.added_by_user_id ? ('#'+dcu.added_by_user_id) : 'someone');
+      h += '<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 9px;border:1px solid var(--border);'
+         + 'border-radius:4px;margin-bottom:5px">'
+         + '<span>'+bkDocIcon(dcu)+'</span>'
+         + '<div style="flex:1;min-width:0">'
+         +   '<div style="font-size:12px;color:var(--accent);cursor:pointer" '
+         +     'onclick="bkDocOpen(\''+bookingId+'\',\''+bkSafe(dcu.id)+'\')">'+bkSafe(dcu.title)+'</div>'
+         +   '<div style="font-size:10px;color:var(--muted);margin-top:2px">'
+         +     '<span style="border:1px solid var(--border);border-radius:3px;padding:0 4px;margin-right:6px">'
+         +     bkSafe(bkDocCatLabel(dcu.category))+'</span>'
+         +     'added by '+bkSafe(who)+' · '+bkSafe(bkDocWhen(dcu.added_at))
+         +   '</div>'
+         +   (dcu.note ? '<div style="font-size:11px;color:var(--muted);margin-top:3px">'+bkSafe(dcu.note)+'</div>' : '')
+         + '</div>'
+         + (admin ? '<button class="btn" style="font-size:10px" onclick="bkDocRemoveAsk(\''+bookingId+'\',\''
+                  + bkSafe(dcu.id)+'\')">Remove</button>' : '')
+         + '</div>';
+    }
+  }
+  host.innerHTML = h;
+  bkDocsCount(docs.length);
+}
+
+// The count on the tab label, filled in after the first load. entityTabs has no
+// re-render hook, so the label's own text node is updated in place.
+function bkDocsCount(n){
+  try{
+    var tabsRoot = document.getElementById('entity-modal-body');
+    if(!tabsRoot) return;
+    var btns = tabsRoot.querySelectorAll('[data-tab-id="docs"]');
+    for(var i=0;i<btns.length;i++){
+      var b = btns[i];
+      if(b.textContent.indexOf('Documents') >= 0) b.textContent = 'Documents (' + n + ')';
+    }
+  }catch(e){ /* a missing count is cosmetic; never break the tab over it */ }
+}
+
+// Errors belong INSIDE the tab (§7). No alert, confirm or prompt anywhere in
+// this block — bkDocRemoveAsk does its own in-page confirm for the same reason.
+function bkDocMsg(text){
+  var el = document.getElementById('bk-doc-msg');
+  if(el) el.innerHTML = text
+    ? '<div style="color:var(--danger,#ef4444);font-size:11px;padding:4px 0">'+bkSafe(text)+'</div>'
+    : '';
+}
+
+function bkDocFind(bookingId, docId){
+  var docs = (((window._bkDocs||{})[bookingId]||{}).documents) || [];
+  for(var i=0;i<docs.length;i++)
+    if(String(docs[i].id) === String(docId)) return docs[i];
+  return null;
+}
+
+function bkDocOpen(bookingId, docId){
+  bkDocMsg('');
+  var doc = bkDocFind(bookingId, docId);
+
+  // A LINK HAS NOTHING TO SIGN. /open signs a stored object, so sending a link
+  // row through it returns "Document not found" — which is true, and useless.
+  // §7.2: a link opens its own url directly; only a file goes through /open.
+  if(doc && doc.kind === 'link'){
+    if(!doc.url){ bkDocMsg('That link has no address.'); return; }
+    window.open(doc.url, '_blank');
+    return;
+  }
+
+  fetch('/api/booking/'+encodeURIComponent(bookingId)+'/documents/'+encodeURIComponent(docId)+'/open')
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      if(!res.ok || !res.j.url){
+        bkDocMsg((res.j && res.j.error) || 'Could not open that document');
+        return;
+      }
+      window.open(res.j.url, '_blank');
+    })
+    .catch(function(e){ bkDocMsg('Could not open that document: '+e); });
+}
+
+// In-page confirm, never window.confirm (§7.2).
+function bkDocRemoveAsk(bookingId, docId){
+  var data = (window._bkDocs||{})[bookingId] || {};
+  var doc = (data.documents||[]).filter(function(x){ return String(x.id) === String(docId); })[0];
+  var title = doc ? doc.title : 'this document';
+  var host = document.getElementById('bk-doc-form');
+  if(!host) return;
+  host.innerHTML = '<div style="border:1px solid var(--border);border-radius:4px;padding:9px;margin-bottom:8px">'
+    + '<div style="font-size:12px;color:var(--text);margin-bottom:7px">Remove “'+bkSafe(title)
+    + '” from this booking? The file is kept and can be restored by Mike.</div>'
+    + '<div id="bk-doc-form-err" style="color:var(--danger,#ef4444);font-size:11px;margin-bottom:6px"></div>'
+    + '<button class="btn" style="font-size:11px" onclick="bkDocRemove(\''+bookingId+'\',\''+bkSafe(docId)+'\')">Remove</button> '
+    + '<button class="btn" style="font-size:11px" onclick="document.getElementById(\'bk-doc-form\').innerHTML=\'\'">Cancel</button>'
+    + '</div>';
+}
+
+function bkDocFormErr(msg){
+  var e = document.getElementById('bk-doc-form-err');
+  if(e) e.textContent = msg;          // red, inside the form, never swallowed
+}
+
+function bkDocRemove(bookingId, docId){
+  fetch('/api/booking/'+encodeURIComponent(bookingId)+'/documents/'+encodeURIComponent(docId)+'/remove',
+        {method:'POST'})
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      if(!res.ok){ bkDocFormErr((res.j && res.j.error) || 'Could not remove it'); return; }
+      var data = (window._bkDocs||{})[bookingId];
+      data.documents = (data.documents||[]).filter(function(x){ return String(x.id) !== String(docId); });
+      bkDocsRender(bookingId);
+    })
+    .catch(function(e){ bkDocFormErr('Could not remove it: '+e); });
+}
+
+function bkDocCatSelect(){
+  var o = '<option value="">Category…</option>';
+  for(var i=0;i<BK_DOC_CATEGORIES.length;i++)
+    o += '<option value="'+BK_DOC_CATEGORIES[i][0]+'">'+BK_DOC_CATEGORIES[i][1]+'</option>';
+  return '<select id="bk-doc-cat" style="font-size:11px;margin-bottom:5px;width:100%">'+o+'</select>';
+}
+
+function bkDocForm(bookingId, kind){
+  var host = document.getElementById('bk-doc-form');
+  if(!host) return;
+  var h = '<div style="border:1px solid var(--border);border-radius:4px;padding:9px;margin-bottom:8px">';
+  if(kind === 'file')
+    h += '<input type="file" id="bk-doc-file" style="font-size:11px;margin-bottom:5px;width:100%" '
+       + 'onchange="bkDocFileChosen()"> '
+       + '<div style="font-size:10px;color:var(--muted);margin-bottom:5px">PDF, JPEG, PNG, DOCX or XLSX · up to 20 MB</div>';
+  else
+    h += '<input type="url" id="bk-doc-url" placeholder="https://…" style="font-size:11px;margin-bottom:5px;width:100%">';
+  h += '<input type="text" id="bk-doc-title" placeholder="Title" style="font-size:11px;margin-bottom:5px;width:100%">'
+     + bkDocCatSelect()
+     + '<input type="text" id="bk-doc-note" placeholder="Note (optional)" style="font-size:11px;margin-bottom:5px;width:100%">'
+     + '<div id="bk-doc-form-err" style="color:var(--danger,#ef4444);font-size:11px;margin-bottom:6px"></div>'
+     + '<div id="bk-doc-progress" style="font-size:11px;color:var(--muted);margin-bottom:6px"></div>'
+     + '<button class="btn" style="font-size:11px" onclick="bkDocSave(\''+bookingId+'\',\''+kind+'\')">Add</button> '
+     + '<button class="btn" style="font-size:11px" onclick="document.getElementById(\'bk-doc-form\').innerHTML=\'\'">Cancel</button>'
+     + '</div>';
+  host.innerHTML = h;
+}
+
+// The title defaults to the file name without its extension (§7.2).
+function bkDocFileChosen(){
+  var f = document.getElementById('bk-doc-file');
+  var t = document.getElementById('bk-doc-title');
+  if(!f || !t || !f.files || !f.files[0] || t.value.trim()) return;
+  var n = f.files[0].name || '';
+  t.value = n.indexOf('.') > 0 ? n.slice(0, n.lastIndexOf('.')) : n;
+}
+
+function bkDocSave(bookingId, kind){
+  var cat   = (document.getElementById('bk-doc-cat')||{}).value || '';
+  var title = ((document.getElementById('bk-doc-title')||{}).value || '').trim();
+  var note  = ((document.getElementById('bk-doc-note')||{}).value || '').trim();
+  if(!cat){ bkDocFormErr('Choose a category'); return; }
+
+  var done = function(res){
+    if(!res.ok){ bkDocFormErr((res.j && res.j.error) || 'Could not add it'); return; }
+    var data = (window._bkDocs||{})[bookingId];
+    data.documents = [res.j.document].concat(data.documents||[]);   // newest first
+    document.getElementById('bk-doc-form').innerHTML = '';
+    bkDocsRender(bookingId);
+  };
+  var fail = function(e){ bkDocFormErr('Could not add it: '+e); };
+
+  if(kind === 'link'){
+    var url = ((document.getElementById('bk-doc-url')||{}).value || '').trim();
+    if(!url){ bkDocFormErr('Enter the link'); return; }
+    if(url.indexOf('https://') !== 0){ bkDocFormErr('The link must start with https://'); return; }
+    if(!title){ bkDocFormErr('Give it a title'); return; }
+    fetch('/api/booking/'+encodeURIComponent(bookingId)+'/documents/link',
+          {method:'POST', headers:{'Content-Type':'application/json'},
+           body: JSON.stringify({category:cat, title:title, note:note, url:url})})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+      .then(done).catch(fail);
+    return;
+  }
+
+  var f = document.getElementById('bk-doc-file');
+  if(!f || !f.files || !f.files[0]){ bkDocFormErr('Choose a file'); return; }
+  var file = f.files[0];
+  if(file.size > 20*1024*1024){ bkDocFormErr('That file is larger than 20 MB'); return; }
+  var fd = new FormData();
+  fd.append('file', file);
+  fd.append('category', cat);
+  fd.append('title', title || file.name);
+  fd.append('note', note);
+  var p = document.getElementById('bk-doc-progress');
+  if(p) p.textContent = 'Uploading ' + Math.round(file.size/1024) + ' KB…';
+  fetch('/api/booking/'+encodeURIComponent(bookingId)+'/documents/file', {method:'POST', body: fd})
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){ if(p) p.textContent = ''; done(res); })
+    .catch(function(e){ if(p) p.textContent = ''; fail(e); });
+}
+
+// ── Figures ──────────────────────────────────────────────────────────────────
+
+function bkFiguresLoad(bookingId){
+  var host = document.getElementById('bk-figures-host');
+  if(!host) return;
+  if(host.getAttribute('data-loaded') === '1') return;
+  host.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading financials…</div>';
+  // customer_id rides along so the route can work out §7.5's amber note, the
+  // same way the Details tab's rate-card block asks for it.
+  var _cust = (window._curBookingEdit && window._curBookingEdit.customer
+               && window._curBookingEdit.customer.id) || '';
+  fetch('/api/booking/'+encodeURIComponent(bookingId)+'/figures'
+        + (_cust ? '?customer_id='+encodeURIComponent(_cust) : ''))
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      if(!res.ok){ bkDocErr('bk-figures-host', (res.j && res.j.error) || 'Could not load financials'); return; }
+      host.setAttribute('data-loaded','1');
+      window._bkFigures = window._bkFigures || {};
+      window._bkFigures[bookingId] = res.j;
+      bkFiguresRender(bookingId);
+    })
+    .catch(function(e){ bkDocErr('bk-figures-host', 'Could not load financials: '+e); });
+}
+
+// HAS PAY IS READ FROM THE PAY MAP, NEVER FROM call_locked: on booking 11763
+// calls 37675/37679/37683 are unlocked and still carry pay, and reading the
+// lock would report "no pay yet" over real money.
+function bkCallHasPay(fig, callId){
+  var p = (fig.pay || {})[String(callId)];
+  return !!(p && p.rows);
+}
+
+function bkFiguresRender(bookingId){
+  var host = document.getElementById('bk-figures-host');
+  if(!host) return;
+  var d    = (window._bkFigures||{})[bookingId] || {};
+  var fig  = d.figures || {};
+  var exp  = d.expected || null;
+  var errs = d.errors || {};
+  var calls = fig.calls || [];
+  var h = '';
+
+  // Each failed piece gets its own red line, and THE REST STILL RENDERS.
+  var errKeys = Object.keys(errs);
+  for(var i=0;i<errKeys.length;i++)
+    h += '<div style="color:var(--danger,#ef4444);font-size:11px;padding:2px 0">'
+       + bkSafe(errs[errKeys[i]]) + '</div>';
+
+  var invoicedCalls = calls.filter(function(c){ return (fig.invoiced||{})[String(c.call_id)]; }).length;
+  var paidCalls     = calls.filter(function(c){ return bkCallHasPay(fig, c.call_id); }).length;
+
+  h += '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">Priced with '
+     + bkSafe(d.rules_label || 'Standard') + ' rules'
+     + (d.rules_as_of ? ' as of ' + bkSafe(String(d.rules_as_of).slice(0,10)) : '')
+     + ' · ' + invoicedCalls + ' of ' + calls.length + ' calls invoiced</div>';
+
+  // §7.5: the booking's card and the customer's listed card disagree. A NOTE,
+  // never a block — the figures are still shown, with the caveat visible.
+  if(d.customer_note)
+    h += '<div style="font-size:11px;color:var(--warn,#f59e0b);margin-bottom:8px">'
+       + bkSafe(d.customer_note) + '</div>';
+  else
+    h += '<div style="margin-bottom:8px"></div>';
+
+  // ── money ──
+  var sum = function(map, key){
+    var t = 0, any = false;
+    for(var k in (map||{})){ if(map[k] && map[k][key] !== null && map[k][key] !== undefined){ t += Number(map[k][key]); any = true; } }
+    return any ? t : null;
+  };
+  var invoiced = sum(fig.invoiced, 'ex_gst');
+  var cost     = sum(fig.pay, 'pay');
+  // EXPECTED IS null, NOT 0, WHEN NOTHING WAS PRICED. invoice_expect returns
+  // total: null in that case and says why in total_reason. Reading it as a
+  // number here is what showed "Expected invoice $0.00" on #11770 and #11760,
+  // whose calls all predate the current card.
+  var expected = (exp && exp.total !== null && exp.total !== undefined) ? exp.total : null;
+  var quote    = null;
+  if(d.quote && d.quote.total_ex_gst !== null && d.quote.total_ex_gst !== undefined){
+    var qn = Number(d.quote.total_ex_gst);
+    if(!isNaN(qn)) quote = qn;
+  }
+
+  var row = function(label, value, note, amber){
+    return '<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px solid var(--border)">'
+         + '<span style="font-size:12px;color:var(--muted)">'+bkSafe(label)+'</span>'
+         + '<span style="font-size:12px;color:'+(amber?'#f59e0b':'var(--text)')+';text-align:right">'+value
+         + (note ? '<span style="display:block;font-size:10px;color:var(--muted)">'+bkSafe(note)+'</span>' : '')
+         + '</span></div>';
+  };
+
+  var qNote = '', qVal = '—';
+  if(d.quote){
+    qVal = bkMoney(quote);
+    qNote = (d.quote.source === 'estimate_import'
+              ? 'Estimator ' + (d.quote.quote_number || '')
+              : 'Entered by #' + (d.quote.set_by_user_id || '?'))
+          + (d.quote.minimums_applied === false ? ' (no minimums)' : '');
+  }
+  h += row('Quoted', qVal, qNote || 'No quote');
+  if(window._cohort === 'admin')
+    h += '<div style="padding:3px 0 7px"><button class="btn" style="font-size:10px" '
+       + 'onclick="bkQuoteForm(\''+bookingId+'\')">'
+       + (d.quote && d.quote.source === 'manual' ? 'Change…' : (d.quote ? '' : 'Set amount…'))
+       + '</button><div id="bk-quote-form"></div></div>';
+
+  // Three cases, and the first two must never read as money:
+  //   nothing to price from   -> "—", why
+  //   nothing priced          -> "—", the reason every call gave
+  //   some priced             -> the total, and HOW MANY OF HOW MANY
+  if(exp === null){
+    h += row('Expected invoice', '—', errs.rules ? 'rules unavailable' : 'not priced');
+  } else if(expected === null){
+    h += row('Expected invoice', '—', exp.total_reason || 'no calls priced');
+  } else {
+    var pc = exp.priced_calls, tc = exp.total_calls;
+    var partial = (pc !== undefined && tc !== undefined && pc < tc);
+    h += row('Expected invoice', bkMoney(expected),
+             partial ? (pc + ' of ' + tc + ' calls priced')
+                     : (exp.unpriced_calls ? (exp.unpriced_calls + ' calls unpriced') : ''),
+             partial || !!exp.unpriced_calls);
+  }
+
+  h += row('Invoiced', invoiced === null ? '—' : bkMoney(invoiced),
+           invoiced === null ? 'Not invoiced yet' : (invoicedCalls+' of '+calls.length+' calls invoiced'));
+  h += row('Cost (crew pay)', cost === null ? '—' : bkMoney(cost),
+           paidCalls + ' of ' + calls.length + ' calls have pay calculated');
+
+  // Margin is INVOICED less COST. It never touches Expected — a booking with
+  // no Expected figure still has a real margin once it is invoiced and paid,
+  // and reading a missing Expected as 0 here would invent one.
+  // Shown only when both sides cover the SAME calls — otherwise "partial".
+  if(invoiced !== null && cost !== null && invoicedCalls === paidCalls && invoicedCalls === calls.length)
+    h += row('Margin', bkMoney(invoiced - cost),
+             invoiced ? (Math.round((invoiced-cost)/invoiced*1000)/10) + '% of invoiced' : '');
+  else
+    h += row('Margin', '—', 'partial');
+
+  // Quoted vs invoiced likewise: QUOTED against INVOICED, never against
+  // Expected. Both must be real numbers or the row is left off entirely.
+  if(quote !== null && invoiced !== null){
+    var diff = invoiced - quote;
+    var over = quote ? Math.abs(diff)/quote > 0.05 : false;   // Q8
+    h += row('Quoted vs invoiced', (diff>=0?'+':'') + bkMoney(diff),
+             quote ? (Math.round(diff/quote*1000)/10)+'%' : '', over);
+  }
+
+  // ── per call ──
+  h += '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 5px">Calls</div>'
+     + '<table style="width:100%;border-collapse:collapse;font-size:11px">'
+     + '<tr style="color:var(--muted)"><th align="left">Call</th><th align="left">Date</th>'
+     + '<th align="left">Type</th><th align="right">Expected</th><th align="right">Invoiced</th>'
+     + '<th align="right">Diff</th><th align="right">Pay</th></tr>';
+
+  var sorted = calls.slice().sort(function(a,b){
+    return (a.start_date - b.start_date) || String(a.start_time||'').localeCompare(String(b.start_time||''));
+  });
+  for(var j=0;j<sorted.length;j++){
+    var c  = sorted[j];
+    var id = String(c.call_id);
+    var ec = exp && exp.calls ? exp.calls[id] : null;
+    var iv = (fig.invoiced||{})[id];
+    var py = (fig.pay||{})[id];
+    var ct = (d.call_types||{})[id] || {};
+    var e  = ec && ec.expected !== null && ec.expected !== undefined ? ec.expected : null;
+    var v  = iv ? Number(iv.ex_gst) : null;
+    var diffCell = '', amberRow = false;
+    if(e !== null && v !== null){
+      var dd = e - v;
+      amberRow = Math.abs(dd) > 0.05;                    // the $0.05 tolerance
+      diffCell = (dd>=0?'+':'') + dd.toFixed(2);
+    }
+    var cancelled = !!c.cancelled_at;
+    var reason = ec && ec.status && ec.status !== 'ok' ? (ec.reason || ec.status) : '';
+    var notes = ec && ec.notes && ec.notes.length ? ec.notes.join('; ') : '';
+    h += '<tr style="border-top:1px solid var(--border)'+(cancelled?';opacity:.55':'')+'">'
+       + '<td>'+bkSafe(c.call_name||('#'+id))
+       +   (cancelled ? ' <span style="font-size:9px;border:1px solid var(--border);border-radius:3px;padding:0 3px">'
+                      + (c.cancel_pay ? 'cancelled – paid' : 'cancelled') + '</span>' : '')
+       +   (reason ? '<div style="font-size:9px;color:var(--muted)">'+bkSafe(reason)+'</div>' : '')
+       +   (notes  ? '<div style="font-size:9px;color:var(--muted)">'+bkSafe(notes)+'</div>' : '')
+       + '</td>'
+       + '<td>'+bkSafe(bkDocWhen(new Date(Number(c.start_date)*1000).toISOString()).slice(0,-6))+'</td>'
+       + '<td>'+bkSafe(ct.role || 'Not set')+(ct.source==='derived'?' <span style="color:var(--muted)">(from name)</span>':'')+'</td>'
+       + '<td align="right">'+(e===null?'—':bkMoney(e))+'</td>'
+       + '<td align="right">'+(v===null?'—':bkMoney(v))+'</td>'
+       + '<td align="right"'+(amberRow?' style="color:#f59e0b"':'')+'>'+diffCell+'</td>'
+       + '<td align="right">'+(bkCallHasPay(fig,id)?bkMoney(py.pay):'—')+'</td>'
+       + '</tr>';
+  }
+  h += '</table>';
+
+  // ── hours by call type ──
+  // SCHEDULED counts confirmed crew and NOT promo-pending (A2), the same rule
+  // as the call dialog's filledCount. ACTUAL is the keyed hours.
+  var byType = {};
+  var cancelledPaid = {calls:0, sched:0, actual:0};
+  var withTimes = 0;
+  for(var k=0;k<sorted.length;k++){
+    var cc = sorted[k], cid = String(cc.call_id);
+    var ct2 = (d.call_types||{})[cid] || {};
+    var label = ct2.role || 'Not set';
+    var rows2 = (fig.crew||[]).filter(function(r){ return String(r.call_id) === cid; });
+    var confirmed = rows2.filter(function(r){ return r.status === 5 && !r.promo_pending; }).length;
+    var sched = (cc.est_length ? Number(cc.est_length) : 0) * confirmed;
+    var ecx = exp && exp.calls ? exp.calls[cid] : null;
+    var actual = ecx ? Number(ecx.hours||0) : 0;
+    if(actual > 0) withTimes++;
+    if(cc.cancelled_at && cc.cancel_pay){
+      cancelledPaid.calls++; cancelledPaid.actual += actual;     // Q7: own row,
+      continue;                                                  // out of Scheduled
+    }
+    if(!byType[label]) byType[label] = {calls:0, sched:0, actual:0, derived:ct2.source==='derived'};
+    byType[label].calls++; byType[label].sched += sched; byType[label].actual += actual;
+  }
+  h += '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 5px">Hours by call type</div>'
+     + '<table style="width:100%;border-collapse:collapse;font-size:11px">'
+     + '<tr style="color:var(--muted)"><th align="left">Call type</th><th align="right">Calls</th>'
+     + '<th align="right">Scheduled h</th><th align="right">Actual h</th></tr>';
+  var tSched=0, tActual=0, tCalls=0;
+  var keys = Object.keys(byType).sort();
+  for(var m=0;m<keys.length;m++){
+    var t = byType[keys[m]];
+    tSched += t.sched; tActual += t.actual; tCalls += t.calls;
+    h += '<tr style="border-top:1px solid var(--border)"><td>'+bkSafe(keys[m])
+       + (t.derived?' <span style="color:var(--muted)">(from name)</span>':'')+'</td>'
+       + '<td align="right">'+t.calls+'</td>'
+       + '<td align="right">'+(t.sched?t.sched.toFixed(2):'—')+'</td>'
+       + '<td align="right">'+(t.actual?t.actual.toFixed(2):'—')+'</td></tr>';
+  }
+  if(cancelledPaid.calls)
+    h += '<tr style="border-top:1px solid var(--border);opacity:.7"><td>Cancelled – paid</td>'
+       + '<td align="right">'+cancelledPaid.calls+'</td><td align="right">—</td>'
+       + '<td align="right">'+(cancelledPaid.actual?cancelledPaid.actual.toFixed(2):'—')+'</td></tr>';
+  h += '<tr style="border-top:2px solid var(--border);font-weight:600"><td>Total</td>'
+     + '<td align="right">'+tCalls+'</td><td align="right">'+(tSched?tSched.toFixed(2):'—')+'</td>'
+     + '<td align="right">'+(tActual?tActual.toFixed(2):'—')+'</td></tr></table>'
+     + '<div style="font-size:10px;color:var(--muted);margin-top:4px">'
+     + withTimes+' of '+calls.length+' calls have times</div>';
+
+  host.innerHTML = h;
+}
+
+function bkQuoteForm(bookingId){
+  var host = document.getElementById('bk-quote-form');
+  if(!host) return;
+  host.innerHTML = '<div style="margin-top:5px">'
+    + '<input type="text" id="bk-quote-amt" placeholder="0.00" style="font-size:11px;width:110px">'
+    + ' <button class="btn" style="font-size:10px" onclick="bkQuoteSave(\''+bookingId+'\')">Save</button>'
+    + ' <button class="btn" style="font-size:10px" onclick="document.getElementById(\'bk-quote-form\').innerHTML=\'\'">Cancel</button>'
+    + '<div id="bk-quote-err" style="color:var(--danger,#ef4444);font-size:10px;margin-top:4px"></div></div>';
+}
+
+function bkQuoteSave(bookingId){
+  var v = ((document.getElementById('bk-quote-amt')||{}).value || '').trim();
+  var err = document.getElementById('bk-quote-err');
+  fetch('/api/booking/'+encodeURIComponent(bookingId)+'/quote',
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body: JSON.stringify({total_ex_gst: v})})
+    .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      if(!res.ok){ if(err) err.textContent = (res.j && res.j.error) || 'Could not save it'; return; }
+      var d = (window._bkFigures||{})[bookingId];
+      d.quote = res.j.quote;
+      bkFiguresRender(bookingId);
+    })
+    .catch(function(e){ if(err) err.textContent = 'Could not save it: '+e; });
+}
 
 function crewNotesInit(ctx, reuse){
   ctx.callIds = (ctx.callIds || []).map(String).filter(function(x){ return /^\d+$/.test(x); });
