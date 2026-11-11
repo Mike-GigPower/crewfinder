@@ -1915,7 +1915,11 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .ent-tab.on{color:var(--accent);border-bottom-color:var(--accent)}
 .ent-tab-count{font-family:'Share Tech Mono',monospace;font-size:10px;font-weight:400;margin-left:5px;opacity:.85}
 .ent-tabpanels{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
-.ent-tabpanel{flex:1 1 auto;min-height:0;overflow:auto;padding:10px 0 14px}
+/* Right padding keeps the last control in a row (e.g. Booked Crew's remove X)
+   clear of the macOS overlay scrollbar, which Safari/WebKit draws ON TOP of the
+   content rather than beside it. scrollbar-gutter can't help: overlay
+   scrollbars get no gutter. */
+.ent-tabpanel{flex:1 1 auto;min-height:0;overflow:auto;padding:10px 14px 14px 0}
 
 /* Booked Crew filter chips and order (call dialog) */
 .cc-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px}
@@ -21426,11 +21430,13 @@ function entityBack(){
 }
 
 // The shared dialog shell opens at ENTITY_MODAL_W. A view that needs more room
-// widens it for its own render — today only the booking view, whose call rows
-// carry notes. Every open resets it first, so a wide view never leaks its width
-// into the next dialog to use the shell.
+// widens it for its own render — the booking view, whose call rows carry notes,
+// and the call view, whose Booked Crew rows carry controls and a phone number.
+// Every open resets it first, so a wide view never leaks its width into the
+// next dialog to use the shell.
 var ENTITY_MODAL_W = 560;
 var ENTITY_MODAL_W_BOOKING = 760;
+var ENTITY_MODAL_W_CALL = 680;
 function entityModalWidth(px){
   var p = document.getElementById('entity-modal-panel');
   if(p) p.style.width = (px || ENTITY_MODAL_W) + 'px';
@@ -23915,6 +23921,7 @@ async function callMarkDietary(callId, crew){
 }
 
 function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
+  entityModalWidth(ENTITY_MODAL_W_CALL);   // room for a Booked Crew row on one line
   window._curCallEdit = editSrc || null;
   document.getElementById('entity-modal-title').textContent = d.call_name || 'Call';
   // A bare "LOAD OUT" means nothing when you arrive from a crew record — name
@@ -24016,7 +24023,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     : '';
   const crewRows = crew.length
     ? crew.map(function(c, _ci){
-        var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px">📱 '+escapeHtml(fmtPhone(c.mobile))+'</a>' : '';
+        var mob = c.mobile ? '<a href="tel:'+escapeHtml(c.mobile)+'" style="color:var(--accent);text-decoration:none;margin-left:8px;white-space:nowrap">📱 '+escapeHtml(fmtPhone(c.mobile))+'</a>' : '';
         var boss = '';   // Team Lead now shows with the row's controls, on or off (crewBossControl)
         // Stage 2 §6: the row's override tag and its Rate / Crew Boss controls,
         // filled by callLoadPricing once the call's pricing context arrives.
