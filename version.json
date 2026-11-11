@@ -1,6 +1,6 @@
 {
-  "version": "5.102.0",
-  "release_date": "2026-11-11",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.102.0/TheGOAT.dmg",
-  "release_notes": "Bookings gain two new tabs at the end: Documents, for quotes, invoices, requirements and other files or links, and Financials (Admins only), showing quoted, expected, invoiced, cost and margin for the booking."
+  "version": "5.102.1",
+  "release_date": "2026-11-12",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.102.1/TheGOAT.dmg",
+  "release_notes": "The call dialog is wider, so each Booked Crew row fits on one line, and the remove ✕ is no longer hidden under the scrollbar in Safari."
 }
