@@ -14291,13 +14291,13 @@ async function openCrewEdit(id, opts){
 
   const ceTabBar =
       '<div style="display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:12px;flex-wrap:wrap">'
-    + ([['details','Details'],['inductions','Inductions'],['licences','Licences']]
+    + ([['details','Details'],['shifts','Calls'],['inductions','Inductions'],['licences','Licences']]
         // Visa and Documents are ADMIN ONLY — passport and grant numbers are
         // immigration PII, and an employment agreement carries the person's
         // signature and commencement terms. Both tabs are absent for every other
         // cohort, not merely disabled.
         .concat(window._cohort === 'admin' ? [['visa','Visa'],['documents','Documents']] : [])
-        .concat([['payslips','Payslips'],['emergency','Emergency'],['dietary','Dietary'],['shifts','Calls'],['hours','Hours'],['unavail','Unavailability']])).map(function(t){
+        .concat([['payslips','Payslips'],['emergency','Emergency'],['dietary','Dietary'],['hours','Hours'],['unavail','Unavailability']])).map(function(t){
         return '<button type="button" id="ce-tabbtn-'+t[0]+'" onclick="ceShowTab(\''+String(c.id)+'\',\''+t[0]+'\')" '
           + 'style="background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-family:\'Rajdhani\',sans-serif;font-size:13px;font-weight:600;letter-spacing:.04em;padding:7px 10px;cursor:pointer">'+t[1]+'</button>';
       }).join('')
@@ -16113,7 +16113,7 @@ function ceMessageForDeletedLicence(crewId){
 }
 
 function _ceVisibleTab(){
-  var tabs = ['details','inductions','licences','visa','documents','payslips','emergency','dietary','shifts','unavail'];
+  var tabs = ['details','inductions','licences','visa','documents','payslips','emergency','dietary','shifts','hours','unavail'];
   for(var i = 0; i < tabs.length; i++){
     var p = document.getElementById('ce-panel-' + tabs[i]);
     if(p && p.style.display === 'block') return tabs[i];
