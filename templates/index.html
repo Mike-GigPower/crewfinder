@@ -2582,6 +2582,14 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
                   <div class="import-field-val" id="prev-ratecard"></div>
                   <div id="prev-ratecard-note"></div>
                 </div>
+                <!-- Quoted (schema 1.3, BRIEF §16.5). Hidden for 1.0-1.2,
+                     which carry no totals: those bookings get Quoted from an
+                     Admin on the Financials tab instead. -->
+                <div class="import-field" id="prev-quoted-row" style="display:none">
+                  <label>Quoted</label>
+                  <div class="import-field-val" id="prev-quoted"></div>
+                  <div id="prev-quoted-note"></div>
+                </div>
                 <div class="import-field" id="prev-notes-row" style="display:none">
                   <label>Booking Notes</label>
                   <div class="import-field-val" id="prev-notes" style="white-space:pre-wrap;font-size:11px;max-height:80px;overflow-y:auto"></div>
@@ -12638,6 +12646,27 @@ function renderImportPreview(data){
     return '<div style="font-size:11px;color:var(--warn);margin-top:4px">' + escapeHtml(n) + '</div>';
   }).join('');
 
+  // Quoted (schema 1.3, §16.5): "Quoted: $… ex GST (Estimator GP-…, v N)",
+  // plus "(no minimums)" when the Estimator exported with minimums off, so
+  // the figure is never read as a like-for-like against one that had them.
+  const q = p.quoted;
+  const qRow = document.getElementById('prev-quoted-row');
+  if(q && q.total_ex_gst !== null && q.total_ex_gst !== undefined){
+    qRow.style.display = '';
+    document.getElementById('prev-quoted').textContent =
+      '$' + Number(q.total_ex_gst).toLocaleString('en-AU',
+            {minimumFractionDigits:2, maximumFractionDigits:2})
+      + ' ex GST (Estimator ' + (q.quote_number || '?') + ', v' + (q.version ?? '?') + ')'
+      + (q.minimums_applied === false ? ' (no minimums)' : '');
+    document.getElementById('prev-quoted-note').innerHTML = q.warning
+      ? '<div style="font-size:11px;color:var(--warn);margin-top:4px">'
+        + escapeHtml(q.warning) + '</div>'
+      : '';
+  } else {
+    qRow.style.display = 'none';
+    document.getElementById('prev-quoted-note').innerHTML = '';
+  }
+
   if(p.booking_notes){
     document.getElementById('prev-notes-row').style.display = '';
     document.getElementById('prev-notes').textContent = p.booking_notes;
@@ -13028,7 +13057,12 @@ function updateImportProgressUI(data){
         // Call Types not saved: the calls exist and show a derived type (§5.2).
         + (data.call_type_error
         ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg);margin-top:8px">'
-          + escapeHtml(data.call_type_error) + '</div>' : '');
+          + escapeHtml(data.call_type_error) + '</div>' : '')
+        // Quoted amount not saved (§16.5): the import is never undone, so
+        // this is a red banner and an Admin types it on Financials.
+        + (data.quote_error
+        ? '<div class="ph-warn" style="border-color:var(--conflict);color:var(--conflict);background:var(--conf-bg);margin-top:8px">'
+          + escapeHtml(data.quote_error) + '</div>' : '');
     }
   } else {
     const rcHost = document.getElementById('import-rc-result');
