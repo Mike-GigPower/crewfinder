@@ -1,6 +1,6 @@
 {
-  "version": "5.102.1",
+  "version": "5.102.2",
   "release_date": "2026-11-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.102.1/TheGOAT.dmg",
-  "release_notes": "The call dialog is wider, so each Booked Crew row fits on one line, and the remove ✕ is no longer hidden under the scrollbar in Safari."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.102.2/TheGOAT.dmg",
+  "release_notes": "Estimates exported from the latest Estimator now bring their quoted amount into the booking's Financials tab."
 }
