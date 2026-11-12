@@ -9881,6 +9881,17 @@ function recruitConvertResultBlocks(d){
         : '<div>✗ Welcome email — <span style="color:var(--conflict)">failed: '
           + escapeHtml(w.error || 'error') + '</span> — use “Resend welcome email” on their row.</div>');
   }
+  // EH Employee Portal access (BRIEF-eh-portal-access). d.portal is
+  // {ok, outcome, text, error}; `text` is the server's plain-English line.
+  if(d.portal){
+    const pa = d.portal;
+    const line = escapeHtml(pa.text || pa.outcome || 'unknown');
+    html += section('EH portal access', (pa.outcome === 'granted' || pa.outcome === 'already')
+        ? '<div>✓ EH portal — ' + line + '</div>'
+        : '<div style="color:var(--warn)">⚠ EH portal — ' + line
+          + (pa.error && pa.outcome === 'failed' ? ' <span style="color:var(--conflict)">' + escapeHtml(pa.error) + '</span>' : '')
+          + ' Use “Grant EH portal access” on their row.</div>');
+  }
   return html;
 }
 
@@ -9940,6 +9951,51 @@ function keypayButton(c){
   else                tip = 'Sent to Employment Hero, but the employee ID is missing — needs backfill';
   return '<button class="recruit-action" disabled title="' + escapeHtml(tip) + '" '
     + 'style="opacity:.45;cursor:not-allowed">Complete KeyPay setup</button>';
+}
+
+// EH Employee Portal access (BRIEF-eh-portal-access). Converted crew with an EH
+// employee id only; admin-only to match Complete KeyPay setup (the server route
+// is the real gate — this is presentation). Once stamped it reads as a dated tick
+// that can still be clicked: the edge function re-checks and answers "already".
+function portalButton(c){
+  if(!c || c.status !== 'active_crew' || c.eh_employee_id == null) return '';
+  if(window._cohort !== 'admin') return '';
+  var id = recruitEsc(String(c.id));
+  if(c.eh_portal_access_at){
+    return '<button class="recruit-action" onclick="recruitGrantPortal(\'' + id + '\',this)" '
+      + 'title="Re-check their Employment Hero portal access">'
+      + 'EH portal ✓ ' + recruitEsc(recruitDate(c.eh_portal_access_at)) + '</button>';
+  }
+  var last = c.eh_portal_access_outcome
+    ? ' (last attempt: ' + String(c.eh_portal_access_outcome).replace(/_/g, ' ') + ')' : '';
+  return '<button class="recruit-action recruit-convert" onclick="recruitGrantPortal(\'' + id + '\',this)" '
+    + 'title="Give this crew member access to the Employment Hero employee portal' + escapeHtml(last) + '">'
+    + 'Grant EH portal access</button>';
+}
+
+async function recruitGrantPortal(id, btn){
+  const cand = (_recruitRows || []).find(c => String(c.id) === String(id)) || {};
+  const who  = cand.name || 'this crew member';
+  if(!cand.eh_portal_access_at && !confirm('Give ' + who + ' access to the Employment Hero employee portal?\n\n'
+    + 'Employment Hero will email them a login link.')) return;
+  if(btn) btn.disabled = true;
+  try{
+    const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/eh-portal-access', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})
+    });
+    const body = await r.json().catch(() => ({}));
+    if(!r.ok){
+      alert(r.status === 403 ? 'You do not have access to grant EH portal access.'
+        : (body.error || 'Could not grant EH portal access. Please try again.'));
+    } else {
+      alert((body.text || body.outcome || 'Done')
+        + (body.outcome === 'failed' && body.error ? '\n\n' + body.error : ''));
+      if(typeof loadRecruitment === 'function') loadRecruitment();
+    }
+  }catch(e){
+    alert('Could not grant EH portal access. Please try again.');
+  }
+  if(btn) btn.disabled = false;
 }
 
 // Deliberate resend of the details-form / contract link. Shown only where the
@@ -11088,7 +11144,7 @@ function renderRecruitRow(c, i){
   // moves, before the read-only notes: secondary to the pipeline actions, not
   // competing with them.
   const resendBtns = recruitResendButtons(c);
-  const allActions = convertBtn + keypayBtn + actions + resendBtns + activeCrewNote + waitingNote;
+  const allActions = convertBtn + keypayBtn + portalButton(c) + actions + resendBtns + activeCrewNote + waitingNote;
 
   // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
   const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
