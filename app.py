@@ -184,7 +184,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.102.2"
+APP_VERSION    = "5.103.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -691,6 +691,12 @@ RECRUITMENT_EXCEPTIONS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions
 # gated inside the edge function by KEYPAY_WRITE_ENABLED === "true" (a Supabase
 # secret), NOT here — Flask/UI gating is presentation only and is not the control.
 KEYPAY_COMPLETE_SETUP_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/keypay-complete-setup"
+# Employment Hero Employee Portal access (BRIEF-eh-portal-access, 12 Nov 2026).
+# Called with mode "grant" at the end of both convert paths, and from the admin
+# retry button on the active_crew panel. The write gate (KEYPAY_ACCESS_ENABLED +
+# KEYPAY_ACCESS_ALLOWLIST) and the email identity guard live in the edge
+# function — nothing here can widen them.
+KEYPAY_PORTAL_ACCESS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/keypay-portal-access"
 # Induction sessions ops surface (item 4). A single action-router edge function
 # (list/create/update/set_state/roster/book_on_behalf/cancel_on_behalf/
 # no_suitable_list); the Flask route below forwards {action, ...} with the secret
@@ -8819,6 +8825,15 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         welcome_result = {"ok": False, "outcome": "failed",
                           "error": "welcome email crashed"}
 
+    # 10b. EH Employee Portal access (BRIEF-eh-portal-access D1). Best-effort;
+    #      a returning crew member who already has access comes back "already".
+    try:
+        portal_result = _grant_eh_portal_access(cand_id)
+    except Exception as e:
+        print(f"[recruitment] convert-update portal access crashed: {e}")
+        portal_result = {"ok": False, "outcome": "failed",
+                         "text": "Portal access step crashed.", "error": str(e)}
+
     # 11. Audit — field NAMES only, never values (PII).
     _write_audit("recruit_convert_update", "candidate", cand_id,
                  {"crew_id": target_id, "ein": ein, "fields": updated_fields,
@@ -8846,6 +8861,7 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         "visa":     visa_result,
         "photo":    photo_result,
         "welcome":  welcome_result,
+        "portal":   portal_result,
     })
 
 
@@ -8920,6 +8936,79 @@ def api_recruitment_welcome_email(cand_id):
     if not res.get("ok"):
         return jsonify({"error": res.get("error") or "Could not send the welcome email",
                         "outcome": res.get("outcome")}), 502
+    return jsonify(res)
+
+
+# ─── EH EMPLOYEE PORTAL ACCESS ────────────────────────────────────────────────
+# Granted at the end of convert (D1), after the welcome email. EH sends its own
+# "you've been given access" email (D2). NEVER RAISES — same contract as the
+# welcome email: the crew member exists whether or not the grant landed, and a
+# missed grant is retried from the active_crew panel.
+_PORTAL_OUTCOME_TEXT = {
+    "granted":          "Access granted — Employment Hero is emailing them a login link.",
+    "already":          "They already had access.",
+    "blocked_identity": "Not granted — the email on the Employment Hero record doesn't match this candidate. Check in EH.",
+    "not_active_crew":  "Not granted — the candidate isn't marked active crew yet.",
+    "no_eh_employee":   "Not granted — no Employment Hero employee is linked.",
+    "not_enabled":      "Not granted — portal access automation is switched off.",
+    "not_allowlisted":  "Not granted — portal access is limited to a test allowlist right now.",
+    "failed":           "Not granted — Employment Hero returned an error.",
+    "unknown":          "Unknown — Employment Hero didn't answer in time. Check their access in EH before retrying.",
+}
+
+
+def _grant_eh_portal_access(cand_id):
+    """POST mode "grant" to keypay-portal-access. Returns {ok, outcome, text, error}."""
+    if not GOAT_RECRUITMENT_KEY:
+        return {"ok": False, "outcome": "failed", "text": "Recruitment key not configured",
+                "error": "Recruitment key not configured"}
+    try:
+        acting = _keypay_acting_user_id()
+    except Exception:
+        acting = ""
+    try:
+        r = http.post(
+            KEYPAY_PORTAL_ACCESS_URL,
+            headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
+            json={"mode": "grant", "candidate_id": str(cand_id),
+                  "acting_user_id": acting},
+            timeout=75,   # two KeyPay reads + a write, each capped at 30 s edge-side
+        )
+    except Exception as e:
+        print(f"[recruitment] portal access request failed: {e}")
+        return {"ok": False, "outcome": "failed",
+                "text": "Couldn't reach the portal access service.",
+                "error": "Portal access service unavailable"}
+    try:
+        body = r.json()
+    except Exception:
+        body = {}
+    if r.status_code != 200:
+        err = body.get("error") or f"HTTP {r.status_code}"
+        print(f"[recruitment] portal access returned {r.status_code}: {err}")
+        return {"ok": False, "outcome": "failed",
+                "text": "Not granted — the portal access service returned an error.",
+                "error": err}
+    outcome = str(body.get("outcome") or "failed")
+    return {"ok": outcome in ("granted", "already"),
+            "outcome": outcome,
+            "confirmed": body.get("confirmed"),
+            "text": _PORTAL_OUTCOME_TEXT.get(outcome, outcome),
+            "error": body.get("error")}
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/eh-portal-access", methods=["POST"])
+@require_cohort("admin")
+def api_recruitment_eh_portal_access(cand_id):
+    """Retry the EH Employee Portal grant for a converted crew member. Admin-only,
+    matching Complete KeyPay setup. No email or name crosses from the browser —
+    the edge function reads both from the candidate row and the EH record."""
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+    res = _grant_eh_portal_access(cand_id)
+    _write_audit("recruit_eh_portal_access", "candidate", cand_id,
+                 {"outcome": res.get("outcome")})
     return jsonify(res)
 
 
@@ -9157,6 +9246,16 @@ def api_recruitment_convert(cand_id):
         welcome_result = {"ok": False, "outcome": "failed",
                           "error": "welcome email crashed"}
 
+    # 13. EH Employee Portal access (BRIEF-eh-portal-access D1) — after every
+    #     SmartStaff write and the welcome email. Best-effort, never fails the
+    #     conversion; needs step 7's active_crew stamp to have landed.
+    try:
+        portal_result = _grant_eh_portal_access(cand_id)
+    except Exception as e:
+        print(f"[recruitment] convert portal access crashed: {e}")
+        portal_result = {"ok": False, "outcome": "failed",
+                         "text": "Portal access step crashed.", "error": str(e)}
+
     return jsonify({
         "ok":       True,
         "id":       uid,
@@ -9172,6 +9271,7 @@ def api_recruitment_convert(cand_id):
         "contract": contract_result,
         "visa":     visa_result,
         "welcome":  welcome_result,
+        "portal":   portal_result,
     })
 
 
