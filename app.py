@@ -184,7 +184,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.102.1"
+APP_VERSION    = "5.102.2"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -5685,10 +5685,25 @@ def payload_rate_card(payload):
     exactly when mopt is false, and set_code agreeing with the two answers.
     Any mismatch is an error, never a guess."""
     std = ({"mopt": False, "australian_open": None}, pricing_rules.STANDARD, [])
-    if not isinstance(payload, dict) or "rate_card" not in payload:
+    if not isinstance(payload, dict):
+        return std
+
+    # 1.3 must CARRY the block: a missing key and a null block are both errors,
+    # because either would quietly price a MOPT estimate as Standard with
+    # nobody told — the outcome C9 exists to prevent.
+    #
+    # 1.2 IS DELIBERATELY UNCHANGED (§16.6 #4, Mike 12 Nov): a missing key
+    # still imports as Standard, and only a present-but-null block is an error.
+    # 1.0 / 1.1 never carried one. Tightening 1.2 as well was considered and
+    # rejected — it is a live format and this release has no business changing
+    # what it accepts.
+    sv = payload.get("schema_version")
+    if "rate_card" not in payload:
+        if sv == "1.3":
+            return None, None, ["Missing: rate_card (required from schema 1.3)"]
         return std
     rc = payload.get("rate_card")
-    if rc is None and payload.get("schema_version") != "1.2":
+    if rc is None and sv not in ("1.2", "1.3"):
         return std
     if not isinstance(rc, dict):
         return None, None, ["rate_card must be an object"]
@@ -5715,6 +5730,159 @@ def payload_rate_card(payload):
     return {"mopt": mopt, "australian_open": ao if mopt else None}, code, []
 
 
+# ─── SCHEMA 1.3: THE QUOTED FIGURE (slice D, BRIEF §16) ──────────────────────
+# 1.3 adds `estimate.totals`, `estimate.minimums_applied` and a per-line
+# `billable_hours`. The money is stored in Supabase's booking_quote through the
+# goat-booking-docs `quote_import` mode, which has taken these fields since
+# 5.102.0 — so slice D is Flask-only: no migration, no edge-function change.
+#
+# QUOTED IS EX GST (D-2): `subtotal_ex_gst` is what reaches
+# booking_quote.total_ex_gst. `gst`, `total_inc_gst` and `gst_rate` are
+# accepted and deliberately NOT stored — the Financials tab is ex GST
+# throughout, and a second total in a different basis sitting in the same row
+# is a mistake waiting to be read off.
+
+# The five amounts 1.3 must carry. `gst_rate` is a rate, not an amount, so it
+# is accepted without being checked as money.
+QUOTE_TOTAL_FIELDS = ("labour_ex_gst", "non_labour_ex_gst", "subtotal_ex_gst",
+                      "gst", "total_inc_gst")
+
+
+def _quote_amount(v):
+    """A totals value as a float, or None when it is not a usable amount.
+
+    bool is rejected explicitly: it is an int subclass in Python, so `True`
+    would otherwise pass as 1.0 and store a dollar."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    if f != f or f in (float("inf"), float("-inf")) or f < 0:
+        return None
+    return f
+
+
+def payload_is_13(payload):
+    return isinstance(payload, dict) and payload.get("schema_version") == "1.3"
+
+
+def quote_payload_errors(payload):
+    """§16.4's 1.3-only rules. [] for 1.0-1.2, which carry no totals."""
+    if not payload_is_13(payload):
+        return []
+
+    errors = []
+    est = payload.get("estimate") or {}
+    totals = est.get("totals")
+
+    if not isinstance(totals, dict):
+        errors.append("Missing: estimate.totals (required from schema 1.3)")
+    else:
+        for field in QUOTE_TOTAL_FIELDS:
+            if field not in totals:
+                errors.append(f"Missing: estimate.totals.{field}")
+            elif _quote_amount(totals.get(field)) is None:
+                errors.append(f"estimate.totals.{field} must be a number of 0 or more "
+                              f"(got {totals.get(field)!r})")
+
+    if not isinstance(est.get("minimums_applied"), bool):
+        errors.append("estimate.minimums_applied must be true or false "
+                      f"(got {est.get('minimums_applied')!r})")
+
+    # Per crew member, so a line's quoted hours are quantity x billable_hours.
+    for ll in (payload.get("labour_lines") or []):
+        bh = ll.get("billable_hours")
+        if isinstance(bh, bool) or not isinstance(bh, (int, float)) or bh < 0:
+            errors.append(f"Invalid billable_hours on line {ll.get('line_id', '?')} "
+                          f"(must be a number ≥ 0 from schema 1.3)")
+
+    return errors
+
+
+def quote_payload_warning(payload):
+    """§16.4's sanity check, as a WARNING and never an error.
+
+    The Estimator rounds each total to cents at export, so a cent of drift is
+    possible and is not a reason to refuse a booking someone is waiting on.
+    Anything larger means the file disagrees with itself, which is worth
+    saying out loud beside the figure rather than swallowing."""
+    if not payload_is_13(payload):
+        return None
+    totals = (payload.get("estimate") or {}).get("totals")
+    if not isinstance(totals, dict):
+        return None
+    labour = _quote_amount(totals.get("labour_ex_gst"))
+    non_labour = _quote_amount(totals.get("non_labour_ex_gst"))
+    subtotal = _quote_amount(totals.get("subtotal_ex_gst"))
+    if labour is None or non_labour is None or subtotal is None:
+        return None
+    if abs(subtotal - (labour + non_labour)) > 0.01:
+        return (f"This quote's subtotal (${subtotal:,.2f}) doesn't equal labour "
+                f"(${labour:,.2f}) plus non-labour (${non_labour:,.2f}). "
+                f"Imported as sent — check it against the Estimator.")
+    return None
+
+
+def quote_import_fields(payload, user_id):
+    """§16.3's mapping: the `quote_import` body, or None for 1.0-1.2.
+
+    Call only on a payload that has already passed validation."""
+    if not payload_is_13(payload):
+        return None
+    est = payload.get("estimate") or {}
+    totals = est.get("totals") or {}
+
+    # Defensive only (§8): export now saves first, so a fake "est_<timestamp>"
+    # id can no longer occur. If one ever does it is stored as null rather than
+    # written as a key that matches no quote in the Estimator.
+    estimate_id = str(est.get("estimate_id") or "").strip()
+    if estimate_id.startswith("est_"):
+        estimate_id = None
+
+    # Read from the PAYLOAD's labour_lines, deliberately — not from the
+    # operator's edited `lines` in api_import_start. booking_quote records THE
+    # QUOTE, which is what the customer was shown; a line the operator added or
+    # deleted on the way into SmartStaff changes the booking, not the quote
+    # that was sent. The totals above come from the same place, so the row is
+    # internally consistent.
+    billable = []
+    for ll in (payload.get("labour_lines") or []):
+        billable.append({
+            "call_name":      ll.get("call_name"),
+            "crew_type":      ll.get("crew_type"),
+            "qty":            ll.get("quantity"),
+            "billable_hours": ll.get("billable_hours"),
+        })
+
+    return {
+        "estimate_id":       estimate_id or None,
+        "quote_number":      est.get("quote_number"),
+        "estimate_version":  est.get("version"),
+        "labour_ex_gst":     totals.get("labour_ex_gst"),
+        "non_labour_ex_gst": totals.get("non_labour_ex_gst"),
+        "total_ex_gst":      totals.get("subtotal_ex_gst"),   # D-2: ex GST
+        "minimums_applied":  est.get("minimums_applied"),
+        "billable_hours":    billable,
+        "user_id":           user_id,
+    }
+
+
+def quote_preview(payload):
+    """The preview's `quoted` block, or None for 1.0-1.2 (§16.5)."""
+    if not payload_is_13(payload):
+        return None
+    est = payload.get("estimate") or {}
+    totals = est.get("totals") or {}
+    return {
+        "total_ex_gst":      totals.get("subtotal_ex_gst"),
+        "labour_ex_gst":     totals.get("labour_ex_gst"),
+        "non_labour_ex_gst": totals.get("non_labour_ex_gst"),
+        "quote_number":      est.get("quote_number"),
+        "version":           est.get("version"),
+        "minimums_applied":  est.get("minimums_applied"),
+        "warning":           quote_payload_warning(payload),
+    }
+
+
 def validate_payload(payload):
     """Validate import payload. Returns list of error strings (empty = valid)."""
     errors = []
@@ -5725,8 +5893,8 @@ def validate_payload(payload):
     # 1.2 (Estimator, 14 Oct 2026) adds a top-level rate_card block and the
     # MOPT call names. The block is validated by payload_rate_card; the call
     # names are checked against the card in api_import_validate.
-    if payload.get("schema_version") not in ("1.0", "1.1", "1.2"):
-        errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0', '1.1' or '1.2')")
+    if payload.get("schema_version") not in ("1.0", "1.1", "1.2", "1.3"):
+        errors.append(f"Unsupported schema version: {payload.get('schema_version')!r} (expected '1.0', '1.1', '1.2' or '1.3')")
 
     est = payload.get("estimate", {})
     if not est.get("estimate_id"):
@@ -5778,8 +5946,12 @@ def validate_payload(payload):
     # Non-labour lines (schema 1.1) — looser rules, no scheduling fields required
     errors.extend(validate_non_labour(non_labour))
 
-    # Rate card (schema 1.2, C9)
+    # Rate card (schema 1.2 and 1.3, C9 / §16.4)
     errors.extend(payload_rate_card(payload)[2])
+
+    # The quoted figure (schema 1.3, §16.4). The subtotal sanity check is a
+    # WARNING and is surfaced in the preview, not here.
+    errors.extend(quote_payload_errors(payload))
 
     return errors
 
@@ -17819,6 +17991,10 @@ def api_import_validate():
                 "customer_note":   rate_card_customer_note(
                     rc_set, customer_match["id"] if customer_match else None),
             },
+            # The quoted figure (schema 1.3, §16.5). None for 1.0-1.2, which
+            # carry no totals — those bookings get Quoted from an Admin on the
+            # Financials tab instead.
+            "quoted": quote_preview(payload),
         },
         "matching": {
             "customer_name":          customer["company_name"],
@@ -18104,6 +18280,30 @@ def api_import_start():
             elif booking_id and ct_warning:
                 _import_progress["call_type_error"] = ct_warning
 
+            # The quoted figure (schema 1.3, §16.5). Stored AFTER the booking
+            # and its calls exist, through the goat-booking-docs quote_import
+            # mode. Like the rate card and the Call Types above, a failure here
+            # NEVER undoes the import — the booking is real and someone is
+            # waiting on it. It is loud instead: a red banner, and the Admin
+            # types the amount on the Financials tab.
+            quote_fields = quote_import_fields(payload, set_by)
+            if booking_id and quote_fields:
+                _import_progress["step"] = "Saving the quoted amount..."
+                if set_by is None:
+                    _import_progress["quote_error"] = (
+                        "Quoted amount not saved (couldn't identify who is importing): "
+                        "set it on the booking's Financials tab.")
+                else:
+                    quote_fields["booking_id"] = booking_id
+                    _, q_err, _ = _booking_docs_call("quote_import", quote_fields)
+                    if q_err:
+                        app.logger.warning(f"[import] quote_import failed: {q_err}")
+                        _import_progress["quote_error"] = (
+                            "Quoted amount not saved: set it on the booking's "
+                            "Financials tab.")
+                    else:
+                        _import_progress["quoted"] = quote_fields["total_ex_gst"]
+
             # Step 3: record in import log
             import_log = load_import_log()
             import_log.append({
@@ -18116,6 +18316,10 @@ def api_import_start():
                 "errors":               len(_import_progress["errors"]),
                 "rate_card":            rc_set,
                 "rate_card_saved":      not _import_progress.get("rate_card_error"),
+                # None for 1.0-1.2: no quote was sent, which is different from
+                # one that was sent and failed.
+                "quote_saved":          (None if not quote_fields
+                                         else not _import_progress.get("quote_error")),
             })
             save_import_log(import_log)
 
