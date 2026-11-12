@@ -39858,10 +39858,16 @@ function bkFiguresRender(bookingId){
           + (d.quote.minimums_applied === false ? ' (no minimums)' : '');
   }
   h += row('Quoted', qVal, qNote || 'No quote');
-  if(window._cohort === 'admin')
+  // AN IMPORTED QUOTE GETS NO BUTTON. Its figure is frozen in the Estimator and
+  // the edge function refuses quote_set against an estimate_import row (409),
+  // so the button used to draw with an empty label — an empty oval that opened
+  // an amount form nothing could save. The note under Quoted already says the
+  // figure came from the Estimator.
+  var qBtn = !d.quote ? 'Set amount…'
+           : (d.quote.source === 'manual' ? 'Change…' : null);
+  if(window._cohort === 'admin' && qBtn)
     h += '<div style="padding:3px 0 7px"><button class="btn" style="font-size:10px" '
-       + 'onclick="bkQuoteForm(\''+bookingId+'\')">'
-       + (d.quote && d.quote.source === 'manual' ? 'Change…' : (d.quote ? '' : 'Set amount…'))
+       + 'onclick="bkQuoteForm(\''+bookingId+'\')">' + bkSafe(qBtn)
        + '</button><div id="bk-quote-form"></div></div>';
 
   // Three cases, and the first two must never read as money:
@@ -39973,27 +39979,71 @@ function bkFiguresRender(bookingId){
     if(!byType[label]) byType[label] = {calls:0, sched:0, actual:0, derived:ct2.source==='derived'};
     byType[label].calls++; byType[label].sched += sched; byType[label].actual += actual;
   }
+  // QUOTED HOURS (AS BILLED), per crew type. Σ qty × billable_hours over the
+  // quote's own labour lines, keyed on crew_type — the SAME string as the call
+  // type's role. Never matched on call name: the quote's call names are the
+  // Estimator's, not the booking's, and the "(from name)" derivation has no
+  // part in it either.
+  //
+  // billable_hours already carries the minimum billable hours when the quote
+  // was priced with them, so a role's quoted figure can be HIGHER than its
+  // Scheduled h even when the schedule matches the quote exactly. That is the
+  // point of the column and not a discrepancy.
+  //
+  // null, not {}, when there is no breakdown to show: no quote, a manual one,
+  // or a 1.0-1.2 import that carried no billable_hours. Every row then reads
+  // '—' rather than a 0.00 nobody quoted.
+  var qHours = null;
+  var qLines = (d.quote && d.quote.source === 'estimate_import')
+                 ? d.quote.billable_hours : null;
+  if(qLines && qLines.length){
+    qHours = {};
+    for(var q=0;q<qLines.length;q++){
+      var ql = qLines[q] || {};
+      var qrole = (ql.crew_type === null || ql.crew_type === undefined)
+                    ? 'Not set' : String(ql.crew_type);
+      var qh = Number(ql.qty||0) * Number(ql.billable_hours||0);
+      if(!isNaN(qh)) qHours[qrole] = (qHours[qrole]||0) + qh;
+    }
+    // A QUOTED ROLE WITH NO MATCHING CALLS GETS ITS OWN ROW. Every quoted hour
+    // has to appear somewhere or the column's total stops equalling the quote.
+    var qRoles = Object.keys(qHours);
+    for(var qr=0;qr<qRoles.length;qr++)
+      if(!byType[qRoles[qr]])
+        byType[qRoles[qr]] = {calls:0, sched:0, actual:0, derived:false};
+  }
+  var qCell = function(v){
+    return '<td align="right">' + (qHours && v ? v.toFixed(2) : '—') + '</td>';
+  };
+
   h += '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 5px">Hours by call type</div>'
      + '<table style="width:100%;border-collapse:collapse;font-size:11px">'
      + '<tr style="color:var(--muted)"><th align="left">Call type</th><th align="right">Calls</th>'
+     + '<th align="right">' + bkSafe('Quoted h (billed)') + '</th>'
      + '<th align="right">Scheduled h</th><th align="right">Actual h</th></tr>';
-  var tSched=0, tActual=0, tCalls=0;
+  var tSched=0, tActual=0, tCalls=0, tQuoted=0;
   var keys = Object.keys(byType).sort();
   for(var m=0;m<keys.length;m++){
     var t = byType[keys[m]];
-    tSched += t.sched; tActual += t.actual; tCalls += t.calls;
+    var tq = qHours ? (qHours[keys[m]]||0) : 0;
+    tSched += t.sched; tActual += t.actual; tCalls += t.calls; tQuoted += tq;
     h += '<tr style="border-top:1px solid var(--border)"><td>'+bkSafe(keys[m])
        + (t.derived?' <span style="color:var(--muted)">(from name)</span>':'')+'</td>'
        + '<td align="right">'+t.calls+'</td>'
+       + qCell(tq)
        + '<td align="right">'+(t.sched?t.sched.toFixed(2):'—')+'</td>'
        + '<td align="right">'+(t.actual?t.actual.toFixed(2):'—')+'</td></tr>';
   }
   if(cancelledPaid.calls)
     h += '<tr style="border-top:1px solid var(--border);opacity:.7"><td>Cancelled – paid</td>'
-       + '<td align="right">'+cancelledPaid.calls+'</td><td align="right">—</td>'
+       + '<td align="right">'+cancelledPaid.calls+'</td>'
+       + '<td align="right">—</td>'                   // Q7: no quoted hours of its own
+       + '<td align="right">—</td>'
        + '<td align="right">'+(cancelledPaid.actual?cancelledPaid.actual.toFixed(2):'—')+'</td></tr>';
   h += '<tr style="border-top:2px solid var(--border);font-weight:600"><td>Total</td>'
-     + '<td align="right">'+tCalls+'</td><td align="right">'+(tSched?tSched.toFixed(2):'—')+'</td>'
+     + '<td align="right">'+tCalls+'</td>'
+     + qCell(tQuoted)
+     + '<td align="right">'+(tSched?tSched.toFixed(2):'—')+'</td>'
      + '<td align="right">'+(tActual?tActual.toFixed(2):'—')+'</td></tr></table>'
      + '<div style="font-size:10px;color:var(--muted);margin-top:4px">'
      + withTimes+' of '+calls.length+' calls have times</div>';
