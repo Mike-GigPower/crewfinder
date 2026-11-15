@@ -428,6 +428,13 @@
 			$crewByCall[$ccid][] = array(
 				'user_id'      => (int) $crow->user_id,
 				'name'         => trim(trim($first) . ' ' . trim($last)),
+				/*
+				/* firstname / lastname ADDED 15 Nov 2026 so the Crew Hub check-in
+				/* screen can show "Lastname, Firstname" sorted by surname, as THE
+				/* GOAT and the Google Sheet do. Additive: `name` is unchanged.
+				*/
+				'firstname'    => trim($first),
+				'lastname'     => trim($last),
 				'mobile'       => ($crow->mobile === null ? '' : $crow->mobile),
 				'status'       => ((int) $crow->status === 5) ? 'confirmed' : 'standby',
 				'is_call_boss' => ((int) $crow->is_call_boss === 1) ? 1 : 0,
