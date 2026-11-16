@@ -147,7 +147,8 @@ class MarginCard(unittest.TestCase):
         self.assertIn("<td>Stage &amp; Lights</td>", h)
         self.assertNotIn("&amp;amp;", h)
         self.assertIn('data-perf-call="13:104"', h)
-        self.assertIn("Check these in Xero before treating them as lost revenue.", h)
+        self.assertIn("likely unbilled", h)
+        self.assertNotIn("Xero before", h)
 
     def test_slot_states(self):
         out = run(r"""

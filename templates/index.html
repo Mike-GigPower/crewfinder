@@ -38164,7 +38164,10 @@ function perfMarginCard(c){
     });
     foldBody += '</tbody></table>';
     if((c.exceptions || {}).truncated) foldBody += '<div class="perf-note">Showing the 50 most recent.</div>';
-    foldBody += '<div class="perf-note">Check these in Xero before treating them as lost revenue.</div>';
+    // Every invoice is generated in SmartStaff and only exported to Xero;
+    // nothing is invoiced or edited in Xero (Jenny via Mike, 16 Nov 2026).
+    // So a call with no line on any SmartStaff invoice was not billed anywhere.
+    foldBody += '<div class="perf-note">No invoice line in SmartStaff for these calls, and invoices are never added to in Xero — likely unbilled.</div>';
   }
 
   return '<div class="perf-card perf-mgn">' + head
