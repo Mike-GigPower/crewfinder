@@ -7,6 +7,7 @@
 	include('../../global.php');
 	include('cohort.php');
 	include('perf-split-lib.php');
+	include_once(dirname(__FILE__) . '/goat-db.php');
 
 	/*
 	/* JSON response */
@@ -67,13 +68,63 @@
 	/*  window boundaries and the bucket keys on one clock. The key is returned
 	/*  raw; the client formats it.
 	/*
-	/* PHP 5.x — mysql_* only, array() syntax, no null-coalescing, no scalar type
-	/* hints. mysql_* returns every column as a STRING, so each numeric is cast
-	/* explicitly before any arithmetic.
+	/* PHP 5.6, version-agnostic — array() syntax, no null-coalescing, no scalar
+	/* type hints. Queries use mysqli_* on this file's own link (O1, converted
+	/* from mysql_* 16 Nov 2026 with no change in behaviour: same five queries,
+	/* same error messages, same fetch shape). mysqli_fetch_object returns every
+	/* column as a STRING, exactly as mysql_fetch_object did, so each numeric is
+	/* still cast explicitly before any arithmetic.
+	/*
+	/* goat_can_read_all() (cohort.php) still reads the session through the
+	/* legacy connection global.php opens; that is cohort.php's own business and
+	/* is unchanged here. Both connections reach the same database and nothing in
+	/* this file writes, so there is no transaction to span.
 	*/
 
 	if (!goat_can_read_all())
 		goat_json_error(403, 'Forbidden');
+
+	/*
+	/* A mysqli link with the same credentials goat_pdo() resolves. No charset
+	/* is set, deliberately: the legacy connection this replaces set none
+	/* either, so customer and call names come back as the same bytes as before.
+	/* Copied in shape from figures_mysqli() (get-booking-figures.php).
+	*/
+	function goat_perf_mysqli()
+	{
+		$host = goat_db_find_setting(array(
+			'GOAT_EMERGENCY_DB_HOST','GOAT_DB_HOST','DB_HOST','DBHOST','MYSQL_HOST','SQL_HOST','HOST'));
+		$user = goat_db_find_setting(array(
+			'GOAT_EMERGENCY_DB_USER','GOAT_DB_USER','DB_USER','DBUSER','DB_USERNAME','MYSQL_USER','SQL_USER','USER'));
+		$pass = goat_db_find_setting(array(
+			'GOAT_EMERGENCY_DB_PASS','GOAT_DB_PASS','DB_PASS','DBPASS','DB_PASSWORD','DBPASSWORD','MYSQL_PASS','SQL_PASS','PASS','PASSWORD'));
+		$name = goat_db_find_setting(array(
+			'GOAT_EMERGENCY_DB_NAME','GOAT_DB_NAME','DB_NAME','DBNAME','MYSQL_DB','SQL_DB','DB_DATABASE','DATABASE'));
+
+		if ($host === null) { $host = 'localhost'; }
+
+		if ($user === null || $pass === null || $name === null)
+		{
+			error_log('get-performance: could not resolve DB credentials');
+			return null;
+		}
+
+		mysqli_report(MYSQLI_REPORT_OFF);
+		$link = @mysqli_connect($host, $user, $pass, $name);
+
+		if (!$link)
+		{
+			error_log('get-performance: connect failed: ' . mysqli_connect_error());
+			return null;
+		}
+
+		return $link;
+	}
+
+	$perf_link = goat_perf_mysqli();
+
+	if ($perf_link === null)
+		goat_json_error(500, 'database unavailable');
 
 
 	/* ──────────────────────────────────────────────────────────────────────────
@@ -418,12 +469,12 @@
 
 	$equipment_roles = array();
 
-	$res_pg = mysql_query("SELECT day_desc FROM paygrades WHERE rate = 0");
+	$res_pg = mysqli_query($perf_link, "SELECT day_desc FROM paygrades WHERE rate = 0");
 
 	if ($res_pg === false)
-		goat_json_error(500, 'paygrade query failed: ' . mysql_error());
+		goat_json_error(500, 'paygrade query failed: ' . mysqli_error($perf_link));
 
-	while ($row = mysql_fetch_object($res_pg))
+	while ($row = mysqli_fetch_object($res_pg))
 	{
 		$norm = goat_perf_normalise_role($row->day_desc);
 
@@ -470,12 +521,12 @@
 		  AND b.hidden = 0
 	";
 
-	$res_lines = mysql_query($sql_lines);
+	$res_lines = mysqli_query($perf_link, $sql_lines);
 
 	if ($res_lines === false)
-		goat_json_error(500, 'invoice line query failed: ' . mysql_error());
+		goat_json_error(500, 'invoice line query failed: ' . mysqli_error($perf_link));
 
-	while ($row = mysql_fetch_object($res_lines))
+	while ($row = mysqli_fetch_object($res_lines))
 	{
 		$ts  = (int) $row->start_date;
 		$key = goat_perf_week_key($ts);
@@ -673,12 +724,12 @@
 
 	$invoiced_calls = array();
 
-	$res_ic = mysql_query("SELECT DISTINCT callID FROM invoice_lines WHERE callID > 0");
+	$res_ic = mysqli_query($perf_link, "SELECT DISTINCT callID FROM invoice_lines WHERE callID > 0");
 
 	if ($res_ic === false)
-		goat_json_error(500, 'invoiced call query failed: ' . mysql_error());
+		goat_json_error(500, 'invoiced call query failed: ' . mysqli_error($perf_link));
 
-	while ($row = mysql_fetch_object($res_ic))
+	while ($row = mysqli_fetch_object($res_ic))
 		$invoiced_calls[(int) $row->callID] = true;
 
 
@@ -744,12 +795,12 @@
 		  AND ccm.status NOT IN ($excluded_status)
 	";
 
-	$res_crew = mysql_query($sql_crew);
+	$res_crew = mysqli_query($perf_link, $sql_crew);
 
 	if ($res_crew === false)
-		goat_json_error(500, 'crew time query failed: ' . mysql_error());
+		goat_json_error(500, 'crew time query failed: ' . mysqli_error($perf_link));
 
-	while ($row = mysql_fetch_object($res_crew))
+	while ($row = mysqli_fetch_object($res_crew))
 	{
 		$call_id = (int) $row->call_id;
 
@@ -979,12 +1030,12 @@
 		ORDER BY c.start_date, c.id
 	";
 
-	$res_fwd = mysql_query($sql_fwd);
+	$res_fwd = mysqli_query($perf_link, $sql_fwd);
 
 	if ($res_fwd === false)
-		goat_json_error(500, 'forward book query failed: ' . mysql_error());
+		goat_json_error(500, 'forward book query failed: ' . mysqli_error($perf_link));
 
-	while ($row = mysql_fetch_object($res_fwd))
+	while ($row = mysqli_fetch_object($res_fwd))
 	{
 		$ts       = (int) $row->start_date;
 		$required = (int) $row->required;
