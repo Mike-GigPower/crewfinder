@@ -160,7 +160,15 @@
 				if ($hasPay || $hasLine)
 					$weeks[$idx]['calls_active']++;
 
-				if ($inv > 0 && isset($matched[$inv]))
+				/*
+				/* calls_matched counts ACTIVE calls only (pay or a line), so it
+				/* is always a subset of calls_active -- the coverage line reads
+				/* "matched of active". A call on a matched invoice with neither
+				/* (cancelled, never crewed) would otherwise push matched above
+				/* active (seen on test, 16 Nov: 157 of 150). Its pay is 0
+				/* either way, so the margin is unchanged.
+				*/
+				if ($inv > 0 && isset($matched[$inv]) && ($hasPay || $hasLine))
 				{
 					$weeks[$idx]['calls_matched']++;
 					$weeks[$idx]['pay'] += $amt;

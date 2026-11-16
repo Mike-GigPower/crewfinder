@@ -64,7 +64,9 @@
 		/* prior week, negative margin */
 		107 => array('start' => $w44, 'invoice' => 4, 'booking' => 15, 'name' => 'H'),
 		/* neither pay nor line: not active */
-		108 => array('start' => $w44, 'invoice' => 0, 'booking' => 16, 'name' => 'I')
+		108 => array('start' => $w44, 'invoice' => 0, 'booking' => 16, 'name' => 'I'),
+		/* on matched invoice 1 but neither pay nor line: not matched either */
+		109 => array('start' => $w46, 'invoice' => 1, 'booking' => 11, 'name' => 'J')
 	);
 
 	$pay = array(
@@ -103,6 +105,7 @@
 	tpc_eq($wk[3]['margin_pct'], 41.7, 'W46 margin pct');
 	tpc_eq($wk[3]['calls_matched'], 2, 'W46 calls matched (A, B)');
 	tpc_eq($wk[3]['calls_active'], 3, 'W46 calls active (A, B, C)');
+	tpc_eq($wk[3]['calls_matched'] <= $wk[3]['calls_active'], true, 'W46 matched never exceeds active (J excluded)');
 	tpc_eq($wk[3]['awaiting_invoice'], array('calls' => 1, 'pay' => 50.0), 'W46 awaiting');
 	tpc_eq($wk[3]['hand_billed_unlined'], array('calls' => 1, 'pay' => 100.0), 'W46 hand billed');
 	tpc_eq($wk[3]['not_on_invoice']['calls'], 0, 'W46 not on invoice');
@@ -147,6 +150,11 @@
 	tpc_eq($r['data_quality']['lines_call_outside_span'], 1, 'dq outside call');
 	tpc_eq($r['data_quality']['lines_no_call'], 1, 'dq no call');
 	tpc_eq($r['data_quality']['lines_no_call_revenue'], 200.0, 'dq no call revenue');
+
+	/* invariant over every week: matched is a subset of active */
+	$ok = true;
+	foreach ($wk as $w) { if ($w['calls_matched'] > $w['calls_active']) $ok = false; }
+	tpc_eq($ok, true, 'matched <= active in every week');
 
 	/* exception in the PRIOR window is not listed */
 	$calls2 = array(201 => array('start' => $w44, 'invoice' => 7, 'booking' => 1, 'name' => 'old'),
