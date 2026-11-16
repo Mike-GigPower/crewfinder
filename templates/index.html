@@ -1883,6 +1883,20 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .perf-basis{display:flex;flex-wrap:wrap;gap:6px 22px;font-size:11px;color:var(--muted);line-height:1.5;margin:-2px 2px 12px}
 .perf-basis span{flex:1 1 320px}
 .perf-basis b{color:var(--text);font-weight:600}
+/* Margin — crew pay (Mike and Joe only; BRIEF-performance-cost-slice-a.md) */
+.perf-mgn-tots .perf-head-val{font-size:18px}
+.perf-mgn-negval{color:#e31e24}
+.perf-mgn-zero{stroke:var(--muted);stroke-width:1}
+.perf-mgn-target{stroke:#10b981;stroke-width:1.2;stroke-dasharray:6 5}
+.perf-mgn-target-lbl{fill:#10b981}
+.perf-mgn-key-target{background:none;border-top:2px dashed #10b981;height:0;align-self:center}
+.perf-mgn-amber{color:var(--warn)}
+.perf-mgn-ex{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+.perf-mgn-ex th{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;font-weight:600;padding:4px 6px;border-bottom:1px solid var(--border)}
+.perf-mgn-ex td{padding:5px 6px;border-bottom:1px solid var(--border)}
+.perf-mgn-ex .r{text-align:right;font-family:'Share Tech Mono',monospace}
+.perf-mgn-exrow{cursor:pointer}
+.perf-mgn-exrow:hover{background:rgba(212,175,55,0.07)}
 
 /* One computed sentence under a chart — the finding, not the method. Templated
    at render from the payload, never a written-down number. */
@@ -36187,7 +36201,7 @@ const PERF_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct'
 const PERF_RANK_MIN_HOURS = 1000;
 
 async function loadPerformance(force){
-  if(_perfData && !force){ renderPerformance(); return; }
+  if(_perfData && !force){ renderPerformance(); loadPerfCost(false); return; }
   const body = document.getElementById('perf-body');
   if(body) body.innerHTML = '<div class="ops-lane-status">Loading…</div>';
   setPerfAsAt(null);
@@ -36203,6 +36217,9 @@ async function loadPerformance(force){
     _perfCustomer = null;
     setPerfAsAt(data.generated_at);
     renderPerformance();
+    // After the revenue charts have drawn, never before, and not awaited: the
+    // margin's pay scan is slower and must not hold the tab up (BRIEF §5.2).
+    loadPerfCost(!!force);
   }catch(e){
     renderPerfUnavailable((e && e.message) || 'load failed');
   }
@@ -36921,8 +36938,14 @@ function perfBasisStrip(){
     + '<span><b>Labour only, by event date.</b> Equipment, vehicles, fuel and expenses are billed outside SmartStaff, '
     +   'and revenue is attributed to when the work happened rather than when it was billed — so this will never '
     +   'reconcile to the accounts, deliberately.</span>'
-    + '<span><b>No margin figure.</b> Charge-out rates are reliable; pay rates are hand-keyed and paygrade variants '
-    +   'that all charge the same amount pay three different ones. A margin would carry the whole of that error.</span>'
+    + (perfMarginOn()
+        // Margin users: the pay figure was checked against Employment Hero
+        // (27 Oct 2026 pay run, within 0.09%; design §7.5), so the old caveat
+        // no longer holds for them. Everyone else keeps it unchanged.
+        ? '<span><b>Margin = invoiced labour less crew pay as SmartStaff calculated it</b> (checked against Employment Hero, '
+          + '27 Oct 2026 pay run: within 0.1%). No salaried staff, super or on-costs. Matched invoices only.</span>'
+        : '<span><b>No margin figure.</b> Charge-out rates are reliable; pay rates are hand-keyed and paygrade variants '
+          + 'that all charge the same amount pay three different ones. A margin would carry the whole of that error.</span>')
     + '</div>';
 }
 
@@ -36997,6 +37020,28 @@ function perfTrim(s, n){
 // and invite a comparison against a distinct count. `totals.bookings` is a
 // distinct count for the window and the endpoint computes no such figure for the
 // prior year, so there is nothing honest to put beside it.
+// One KPI tile. Hoisted out of perfHeadlines so the margin tile can be
+// redrawn on its own when the margin data arrives, after the tiles have drawn.
+function perfHeadTile(o){
+  const col = o.sig ? perfSignalColor(o.sig, o.sigVal) : null;
+  return '<div class="perf-head' + (o.muted ? ' perf-head--muted' : '') + '"'
+    +      (o.title ? ' title="' + escapeHtml(o.title) + '"' : '') + '>'
+    +      (o.spark ? '<div class="perf-spark">' + o.spark + '</div>' : '')
+    +      '<div class="perf-head-in">'
+    +        '<div class="perf-head-val' + (o.accent ? ' accent' : '') + '">' + o.val + '</div>'
+    +        (o.delta
+               ? '<div class="perf-tile-delta"' + (col ? ' style="color:' + col + '"' : '') + '>'
+                 + (col ? '<span class="perf-tile-dot" style="background:' + col + '"></span>' : '')
+                 + o.delta
+                 + (o.vs && o.sigVal != null ? '<span class="perf-tile-vs">' + o.vs + '</span>' : '')
+                 + '</div>'
+               : '')
+    +        '<div class="perf-head-lbl">' + escapeHtml(o.lbl) + '</div>'
+    +        (o.sub ? '<div class="perf-head-sub">' + o.sub + '</div>' : '')
+    +      '</div>'
+    +    '</div>';
+}
+
 function perfHeadlines(d){
   const t    = d.totals || {};
   const win  = d.window || {};
@@ -37044,25 +37089,7 @@ function perfHeadlines(d){
     return (iv.hours > 0) ? (iv.revenue || 0) / iv.hours : null;
   }).filter(function(x){ return x != null; });
 
-  const tile = function(o){
-    const col = o.sig ? perfSignalColor(o.sig, o.sigVal) : null;
-    return '<div class="perf-head' + (o.muted ? ' perf-head--muted' : '') + '"'
-      +      (o.title ? ' title="' + escapeHtml(o.title) + '"' : '') + '>'
-      +      (o.spark ? '<div class="perf-spark">' + o.spark + '</div>' : '')
-      +      '<div class="perf-head-in">'
-      +        '<div class="perf-head-val' + (o.accent ? ' accent' : '') + '">' + o.val + '</div>'
-      +        (o.delta
-                 ? '<div class="perf-tile-delta"' + (col ? ' style="color:' + col + '"' : '') + '>'
-                   + (col ? '<span class="perf-tile-dot" style="background:' + col + '"></span>' : '')
-                   + o.delta
-                   + (o.vs && o.sigVal != null ? '<span class="perf-tile-vs">' + o.vs + '</span>' : '')
-                   + '</div>'
-                 : '')
-      +        '<div class="perf-head-lbl">' + escapeHtml(o.lbl) + '</div>'
-      +        (o.sub ? '<div class="perf-head-sub">' + o.sub + '</div>' : '')
-      +      '</div>'
-      +    '</div>';
-  };
+  const tile = perfHeadTile;
 
   const heads = '<div class="perf-heads">'
     + tile({ val: perfMoney(t.revenue), accent: true, lbl: 'invoiced revenue',
@@ -37096,8 +37123,13 @@ function perfHeadlines(d){
              delta: (top3.length ? 'top 8 · ' + share8.toFixed(1) + '%' : null),
              sub: escapeHtml(top3.map(function(c){ return c.name; }).join(' · ')),
              title: top3.map(function(c){ return c.name + '  ' + perfMoneyFull(c.revenue); }).join('\n') })
-    + tile({ val: '—', lbl: 'gross margin', muted: true,
-             sub: 'cost data not yet reliable' })
+    + (perfMarginOn()
+        // Mike and Joe: filled from the margin card's data (Mike, 16 Nov).
+        // Wrapped so it can be redrawn when that data arrives; display:contents
+        // keeps it a direct flex item of the tile row.
+        ? '<div id="perf-gm-tile" style="display:contents">' + perfGmTileHtml() + '</div>'
+        : tile({ val: '—', lbl: 'gross margin', muted: true,
+                 sub: 'cost data not yet reliable' }))
     + '</div>';
 
   // The whole method note for the strip, folded. Everything here is worth
@@ -37627,6 +37659,9 @@ function renderPerformance(){
                  + '<div class="perf-row2">' + perfWaterfallCard(d) + perfSlopeCard(d) + '</div>'
                  + perfYieldCard(d)
                  + perfWeeklyCard(d)
+                 // Mike and Joe only (whoami.margin). The slot is filled from
+                 // _perfCost state, so every re-render keeps the card.
+                 + (perfMarginOn() ? '<div id="perf-margin-slot">' + perfMarginSlotHtml() + '</div>' : '')
                  + perfForwardCard(d)
                  // Last, full width, and never sharing a row: it is the only view
                  // with a target on it, so it is the one read in a hurry.
@@ -37781,6 +37816,366 @@ function perfWeeklyCard(d){
        + perfFold('weeklyNotes', 'how to read this chart', note)
        + '</div>';
 }
+// ── MARGIN · crew pay (BRIEF-performance-cost-slice-a.md §5.2) ──────────────
+// Mike and Joe only (MARGIN_USERS in app.py, $GOAT_MARGIN_USERS in the PHP).
+// whoami.margin decides whether the card exists at all; it fails closed, so a
+// missing field, an older server or a failed whoami renders Performance exactly
+// as before. Hiding the card is not the access control — the route refuses too.
+//
+// Loaded AFTER the revenue charts have drawn, through its own route, because
+// the pay read is a 2 s JSON scan (P3b). Its state lives here, outside
+// _perfData, so a unit switch or fold toggle (which re-renders #perf-body)
+// redraws the card from state instead of refetching.
+let _perfCost        = null;
+let _perfCostErr     = null;
+let _perfCostLoading = false;
+let _perfCostSeq     = 0;
+let _perfMarginUnit  = (goatPrefs.get('perf', 'marginUnit', 'dollars') === 'pct') ? 'pct' : 'dollars';
+const PERF_MARGIN_TARGET_PCT = 30;    // Q3 (Mike, 16 Nov 2026): a reference line, not a judgement
+
+function perfMarginOn(){
+  return !!(window._identity && window._identity.margin === true);
+}
+
+async function loadPerfCost(force){
+  if(!perfMarginOn()) return;
+  if(!force && (_perfCost || _perfCostLoading)){ renderPerfMarginSlot(); return; }
+  const seq = ++_perfCostSeq;
+  _perfCostLoading = true;
+  _perfCostErr     = null;
+  if(force) _perfCost = null;
+  renderPerfMarginSlot();
+  let data = null, err = null;
+  try{
+    const resp = await fetch('/api/performance/cost' + (force ? '?force=1' : ''));
+    data = await resp.json();
+    // Same contract as /api/performance: soft-fail is HTTP 200 {unavailable}.
+    if(data && data.unavailable) err = data.error || 'the margin endpoint did not answer';
+    else if(!resp.ok || (data && data.error)) err = (data && data.error) || ('HTTP ' + resp.status);
+  }catch(e){
+    err = (e && e.message) || 'load failed';
+  }
+  if(seq !== _perfCostSeq) return;          // a newer load (Refresh) owns the slot
+  _perfCostLoading = false;
+  if(err){ _perfCost = null; _perfCostErr = err; }
+  else   { _perfCost = data; _perfCostErr = null; }
+  renderPerfMarginSlot();
+}
+
+// The slot's whole content, from state. Called by renderPerformance() (inline,
+// so every re-render keeps the card) and by renderPerfMarginSlot() (in place).
+function perfMarginSlotHtml(){
+  if(_perfCostErr) return '<div class="ops-unavail">Margin is unavailable — ' + escapeHtml(String(_perfCostErr)) + '</div>';
+  if(!_perfCost)   return '<div class="perf-card"><div class="ops-lane-status">Loading margin…</div></div>';
+  try{
+    return perfMarginCard(_perfCost);
+  }catch(e){
+    // A shape change must cost this card only, never the revenue charts above it.
+    return '<div class="ops-unavail">Margin is unavailable — ' + escapeHtml(String((e && e.message) || e)) + '</div>';
+  }
+}
+function renderPerfMarginSlot(){
+  const slot = document.getElementById('perf-margin-slot');
+  if(slot) slot.innerHTML = perfMarginSlotHtml();
+  const gm = document.getElementById('perf-gm-tile');
+  if(gm) gm.innerHTML = perfGmTileHtml();
+}
+
+// The headline "gross margin" tile for margin users: the card's own window
+// totals, so the tile and the card can never disagree. Margin % moves in
+// POINTS against last year. No signal colour: the only judgement on this
+// number is the 30% target, which the sub-line states.
+function perfGmTileHtml(){
+  if(_perfCostErr) return perfHeadTile({ val: '—', lbl: 'gross margin', muted: true, sub: 'margin unavailable' });
+  if(!_perfCost)   return perfHeadTile({ val: '…', lbl: 'gross margin', muted: true, sub: 'loading crew pay…' });
+  try{
+    const tot = _perfCost.totals || {};
+    const cur = tot.current || {}, pri = tot.prior || {};
+    let delta = null;
+    if(cur.margin_pct != null && pri.margin_pct != null){
+      const dp = cur.margin_pct - pri.margin_pct;
+      delta = (dp >= 0 ? '▲ ' : '▼ ') + Math.abs(dp).toFixed(1) + ' pts vs ' + Number(pri.margin_pct).toFixed(1) + '%';
+    }
+    const s = perfMarginSeries(_perfCost, 'pct');
+    return perfHeadTile({
+      val:   perfPctFmtFull(cur.margin_pct),
+      lbl:   'gross margin',
+      delta: delta ? escapeHtml(delta) : null,
+      sub:   'crew pay only · target ' + PERF_MARGIN_TARGET_PCT + '% · ' + escapeHtml(perfSignedMoney(cur.margin)),
+      spark: perfSparkSvg(s.cur, '#d4af37'),
+      title: 'Matched revenue ' + perfMoneyFull(cur.revenue) + ' less crew pay ' + perfMoneyFull(cur.pay)
+    });
+  }catch(e){
+    return perfHeadTile({ val: '—', lbl: 'gross margin', muted: true, sub: 'margin unavailable' });
+  }
+}
+
+function perfSetMarginUnit(u){
+  const next = (u === 'pct') ? 'pct' : 'dollars';
+  if(next === _perfMarginUnit) return;
+  _perfMarginUnit = next;
+  goatPrefs.set('perf', 'marginUnit', next);
+  renderPerfMarginSlot();
+}
+
+// Payload weeks are the full 2N span, oldest first: the first N are last year.
+// The split is by the server's own window.weeks, never re-derived from dates.
+function perfMarginSeries(c, unit){
+  if(!c || !Array.isArray(c.weeks)) throw new Error('unexpected response shape');
+  const all = c.weeks;
+  const N   = (c && c.window && c.window.weeks) || Math.floor(all.length / 2);
+  const cur = all.slice(all.length - N);
+  const prv = all.slice(Math.max(0, all.length - 2 * N), all.length - N);
+  const n   = Math.min(cur.length, prv.length);
+  const pick = function(w){
+    if(!w) return null;
+    if(unit === 'pct') return (w.margin_pct == null) ? null : +w.margin_pct;   // null = no revenue: a gap, not 0%
+    // A week with no calls, no revenue and no pay is a GAP, not a $0 margin:
+    // "nothing happened" and "broke even" are different statements.
+    if(!(w.calls_active > 0) && !w.revenue && !w.pay) return null;
+    return +(w.margin || 0);
+  };
+  const s = { labels: [], cur: [], prev: [], weeks: [], prevWeeks: [], incomplete: [], unit: unit };
+  for(let i = 0; i < n; i++){
+    const w = cur[cur.length - n + i], p = prv[prv.length - n + i];
+    s.labels.push(w.key);
+    s.cur.push(pick(w));
+    s.prev.push(pick(p));
+    s.weeks.push(w);
+    s.prevWeeks.push(p);
+    s.incomplete.push(!!(w.awaiting_invoice && w.awaiting_invoice.calls > 0));
+  }
+  return s;
+}
+
+function perfPctFmt(v){ return (v == null) ? '—' : (Math.round(v) + '%'); }
+// Margin can be negative; perfMoney would print "$-400". These put the sign first.
+function perfSignedMoney(v){ return (v < 0) ? '−' + perfMoney(-v) : perfMoney(v); }
+function perfSignedMoneyFull(v){
+  if(v == null) return 'no activity';
+  return (v < 0) ? '−' + perfMoneyFull(-v) : perfMoneyFull(v);
+}
+function perfPctFmtFull(v){ return (v == null) ? 'no revenue' : (Number(v).toFixed(1) + '%'); }
+
+// Its own chart rather than perfWeeklyChartSvg: that one starts its axis at 0
+// (`let max = 0`, baseline at the bottom) because revenue cannot be negative,
+// so a loss-making week would be clipped to the floor. Margin CAN be negative,
+// and a negative week must be shown — the axis here extends below zero and a
+// solid zero line is drawn whenever it does. It also has no forward zone and
+// no uninvoiced band, neither of which means anything for margin.
+function perfMarginChartSvg(s, accent){
+  const n = s.labels.length;
+  if(n < 2) return '<div class="ops-lane-status">Not enough weeks to chart.</div>';
+  accent = accent || '#d4af37';
+  const pct     = (s.unit === 'pct');
+  const fmt     = pct ? perfPctFmt : perfSignedMoney;
+  const fmtFull = pct ? perfPctFmtFull : perfSignedMoneyFull;
+  const NEG     = PERF_SIGNAL_COLORS.bad;
+
+  const W = 1000, H = 300, padL = 64, padR = 12, padT = 16, padB = 36;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  let hi = pct ? PERF_MARGIN_TARGET_PCT : 0, lo = 0;
+  for(let i = 0; i < n; i++){
+    [s.cur[i], s.prev[i]].forEach(function(v){
+      if(v == null || !isFinite(v)) return;
+      if(v > hi) hi = v;
+      if(v < lo) lo = v;
+    });
+  }
+  // Gridlines on a "nice" step that divides the whole range, so zero always
+  // lands ON a gridline and the labels are values a person would pick
+  // (−$20k / $0 / $20k…), rather than four equal cuts of an odd range.
+  const stepV = perfNiceMax(((hi - lo) || 1) / 4);
+  const top   = Math.max(stepV, Math.ceil(hi / stepV - 1e-9) * stepV);
+  const bot   = Math.min(0, Math.floor(lo / stepV + 1e-9) * stepV);
+  const rng   = (top - bot) || 1;
+  const X = function(i){ return padL + (plotW * i / (n - 1)); };
+  const Y = function(v){ return padT + plotH * ((top - (v || 0)) / rng); };
+
+  // gridlines, plus a solid zero when the axis goes negative
+  let grid = '';
+  const nTicks = Math.round(rng / stepV);
+  for(let t = 0; t <= nTicks; t++){
+    const v = bot + stepV * t, y = Y(v);
+    grid += '<line class="perf-grid" x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW) + '" y2="' + y.toFixed(1) + '"/>'
+          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + escapeHtml(fmt(v)) + '</text>';
+  }
+  if(bot < 0){
+    grid += '<line class="perf-mgn-zero" x1="' + padL + '" y1="' + Y(0).toFixed(1) + '" x2="' + (padL + plotW) + '" y2="' + Y(0).toFixed(1) + '"/>';
+  }
+
+  let xlab = '', lastMonth = -1, lastAt = -99;
+  for(let i = 0; i < n; i++){
+    const d = perfIsoWeekMonday(s.labels[i]);
+    if(!d) continue;
+    if(d.getMonth() !== lastMonth && (i - lastAt) >= 4){
+      lastMonth = d.getMonth(); lastAt = i;
+      const txt = PERF_MONTHS[d.getMonth()] + (d.getMonth() === 0 ? " '" + String(d.getFullYear()).slice(2) : '');
+      xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (padT + plotH + 15) + '" text-anchor="middle">' + txt + '</text>';
+    }
+  }
+
+  // A null (no revenue, % view) breaks the line rather than drawing it to 0.
+  const pathOf = function(arr){
+    let p = '', pen = false;
+    for(let i = 0; i < n; i++){
+      if(arr[i] == null || !isFinite(arr[i])){ pen = false; continue; }
+      p += (pen ? ' L' : ' M') + X(i).toFixed(1) + ' ' + Y(arr[i]).toFixed(1);
+      pen = true;
+    }
+    return p.trim();
+  };
+
+  let target = '';
+  if(pct){
+    const ty = Y(PERF_MARGIN_TARGET_PCT).toFixed(1);
+    target = '<line class="perf-mgn-target" x1="' + padL + '" y1="' + ty + '" x2="' + (padL + plotW) + '" y2="' + ty + '"/>'
+           // Labelled at the LEFT edge: the newest weeks sit at the right, and
+           // the label must never cover the point being read.
+           + '<text class="perf-ax perf-mgn-target-lbl" x="' + (padL + 6) + '" y="' + (+ty - 5).toFixed(1) + '" text-anchor="start">target ' + PERF_MARGIN_TARGET_PCT + '%</text>';
+  }
+
+  // Points: red below zero, hollow when the week still has calls paid but not
+  // yet invoiced — that week's margin will move, and must not read as a dip.
+  let dots = '';
+  for(let i = 0; i < n; i++){
+    const v = s.cur[i];
+    if(v == null || !isFinite(v)) continue;
+    const col = (v < 0) ? NEG : accent;
+    const inc = s.incomplete[i];
+    dots += '<circle class="perf-mgn-dot' + (inc ? ' perf-mgn-inc' : '') + (v < 0 ? ' perf-mgn-neg' : '') + '"'
+          + ' cx="' + X(i).toFixed(1) + '" cy="' + Y(v).toFixed(1) + '" r="' + (inc ? 4 : 2.6) + '"'
+          + ' fill="' + (inc ? 'none' : col) + '" stroke="' + col + '" stroke-width="1.5"' + (inc ? ' stroke-dasharray="2 2"' : '') + '/>';
+  }
+
+  const step = plotW / (n - 1);
+  let hits = '';
+  for(let i = 0; i < n; i++){
+    const w = s.weeks[i] || {}, p = s.prevWeeks[i] || {};
+    let tip = perfWeekLabel(s.labels[i])
+      + '\nmargin   ' + fmtFull(s.cur[i])
+      + '\nrevenue  ' + perfMoneyFull(w.revenue) + '   crew pay  ' + perfMoneyFull(w.pay)
+      + '\nsame week last year  ' + fmtFull(s.prev[i]);
+    if(s.incomplete[i]){
+      const k = w.awaiting_invoice.calls;
+      tip += '\n' + k + ' call' + (k === 1 ? '' : 's') + ' paid, awaiting invoice — this week will move';
+    }
+    if(w.not_on_invoice && w.not_on_invoice.calls > 0){
+      tip += '\n' + w.not_on_invoice.calls + ' paid, not on invoice';
+    }
+    const hx = Math.max(padL, X(i) - step / 2);
+    const hw = Math.max(0, Math.min(X(i) + step / 2, padL + plotW) - hx);
+    hits += '<rect class="perf-hit" x="' + hx.toFixed(1) + '" y="' + padT + '" width="' + hw.toFixed(1) + '" height="' + plotH + '">'
+          + '<title>' + escapeHtml(tip) + '</title></rect>';
+  }
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Weekly margin, this year against last">'
+    + grid + xlab + target
+    + '<path class="perf-mgn-prev" d="' + pathOf(s.prev) + '" fill="none" stroke="#666666" stroke-width="1.4"/>'
+    + '<path class="perf-mgn-cur" d="' + pathOf(s.cur) + '" fill="none" stroke="' + accent + '" stroke-width="2"/>'
+    + dots + hits
+    + '</svg>';
+}
+
+function perfMarginCard(c){
+  const unit = _perfMarginUnit;
+  const s    = perfMarginSeries(c, unit);
+  if(!c.totals || typeof c.totals !== 'object') throw new Error('unexpected response shape');
+  const tot  = c.totals;
+  const cur  = tot.current || {}, pri = tot.prior || {};
+
+  const unitBtn = function(u, lbl){
+    const on = (unit === u);
+    return '<span class="perf-unit' + (on ? ' on' : '') + '" role="button" tabindex="0"'
+      + ' aria-pressed="' + (on ? 'true' : 'false') + '"'
+      + ' aria-label="Show weekly margin in ' + (u === 'pct' ? 'percent' : 'dollars') + '"'
+      + ' data-perf-margin-unit="' + u + '">' + lbl + '</span>';
+  };
+
+  const head = '<div class="perf-card-head">'
+    + '<span class="perf-card-title">MARGIN — CREW PAY</span>'
+    + '<span class="perf-card-sub">weekly ' + (unit === 'pct' ? 'margin %' : 'margin $') + ', this year against last</span>'
+    + '<span class="perf-units" style="margin-left:auto">' + unitBtn('dollars', '$') + unitBtn('pct', '%') + '</span>'
+    + '</div>';
+
+  // Totals against the prior window. Margin % moves in POINTS, not percent of
+  // a percent, so its delta says "pts".
+  const delta = function(now, was){ return perfDeltaText(perfDeltaPct(now || 0, was || 0)); };
+  let pctDelta = '—';
+  if(cur.margin_pct != null && pri.margin_pct != null){
+    const d = cur.margin_pct - pri.margin_pct;
+    pctDelta = (d >= 0 ? '▲ ' : '▼ ') + Math.abs(d).toFixed(1) + ' pts';
+  }
+  const tile = function(val, lbl, dl, neg){
+    return '<div class="perf-head">'
+      + '<div class="perf-head-val' + (neg ? ' perf-mgn-negval' : '') + '">' + escapeHtml(val) + '</div>'
+      + '<div class="perf-tile-delta"><span class="perf-tile-vs">' + escapeHtml(dl) + ' vs last year</span></div>'
+      + '<div class="perf-head-lbl">' + escapeHtml(lbl) + '</div>'
+      + '</div>';
+  };
+  const tiles = '<div class="perf-heads perf-mgn-tots">'
+    + tile(perfMoneyFull(cur.revenue), 'Matched revenue', delta(cur.revenue, pri.revenue))
+    + tile(perfMoneyFull(cur.pay), 'Crew pay', delta(cur.pay, pri.pay))
+    // Against |last year|: perfDeltaPct divides by a signed base, so a margin
+    // that went from −$400 to +$620 would read as a fall.
+    + tile(perfSignedMoneyFull(cur.margin), 'Margin $',
+           perfDeltaText(Math.abs(pri.margin || 0) > 0 ? 100 * ((cur.margin || 0) - pri.margin) / Math.abs(pri.margin) : null),
+           (cur.margin || 0) < 0)
+    + tile(perfPctFmtFull(cur.margin_pct), 'Margin % (target ' + PERF_MARGIN_TARGET_PCT + '%)', pctDelta, cur.margin_pct != null && cur.margin_pct < 0)
+    + '</div>';
+
+  // Coverage: how much of the window the margin actually covers.
+  let awaitN = 0, notN = 0;
+  s.weeks.forEach(function(w){
+    awaitN += (w.awaiting_invoice && w.awaiting_invoice.calls) || 0;
+    notN   += (w.not_on_invoice && w.not_on_invoice.calls) || 0;
+  });
+  let cov = '<div class="perf-note perf-mgn-cov">Covers <b>' + perfNum(cur.calls_matched || 0) + '</b> of '
+    + perfNum(cur.calls_active || 0) + ' calls with pay or an invoice';
+  if(awaitN > 0) cov += ' · ' + perfNum(awaitN) + ' paid, awaiting invoice';
+  if(notN > 0)   cov += ' · <span class="perf-mgn-amber">' + perfNum(notN) + ' paid, not on invoice</span>';
+  cov += '</div>';
+
+  const key = '<div class="perf-key">'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:#d4af37"></span>this year</span>'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:#666666"></span>same weeks last year</span>'
+    + '<span class="perf-key-i"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="none" stroke="#d4af37" stroke-width="1.5" stroke-dasharray="2 2"/></svg>calls still awaiting invoice</span>'
+    + (unit === 'pct' ? '<span class="perf-key-i"><span class="perf-key-sw perf-mgn-key-target"></span>target ' + PERF_MARGIN_TARGET_PCT + '%</span>' : '')
+    + '</div>';
+
+  // The exceptions: crew paid, invoice exists, nothing on it for this call and
+  // no hand-added line that might cover it. Probably unbilled — Xero decides.
+  const ex = ((c.exceptions || {}).not_on_invoice) || [];
+  let foldBody = '';
+  if(ex.length){
+    foldBody = '<table class="perf-mgn-ex"><thead><tr>'
+      + '<th>Date</th><th>Call</th><th>Invoice</th><th class="r">Crew pay</th><th class="r">Charge on pay</th>'
+      + '</tr></thead><tbody>';
+    ex.forEach(function(r){
+      foldBody += '<tr class="perf-mgn-exrow" role="button" tabindex="0"'
+        + ' data-perf-call="' + escapeHtml(String(r.booking_id)) + ':' + escapeHtml(String(r.call_id)) + '">'
+        + '<td>' + escapeHtml(String(r.call_date || '')) + '</td>'
+        + '<td>' + escapeHtml(decodeEntities(r.call_name || '')) + '</td>'
+        + '<td>' + escapeHtml(String(r.invoice_id)) + '</td>'
+        + '<td class="r">' + perfMoneyFull(r.pay) + '</td>'
+        + '<td class="r">' + perfMoneyFull(r.charge_on_pay) + '</td>'
+        + '</tr>';
+    });
+    foldBody += '</tbody></table>';
+    if((c.exceptions || {}).truncated) foldBody += '<div class="perf-note">Showing the 50 most recent.</div>';
+    foldBody += '<div class="perf-note">Check these in Xero before treating them as lost revenue.</div>';
+  }
+
+  return '<div class="perf-card perf-mgn">' + head
+    + tiles
+    + perfMarginChartSvg(s, '#d4af37')
+    + key
+    + cov
+    + perfFold('marginExceptions', 'Paid, not on invoice (' + ex.length + (((c.exceptions || {}).truncated) ? '+' : '') + ')', foldBody)
+    + '</div>';
+}
+
 // ── the forward book ────────────────────────────────────────────────────────
 // The chart above shares one y-axis with the history, which is honest and which
 // also means a normal forward week is a few pixels tall beside a $700k tour
@@ -38214,10 +38609,20 @@ function perfYieldCard(d){
     const el = ev.target;
     // Element.closest exists on SVG elements too, which matters: the customer
     // stack's click targets are <rect>s.
-    return (el && el.closest) ? el.closest('[data-perf-unit],[data-perf-fyrange],[data-perf-cust],[data-perf-fold]') : null;
+    return (el && el.closest) ? el.closest('[data-perf-unit],[data-perf-margin-unit],[data-perf-call],[data-perf-fyrange],[data-perf-cust],[data-perf-fold]') : null;
   };
 
   const fire = function(t){
+    if(t.hasAttribute('data-perf-margin-unit')){
+      perfSetMarginUnit(t.getAttribute('data-perf-margin-unit'));
+      return;
+    }
+    if(t.hasAttribute('data-perf-call')){
+      // "bookingId:callId" from the margin card's Paid-not-on-invoice rows.
+      const parts = String(t.getAttribute('data-perf-call')).split(':');
+      if(parts.length === 2) openCallDialog(parts[0], parts[1]);
+      return;
+    }
     if(t.hasAttribute('data-perf-unit')){
       perfSetUnit(t.getAttribute('data-perf-unit'));
       return;
