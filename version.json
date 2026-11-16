@@ -1,6 +1,6 @@
 {
-  "version": "5.103.1",
-  "release_date": "2026-11-12",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.103.1/TheGOAT.dmg",
-  "release_notes": "The booking's Financials tab now shows quoted hours (as billed) for each call type, and the empty button under an imported quote has gone."
+  "version": "5.104.0",
+  "release_date": "2026-11-16",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.104.0/TheGOAT.dmg",
+  "release_notes": "Performance: groundwork for a new view, visible to selected accounts while it's tested."
 }
