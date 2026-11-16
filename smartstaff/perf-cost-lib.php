@@ -21,6 +21,11 @@
 	/*           every NON-SPACER line on an invoice a span call carries;
 	/*           revenue already worked out with the Xero formula
 	/*   $cap    most exception rows to return (50)
+	/*   $invCust (optional, slice B) invoice => customer id, from
+	/*           invoices.bookingID -> bookings.customerID. When given, the
+	/*           result also carries 'customers': each customer's matched
+	/*           revenue, pay, hours and calls for the requested window and
+	/*           the one before it. Lines may carry 'hours' (hours x qty).
 	/*
 	/* RULES (§3.2-3.4)
 	/*   - An invoice is MATCHED when it has at least one line AND at least one
@@ -81,11 +86,34 @@
 		}
 	}
 
+	if (!function_exists('goat_perf_cost_cust_add'))
+	{
+		function goat_perf_cost_cust_add(&$byCust, $cust, $t, $field, $amt)
+		{
+			if (!isset($byCust[$cust]))
+			{
+				$z = array('revenue' => 0.0, 'pay' => 0.0, 'hours' => 0.0, 'calls_matched' => 0);
+				$byCust[$cust] = array('current' => $z, 'prior' => $z);
+			}
+			$byCust[$cust][$t][$field] += $amt;
+		}
+	}
+
 	if (!function_exists('goat_perf_cost_compute'))
 	{
-		function goat_perf_cost_compute($win, $calls, $pay, $lines, $cap)
+		function goat_perf_cost_compute($win, $calls, $pay, $lines, $cap, $invCust = null)
 		{
 			$span = (int) $win['span'];
+
+			/*
+			/* Slice B: per-customer window totals. Same matched invoices, same
+			/* week buckets and the same current/prior split as the weekly
+			/* series, so the customers always sum to totals.current and
+			/* totals.prior exactly. Customer is the invoice's booking's
+			/* customer (Q6): a call's pay and a line's revenue both follow
+			/* their invoice. 0 = no customer.
+			*/
+			$byCust = array();     /* cust => array('current' => [...], 'prior' => [...]) */
 
 			/* ---- 1. what each invoice has ---- */
 
@@ -172,6 +200,14 @@
 				{
 					$weeks[$idx]['calls_matched']++;
 					$weeks[$idx]['pay'] += $amt;
+
+					if ($invCust !== null)
+					{
+						$cu = isset($invCust[$inv]) ? (int) $invCust[$inv] : 0;
+						$tt = ($idx >= (int) $win['req_first']) ? 'current' : 'prior';
+						goat_perf_cost_cust_add($byCust, $cu, $tt, 'pay', $amt);
+						goat_perf_cost_cust_add($byCust, $cu, $tt, 'calls_matched', 1);
+					}
 				}
 
 				if (!$hasPay)
@@ -242,6 +278,15 @@
 				if (isset($matched[$inv]))
 				{
 					$weeks[$idx]['revenue'] += $rev;
+
+					if ($invCust !== null)
+					{
+						$cu = isset($invCust[$inv]) ? (int) $invCust[$inv] : 0;
+						$tt = ($idx >= (int) $win['req_first']) ? 'current' : 'prior';
+						goat_perf_cost_cust_add($byCust, $cu, $tt, 'revenue', $rev);
+						goat_perf_cost_cust_add($byCust, $cu, $tt, 'hours',
+							isset($ln['hours']) ? (float) $ln['hours'] : 0.0);
+					}
 				}
 				else if (!isset($invPaid[$inv]))
 				{
@@ -309,12 +354,41 @@
 
 			$dq['lines_no_call_revenue'] = round($dq['lines_no_call_revenue'], 2);
 
-			return array(
+			$out = array(
 				'weeks'        => $weeks,
 				'totals'       => $tot,
 				'exceptions'   => array('not_on_invoice' => $exceptions, 'truncated' => $truncated),
 				'data_quality' => $dq
 			);
+
+			if ($invCust !== null)
+			{
+				/* A list, not an object keyed by id, so the JSON shape cannot
+				   flip between [] and {} with the ids. Ordered by id; the
+				   front end orders by the revenue charts' own ranking. */
+				ksort($byCust);
+				$custOut = array();
+				foreach ($byCust as $cu => $c)
+				{
+					$row = array('id' => (int) $cu);
+					foreach (array('current', 'prior') as $t)
+					{
+						$m = $c[$t]['revenue'] - $c[$t]['pay'];
+						$row[$t] = array(
+							'revenue'       => round($c[$t]['revenue'], 2),
+							'pay'           => round($c[$t]['pay'], 2),
+							'margin'        => round($m, 2),
+							'margin_pct'    => goat_perf_cost_pct($m, $c[$t]['revenue']),
+							'hours'         => round($c[$t]['hours'], 2),
+							'calls_matched' => (int) $c[$t]['calls_matched']
+						);
+					}
+					$custOut[] = $row;
+				}
+				$out['customers'] = $custOut;
+			}
+
+			return $out;
 		}
 	}
 

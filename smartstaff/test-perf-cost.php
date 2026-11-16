@@ -190,6 +190,50 @@
 	$r4 = goat_perf_cost_compute($win, $calls4, $pay4, $lines4, 50);
 	tpc_eq($r4['weeks'][3]['pay'], round(3 * 0.335, 2), 'pay rounded once');
 
+	/* ---- slice B: per customer ---- */
+
+	/* Same fixture as the main run, with hours on the lines and invoices
+	   mapped to customers. Invoice 4 (prior week) is deliberately left out of
+	   the map, so its figures land on customer 0. */
+	$linesB = $lines;
+	for ($i = 0; $i < count($linesB); $i++)
+		$linesB[$i]['hours'] = 10.0;
+	$invCust = array(1 => 500, 2 => 600, 3 => 700);
+
+	$rB = goat_perf_cost_compute($win, $calls, $pay, $linesB, 50, $invCust);
+	tpc_eq(isset($rB['customers']), true, 'B: customers present when a map is given');
+	tpc_eq(isset($r['customers']), false, 'B: customers absent without a map (5.104.0 shape)');
+	tpc_eq($rB['weeks'], $r['weeks'], 'B: weeks unchanged by the customer split');
+	tpc_eq($rB['totals'], $r['totals'], 'B: totals unchanged by the customer split');
+
+	$byId = array();
+	foreach ($rB['customers'] as $c)
+		$byId[$c['id']] = $c;
+
+	tpc_eq(array_keys($byId), array(0, 500, 600), 'B: customers 0, 500, 600 (700 is invoiced, unpaid: not matched)');
+	tpc_eq($byId[500]['current']['revenue'], 1200.0, 'B: 500 revenue (incl. hand line)');
+	tpc_eq($byId[500]['current']['pay'], 700.0, 'B: 500 pay');
+	tpc_eq($byId[500]['current']['margin'], 500.0, 'B: 500 margin');
+	tpc_eq($byId[500]['current']['margin_pct'], 41.7, 'B: 500 margin pct');
+	tpc_eq($byId[500]['current']['hours'], 20.0, 'B: 500 hours (two lines x 10)');
+	tpc_eq($byId[500]['current']['calls_matched'], 2, 'B: 500 calls matched');
+	tpc_eq($byId[600]['current']['revenue'], 300.0, 'B: 600 revenue');
+	tpc_eq($byId[600]['current']['pay'], 80.0, 'B: 600 pay');
+	tpc_eq($byId[0]['prior']['revenue'], 540.0, 'B: unmapped invoice falls to customer 0, prior window');
+	tpc_eq($byId[0]['prior']['margin'], -360.0, 'B: customer 0 prior margin (negative)');
+	tpc_eq($byId[0]['current']['margin_pct'], null, 'B: no current revenue -> pct null');
+
+	/* the reconciliation the card relies on: customers sum to the totals */
+	foreach (array('current', 'prior') as $tw)
+	{
+		$sr = 0.0; $sp = 0.0; $sc = 0;
+		foreach ($rB['customers'] as $c) { $sr += $c[$tw]['revenue']; $sp += $c[$tw]['pay']; $sc += $c[$tw]['calls_matched']; }
+		tpc_eq(round($sr, 2), $rB['totals'][$tw]['revenue'], 'B: customers sum to totals.' . $tw . '.revenue');
+		tpc_eq(round($sp, 2), $rB['totals'][$tw]['pay'], 'B: customers sum to totals.' . $tw . '.pay');
+		tpc_eq($sc, $rB['totals'][$tw]['calls_matched'], 'B: customers sum to totals.' . $tw . '.calls_matched');
+	}
+	tpc_eq(json_encode($rB['customers'])[0], '[', 'B: customers encode as a JSON list');
+
 	/* JSON shape survives encoding */
 	tpc_eq(json_encode($r) !== false, true, 'json_encode ok');
 

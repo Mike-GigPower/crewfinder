@@ -223,6 +223,7 @@
 
 	$res = perfcost_query($link, 'invoice lines',
 		"SELECT il.invoiceID, il.callID, il.start_date,
+		        il.hours * il.qty AS line_hours,
 		        IF(il.flatrate > 0, il.flatrate * il.qty,
 		           il.chargeout_rate * il.hours * il.qty) AS revenue
 		   FROM `invoice_lines` il
@@ -240,15 +241,42 @@
 			'invoice' => (int) $row['invoiceID'],
 			'call'    => $row['callID'] === null ? 0 : (int) $row['callID'],
 			'start'   => (int) $row['start_date'],
-			'revenue' => $row['revenue'] === null ? 0.0 : (float) $row['revenue']
+			'revenue' => $row['revenue'] === null ? 0.0 : (float) $row['revenue'],
+			'hours'   => $row['line_hours'] === null ? 0.0 : (float) $row['line_hours']
 		);
 	}
 
 	mysqli_free_result($res);
 
+	/* ---- 4. each invoice's customer (slice B) ---- */
+
+	/*
+	/* Through invoices.bookingID, which is filled even when the lines carry
+	/* bookingID 0 (P5e(c)). The hidden flag is not re-applied here: an invoice
+	/* only reaches this set through a non-hidden call, and the invoice's
+	/* booking is that call's booking.
+	*/
+	$invCust = array();
+
+	$res = perfcost_query($link, 'invoice customers',
+		"SELECT inv.id, b.customerID
+		   FROM `invoices` inv
+		   JOIN (SELECT DISTINCT c.invoiceID
+		           FROM `calls` c
+		           JOIN `bookings` b2 ON b2.id = c.bookingID AND b2.hidden = 0
+		          WHERE c.start_date > 0
+		            AND c.start_date BETWEEN " . $rs . " AND " . $re . "
+		            AND c.invoiceID > 0) s ON s.invoiceID = inv.id
+		   LEFT JOIN `bookings` b ON b.id = inv.bookingID");
+
+	while ($row = mysqli_fetch_assoc($res))
+		$invCust[(int) $row['id']] = ($row['customerID'] === null) ? 0 : (int) $row['customerID'];
+
+	mysqli_free_result($res);
+
 	/* ---- compute, then answer ---- */
 
-	$r = goat_perf_cost_compute($win, $calls, $pay, $lines, 50);
+	$r = goat_perf_cost_compute($win, $calls, $pay, $lines, 50, $invCust);
 
 	/*
 	/* call_name is the only free text in the response. Names are stored
@@ -275,7 +303,8 @@
 		'weeks'        => $r['weeks'],
 		'totals'       => $r['totals'],
 		'exceptions'   => $r['exceptions'],
-		'data_quality' => $r['data_quality']
+		'data_quality' => $r['data_quality'],
+		'customers'    => $r['customers']
 	);
 
 	$out = json_encode($body);
