@@ -1897,6 +1897,21 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .perf-mgn-ex .r{text-align:right;font-family:'Share Tech Mono',monospace}
 .perf-mgn-exrow{cursor:pointer}
 .perf-mgn-exrow:hover{background:rgba(212,175,55,0.07)}
+/* Margin by customer (slice B) */
+.perf-mct{width:100%;border-collapse:collapse;font-size:12px}
+.perf-mct th{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;font-weight:600;padding:4px 6px;border-bottom:1px solid var(--border)}
+.perf-mct td{padding:6px;border-bottom:1px solid var(--border);white-space:nowrap}
+.perf-mct .r{text-align:right;font-family:'Share Tech Mono',monospace}
+.perf-mct-other td{color:var(--muted)}
+.perf-mct-total td{border-top:1px solid var(--border-gold);font-weight:600}
+.perf-mcb-cell{min-width:170px}
+.perf-mcb{position:relative;display:inline-block;width:110px;height:8px;background:rgba(255,255,255,0.06);border-radius:2px;vertical-align:middle;margin-right:8px}
+.perf-mcb-fill{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
+.perf-mcb-tgt{position:absolute;top:-3px;bottom:-3px;width:0;border-left:1px dashed #10b981}
+.perf-mcb-num{font-family:'Share Tech Mono',monospace}
+.perf-mcb-thin{opacity:.45}
+.perf-mgn-up{color:#10b981;font-family:'Share Tech Mono',monospace}
+.perf-mgn-dn{color:#e31e24;font-family:'Share Tech Mono',monospace}
 
 /* One computed sentence under a chart — the finding, not the method. Templated
    at render from the payload, never a written-down number. */
@@ -37868,7 +37883,7 @@ function perfMarginSlotHtml(){
   if(_perfCostErr) return '<div class="ops-unavail">Margin is unavailable — ' + escapeHtml(String(_perfCostErr)) + '</div>';
   if(!_perfCost)   return '<div class="perf-card"><div class="ops-lane-status">Loading margin…</div></div>';
   try{
-    return perfMarginCard(_perfCost);
+    return perfMarginCard(_perfCost) + perfMarginCustomerCard(_perfCost, _perfData);
   }catch(e){
     // A shape change must cost this card only, never the revenue charts above it.
     return '<div class="ops-unavail">Margin is unavailable — ' + escapeHtml(String((e && e.message) || e)) + '</div>';
@@ -38179,6 +38194,113 @@ function perfMarginCard(c){
     + '</div>';
 }
 
+
+// ── MARGIN BY CUSTOMER (slice B) ───────────────────────────────────────────
+// The SAME eight customers the revenue charts name, in the same order, plus
+// "All other" (Mike, 17 Nov 2026). The ranking is read from the revenue
+// payload (_perfData.customers), never recomputed here, so the two views can
+// never name different customers. The figures come from the margin payload's
+// per-customer totals, which the endpoint guarantees sum to totals.current —
+// the table's total row is therefore the margin card's own totals, and the
+// rows are checked against it below rather than trusted.
+//
+// Margin % is greyed under PERF_RANK_MIN_HOURS (the yield table's threshold):
+// on a few hundred hours one odd call swings the percentage, and the colour
+// would read as a verdict the sample cannot support.
+function perfMarginCustomerRows(c, d){
+  const list  = (c && Array.isArray(c.customers)) ? c.customers : null;
+  if(!list) return null;                                   // older endpoint: no card
+  const byId  = {};
+  list.forEach(function(x){ byId[String(x.id)] = x; });
+  const zero  = { revenue: 0, pay: 0, margin: 0, margin_pct: null, hours: 0, calls_matched: 0 };
+  const top   = ((d && d.customers) || []).slice(0, 8);
+  const used  = {};
+  const rows  = top.map(function(t){
+    const k = String(t.id); used[k] = true;
+    const m = byId[k] || { current: zero, prior: zero };
+    return { id: k, name: t.name || '(no customer)', cur: m.current || zero, pri: m.prior || zero };
+  });
+  const other = { revenue: 0, pay: 0, hours: 0, calls_matched: 0 };
+  const otherPri = { revenue: 0, pay: 0 };
+  let otherCount = 0;
+  list.forEach(function(x){
+    if(used[String(x.id)]) return;
+    const cu = x.current || zero, pr = x.prior || zero;
+    if(cu.revenue || cu.pay) otherCount++;
+    other.revenue += cu.revenue || 0; other.pay += cu.pay || 0;
+    other.hours += cu.hours || 0;     other.calls_matched += cu.calls_matched || 0;
+    otherPri.revenue += pr.revenue || 0; otherPri.pay += pr.pay || 0;
+  });
+  const pct = function(m, r){ return (Math.abs(r) >= 0.005) ? Math.round(1000 * m / r) / 10 : null; };
+  other.margin = other.revenue - other.pay;   other.margin_pct = pct(other.margin, other.revenue);
+  const op = { revenue: otherPri.revenue, pay: otherPri.pay, margin: otherPri.revenue - otherPri.pay };
+  op.margin_pct = pct(op.margin, op.revenue);
+  return { rows: rows, other: other, otherPri: op, otherCount: otherCount };
+}
+
+function perfMarginCustomerCard(c, d){
+  const R = perfMarginCustomerRows(c, d);
+  if(!R || !R.rows.length) return '';
+  const tot = (c.totals && c.totals.current) || {};
+
+  // Reconciliation: the rows plus "All other" must equal the card's totals.
+  // A mismatch is shown, never smoothed over.
+  let sumRev = R.other.revenue, sumPay = R.other.pay;
+  R.rows.forEach(function(r){ sumRev += r.cur.revenue || 0; sumPay += r.cur.pay || 0; });
+  // Each customer is rounded to the cent on its own, so the sum may drift by
+  // up to half a cent per customer (153 customers on test gave 6 cents on
+  // 17 Nov). Anything beyond that drift is a real disagreement.
+  const recTol = 0.005 * ((c.customers || []).length) + 0.01;
+  const recOk = Math.abs(sumRev - (tot.revenue || 0)) <= recTol && Math.abs(sumPay - (tot.pay || 0)) <= recTol;
+
+  const pts = function(cur, pri){
+    if(cur == null || pri == null) return '<span class="perf-tile-vs">—</span>';
+    const dlt = cur - pri;
+    return '<span class="' + (dlt >= 0 ? 'perf-mgn-up' : 'perf-mgn-dn') + '">' + (dlt >= 0 ? '▲ ' : '▼ ') + Math.abs(dlt).toFixed(1) + ' pts</span>';
+  };
+  const bar = function(p, thin){
+    if(p == null) return '<span class="perf-tile-vs">—</span>';
+    const w = Math.max(0, Math.min(100, (p / 60) * 100));      // 0–60% scale
+    const col = (p < 0) ? '#e31e24' : '#d4af37';
+    return '<span class="perf-mcb' + (thin ? ' perf-mcb-thin' : '') + '"'
+      + (thin ? ' title="Under ' + perfNum(PERF_RANK_MIN_HOURS) + ' hours in the window: one call can swing this"' : '') + '>'
+      + '<span class="perf-mcb-fill" style="width:' + w.toFixed(1) + '%;background:' + col + '"></span>'
+      + '<span class="perf-mcb-tgt" style="left:' + ((PERF_MARGIN_TARGET_PCT / 60) * 100).toFixed(1) + '%"></span>'
+      + '</span><span class="perf-mcb-num' + (thin ? ' perf-mcb-thin' : '') + '">' + p.toFixed(1) + '%</span>';
+  };
+  const row = function(name, cur, pri, cls){
+    const thin = (cur.hours || 0) < PERF_RANK_MIN_HOURS;
+    return '<tr' + (cls ? ' class="' + cls + '"' : '') + '>'
+      + '<td>' + name + '</td>'
+      + '<td class="r">' + perfMoneyFull(cur.revenue) + '</td>'
+      + '<td class="r">' + perfMoneyFull(cur.pay) + '</td>'
+      + '<td class="r">' + escapeHtml(perfSignedMoneyFull(cur.margin)) + '</td>'
+      + '<td class="perf-mcb-cell">' + bar(cur.margin_pct, thin) + '</td>'
+      + '<td class="r">' + pts(cur.margin_pct, pri && pri.margin_pct) + '</td>'
+      + '<td class="r">' + perfNum(cur.hours || 0) + '</td>'
+      + '</tr>';
+  };
+
+  let body = '';
+  R.rows.forEach(function(r){ body += row(escapeHtml(r.name), r.cur, r.pri); });
+  body += row('All other <span class="perf-tile-vs">(' + perfNum(R.otherCount) + (R.otherCount === 1 ? ' customer)' : ' customers)') + '</span>', R.other, R.otherPri, 'perf-mct-other');
+  const totHours = R.rows.reduce(function(a, r){ return a + (r.cur.hours || 0); }, R.other.hours);
+  body += row('<b>Total</b>', { revenue: tot.revenue, pay: tot.pay, margin: tot.margin,
+                               margin_pct: tot.margin_pct, hours: totHours },
+              (c.totals && c.totals.prior) || null, 'perf-mct-total');
+
+  return '<div class="perf-card perf-mgn-cust">'
+    + '<div class="perf-card-head"><span class="perf-card-title">MARGIN BY CUSTOMER</span>'
+    +   '<span class="perf-card-sub">the revenue charts’ top 8, this window · crew pay only · matched invoices</span></div>'
+    + '<table class="perf-mct"><thead><tr>'
+    +   '<th>Customer</th><th class="r">Matched revenue</th><th class="r">Crew pay</th><th class="r">Margin $</th>'
+    +   '<th>Margin % <span class="perf-tile-vs">(target ' + PERF_MARGIN_TARGET_PCT + '%)</span></th><th class="r">vs last year</th><th class="r">Hours</th>'
+    + '</tr></thead><tbody>' + body + '</tbody></table>'
+    + (recOk ? '' : '<div class="perf-note perf-mgn-amber">These rows do not add up to the margin card’s totals — the figures may be stale. Press Refresh.</div>')
+    + '<div class="perf-note">Customers and order come from the revenue charts above. Margin % is greyed where a customer has under '
+    +   perfNum(PERF_RANK_MIN_HOURS) + ' hours in the window. Customer is the one on each invoice’s booking.</div>'
+    + '</div>';
+}
 // ── the forward book ────────────────────────────────────────────────────────
 // The chart above shares one y-axis with the history, which is honest and which
 // also means a normal forward week is a few pixels tall beside a $700k tour

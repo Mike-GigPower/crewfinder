@@ -36,6 +36,7 @@ NAMES = (
     "perfIsoWeekMonday", "perfWeekLabel", "perfMoney", "perfMoneyFull", "perfNum",
     "perfDeltaPct", "perfDeltaText", "perfFold", "perfBasisStrip", "renderPerformance",
     "perfHeadTile", "perfGmTileHtml", "perfSparkSvg", "perfRgba",
+    "perfMarginCustomerRows", "perfMarginCustomerCard",
 )
 FUNCS = H.extract(*NAMES) if H.NODE else ""
 
@@ -43,6 +44,7 @@ PRELUDE = H.DOM_PRELUDE + r"""
 var PERF_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 var PERF_SIGNAL_COLORS = { good: '#10b981', watch: '#f59e0b', bad: '#e31e24', none: '#666666' };
 var PERF_MARGIN_TARGET_PCT = 30;
+var PERF_RANK_MIN_HOURS = 1000;
 var _prefs = {};
 var goatPrefs = { get: function(a, k, d){ return (a + k) in _prefs ? _prefs[a + k] : d; },
                   set: function(a, k, v){ _prefs[a + k] = v; } };
@@ -213,6 +215,79 @@ class GrossMarginTile(unittest.TestCase):
         self.assertIn("47.7%", out["card"])
 
 
+# Slice B fixture: totals.current in PAYLOAD are revenue 1300, pay 680. Split
+# here across three customers, two of them in the revenue charts' top 8.
+CUST = r"""
+P.customers = [
+  {id: 0,   current: {revenue: 0,    pay: 0,   margin: 0,   margin_pct: null, hours: 0,   calls_matched: 0},
+            prior:   {revenue: 500,  pay: 900, margin: -400, margin_pct: -80, hours: 5,   calls_matched: 1}},
+  {id: 11,  current: {revenue: 1000, pay: 600, margin: 400, margin_pct: 40,   hours: 1500, calls_matched: 1},
+            prior:   {revenue: 0,    pay: 0,   margin: 0,   margin_pct: null, hours: 0,   calls_matched: 0}},
+  {id: 22,  current: {revenue: 250,  pay: 50,  margin: 200, margin_pct: 80,   hours: 20,  calls_matched: 1},
+            prior:   {revenue: 0,    pay: 0,   margin: 0,   margin_pct: null, hours: 0,   calls_matched: 0}},
+  {id: 33,  current: {revenue: 50,   pay: 30,  margin: 20,  margin_pct: 40,   hours: 2,   calls_matched: 1},
+            prior:   {revenue: 0,    pay: 0,   margin: 0,   margin_pct: null, hours: 0,   calls_matched: 0}}
+];
+var D = {customers: [{id: 22, name: 'Smaller &amp; Co'}, {id: 11, name: 'Big Touring'}, {id: 44, name: 'No Margin Yet'}]};
+"""
+
+
+@unittest.skipUnless(H.NODE, "node not installed")
+class MarginByCustomer(unittest.TestCase):
+    """Slice B: the revenue charts' top 8, in their order, plus All other."""
+
+    def test_rows_follow_the_revenue_ranking(self):
+        out = run(CUST + r"""
+          var R = perfMarginCustomerRows(P, D);
+          console.log(JSON.stringify({ids: R.rows.map(function(r){ return r.id; }),
+                                      other: R.other, n: R.otherCount,
+                                      missing: R.rows[2].cur}));
+        """)
+        self.assertEqual(out["ids"], ["22", "11", "44"])        # revenue order, not margin order
+        self.assertEqual(out["other"]["revenue"], 50)            # 33 + 0 (customer 0 has no current)
+        self.assertEqual(out["n"], 1)                            # only 33 is active in the window
+        self.assertEqual(out["missing"]["revenue"], 0)           # top-8 customer with no margin data: zeros
+
+    def test_card_reconciles_and_greys_thin_customers(self):
+        out = run(CUST + r"""
+          console.log(JSON.stringify({h: perfMarginCustomerCard(P, D)}));
+        """)
+        h = out["h"]
+        self.assertIn("MARGIN BY CUSTOMER", h)
+        self.assertIn("Smaller &amp;amp; Co", h)                # name escaped once (harness decodeEntities is identity)
+        self.assertIn("All other", h)
+        self.assertIn("(1 customer)", h)
+        self.assertNotIn("do not add up", h)                    # 250 + 1000 + 0 + 50 = 1300 = totals
+        self.assertIn("perf-mcb-thin", h)                       # 22 has 20 h: greyed
+        self.assertIn(">40.0%<", h)                             # 11: 40%, not greyed
+        self.assertIn("perf-mct-total", h)
+
+    def test_mismatch_is_shown(self):
+        out = run(CUST + r"""
+          P.customers[1].current.revenue = 999;
+          console.log(JSON.stringify({h: perfMarginCustomerCard(P, D)}));
+        """)
+        self.assertIn("do not add up", out["h"])
+
+    def test_rounding_drift_is_not_a_mismatch(self):
+        # 17 Nov, test server: 153 customers summed to 6 cents over the total
+        # pay, purely from per-customer rounding. That must not warn.
+        out = run(CUST + r"""
+          for(var i = 0; i < 150; i++)                       // 154 customers, as on test
+            P.customers.push({id: 1000 + i, current: {revenue: 0, pay: 0, margin: 0, margin_pct: null, hours: 0, calls_matched: 0},
+                                             prior:   {revenue: 0, pay: 0, margin: 0, margin_pct: null, hours: 0, calls_matched: 0}});
+          P.customers[1].current.pay = 600.06;
+          console.log(JSON.stringify({h: perfMarginCustomerCard(P, D)}));
+        """)
+        self.assertNotIn("do not add up", out["h"])
+
+    def test_no_customers_no_card(self):
+        out = run(r"""
+          console.log(JSON.stringify({h: perfMarginCustomerCard(P, {customers: [{id: 1, name: 'x'}]})}));
+        """)
+        self.assertEqual(out["h"], "")                          # 5.104.0 endpoint: card simply absent
+
+
 @unittest.skipUnless(H.NODE, "node not installed")
 class Wiring(unittest.TestCase):
     """The parts that are plain source facts rather than behaviour."""
@@ -229,6 +304,9 @@ class Wiring(unittest.TestCase):
         self.assertIn("perfMarginOn()", src)
         self.assertIn("sub: 'cost data not yet reliable'", src)
         self.assertIn('id="perf-gm-tile"', src)
+
+    def test_slot_includes_customer_card(self):
+        self.assertIn("perfMarginCustomerCard(_perfCost, _perfData)", H.extract("perfMarginSlotHtml"))
 
     def test_tile_redrawn_when_cost_arrives(self):
         src = H.extract("renderPerfMarginSlot")
