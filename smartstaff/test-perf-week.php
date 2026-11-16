@@ -101,6 +101,10 @@
 				$m1 = tpw_monday_noon($d[0], $d[1], $d[2], 0);
 				$exp_end = mktime(0, 0, 0, (int) date('n', $m1), (int) date('j', $m1), (int) date('Y', $m1)) - 1;
 				tpw_check($w['range_end'] === $exp_end, $tag . " weeks=" . $weeks . ": range_end");
+
+				/* A2: the forward book's anchors */
+				tpw_check($w['today'] === $today, $tag . ": today");
+				tpw_check($w['this_week_start'] === $exp_end + 1, $tag . ": this_week_start = Monday 00:00 of this week");
 			}
 		}
 	}

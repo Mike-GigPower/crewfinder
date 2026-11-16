@@ -7,6 +7,7 @@
 	include('../../global.php');
 	include('cohort.php');
 	include('perf-split-lib.php');
+	include_once(dirname(__FILE__) . '/perf-week-lib.php');
 	include_once(dirname(__FILE__) . '/goat-db.php');
 
 	/*
@@ -215,15 +216,12 @@
 	/* ────────────────────────────────────────────────────────────────────────── */
 
 	/*
-	/* ISO year-week key for a unix timestamp — "2026-W33". date('o') is the ISO
-	/* year (which is NOT date('Y') in the last/first days of a year) and date('W')
-	/* is the zero-padded ISO week. This pairing is the exact equivalent of MySQL's
-	/* '%x-W%v'.
+	/* ISO year-week key for a unix timestamp — "2026-W33" — is
+	/* goat_perf_week_key_lib() in perf-week-lib.php (A2, 17 Nov 2026: one copy,
+	/* shared with get-performance-cost.php). date('o') is the ISO year (NOT
+	/* date('Y') at the turn of a year) and date('W') the zero-padded ISO week:
+	/* the exact equivalent of MySQL's '%x-W%v'.
 	*/
-	function goat_perf_week_key($ts)
-	{
-		return date('o', (int) $ts) . '-W' . date('W', (int) $ts);
-	}
 
 	/*
 	/* goat_perf_hms_to_seconds() now lives in perf-split-lib.php (moved
@@ -288,65 +286,30 @@
 	/* Window
 	/* ────────────────────────────────────────────────────────────────────────── */
 
-	$weeks = 52;
-
-	if (isset($_GET['weeks']))
-	{
-		$requested = (int) $_GET['weeks'];
-		if ($requested >= 1 && $requested <= 104)
-			$weeks = $requested;
-	}
-
-	$span = $weeks * 2;                        /* requested window + comparison */
-
 	/*
-	/* Week boundaries are walked with strtotime() relative strings rather than
-	/* 86400-second arithmetic: Melbourne observes DST, so a week is not always
-	/* 604800 seconds and fixed-second stepping would drift an hour twice a year —
-	/* enough to move a Sunday-night or Monday-morning call into the wrong bucket.
+	/* The window comes from goat_perf_window() in perf-week-lib.php (A2, 17 Nov
+	/* 2026). It is an exact port of the block that stood here — proven identical
+	/* over 800 days x 4 widths on 16 Nov — so the margin card and these charts
+	/* share one copy of the rule: weeks clamped 1..104 (default 52), span = 2N,
+	/* anchored on the last COMPLETE week, stepped with strtotime() relative
+	/* strings because Melbourne observes DST.
+	/*
+	/* The window ends at the last complete week, not the week in progress: a
+	/* part-week bucket is always short, so a chart that includes it draws a
+	/* cliff at the right-hand edge every time it is opened. Zero-filled buckets
+	/* are dense for the same reason. See perf-week-lib.php for the rest.
 	*/
-	$today = strtotime('today');
-	$dow   = (int) date('N', $today);                          /* 1 = Mon .. 7 = Sun */
+	$perf_win = goat_perf_window(isset($_GET['weeks']) ? $_GET['weeks'] : 52);
 
-	/* Guarded rather than relying on strtotime('-0 days') on a Monday. */
-	$this_week_start = ($dow > 1)
-	                 ? strtotime('-' . ($dow - 1) . ' days', $today)
-	                 : $today;
-
-	/*
-	/* The window ends at the last COMPLETE week, not the week in progress. A
-	/* part-week bucket is always short, so a chart that includes it draws a cliff
-	/* at the right-hand edge every time it is opened and reads as a collapse
-	/* rather than as a Tuesday. It also makes the year-on-year pair compare a
-	/* partial week against a whole one.
-	/*
-	/* This is what BRIEF §A.3's own worked example does: weeks=52 on 24 Aug 2026
-	/* (which is 2026-W35) is specified as 2025-W35 -> 2026-W34.
-	*/
-	$anchor_week_start = strtotime('-1 week', $this_week_start);
-
-	$range_start = strtotime('-' . ($span - 1) . ' weeks', $anchor_week_start);
-	$range_end   = strtotime('+1 week', $anchor_week_start) - 1;
-
-	/*
-	/* Dense, ordered bucket list. Zero-filled gaps matter: a chart that silently
-	/* omits a quiet week draws a straight line across it and reads as continuity
-	/* rather than as an empty week.
-	*/
-	$week_keys  = array();
-	$week_index = array();
-	$cursor     = $range_start;
-
-	for ($i = 0; $i < $span; $i++)
-	{
-		$key              = goat_perf_week_key($cursor);
-		$week_keys[$i]    = $key;
-		$week_index[$key] = $i;
-		$cursor           = strtotime('+1 week', $cursor);
-	}
-
-	/* Index of the first bucket inside the REQUESTED window. */
-	$req_first = $weeks;
+	$weeks           = $perf_win['weeks'];
+	$span            = $perf_win['span'];             /* requested window + comparison */
+	$today           = $perf_win['today'];
+	$this_week_start = $perf_win['this_week_start'];
+	$range_start     = $perf_win['range_start'];
+	$range_end       = $perf_win['range_end'];
+	$week_keys       = $perf_win['week_keys'];
+	$week_index      = $perf_win['week_index'];
+	$req_first       = $perf_win['req_first'];      /* first bucket in the REQUESTED window */
 
 
 	/* ──────────────────────────────────────────────────────────────────────────
@@ -396,7 +359,7 @@
 
 	while ($fwd_cursor <= $fwd_last_week)
 	{
-		$key                  = goat_perf_week_key($fwd_cursor);
+		$key                  = goat_perf_week_key_lib($fwd_cursor);
 		$idx                  = count($fwd_week_keys);
 		$fwd_week_keys[$idx]  = $key;
 		$fwd_week_index[$key] = $idx;
@@ -494,6 +457,22 @@
 	/* ──────────────────────────────────────────────────────────────────────────
 	/* Query 2 — invoiced lines over the full span
 	/*
+	/* A2 (17 Nov 2026), so these charts read lines the way the margin card does:
+	/*
+	/*  - HAND-ADDED LINES carry bookingID 0 and callID 0 (P5d). Joining bookings
+	/*    on il.bookingID dropped every one of them -- 23 lines, $33,711.05 in the
+	/*    52 weeks to 2026-W46 (P7a). The booking is now resolved through the
+	/*    invoice when the line has none; every one of the 66 in the span resolved
+	/*    to a visible booking (P7a). Invoices are only ever generated in
+	/*    SmartStaff and never edited in Xero (Jenny, 16 Nov), so these lines are
+	/*    real billing, not noise.
+	/*  - ZERO LINES (0 hours AND no flatrate) are skipped. They add $0 and 0 h
+	/*    either way; skipping them stops a placeholder line adding its booking
+	/*    to a week's count. One in the span (P7d), on a booking with real lines
+	/*    beside it.
+	/*  - REVENUE uses the Xero formula (below). No flat-rate lines in the span
+	/*    on 17 Nov (P7c), so this changes no current figure.
+	/*
 	/* Fetched as rows rather than aggregated in SQL because the equipment split
 	/* and the tier canary both depend on parsing description, which SQL cannot do.
 	/* One pass over ~15k rows produces every invoiced series, the customer
@@ -503,7 +482,7 @@
 
 	$sql_lines = "
 		SELECT
-			il.bookingID       AS booking_id,
+			b.id               AS booking_id,
 			il.callID          AS call_id,
 			il.invoiceID       AS invoice_id,
 			il.start_date      AS start_date,
@@ -511,13 +490,16 @@
 			il.hours           AS hours,
 			il.qty             AS qty,
 			il.chargeout_rate  AS chargeout_rate,
+			il.flatrate        AS flatrate,
 			b.customerID       AS customer_id,
 			cu.customer_name   AS customer_name
 		FROM invoice_lines il
-		JOIN bookings  b  ON b.id  = il.bookingID
+		LEFT JOIN invoices inv ON inv.id = il.invoiceID
+		JOIN bookings  b  ON b.id = IF(il.bookingID > 0, il.bookingID, inv.bookingID)
 		LEFT JOIN customers cu ON cu.id = b.customerID
 		WHERE il.start_date > 0
 		  AND il.start_date BETWEEN " . (int) $range_start . " AND " . (int) $range_end . "
+		  AND NOT (il.hours = 0 AND il.flatrate = 0)
 		  AND b.hidden = 0
 	";
 
@@ -529,7 +511,7 @@
 	while ($row = mysqli_fetch_object($res_lines))
 	{
 		$ts  = (int) $row->start_date;
-		$key = goat_perf_week_key($ts);
+		$key = goat_perf_week_key_lib($ts);
 
 		if (!isset($week_index[$key]))
 		{
@@ -554,12 +536,20 @@
 		$hours_each = (double) $row->hours;
 		$qty        = (double) $row->qty;
 		$rate       = (double) $row->chargeout_rate;
+		$flatrate   = ($row->flatrate === null) ? 0.0 : (double) $row->flatrate;
 
 		if ($qty <= 0)
 			$dq_zero_qty_lines++;
 
+		/*
+		/* The Xero formula -- what the customer is actually invoiced for (Q1):
+		/* a flat-rate line is flatrate x qty, otherwise hours x rate x qty.
+		/* Hours are hours x qty either way.
+		*/
 		$line_hours   = $hours_each * $qty;
-		$line_revenue = $hours_each * $rate * $qty;
+		$line_revenue = ($flatrate > 0)
+		              ? $flatrate * $qty
+		              : $hours_each * $rate * $qty;
 
 		$parsed = goat_perf_parse_description($row->description);
 
@@ -731,6 +721,41 @@
 
 	while ($row = mysqli_fetch_object($res_ic))
 		$invoiced_calls[(int) $row->callID] = true;
+
+	/*
+	/* A2 / Q-A2 (Mike, 17 Nov 2026): a call billed BY HAND -- no line carries
+	/* its callID, but its invoice has hand-added (callID 0) lines -- has been
+	/* invoiced, so it leaves the "delivered, not invoiced" band. This is the
+	/* rule the margin card uses for hand_billed_unlined (perf-cost-lib.php), so
+	/* the two views cannot disagree about a call. 7 calls in the 104-week span
+	/* on 17 Nov (P7e), 38809 among them.
+	/*
+	/* Calls with NO line and NO hand-added line on their invoice stay in the
+	/* band: those are the likely-unbilled ones, and the band is where they
+	/* belong.
+	*/
+	$dq_hand_billed_calls = 0;
+
+	$res_hb = mysqli_query($perf_link,
+		"SELECT DISTINCT c.id AS call_id
+		   FROM calls c
+		   JOIN (SELECT DISTINCT invoiceID FROM invoice_lines
+		          WHERE (callID = 0 OR callID IS NULL)
+		            AND NOT (hours = 0 AND flatrate = 0)) m ON m.invoiceID = c.invoiceID
+		  WHERE c.invoiceID > 0");
+
+	if ($res_hb === false)
+		goat_json_error(500, 'hand-billed call query failed: ' . mysqli_error($perf_link));
+
+	while ($row = mysqli_fetch_object($res_hb))
+	{
+		$cid = (int) $row->call_id;
+		if (!isset($invoiced_calls[$cid]))
+		{
+			$invoiced_calls[$cid] = true;
+			$dq_hand_billed_calls++;
+		}
+	}
 
 
 	/* ──────────────────────────────────────────────────────────────────────────
@@ -931,7 +956,7 @@
 			$day_hours = 0.0;                  /* worked > 0 makes this unreachable */
 
 		$ts  = (int) $row->start_date;
-		$key = goat_perf_week_key($ts);
+		$key = goat_perf_week_key_lib($ts);
 
 		if (!isset($week_index[$key]))
 		{
@@ -1058,7 +1083,7 @@
 			continue;
 		}
 
-		$key = goat_perf_week_key($ts);
+		$key = goat_perf_week_key_lib($ts);
 
 		if (!isset($fwd_week_index[$key]))
 		{
@@ -1310,6 +1335,7 @@
 			'malformed_breaks'              => $dq_malformed_breaks,
 			'unclassified_tiers'            => $dq_unclassified_tiers,
 			'double_invoiced_calls'         => $dq_double_invoiced,
+			'hand_billed_calls'             => $dq_hand_billed_calls,
 			/* a call carrying lines under more than one bookingID — a referential
 			   fault, unrelated to double billing */
 			'calls_spanning_bookings'       => $dq_spanning_bookings,

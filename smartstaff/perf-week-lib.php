@@ -79,7 +79,13 @@
 				'range_end'   => (int) $range_end,
 				'week_keys'   => $week_keys,
 				'week_index'  => $week_index,
-				'req_first'   => $w      /* index of the first bucket in the REQUESTED window */
+				'req_first'   => $w,     /* index of the first bucket in the REQUESTED window */
+				/* A2 (17 Nov 2026): the two anchors get-performance.php's forward
+				   book also needs, so it reads them from here rather than
+				   computing them a second time. Additive; existing callers ignore
+				   them. */
+				'today'           => (int) $today,
+				'this_week_start' => (int) $this_week_start
 			);
 		}
 	}
