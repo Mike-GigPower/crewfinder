@@ -184,7 +184,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.103.1"
+APP_VERSION    = "5.104.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -801,6 +801,31 @@ def current_accounting_user_id():
     except (TypeError, ValueError):
         return None
     return uid if uid in ACCOUNTING_USERS else None
+
+# ─── PERFORMANCE MARGIN (crew pay) ────────────────────────────────────────────
+# The "Margin — crew pay" card on Today › Performance is visible to Mike and Joe
+# only while it is tested (Mike, 16 Nov 2026; BRIEF-performance-cost-slice-a.md
+# §5.0). Keyed on SmartStaff userID for the same reasons as ACCOUNTING_USERS
+# above. 10261 = Mike's admin login, 10260 = Joe's admin login (prod ids; the
+# test accounts are created with the same ids so this set is identical on both).
+#
+# get-performance-cost.php holds the SAME set as $GOAT_MARGIN_USERS and refuses
+# on its own; both must change together. Hiding the card is not access control:
+# /api/performance/cost refuses unless current_margin_user_id() is not None.
+MARGIN_USERS = {10261, 10260}
+
+def current_margin_user_id():
+    """The session's SmartStaff userID if it may see margin, else None.
+    Same defensive coercion as current_accounting_user_id()."""
+    ident = current_identity() or {}
+    raw = ident.get("user_id")
+    if raw in (None, "", 0, "0"):
+        return None
+    try:
+        uid = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return uid if uid in MARGIN_USERS else None
 
 # ─── BOOKING RATE CARD (C7–C9) ────────────────────────────────────────────────
 # Each booking's two answers — MOPT? and, when MOPT, a mandatory Australian Open
@@ -14087,6 +14112,46 @@ def fetch_performance(ss, weeks):
     return data, None
 
 
+def fetch_performance_cost(ss, weeks):
+    """Weekly crew-pay margin via get-performance-cost.php (admin cohort AND
+    Mike/Joe only, enforced in the PHP as well). Returns (data, error) exactly
+    as fetch_performance does, and for the same reasons:
+
+    ONE request only (the per-session PHP lock). `weeks` is forwarded verbatim
+    and URL-encoded, never range-checked: the PHP clamps it and owns the default.
+
+    The only free text in the payload is exceptions.not_on_invoice[].call_name,
+    passed through HTML-encoded by the PHP; it is unescaped here once, like the
+    customer names in fetch_performance. Everything else is numeric or a week key
+    and is passed through untouched -- nothing is recomputed in Python."""
+    from html import unescape
+    from urllib.parse import quote
+    qs  = f"?weeks={quote(str(weeks), safe='')}" if weeks is not None else ""
+    url = f"{BASE_URL}/ajax/crew/get-performance-cost.php{qs}"
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=60)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict):
+        return None, "unexpected response shape"
+    if "error" in data:
+        return None, data["error"]
+    if not isinstance(data.get("weeks"), list) or not isinstance(data.get("totals"), dict):
+        return None, "unexpected response shape"
+    exc = data.get("exceptions")
+    if isinstance(exc, dict):
+        for c in (exc.get("not_on_invoice") or []):
+            if isinstance(c, dict) and c.get("call_name") is not None:
+                c["call_name"] = unescape(c["call_name"])
+    return data, None
+
+
 # ─── FORWARD BOOK PRICING ─────────────────────────────────────────────────────
 # The book, as at today, priced at LIST RATES through the same engine the
 # Estimator quotes from (estimator_calc.calc_line).
@@ -14539,6 +14604,53 @@ def api_performance():
             app.logger.warning(f"[performance] forward pricing failed: {e}")
             fwd["priced"] = {"unavailable": True, "error": str(e)}
 
+    return jsonify(data)
+
+
+# 10-minute cache for the margin card (BRIEF §1, §5.1). The pay read is one
+# JSON_TABLE scan of `accounting` (2.2 s over 104 weeks on prod, P3b), and the
+# numbers only move when calls are locked or invoices generated, so re-reading on
+# every tab open buys nothing. Keyed per session AND per window, like
+# _schedule_cache. Refresh sends force=1 and bypasses it.
+_perf_cost_cache = {}  # {f"{sid}_{weeks}": {"data", "at"}}
+PERF_COST_CACHE_SECONDS = 600
+
+
+@app.route("/api/performance/cost", methods=["GET"])
+@require_cohort("admin")
+def api_performance_cost():
+    """Weekly crew-pay margin for the Performance tab -- a thin proxy over
+    get-performance-cost.php, separate from /api/performance so the revenue
+    charts draw first and the slower pay scan never holds them up.
+
+    Admin cohort (decorator) AND Mike or Joe (MARGIN_USERS). The PHP checks
+    both again. Soft-fails as HTTP 200 {"unavailable": true} so a failure costs
+    the margin card only. Never calls get-performance.php: one PHP request per
+    route, so the session lock is never contended within a request."""
+    if current_margin_user_id() is None:
+        return jsonify({"error": "Not enabled for this account"}), 403
+
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    weeks = request.args.get("weeks")
+    force = request.args.get("force") == "1"
+    sid   = session.get("sid", "anon")
+    key   = f"{sid}_{weeks}"
+
+    cached = _perf_cost_cache.get(key)
+    if (not force and cached
+            and (datetime.now() - cached["at"]).total_seconds() < PERF_COST_CACHE_SECONDS):
+        return jsonify(cached["data"])
+
+    data, err = fetch_performance_cost(ss, weeks)
+    if err is not None:
+        app.logger.warning(f"[performance/cost] unavailable: {err}")
+        # A failure is never cached: the next open tries again.
+        return jsonify({"unavailable": True, "error": err})
+
+    _perf_cost_cache[key] = {"data": data, "at": datetime.now()}
     return jsonify(data)
 
 
@@ -17783,6 +17895,7 @@ def api_whoami():
         "elevated":    session.get("sid") in _pre_elevation,
         # Accounting group visibility (ACCOUNTING_USERS). Visibility only.
         "accounting":  current_accounting_user_id() is not None,
+        "margin":      current_margin_user_id() is not None,
         "ss_base":     BASE_URL,
         # Opaque per-person id for UI preferences. Safe to expose: a one-way
         # digest, no name or username in it, and it grants nothing on its own.
