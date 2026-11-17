@@ -9,7 +9,7 @@ Skips when node isn't installed.
   - weekly margin % is null (a gap, not 0%) on a week with no revenue
   - a week with calls paid but awaiting invoice is drawn hollow and says so
   - a negative-margin week is drawn below a zero line, in red, not clipped
-  - the 30% target line appears in the % view only
+  - the margin target line (40%) appears in the % view only
   - exception rows decode entities, then escape; each row opens its call
   - perfMarginOn() is false unless whoami.margin is exactly true, so an ops
     login and an admin who isn't Mike or Joe get no slot at all
@@ -55,7 +55,7 @@ FUNCS = H.extract(*NAMES) if H.NODE else ""
 PRELUDE = H.DOM_PRELUDE + r"""
 var PERF_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 var PERF_SIGNAL_COLORS = { good: '#10b981', watch: '#f59e0b', bad: '#e31e24', none: '#666666' };
-var PERF_MARGIN_TARGET_PCT = 30;
+var PERF_MARGIN_TARGET_PCT = 40;
 var PERF_RANK_MIN_HOURS = 1000;
 var _perfSvgSeq = 0;
 var PERF_HATCH_STROKE = '#999', PERF_HATCH_OPACITY = 0.5;
@@ -138,7 +138,7 @@ class MarginCard(unittest.TestCase):
           var p = perfMarginChartSvg(perfMarginSeries(P, 'pct'), '#d4af37');
           console.log(JSON.stringify({d: d.indexOf('perf-mgn-target') >= 0,
                                       p: p.indexOf('perf-mgn-target') >= 0,
-                                      lbl: p.indexOf('target 30%') >= 0}));
+                                      lbl: p.indexOf('target 40%') >= 0}));
         """)
         self.assertFalse(out["d"])
         self.assertTrue(out["p"])
@@ -218,7 +218,7 @@ class GrossMarginTile(unittest.TestCase):
         c = out["c"]
         self.assertIn(">47.7%<", c)                       # the card's own current margin %
         self.assertIn("pts vs -80.0%", c)                 # points against last year
-        self.assertIn("target 30%", c)
+        self.assertIn("target 40%", c)
         self.assertIn("perf-spark", c)
         self.assertNotIn("perf-head--muted", c)
 
@@ -549,7 +549,7 @@ class FinancialYear(unittest.TestCase):
         self.assertIn("MARGIN — FINANCIAL YEAR", h)
         self.assertIn("FY2026–27 against FY2025–26", h)
         self.assertIn("%.1f%%" % pct, h)
-        self.assertIn("▼ %.1f pts" % abs(pct - 30), h)       # below target
+        self.assertIn("▼ %.1f pts" % abs(pct - 40), h)       # below target
         self.assertIn("FY2025–26 was 50.0% at week 20", h)
         self.assertIn("20 weeks in:", h)
         self.assertIn("perf-mgn-fy-actual", h)

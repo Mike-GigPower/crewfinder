@@ -37852,7 +37852,7 @@ let _perfCostErr     = null;
 let _perfCostLoading = false;
 let _perfCostSeq     = 0;
 let _perfMarginUnit  = (goatPrefs.get('perf', 'marginUnit', 'dollars') === 'pct') ? 'pct' : 'dollars';
-const PERF_MARGIN_TARGET_PCT = 30;    // Q3 (Mike, 16 Nov 2026): a reference line, not a judgement
+const PERF_MARGIN_TARGET_PCT = 40;    // Q3: 30% (Mike, 16 Nov 2026), raised to 40% (Mike, 17 Nov 2026). A reference line, not a judgement
 
 function perfMarginOn(){
   return !!(window._identity && window._identity.margin === true);
@@ -37905,7 +37905,7 @@ function renderPerfMarginSlot(){
 // The headline "gross margin" tile for margin users: the card's own window
 // totals, so the tile and the card can never disagree. Margin % moves in
 // POINTS against last year. No signal colour: the only judgement on this
-// number is the 30% target, which the sub-line states.
+// number is the margin target, which the sub-line states.
 function perfGmTileHtml(){
   if(_perfCostErr) return perfHeadTile({ val: '—', lbl: 'gross margin', muted: true, sub: 'margin unavailable' });
   if(!_perfCost)   return perfHeadTile({ val: '…', lbl: 'gross margin', muted: true, sub: 'loading crew pay…' });
@@ -38091,8 +38091,9 @@ function perfMarginChartSvg(s, accent){
     const ty = Y(PERF_MARGIN_TARGET_PCT).toFixed(1);
     target = '<line class="perf-mgn-target" x1="' + padL + '" y1="' + ty + '" x2="' + (padL + plotW) + '" y2="' + ty + '"/>'
            // Labelled at the LEFT edge: the newest weeks sit at the right, and
-           // the label must never cover the point being read.
-           + '<text class="perf-ax perf-mgn-target-lbl" x="' + (padL + 6) + '" y="' + (+ty - 5).toFixed(1) + '" text-anchor="start">target ' + PERF_MARGIN_TARGET_PCT + '%</text>';
+           // the label must never cover the point being read. BELOW the line:
+           // at 40% the margin runs just above it, so above would sit on the data.
+           + '<text class="perf-ax perf-mgn-target-lbl" x="' + (padL + 6) + '" y="' + (+ty + 13).toFixed(1) + '" text-anchor="start">target ' + PERF_MARGIN_TARGET_PCT + '%</text>';
   }
 
   // Points: red below zero, hollow when the week still has calls paid but not
@@ -38336,7 +38337,7 @@ function perfMarginCard(c){
 
 
 // ── MARGIN — FINANCIAL YEAR (slice C) ──────────────────────────────────────
-// Cumulative margin % for this financial year and last, against the 30%
+// Cumulative margin % for this financial year and last, against the margin
 // target (Mike, 17 Nov 2026: the main line is cumulative margin %, not $),
 // with the booked-ahead weeks continuing it from slice D's estimate.
 //
@@ -38455,7 +38456,7 @@ function perfMarginFySvg(s){
 
   const ty = Y(PERF_MARGIN_TARGET_PCT).toFixed(1);
   const target = '<line class="perf-mgn-target" x1="' + padL + '" y1="' + ty + '" x2="' + (padL + plotW) + '" y2="' + ty + '"/>'
-    + '<text class="perf-ax perf-mgn-target-lbl" x="' + (padL + plotW - 6) + '" y="' + (+ty - 5).toFixed(1) + '" text-anchor="end">target ' + PERF_MARGIN_TARGET_PCT + '%</text>';
+    + '<text class="perf-ax perf-mgn-target-lbl" x="' + (padL + plotW - 6) + '" y="' + (+ty + 13).toFixed(1) + '" text-anchor="end">target ' + PERF_MARGIN_TARGET_PCT + '%</text>';
 
   // A null % (no revenue yet) breaks a line rather than drawing it at 0%.
   const pathOf = function(pts, xi){
