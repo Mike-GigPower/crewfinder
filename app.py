@@ -185,7 +185,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.108.0"
+APP_VERSION    = "5.109.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -23632,6 +23632,221 @@ def api_admin_update_crew(crew_id):
         return jsonify({"error": err}), 502
     return jsonify(data)
 
+
+
+# ── Change pay grade (BRIEF-promotion-paygrade-slice1) ───────────────────────
+# One action on the crew record changes a person's pay grade AND moves their
+# rows on unlocked calls from the WEF date to the matching grade, so Rich no
+# longer hunts them down by hand (DESIGN-promotion-paygrade-cascade v0.2).
+#
+#   preview-grade-change.php  read only: what would change
+#   apply-grade-change.php    re-checks every row, writes rows then the person
+#   grade-change-log          Supabase edge function: the audit log, and the
+#                             rows Rich chose to keep (the banner ignores them)
+#
+# THE DECORATOR IS THE ACCESS CONTROL (admin). The person and the grade the
+# preview was built on are re-read SERVER-SIDE before applying; the browser
+# sends only its choices (new grade, WEF, the ticked call IDs).
+#
+# The audit log is best-effort: a Supabase failure after SmartStaff succeeded
+# is reported as log_error, never as a failed grade change.
+
+GRADE_CHANGE_LOG_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/grade-change-log"
+
+
+def ss_grade_change_preview(ss, crew_id, new_grade, wef=None):
+    """(status, data) from preview-grade-change.php. Status 0 = no response."""
+    params = {"user_id": int(crew_id), "new_grade": int(new_grade)}
+    if wef:
+        params["wef"] = str(wef)
+    try:
+        resp = ss.get(f"{BASE_URL}/ajax/crew/preview-grade-change.php", params=params, timeout=60)
+    except Exception as e:
+        return 0, {"error": f"request failed: {e}"}
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        data = {"error": f"HTTP {resp.status_code}: unexpected response"}
+    return resp.status_code, data
+
+
+def _grade_log_call(mode, payload, timeout=10):
+    """(data, error) for one grade-change-log POST. Uses the rate-card key, as
+    call-types does (same trust boundary). Never raises."""
+    if not GOAT_RATE_CARD_KEY:
+        return None, RATE_CARD_KEY_MISSING
+    body = dict(payload)
+    body["mode"] = mode
+    try:
+        r = http.post(GRADE_CHANGE_LOG_URL, json=body,
+                      headers={"X-Goat-Service-Key": GOAT_RATE_CARD_KEY}, timeout=timeout)
+    except Exception as e:
+        print(f"[grade-change-log] {mode} request failed: {type(e).__name__}")
+        return None, "grade change log unavailable"
+    try:
+        data = r.json() or {}
+    except Exception:
+        data = {}
+    if r.status_code == 200:
+        return data, None
+    print(f"[grade-change-log] {mode} returned {r.status_code}: {data.get('error')}")
+    if r.status_code == 500 and data.get("id") and data.get("rows_logged") is False:
+        return data, "the change was logged without its call detail"
+    return None, str(data.get("error") or f"grade change log error (HTTP {r.status_code})")
+
+
+def _as_pos_int(v):
+    try:
+        n = int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+@app.route("/api/admin/crew/<crew_id>/grade-change/preview")
+@require_cohort("admin")
+def api_admin_grade_change_preview(crew_id):
+    """What changing this person's grade would do. Read only."""
+    if _as_pos_int(crew_id) is None:
+        return jsonify({"error": "crew id must be an integer"}), 400
+    new_grade = _as_pos_int(request.args.get("new_grade"))
+    if new_grade is None:
+        return jsonify({"error": "new_grade required"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    st, data = ss_grade_change_preview(ss, crew_id, new_grade, request.args.get("wef") or None)
+    if st == 0:
+        return jsonify(data), 502
+    if st == 200:
+        # Rows Rich chose to keep in an earlier change to this same grade come
+        # back unticked and marked, so the banner's "Review…" does not quietly
+        # re-tick them. Best-effort: if the log can't be read, nothing is marked.
+        kept, _ = _grade_log_call("kept", {"user_id": int(crew_id), "grade": new_grade})
+        ids = set((kept or {}).get("call_ids") or [])
+        for r in data.get("rows") or []:
+            if r.get("call_id") in ids:
+                r["kept_before"] = True
+                r["default_ticked"] = False
+    return jsonify(data), (st if st in (200, 400, 403, 404) else 502)
+
+
+@app.route("/api/admin/crew/<crew_id>/grade-change", methods=["POST"])
+@require_cohort("admin")
+def api_admin_grade_change_apply(crew_id):
+    """Apply a grade change: SmartStaff first (rows, then the person), then the
+    audit log. The preview is re-run here so the log records what the server
+    saw, and `kept` is derived from it rather than taken from the browser."""
+    cid = _as_pos_int(crew_id)
+    if cid is None:
+        return jsonify({"error": "crew id must be an integer"}), 400
+    body = request.get_json(silent=True) or {}
+    new_grade = _as_pos_int(body.get("new_grade"))
+    wef = str(body.get("wef") or "")
+    expected = body.get("expected_current_grade")
+    try:
+        expected = int(expected)
+    except (TypeError, ValueError):
+        return jsonify({"error": "expected_current_grade required"}), 400
+    if new_grade is None or not wef:
+        return jsonify({"error": "new_grade and wef required"}), 400
+    ticked = []
+    for v in body.get("call_ids") or []:
+        n = _as_pos_int(v)
+        if n is not None and n not in ticked:
+            ticked.append(n)
+
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    applied_by = current_user_id()
+    if applied_by is None:
+        return jsonify({"error": "couldn't identify who is making the change (no SmartStaff userID)"}), 400
+
+    pst, prev = ss_grade_change_preview(ss, cid, new_grade, wef)
+    if pst != 200:
+        return jsonify(prev), (pst if pst in (400, 403, 404) else 502)
+
+    ast, res = _ss_post_json(ss, "apply-grade-change.php", {
+        "user_id": cid, "new_grade": new_grade, "wef": wef,
+        "call_ids": ticked, "expected_current_grade": expected,
+    })
+    if ast != 200:
+        return jsonify(res), (ast if ast in (400, 403, 404, 409) else 502)
+
+    # The log: every row the preview listed, with what became of it.
+    updated = {u["call_id"]: u for u in res.get("updated") or []}
+    skipped = {s["call_id"]: s.get("reason") for s in res.get("skipped") or []}
+    rows = []
+    for r in prev.get("rows") or []:
+        c = r["call_id"]
+        if c in updated:
+            rows.append({"call_id": c, "from_grade": r["from_grade"], "to_grade": r["to_grade"], "action": "updated"})
+        elif c in skipped:
+            rows.append({"call_id": c, "from_grade": r["from_grade"], "to_grade": r["to_grade"],
+                         "action": "skipped", "reason": skipped[c]})
+        else:
+            rows.append({"call_id": c, "from_grade": r["from_grade"], "to_grade": r["to_grade"], "action": "kept"})
+    for key, action in (("before_wef", "before_wef"), ("locked", "locked")):
+        for r in prev.get(key) or []:
+            rows.append({"call_id": r["call_id"], "from_grade": r["from_grade"],
+                         "to_grade": r["to_grade"], "action": action})
+
+    person = prev.get("person") or {}
+    log, log_err = _grade_log_call("log", {
+        "user_id": cid, "ein": _as_pos_int(person.get("ein")),
+        "from_grade": res.get("from_grade"), "to_grade": res.get("to_grade"),
+        "wef": res.get("wef") or wef, "applied_by": applied_by, "rows": rows,
+    })
+
+    # The Probation tile is NOT recalculated here. Its list is saved for up to
+    # 3 hours and a recompute costs ~10 s of PHP holding this session's file
+    # lock, which would stall every other GOAT request meanwhile. The result
+    # tells the user instead (probation_note), and "Recalculate now" on the
+    # tile drops the person at once.
+    out_note = None
+    if res.get("grade_changed") and int(res.get("from_grade") or 0) == 10:
+        out_note = ("The Probation tile still lists them until its next recalculation "
+                    "(up to 3 hours) or until you press Recalculate now.")
+
+    out = dict(res)
+    out["locked"] = prev.get("locked") or []
+    out["log_id"] = (log or {}).get("id")
+    if log_err:
+        out["log_error"] = log_err
+    if out_note:
+        out["probation_note"] = out_note
+    return jsonify(out)
+
+
+@app.route("/api/admin/crew/<crew_id>/grade-change/stale")
+@require_cohort("admin")
+def api_admin_grade_change_stale(crew_id):
+    """How many of this person's rows on unlocked calls from today are still
+    on another tier than their own grade, ignoring rows logged as kept. For
+    the crew record's banner; any failure answers 0 rather than an error."""
+    cid = _as_pos_int(crew_id)
+    if cid is None:
+        return jsonify({"count": 0})
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"count": 0})
+    crew, err = ss_get_crew(ss, cid)
+    grade = _as_pos_int((crew or {}).get("paygrade_id")) if not err else None
+    if grade not in (10, 25, 26):
+        return jsonify({"count": 0})
+    st, prev = ss_grade_change_preview(ss, cid, grade)
+    if st != 200:
+        return jsonify({"count": 0})
+    kept, _ = _grade_log_call("kept", {"user_id": cid, "grade": grade})
+    ignore = set((kept or {}).get("call_ids") or [])
+    # Only rows BELOW the person's grade are stale. A row above it is a
+    # deliberate booking (design D12), not something to nag about.
+    rows = [r for r in prev.get("rows") or []
+            if r.get("call_id") not in ignore and r.get("direction") == "up"]
+    return jsonify({"count": len(rows), "grade": grade})
 
 # ── Manage Venues ────────────────────────────────────────────────────────────
 # Authored-endpoint pattern, mirroring Manage Crew: get-venue.php (read one,
