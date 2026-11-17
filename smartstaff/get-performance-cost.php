@@ -20,6 +20,7 @@
 	/*
 	/*   ?weeks=N (1..104, default 52)
 	/*     -> {generated_at, window, weeks[], totals, exceptions, data_quality}
+	/*   &inputs=1 adds forward_cost_inputs (slice D; see block 5)
 	/*
 	/* READ ONLY. Nothing in this file writes to any table.
 	/*
@@ -274,6 +275,179 @@
 
 	mysqli_free_result($res);
 
+	/* ---- 5. slice D inputs (only when asked: ?inputs=1) ---- */
+
+	/*
+	/* DESIGN-performance-d-v0_2.md. The estimator lives in THE GOAT
+	/* (forward_cost.py); this only hands it the raw facts:
+	/*
+	/*   history  26 complete weeks of PAID calls, split into an older and a
+	/*            newer 13. Per call: name, date, start time, booked length,
+	/*            and per paid person {pay category: [hours, dollars]}.
+	/*            The backtest trains on the older half and prices the newer;
+	/*            the live estimate trains on the newer half.
+	/*   forward  calls from today to +60 days, not cancelled, with the
+	/*            confirmed (status 5) crew.
+	/*
+	/* PEOPLE ARE NUMBERS. Each crew member is an index (0, 1, 2 ...) that means
+	/* something only inside this one response. No userID or name leaves the
+	/* server. The same person has the same index in history and forward, which
+	/* is all the estimator needs to use their own recent rate.
+	/*
+	/* OPT-IN so that deploying this file changes nothing for the app until
+	/* slice D's front end asks for it.
+	*/
+
+	$fci = null;
+
+	if (isset($_GET['inputs']) && $_GET['inputs'] === '1')
+	{
+		$fci_today  = (int) $win['today'];
+		$fci_anchor = strtotime('-1 week', (int) $win['this_week_start']);
+		$fci_hs     = strtotime('-25 weeks', $fci_anchor);   /* history start */
+		$fci_ns     = strtotime('-12 weeks', $fci_anchor);   /* newer half start */
+		$fci_he     = strtotime('+1 week', $fci_anchor) - 1; /* history end */
+		$fci_fe     = strtotime('+60 days', $fci_today);     /* forward end */
+
+		$fci_people = array();
+		$fci_idx    = function ($uid) use (&$fci_people)
+		{
+			$uid = (int) $uid;
+			if (!isset($fci_people[$uid]))
+				$fci_people[$uid] = count($fci_people);
+			return $fci_people[$uid];
+		};
+
+		$fci_name = function ($nm)
+		{
+			$nm = (string) $nm;
+			return (json_encode($nm) === false) ? iconv('ISO-8859-1', 'UTF-8//IGNORE', $nm) : $nm;
+		};
+
+		/* history calls */
+		$fci_hist = array();
+		$res = perfcost_query($link, 'inputs history calls',
+			"SELECT c.id, c.start_date, c.start_time, c.est_length, c.call_name, c.bookingID
+			   FROM `calls` c
+			   JOIN `bookings` b ON b.id = c.bookingID AND b.hidden = 0
+			  WHERE c.start_date > 0
+			    AND c.start_date BETWEEN " . (int) $fci_hs . " AND " . (int) $fci_he);
+		while ($row = mysqli_fetch_assoc($res))
+		{
+			$ts = (int) $row['start_date'];
+			$fci_hist[(int) $row['id']] = array(
+				'id'         => (int) $row['id'],
+				'half'       => ($ts >= $fci_ns) ? 'newer' : 'older',
+				'date_iso'   => date('Y-m-d', $ts),
+				'start_time' => trim((string) $row['start_time']),
+				'est_length' => (float) $row['est_length'],
+				'name'       => $fci_name($row['call_name']),
+				'booking_id' => (int) $row['bookingID'],
+				'crew'       => array()
+			);
+		}
+		mysqli_free_result($res);
+
+		/* history pay, per call, person and category */
+		$fci_crew = array();
+		$res = perfcost_query($link, 'inputs history pay',
+			"SELECT a.callID, a.userID, jt.code,
+			        SUM(jt.t) AS h, SUM(jt.t * jt.rate) AS p
+			   FROM `accounting` a
+			   JOIN `calls` c ON c.id = a.callID
+			   JOIN `bookings` b ON b.id = c.bookingID AND b.hidden = 0,
+			        JSON_TABLE(a.calculated, '$[*]' COLUMNS(
+			          code VARCHAR(64) PATH '$.myobCode',
+			          rate DOUBLE      PATH '$.rate',
+			          t    DOUBLE      PATH '$.timeTotal')) jt
+			  WHERE c.start_date > 0
+			    AND c.start_date BETWEEN " . (int) $fci_hs . " AND " . (int) $fci_he . "
+			    AND jt.t <> 0
+			  GROUP BY a.callID, a.userID, jt.code");
+		while ($row = mysqli_fetch_assoc($res))
+		{
+			$cid = (int) $row['callID'];
+			if (!isset($fci_hist[$cid]))
+				continue;
+			$i    = $fci_idx($row['userID']);
+			$code = (string) $row['code'];
+			if (!isset($fci_crew[$cid][$i]))
+				$fci_crew[$cid][$i] = array();
+			$fci_crew[$cid][$i][$code] = array(round((float) $row['h'], 4), round((float) $row['p'], 4));
+		}
+		mysqli_free_result($res);
+
+		foreach ($fci_crew as $cid => $people)
+			foreach ($people as $i => $codes)
+				$fci_hist[$cid]['crew'][] = array('i' => $i, 'pay' => $codes);
+
+		/* forward calls, cancelled ones counted and left out (get-performance.php's rule) */
+		$fci_fwd       = array();
+		$fci_cancelled = 0;
+		$res = perfcost_query($link, 'inputs forward calls',
+			"SELECT c.id, c.start_date, c.start_time, c.est_length, c.call_name, c.bookingID, c.required
+			   FROM `calls` c
+			   JOIN `bookings` b ON b.id = c.bookingID AND b.hidden = 0
+			  WHERE c.start_date > 0
+			    AND c.start_date >= " . (int) $fci_today . "
+			    AND c.start_date <  " . (int) $fci_fe . "
+			  ORDER BY c.start_date, c.id");
+		while ($row = mysqli_fetch_assoc($res))
+		{
+			if (stripos((string) $row['call_name'], 'CANCEL') !== false)
+			{
+				$fci_cancelled++;
+				continue;
+			}
+			$ts = (int) $row['start_date'];
+			$fci_fwd[(int) $row['id']] = array(
+				'id'         => (int) $row['id'],
+				'week_key'   => goat_perf_week_key_lib($ts),
+				'date_iso'   => date('Y-m-d', $ts),
+				'start_time' => trim((string) $row['start_time']),
+				'est_length' => (float) $row['est_length'],
+				'name'       => $fci_name($row['call_name']),
+				'booking_id' => (int) $row['bookingID'],
+				'required'   => (int) $row['required'],
+				'crew'       => array()
+			);
+		}
+		mysqli_free_result($res);
+
+		if (count($fci_fwd) > 0)
+		{
+			$res = perfcost_query($link, 'inputs forward crew',
+				"SELECT ccm.callID, ccm.userID
+				   FROM `call_crew_map` ccm
+				  WHERE ccm.status = 5
+				    AND ccm.callID IN (" . implode(',', array_map('intval', array_keys($fci_fwd))) . ")
+				  ORDER BY ccm.callID, ccm.userID");
+			while ($row = mysqli_fetch_assoc($res))
+			{
+				$cid = (int) $row['callID'];
+				if (isset($fci_fwd[$cid]))
+					$fci_fwd[$cid]['crew'][] = $fci_idx($row['userID']);
+			}
+			mysqli_free_result($res);
+		}
+
+		$fci = array(
+			'history' => array(
+				'older_from' => (int) $fci_hs,
+				'newer_from' => (int) $fci_ns,
+				'to'         => (int) $fci_he,
+				'calls'      => array_values($fci_hist)
+			),
+			'forward' => array(
+				'from'            => (int) $fci_today,
+				'to'              => (int) $fci_fe - 1,
+				'cancelled_calls' => $fci_cancelled,
+				'calls'           => array_values($fci_fwd)
+			),
+			'people' => count($fci_people)
+		);
+	}
+
 	/* ---- compute, then answer ---- */
 
 	$r = goat_perf_cost_compute($win, $calls, $pay, $lines, 50, $invCust);
@@ -306,6 +480,9 @@
 		'data_quality' => $r['data_quality'],
 		'customers'    => $r['customers']
 	);
+
+	if ($fci !== null)
+		$body['forward_cost_inputs'] = $fci;
 
 	$out = json_encode($body);
 
