@@ -1,6 +1,6 @@
 {
-  "version": "5.104.0",
-  "release_date": "2026-11-16",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.104.0/TheGOAT.dmg",
-  "release_notes": "Performance: groundwork for a new view, visible to selected accounts while it's tested."
+  "version": "5.107.0",
+  "release_date": "2026-11-17",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.107.0/TheGOAT.dmg",
+  "release_notes": "Performance: chart month labels now sit on the first week of each month, and revenue now includes hand-added invoice lines, so totals may read slightly higher."
 }
