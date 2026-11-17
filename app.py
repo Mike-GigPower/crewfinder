@@ -804,16 +804,19 @@ def current_accounting_user_id():
     return uid if uid in ACCOUNTING_USERS else None
 
 # ─── PERFORMANCE MARGIN (crew pay) ────────────────────────────────────────────
-# The "Margin — crew pay" card on Today › Performance is visible to Mike and Joe
-# only while it is tested (Mike, 16 Nov 2026; BRIEF-performance-cost-slice-a.md
-# §5.0). Keyed on SmartStaff userID for the same reasons as ACCOUNTING_USERS
-# above. 10261 = Mike's admin login, 10260 = Joe's admin login (prod ids; the
-# test accounts are created with the same ids so this set is identical on both).
+# The margin cards on Today › Performance (weekly, by customer, forward,
+# financial year) were Mike and Joe only while tested (Mike, 16 Nov 2026;
+# BRIEF-performance-cost-slice-a.md §5.0); Rich and Monty added 17 Nov 2026.
+# Keyed on SmartStaff userID for the same reasons as ACCOUNTING_USERS above.
+# Prod ADMIN logins (usergroupID 1), never anyone's crew/ops account:
+#   10261 Mike · 10260 Joe · 10259 Rich (Richard Cosgriff) · 10258 Monty (Emil Camilleri)
+# A sign-in on an ops account sees no margin, elevated or not, unless the
+# request runs as one of these admin accounts.
 #
 # get-performance-cost.php holds the SAME set as $GOAT_MARGIN_USERS and refuses
 # on its own; both must change together. Hiding the card is not access control:
 # /api/performance/cost refuses unless current_margin_user_id() is not None.
-MARGIN_USERS = {10261, 10260}
+MARGIN_USERS = {10261, 10260, 10259, 10258}
 
 def current_margin_user_id():
     """The session's SmartStaff userID if it may see margin, else None.
@@ -21058,7 +21061,8 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
     _dup_ids = set(cid for cid, names in _claims.items() if len(names) > 1)
     for cid in sorted(_dup_ids, key=str):
         duplicates.append({"call_id": cid, "tab_names": _claims[cid],
-                           "call_name": (by_id.get(cid) or {}).get("call_name")})
+                           "call_name": (by_id.get(cid) or {}).get("call_name"),
+                           "call_time": (by_id.get(cid) or {}).get("iso")})
 
     for tab in tabs_in:
         if not tab.get("rows"):
@@ -21118,6 +21122,7 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
                 cancelled_tabs.append({"tab_name": tab["tab_name"],
                                        "call_id": ci["call_id"],
                                        "call_name": ci["call_name"],
+                                       "call_time": ci["iso"],
                                        "crew_count": len(tab["rows"])})
                 continue
             best, map_by = ci, "call_id"
@@ -21178,6 +21183,7 @@ def _build_import_preview(ss, booking_id, parsed, manual_map=None):
                 cancelled_tabs.append({"tab_name": tab["tab_name"],
                                        "call_id": best["call_id"],
                                        "call_name": best["call_name"],
+                                       "call_time": best["iso"],
                                        "crew_count": len(tab["rows"])})
                 continue
 

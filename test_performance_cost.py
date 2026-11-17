@@ -4,8 +4,9 @@
 Drives the REAL /api/performance/cost through a Flask test client with
 SmartStaff faked:
 
-  - who may call it: admin cohort AND a MARGIN_USERS userID (Mike 10261,
-    Joe 10260). An operations session, and an admin who is not Mike or Joe,
+  - who may call it: admin cohort AND a MARGIN_USERS userID (admin logins:
+    Mike 10261, Joe 10260, Rich 10259, Monty 10258). An operations session,
+    and an admin who is not on the list (the shared admin 2973, Jenny 10494),
     are refused with 403 and never reach SmartStaff.
   - soft-fail: a failed fetch is HTTP 200 {"unavailable": true} and is never
     cached.
@@ -86,6 +87,18 @@ class Route(unittest.TestCase):
 
     def test_operations_is_refused_and_never_fetches(self):
         self.who("operations", 10261)
+        code, _ = get("/api/performance/cost")
+        self.assertEqual(code, 403)
+        self.assertEqual(self.calls, [])
+
+    def test_rich_and_monty_admin_logins_get_the_payload(self):
+        for uid in (10259, "10258"):
+            self.who("admin", uid)
+            code, _ = get("/api/performance/cost?force=1")
+            self.assertEqual(code, 200, uid)
+
+    def test_rich_on_an_operations_account_is_refused(self):
+        self.who("operations", 10259)
         code, _ = get("/api/performance/cost")
         self.assertEqual(code, 403)
         self.assertEqual(self.calls, [])
@@ -262,8 +275,8 @@ class ForwardMarginRoute(Route):
 
 class Allowlist(unittest.TestCase):
 
-    def test_margin_users_are_mike_and_joe(self):
-        self.assertEqual(A.MARGIN_USERS, {10261, 10260})
+    def test_margin_users_are_the_four_admin_logins(self):
+        self.assertEqual(A.MARGIN_USERS, {10261, 10260, 10259, 10258})
 
     def test_php_holds_the_same_set(self):
         import os, re
@@ -276,7 +289,8 @@ class Allowlist(unittest.TestCase):
 
     def test_current_margin_user_id(self):
         cases = [({"user_id": 10261}, 10261), ({"user_id": "10260"}, 10260),
-                 ({"user_id": 10258}, None), ({"user_id": "0"}, None),
+                 ({"user_id": 10258}, 10258), ({"user_id": "10259"}, 10259),
+                 ({"user_id": 10494}, None), ({"user_id": 2973}, None), ({"user_id": "0"}, None),
                  ({"user_id": "x"}, None), ({}, None)]
         for ident, want in cases:
             with mock.patch.object(A, "current_identity", lambda i=ident: i):

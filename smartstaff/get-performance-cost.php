@@ -24,8 +24,9 @@
 	/*
 	/* READ ONLY. Nothing in this file writes to any table.
 	/*
-	/* WHO: admin cohort AND one of $GOAT_MARGIN_USERS (Mike 10261, Joe 10260;
-	/* Mike, 16 Nov 2026). The same set is MARGIN_USERS in THE GOAT's app.py;
+	/* WHO: admin cohort AND one of $GOAT_MARGIN_USERS: the admin logins of
+	/* Mike 10261 and Joe 10260 (16 Nov 2026), Rich 10259 and Monty 10258
+	/* (17 Nov 2026). The same set is MARGIN_USERS in THE GOAT's app.py;
 	/* both must change together. Checked here as well as in Flask because an
 	/* admin logged straight into SmartStaff could otherwise open this URL in a
 	/* browser.
@@ -53,7 +54,7 @@
 	/* ACCESSOR: mysqli_* on its own link, as get-booking-figures.php.
 	/* PHP 5.6 -- array(), no null-coalescing, no short array syntax. */
 
-	$GOAT_MARGIN_USERS = array(10261, 10260);
+	$GOAT_MARGIN_USERS = array(10261, 10260, 10259, 10258);
 
 	/* ---- helpers ---- */
 

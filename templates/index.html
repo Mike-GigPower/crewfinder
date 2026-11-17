@@ -27869,6 +27869,22 @@ function _tiCallRows(s, c){
 // booking 11952's "Tue 1300" tab lost 79 crew and their times with nothing said.
 // Each block below is deliberately louder than that line.
 
+// "Show Call · Sat 21 Nov 18:00" — a call's name with its scheduled start, so
+// two calls with the same name on one booking (two "Crew Boss", two "Show
+// Call") can be told apart (Mike, 17 Nov 2026). PLAIN TEXT: the caller
+// escapes. 24-hour clock, no am/pm. iso is the preview's "YYYY-MM-DDTHH:MM:SS"
+// in Melbourne wall time, read as written — never through Date(), which
+// would shift it by the viewer's zone.
+function tiCallLabel(name, iso, callId){
+  const nm = decodeEntities(String(name || '')) || ('Call ' + (callId != null ? callId : ''));
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso || ''));
+  if(!m) return nm;
+  const dows = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const mons = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dow  = dows[new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay()];
+  return nm + ' · ' + dow + ' ' + (+m[3]) + ' ' + mons[+m[2] - 1] + ' ' + m[4] + ':' + m[5];
+}
+
 // Two or more tabs stamped with the same Call ID. All of them are blocked: the app
 // cannot know which is the real one, and writing the wrong one costs someone's pay.
 function _tiDuplicateBlock(d){
@@ -27884,7 +27900,7 @@ function _tiDuplicateBlock(d){
           : (names[0] || '');
         const many = names.length > 2;
         return '⛔ <b>'+joined+'</b> '+(many?'all carry':'both carry')+' Call ID '+escapeHtml(String(t.call_id))
-             + (t.call_name ? ' ('+escapeHtml(t.call_name)+')' : '')
+             + ((t.call_name || t.call_time) ? ' ('+escapeHtml(tiCallLabel(t.call_name, t.call_time, t.call_id))+')' : '')
              + ' — '+(many?'none were':'neither was')+' imported. Fix B1 so each tab has its own, and re-import.';
       }).join('<div style="height:6px"></div>')
     + '</div>';
@@ -27904,7 +27920,7 @@ function _tiNeedsCallBlock(d){
         }
         const opts = ['<option value="">Pick the call it belongs to…</option>'].concat(
           t.candidates.map(function(c){
-            return '<option value="'+c.call_id+'">'+escapeHtml((c.call_name||('Call '+c.call_id))
+            return '<option value="'+c.call_id+'">'+escapeHtml(tiCallLabel(c.call_name, c.call_time, c.call_id)
                  + ' — '+c.overlap+' of '+t.ein_count+' crew match')+'</option>';
           })).join('');
         return head
@@ -27934,8 +27950,8 @@ function _tiCancelledBlock(d){
   const tabs = d.cancelled_tabs || [];
   if(!tabs.length) return '';
   const byCall = {};
-  tabs.forEach(function(t){ byCall[String(t.call_id)] = t.call_name || ('Call '+t.call_id); });
-  const names = Object.keys(byCall).map(function(k){ return decodeEntities(byCall[k]); });
+  tabs.forEach(function(t){ byCall[String(t.call_id)] = tiCallLabel(t.call_name, t.call_time, t.call_id); });
+  const names = Object.keys(byCall).map(function(k){ return byCall[k]; });
   const n = names.length;
   return '<div style="font-size:11px;color:#f59e0b;padding-bottom:8px">'
     + n+' cancelled call'+(n===1?'':'s')+' skipped — check their times in Enter Times: '
@@ -27987,7 +28003,7 @@ function renderTimesheetImportPreview(){
       + '<div style="display:flex;align-items:center;gap:10px">'
       + '<input type="checkbox" '+(inc?'checked':'')+(c.matched.length?'':' disabled')+' onchange="tiToggleCall('+c.call_id+',this)">'
       + '<div style="flex:1;min-width:0">'
-      + '<div style="font-size:13px;color:var(--text)">'+escapeHtml(c.tab_name)+' <span style="color:var(--muted)">→</span> '+escapeHtml(c.call_name||('Call '+c.call_id))+'</div>'
+      + '<div style="font-size:13px;color:var(--text)">'+escapeHtml(c.tab_name)+' <span style="color:var(--muted)">→</span> '+escapeHtml(tiCallLabel(c.call_name, c.call_time, c.call_id))+'</div>'
       + '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(mappedBy)+' · '+_tiCallRows(s,c).length+' to write</div>'
       + '</div></div>'
       + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>')
@@ -28080,7 +28096,7 @@ async function writeTimesImport(){
   let done = 0, wrote = 0, failed = 0;
   const refused = [];
   for(const c of targets){
-    result.textContent = 'Writing '+(done+1)+'/'+targets.length+' — '+(c.call_name||('call '+c.call_id))+'…';
+    result.textContent = 'Writing '+(done+1)+'/'+targets.length+' — '+tiCallLabel(c.call_name, c.call_time, c.call_id)+'…';
     const rows = _tiCallRows(s, c).map(function(m){
       const row = {user_id:m.user_id, on:m.on, off:m.off, break:m.break, break_night:m.break_night, late:m.late, note:m.note};
       if(m.callpaygradeID) row.callpaygradeID = m.callpaygradeID;
