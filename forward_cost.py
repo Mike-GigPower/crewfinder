@@ -356,17 +356,41 @@ def call_actual_pay(call):
 # Forward estimate (what the card draws)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def estimate_forward(model, forward_calls, cfg):
+def iso_week_key(date_iso):
+    """PHP's week key, date('o-\\WW'): ISO year and ISO week, "2026-W47"."""
+    y, w, _ = date.fromisoformat(date_iso).isocalendar()
+    return "%d-W%02d" % (y, w)
+
+
+def dense_week_keys(from_iso, to_iso):
+    """Every ISO week key from the week holding from_iso to the week holding
+    to_iso, in order, with no gaps: a quiet week is a real week."""
+    d = date.fromisoformat(from_iso)
+    d -= timedelta(days=d.weekday())
+    end = date.fromisoformat(to_iso)
+    out = []
+    while d <= end:
+        out.append(iso_week_key(d.isoformat()))
+        d += timedelta(days=7)
+    return out
+
+
+def estimate_forward(model, forward_calls, cfg, only_ids=None):
     """Per week, estimated crew pay at two levels (D2 = both):
 
       secured   confirmed seats only, each at their own rate where known
       required  confirmed seats + unfilled seats at the role average
 
     Calls with no booked length are skipped and counted (they have no hours
-    to price), as the revenue side already does."""
+    to price), as the revenue side already does.
+
+    only_ids: when given, only calls whose id is in it are costed. The caller
+    passes the calls the REVENUE side managed to price, so a call with no
+    charge never carries a cost into the margin. The rest are counted."""
     holidays = holiday_set(cfg)
     weeks = OrderedDict()
     counts = {"calls": 0, "zero_length_calls": 0, "untimed_calls": 0,
+              "not_priced_calls": 0, "not_priced_seats": 0,
               "seats_by_source": {s: 0 for s in SOURCES},
               "cost_by_source": {s: 0.0 for s in SOURCES}}
     for c in sorted(forward_calls, key=lambda x: (str(x.get("date_iso")), str(x.get("start_time")))):
@@ -376,6 +400,10 @@ def estimate_forward(model, forward_calls, cfg):
             est = 0.0
         if est <= 0:
             counts["zero_length_calls"] += 1
+            continue
+        if only_ids is not None and c.get("id") not in only_ids:
+            counts["not_priced_calls"] += 1
+            counts["not_priced_seats"] += max(int(c.get("required") or 0), len(c.get("crew") or []))
             continue
         confirmed = list(c.get("crew") or [])
         required = max(int(c.get("required") or 0), len(confirmed))
@@ -517,3 +545,147 @@ def split_history(inputs):
     older = [c for c in calls if c.get("half") == "older"]
     newer = [c for c in calls if c.get("half") == "newer"]
     return older, newer
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Revenue + cost -> forward margin (what the route returns)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _margin(rev, cost):
+    m = rev - cost
+    return round(m, 2), (round(100.0 * m / rev, 2) if rev > 0 else None)
+
+
+def combine_forward(keys, revenue_weeks, est, revenue_factor=1.0):
+    """One row per forward week key, in order, at both levels:
+
+      required  revenue for every seat charged, cost incl. unfilled seats
+      secured   revenue and cost for confirmed seats only
+
+    revenue_weeks is price_forward_book's weeks list ({key, revenue,
+    secured_revenue, unfilled_seats, calls}); est is estimate_forward()'s
+    result. A week with no calls on either side has has_work False and the
+    front end leaves it blank ("not yet booked"), never draws it as $0.
+
+    revenue_factor (invoiced / rate-card priced, learned by revenue_ratio) is
+    applied to BOTH revenue levels. The unscaled rate-card figure is kept as
+    rate_card_revenue so the fold can show what the factor did."""
+    rev = {w.get("key"): w for w in (revenue_weeks or [])}
+    cost = est.get("weeks") or {}
+    rows = []
+    t = {"rate_card_revenue": 0.0, "revenue": 0.0, "secured_revenue": 0.0,
+         "required_cost": 0.0, "secured_cost": 0.0}
+    for k in keys:
+        r = rev.get(k) or {}
+        c = cost.get(k) or {}
+        rc_rev = float(r.get("revenue") or 0.0)
+        row = {
+            "key": k,
+            "rate_card_revenue": round(rc_rev, 2),
+            "revenue": round(rc_rev * revenue_factor, 2),
+            "secured_revenue": round(float(r.get("secured_revenue") or 0.0) * revenue_factor, 2),
+            "required_cost": round(float(c.get("required_cost") or 0.0), 2),
+            "secured_cost": round(float(c.get("secured_cost") or 0.0), 2),
+            "unfilled_seats": int(r.get("unfilled_seats") or 0),
+            "calls": int(c.get("calls") or 0),
+        }
+        row["has_work"] = bool(row["calls"] or row["rate_card_revenue"])
+        row["required_margin"], row["required_margin_pct"] = _margin(row["revenue"], row["required_cost"])
+        row["secured_margin"], row["secured_margin_pct"] = _margin(row["secured_revenue"], row["secured_cost"])
+        for f in t:
+            t[f] += row[f]
+        rows.append(row)
+    totals = {f: round(v, 2) for f, v in t.items()}
+    totals["required_margin"], totals["required_margin_pct"] = _margin(t["revenue"], t["required_cost"])
+    totals["secured_margin"], totals["secured_margin_pct"] = _margin(t["secured_revenue"], t["secured_cost"])
+    return rows, totals
+
+
+def backtest_summary(res, older_from_iso, newer_from_iso, to_iso, revenue=None):
+    """The few backtest figures the fold shows. Weekly rows are left out:
+    the fold states the result, the runner prints the detail. revenue is
+    revenue_backtest()'s result; when given, passed needs both checks."""
+    def one(r):
+        return {"estimated": r["estimated"], "actual": r["actual"],
+                "total_pct": r["total_pct"], "worst_week_pct": r["worst_week_pct"],
+                "weeks": len(r["weeks"]), "passed": r["passed"]}
+    out_rev = None
+    if revenue is not None:
+        out_rev = one(revenue)
+        out_rev["ratio"] = revenue["ratio"]
+        out_rev["calls"] = revenue["calls"]
+    return {"trained_from": older_from_iso, "tested_from": newer_from_iso, "tested_to": to_iso,
+            "people": one(res["people"]), "roles": one(res["roles"]),
+            "revenue": out_rev,
+            "passed": res["passed"] and (revenue is None or revenue["passed"]),
+            "pass_mark": res["pass_mark"],
+            "hours_factor": res["model"]["hours_factor"],
+            "band_check": res["band_check"]}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Revenue: rate-card price against what was actually invoiced
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Forward revenue is the rate card's price on the BOOKED hours (plus the
+# minimum engagement). Invoices are raised on what was worked, and the cost
+# side already knows crew are paid ~7% fewer hours than booked. Left alone,
+# the margin would compare a booked-hours charge with a worked-hours cost and
+# read several points too high (47.5% against ~41% measured, 17 Nov 2026).
+#
+# So revenue is calibrated the same way cost is learned: from history. For
+# calls that were both priced on the rate card and invoiced, ratio =
+# Σ invoiced / Σ rate-card price. The backtest learns it on the older 13 weeks
+# and checks it on the newer 13, against Mike's same pass mark.
+
+def revenue_ratio(calls, call_revenue):
+    """(ratio, n_calls, invoiced, priced) over calls with an invoice, a
+    rate-card price and something invoiced. ratio is 1.0 with no evidence."""
+    inv = pri = 0.0
+    n = 0
+    for c in calls:
+        est = call_revenue.get(c.get("id"))
+        got = float(c.get("invoiced") or 0.0)
+        if not c.get("invoice") or not est or got <= 0:
+            continue
+        inv += got
+        pri += est
+        n += 1
+    return ((inv / pri) if pri > 0 else 1.0), n, inv, pri
+
+
+def revenue_backtest(train_calls, test_calls, call_revenue,
+                     total_pct=PASS_TOTAL_PCT, week_pct=PASS_WEEK_PCT):
+    """Learn the ratio on train_calls, apply it to the rate-card price of
+    test_calls, and compare with what those calls were actually invoiced,
+    weekly. Only calls with an invoice, a price and invoiced revenue count:
+    an uninvoiced call has no answer to compare with yet."""
+    ratio, n_train, _, _ = revenue_ratio(train_calls, call_revenue)
+    weeks = OrderedDict()
+    n = 0
+    for c in test_calls:
+        est = call_revenue.get(c.get("id"))
+        got = float(c.get("invoiced") or 0.0)
+        if not c.get("invoice") or not est or got <= 0:
+            continue
+        w = weeks.setdefault(week_key(c["date_iso"]), {"estimated": 0.0, "actual": 0.0, "calls": 0})
+        w["estimated"] += est * ratio
+        w["actual"] += got
+        w["calls"] += 1
+        n += 1
+    rows, worst = [], 0.0
+    for wk in sorted(weeks):
+        w = weeks[wk]
+        p = _pct(w["estimated"], w["actual"])
+        if p is not None:
+            worst = max(worst, abs(p))
+        rows.append({"week": wk, "calls": w["calls"], "estimated": round(w["estimated"], 2),
+                     "actual": round(w["actual"], 2), "pct": None if p is None else round(p, 2)})
+    est_t = sum(w["estimated"] for w in weeks.values())
+    act_t = sum(w["actual"] for w in weeks.values())
+    tp = _pct(est_t, act_t)
+    passed = bool(rows) and tp is not None and abs(tp) <= total_pct and worst <= week_pct
+    return {"ratio": round(ratio, 4), "train_calls": n_train, "calls": n,
+            "estimated": round(est_t, 2), "actual": round(act_t, 2),
+            "total_pct": None if tp is None else round(tp, 2),
+            "worst_week_pct": round(worst, 2), "weeks": rows, "passed": passed}

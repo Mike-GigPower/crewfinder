@@ -60,6 +60,7 @@ import docs_render
 import docs_source
 import public_holidays
 import pricing_rules
+import forward_cost
 import call_types
 import invoice_expect
 import name_match
@@ -14112,7 +14113,7 @@ def fetch_performance(ss, weeks):
     return data, None
 
 
-def fetch_performance_cost(ss, weeks):
+def fetch_performance_cost(ss, weeks, inputs=False):
     """Weekly crew-pay margin via get-performance-cost.php (admin cohort AND
     Mike/Joe only, enforced in the PHP as well). Returns (data, error) exactly
     as fetch_performance does, and for the same reasons:
@@ -14127,6 +14128,11 @@ def fetch_performance_cost(ss, weeks):
     from html import unescape
     from urllib.parse import quote
     qs  = f"?weeks={quote(str(weeks), safe='')}" if weeks is not None else ""
+    if inputs:
+        # Slice D: the opt-in forward_cost_inputs block (raw facts for
+        # forward_cost.py). The route takes it OUT of the payload before
+        # anything reaches the browser.
+        qs += ("&" if qs else "?") + "inputs=1"
     url = f"{BASE_URL}/ajax/crew/get-performance-cost.php{qs}"
     try:
         resp = ss.get(url, allow_redirects=True, timeout=60)
@@ -14199,7 +14205,7 @@ def load_forward_rate_card():
     }, None
 
 
-def price_forward_book(fwd):
+def price_forward_book(fwd, priced_ids=None, call_revenue=None):
     """Price the forward book and aggregate it to ISO weeks.
 
     Takes get-performance.php's `forward` block (raw rows, one per call) and
@@ -14245,6 +14251,12 @@ def price_forward_book(fwd):
     prefix before the first "-" or "/". Never a fallback to Standard Crew. The
     prefix rule is a heuristic and is counted separately so the share of the
     book resting on it stays visible.
+
+    priced_ids (slice D): when a set is passed, the call_id of every call that
+    priced is added to it, so the forward margin costs exactly the calls that
+    carry a charge. call_revenue, when a dict is passed, gets call_id ->
+    the call's required-basis revenue (the revenue backtest needs it per
+    call). Callers that pass neither see no change.
 
     HOLIDAYS ARE THE ESTIMATOR'S (D22), with the D31 windows, both in the cfg.
     SmartStaff's is_pubhol / is_pubhol_tomorrow flags are no longer used to
@@ -14435,6 +14447,10 @@ def price_forward_book(fwd):
             below_min_calls += 1
 
         priced_calls        += 1
+        if priced_ids is not None:
+            priced_ids.add(c.get("call_id"))
+        if call_revenue is not None:
+            call_revenue[c.get("call_id")] = res.get("costExGst") or 0.0
         w["revenue"]        += res.get("costExGst") or 0.0
         w["billable_hours"] += required * (res.get("billableHours") or 0.0)
 
@@ -14644,14 +14660,154 @@ def api_performance_cost():
             and (datetime.now() - cached["at"]).total_seconds() < PERF_COST_CACHE_SECONDS):
         return jsonify(cached["data"])
 
-    data, err = fetch_performance_cost(ss, weeks)
+    data, err = fetch_performance_cost(ss, weeks, inputs=True)
     if err is not None:
         app.logger.warning(f"[performance/cost] unavailable: {err}")
         # A failure is never cached: the next open tries again.
         return jsonify({"unavailable": True, "error": err})
 
+    # Slice D. The raw inputs (per-person pay, anonymised) never go to the
+    # browser: they are popped here and only the weekly result is added. A
+    # failure costs the forward zone only, never the measured card.
+    inputs = data.pop("forward_cost_inputs", None)
+    try:
+        data["forward_margin"] = build_forward_margin(inputs)
+    except Exception as e:
+        app.logger.warning(f"[performance/cost] forward margin failed: {type(e).__name__}: {e}")
+        data["forward_margin"] = {"unavailable": True, "error": "the estimate could not be built"}
+
     _perf_cost_cache[key] = {"data": data, "at": datetime.now()}
     return jsonify(data)
+
+
+def _melb_date_iso(ts):
+    from zoneinfo import ZoneInfo
+    return datetime.fromtimestamp(int(ts), ZoneInfo("Australia/Melbourne")).date().isoformat()
+
+
+def build_forward_margin(inputs):
+    """Slice D (DESIGN-performance-d-v0_2.md): estimated crew cost and margin
+    for the forward book, weekly, at the required and secured levels.
+
+    REVENUE is price_forward_book's, on the same rate cards the revenue chart
+    uses, then scaled by the ratio of what was invoiced to what the same rate
+    cards price for the newer 13 weeks of worked calls (Mike, 17 Nov: the
+    unscaled price is on booked hours and read ~6 points high). COST is
+    forward_cost.py's, trained on the NEWER 13 weeks of pay.
+    Only calls that priced on the revenue side are costed (priced_ids), so a
+    call with no charge never drags the margin down.
+
+    The backtest (train on the older 13 weeks, price the newer 13) runs on
+    every build so the fold always states how well the method did on the
+    latest data, not on the day it shipped. If it fails Mike's mark the
+    estimate is still returned, flagged, and the front end says so.
+
+    ESTIMATED, ALWAYS. Never added to measured cost or margin; the Gross
+    margin tile does not read it (D3)."""
+    if not inputs:
+        return {"unavailable": True, "error": "no estimate inputs in the response"}
+    card, err = load_forward_rate_card()
+    if err is not None:
+        return {"unavailable": True, "error": err}
+    cfg = pricing_rules.cfg_for_set(card["rules"], pricing_rules.STANDARD)
+
+    hist = inputs.get("history") or {}
+    fwd  = inputs.get("forward") or {}
+    older, newer = forward_cost.split_history(inputs)
+    calls = list(fwd.get("calls") or [])
+
+    from_iso = _melb_date_iso(fwd.get("from"))
+    to_iso   = _melb_date_iso(fwd.get("to"))
+    keys     = forward_cost.dense_week_keys(from_iso, to_iso)
+
+    from datetime import date as date_cls
+    holidays = forward_cost.holiday_set(cfg)
+
+    def book_row(c, required, confirmed, week_key):
+        d = c.get("date_iso")
+        try:
+            nxt = (date_cls.fromisoformat(d) + timedelta(days=1)).isoformat()
+        except (TypeError, ValueError):
+            nxt = None
+        return {
+            "call_id":            c.get("id"),
+            "booking_id":         c.get("booking_id"),
+            "call_name":          c.get("name"),
+            "week_key":           week_key,
+            "date_iso":           d,
+            "next_date_iso":      nxt,
+            "start_time":         c.get("start_time"),
+            "est_length":         c.get("est_length"),
+            "required":           required,
+            "ordered":            required,
+            "confirmed":          confirmed,
+            # The Estimator's own holidays, so no false flag mismatches: this
+            # path never had SmartStaff's flags to compare.
+            "is_pubhol":          1 if d in holidays else 0,
+            "is_pubhol_tomorrow": 1 if nxt in holidays else 0,
+        }
+
+    book = {"week_keys": keys,
+            "calls": [book_row(c, c.get("required"), len(c.get("crew") or []), c.get("week_key"))
+                      for c in calls]}
+    priced_ids = set()
+    priced = price_forward_book(book, priced_ids=priced_ids)
+    if priced.get("unavailable"):
+        return {"unavailable": True, "error": priced.get("error") or "forward book could not be priced"}
+
+    # Revenue calibration: the same rate cards priced over the 26 weeks of
+    # worked calls (seats = the crew actually paid), per call, so it can be
+    # set against what each call was invoiced (forward_cost.revenue_ratio).
+    hist_calls = older + newer
+    hist_keys = sorted({forward_cost.iso_week_key(c["date_iso"]) for c in hist_calls if c.get("date_iso")})
+    hist_book = {"week_keys": hist_keys,
+                 "calls": [book_row(c, len(c.get("crew") or []), len(c.get("crew") or []),
+                                    forward_cost.iso_week_key(c["date_iso"]))
+                           for c in hist_calls if c.get("date_iso") and c.get("crew")]}
+    hist_revenue = {}
+    hist_priced = price_forward_book(hist_book, call_revenue=hist_revenue)
+    if hist_priced.get("unavailable"):
+        return {"unavailable": True, "error": hist_priced.get("error") or "history could not be priced"}
+
+    rev_ratio, rev_calls, rev_inv, rev_pri = forward_cost.revenue_ratio(newer, hist_revenue)
+    rev_bt = forward_cost.revenue_backtest(older, newer, hist_revenue)
+
+    model = forward_cost.learn(newer)
+    est   = forward_cost.estimate_forward(model, calls, cfg, only_ids=priced_ids)
+    weeks, totals = forward_cost.combine_forward(keys, priced.get("weeks"), est,
+                                                 revenue_factor=rev_ratio)
+
+    bt = forward_cost.backtest(older, newer, cfg)
+    summary = forward_cost.backtest_summary(
+        bt, _melb_date_iso(hist.get("older_from")), _melb_date_iso(hist.get("newer_from")),
+        _melb_date_iso(hist.get("to")), revenue=rev_bt)
+
+    return {
+        "estimated":    True,
+        "from":         from_iso,
+        "to":           to_iso,
+        "week_keys":    keys,
+        "weeks":        weeks,
+        "totals":       totals,
+        "backtest":     summary,
+        "method": {
+            "trained_from":  _melb_date_iso(hist.get("newer_from")),
+            "trained_to":    _melb_date_iso(hist.get("to")),
+            "hours_factor":  est.get("hours_factor"),
+            "revenue_factor": round(rev_ratio, 4),
+            "revenue_factor_calls": rev_calls,
+            "seats_by_source": est["counts"]["seats_by_source"],
+            "cost_by_source":  est["counts"]["cost_by_source"],
+        },
+        "data_quality": {
+            "calls_costed":        est["counts"]["calls"],
+            "not_priced_calls":    est["counts"]["not_priced_calls"],
+            "not_priced_seats":    est["counts"]["not_priced_seats"],
+            "zero_length_calls":   est["counts"]["zero_length_calls"],
+            "untimed_calls":       est["counts"]["untimed_calls"],
+            "cancelled_calls":     int(fwd.get("cancelled_calls") or 0),
+        },
+    }
 
 
 @app.route("/api/schedule")

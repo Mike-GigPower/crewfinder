@@ -283,6 +283,7 @@
 	/*
 	/*   history  26 complete weeks of PAID calls, split into an older and a
 	/*            newer 13. Per call: name, date, start time, booked length,
+	/*            its invoice and what its own lines invoiced (Xero formula),
 	/*            and per paid person {pay category: [hours, dollars]}.
 	/*            The backtest trains on the older half and prices the newer;
 	/*            the live estimate trains on the newer half.
@@ -327,7 +328,7 @@
 		/* history calls */
 		$fci_hist = array();
 		$res = perfcost_query($link, 'inputs history calls',
-			"SELECT c.id, c.start_date, c.start_time, c.est_length, c.call_name, c.bookingID
+			"SELECT c.id, c.start_date, c.start_time, c.est_length, c.call_name, c.bookingID, c.invoiceID
 			   FROM `calls` c
 			   JOIN `bookings` b ON b.id = c.bookingID AND b.hidden = 0
 			  WHERE c.start_date > 0
@@ -343,10 +344,27 @@
 				'est_length' => (float) $row['est_length'],
 				'name'       => $fci_name($row['call_name']),
 				'booking_id' => (int) $row['bookingID'],
+				'invoice'    => (int) $row['invoiceID'],
+				'invoiced'   => 0.0,
 				'crew'       => array()
 			);
 		}
 		mysqli_free_result($res);
+
+		/*
+		/* What each history call was actually invoiced, for the revenue
+		/* backtest: the Xero-formula lines block 3 already read (they cover
+		/* every invoice a span call carries, and the span is 104 weeks).
+		/* Lines are counted against their own callID only; a hand-added
+		/* line (callID 0) belongs to no one call and is left out.
+		*/
+		foreach ($lines as $ln)
+		{
+			if ($ln['call'] > 0 && isset($fci_hist[$ln['call']]))
+				$fci_hist[$ln['call']]['invoiced'] += $ln['revenue'];
+		}
+		foreach ($fci_hist as $cid => $h)
+			$fci_hist[$cid]['invoiced'] = round($h['invoiced'], 2);
 
 		/* history pay, per call, person and category */
 		$fci_crew = array();

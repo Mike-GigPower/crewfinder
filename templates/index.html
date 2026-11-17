@@ -37960,7 +37960,33 @@ function perfMarginSeries(c, unit){
     s.prevWeeks.push(p);
     s.incomplete.push(!!(w.awaiting_invoice && w.awaiting_invoice.calls > 0));
   }
+  s.fwd = perfMarginForward(c, unit);
   return s;
+}
+
+// Slice D: the forward estimate, shaped for the chart. null when the payload
+// has no forward_margin at all (an older Flask): the chart is then drawn
+// exactly as before, with no zone. {unavailable} draws the zone with a label.
+// drawn = up to the last week with work in it; the empty tail is "not yet
+// booked", never a line at zero (the revenue chart's rule).
+function perfMarginForward(c, unit){
+  const fm = c && c.forward_margin;
+  if(!fm) return null;
+  if(fm.unavailable || !Array.isArray(fm.weeks)) return { unavailable: true, error: fm.error || '' };
+  const pct = (unit === 'pct');
+  const out = { keys: [], required: [], secured: [], weeks: fm.weeks, drawn: 0, fm: fm };
+  fm.weeks.forEach(function(w, j){
+    out.keys.push(w.key);
+    if(w.has_work) out.drawn = j + 1;
+    if(pct){
+      out.required.push(w.required_margin_pct == null ? null : +w.required_margin_pct);
+      out.secured.push(w.secured_margin_pct == null ? null : +w.secured_margin_pct);
+    } else {
+      out.required.push(w.has_work ? +(w.required_margin || 0) : null);
+      out.secured.push(w.has_work ? +(w.secured_margin || 0) : null);
+    }
+  });
+  return out;
 }
 
 function perfPctFmt(v){ return (v == null) ? '—' : (Math.round(v) + '%'); }
@@ -37976,8 +38002,9 @@ function perfPctFmtFull(v){ return (v == null) ? 'no revenue' : (Number(v).toFix
 // (`let max = 0`, baseline at the bottom) because revenue cannot be negative,
 // so a loss-making week would be clipped to the floor. Margin CAN be negative,
 // and a negative week must be shown — the axis here extends below zero and a
-// solid zero line is drawn whenever it does. It also has no forward zone and
-// no uninvoiced band, neither of which means anything for margin.
+// solid zero line is drawn whenever it does. It has no uninvoiced band, which
+// means nothing for margin. Its forward zone (slice D) is an ESTIMATE, drawn
+// only when the payload carries forward_margin.
 function perfMarginChartSvg(s, accent){
   const n = s.labels.length;
   if(n < 2) return '<div class="ops-lane-status">Not enough weeks to chart.</div>';
@@ -37988,11 +38015,26 @@ function perfMarginChartSvg(s, accent){
   const NEG     = PERF_SIGNAL_COLORS.bad;
 
   const W = 1000, H = 300, padL = 64, padR = 12, padT = 16, padB = 36;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
+  // Slice D: the forward zone, the revenue chart's width, only when the
+  // payload carries a forward estimate. Without one the chart is unchanged.
+  const fwd   = s.fwd || null;
+  const fwdW  = fwd ? 138 : 0;
+  const plotW = W - padL - padR - fwdW, plotH = H - padT - padB;
+  const m     = (fwd && !fwd.unavailable) ? fwd.keys.length : 0;
+  const mD    = (fwd && !fwd.unavailable) ? Math.min(fwd.drawn || 0, m) : 0;
 
   let hi = pct ? PERF_MARGIN_TARGET_PCT : 0, lo = 0;
   for(let i = 0; i < n; i++){
     [s.cur[i], s.prev[i]].forEach(function(v){
+      if(v == null || !isFinite(v)) return;
+      if(v > hi) hi = v;
+      if(v < lo) lo = v;
+    });
+  }
+  // The estimate shares the axis, as the forward book does on the revenue
+  // chart: a second scale would make the comparison dishonest.
+  for(let j = 0; j < mD; j++){
+    [fwd.required[j], fwd.secured[j]].forEach(function(v){
       if(v == null || !isFinite(v)) return;
       if(v > hi) hi = v;
       if(v < lo) lo = v;
@@ -38085,11 +38127,97 @@ function perfMarginChartSvg(s, accent){
           + '<title>' + escapeHtml(tip) + '</title></rect>';
   }
 
+  // ── slice D: the forward zone (ESTIMATED) ────────────────────────────────
+  // Required (every seat charged) is a filled area with a dashed edge: dashed
+  // because it is a projection, the measured line is solid. Secured (confirmed
+  // seats only) is a solid line on top. Never joined to the measured line.
+  let fwdArt = '';
+  if(fwd){
+    const fwdX = padL + plotW;
+    fwdArt += '<rect x="' + fwdX.toFixed(1) + '" y="' + padT + '" width="' + fwdW + '" height="' + plotH + '" fill="rgba(255,255,255,0.015)"/>'
+      + '<line x1="' + fwdX.toFixed(1) + '" y1="' + padT + '" x2="' + fwdX.toFixed(1) + '" y2="' + (padT + plotH) + '" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 4"/>';
+    const label = function(lines, cy){
+      const cx = (fwdX + fwdW / 2).toFixed(1);
+      let t = '<text class="perf-fwd-lbl" x="' + cx + '" y="' + cy.toFixed(1) + '" text-anchor="middle">';
+      lines.forEach(function(l, k){ t += '<tspan x="' + cx + '" dy="' + (k ? 14 : 0) + '">' + escapeHtml(l) + '</tspan>'; });
+      return t + '</text>';
+    };
+    if(fwd.unavailable || !mD){
+      fwdArt += label(fwd.unavailable ? ['estimate', 'unavailable'] : ['nothing', 'on the books', 'yet'], padT + plotH / 2 - 10);
+    } else {
+      const fStep = Math.min(plotW / (n - 1), fwdW / m);
+      const FX = function(j){ return fwdX + fStep * (j + 1); };
+      const zeroY = Y(0);
+      // Runs of non-null points, so a week with no revenue (% view) breaks
+      // the line instead of being drawn at 0%.
+      const runs = function(arr){
+        const out = []; let cur = [];
+        for(let j = 0; j < mD; j++){
+          if(arr[j] == null || !isFinite(arr[j])){ if(cur.length) out.push(cur); cur = []; continue; }
+          cur.push(j);
+        }
+        if(cur.length) out.push(cur);
+        return out;
+      };
+      const line = function(run, arr){
+        return run.map(function(j, k){ return (k ? 'L' : 'M') + FX(j).toFixed(1) + ' ' + Y(arr[j]).toFixed(1); }).join(' ');
+      };
+      runs(fwd.required).forEach(function(run){
+        const d = line(run, fwd.required);
+        // Filled in the $ view only. A percentage is a rate, not an amount:
+        // filled down to 0% it reads as a solid block of "something".
+        if(!pct){
+          fwdArt += '<path class="perf-mgn-fwd-area" d="' + d + ' L' + FX(run[run.length - 1]).toFixed(1) + ' ' + zeroY.toFixed(1)
+                 +  ' L' + FX(run[0]).toFixed(1) + ' ' + zeroY.toFixed(1) + ' Z" fill="' + perfRgba(accent, 0.16) + '" stroke="none"/>';
+        }
+        fwdArt += '<path class="perf-mgn-fwd-req" d="' + d + '" fill="none" stroke="' + accent + '" stroke-width="1.6" stroke-dasharray="4 3"/>';
+        if(run.length === 1){
+          fwdArt += '<circle cx="' + FX(run[0]).toFixed(1) + '" cy="' + Y(fwd.required[run[0]]).toFixed(1) + '" r="2.6" fill="' + accent + '"/>';
+        }
+      });
+      runs(fwd.secured).forEach(function(run){
+        fwdArt += '<path class="perf-mgn-fwd-sec" d="' + line(run, fwd.secured) + '" fill="none" stroke="' + accent + '" stroke-width="2"/>';
+        if(run.length === 1){
+          fwdArt += '<circle cx="' + FX(run[0]).toFixed(1) + '" cy="' + Y(fwd.secured[run[0]]).toFixed(1) + '" r="2.6" fill="none" stroke="' + accent + '" stroke-width="1.5"/>';
+        }
+      });
+      if(mD < m){
+        const tx0 = FX(mD - 1), tx1 = Math.min(W - padR, fwdX + fwdW);
+        if(tx1 - tx0 >= 46){
+          const tcx = ((tx0 + tx1) / 2).toFixed(1);
+          fwdArt += '<text class="perf-fwd-lbl" x="' + tcx + '" y="' + (padT + plotH / 2 - 7) + '" text-anchor="middle">'
+                 +  '<tspan x="' + tcx + '" dy="0">not yet</tspan><tspan x="' + tcx + '" dy="14">booked</tspan></text>';
+        }
+      }
+      for(let j = 0; j < m; j++){
+        const w = fwd.weeks[j] || {};
+        let tip = perfWeekLabel(fwd.keys[j]) + ' — ESTIMATED';
+        if(j >= mD || !w.has_work){
+          tip += '\nnothing booked into this week yet';
+        } else {
+          const lvl = function(name, rev, cost, mg, mp){
+            return '\n' + name + '  revenue ' + perfMoneyFull(rev) + ' · est. crew pay ' + perfMoneyFull(cost)
+              + ' · margin ' + perfSignedMoneyFull(mg) + ' (' + perfPctFmtFull(mp) + ')';
+          };
+          tip += lvl('all seats ', w.revenue, w.required_cost, w.required_margin, w.required_margin_pct);
+          tip += lvl('confirmed ', w.secured_revenue, w.secured_cost, w.secured_margin, w.secured_margin_pct);
+          if(w.unfilled_seats > 0){
+            tip += '\n' + w.unfilled_seats + ' unfilled seat' + (w.unfilled_seats === 1 ? '' : 's') + ' priced at the average paid for that kind of call';
+          }
+        }
+        const fx = Math.max(fwdX, FX(j) - fStep / 2);
+        const fw = Math.max(0, Math.min(FX(j) + fStep / 2, W - padR) - fx);
+        fwdArt += '<rect class="perf-hit" x="' + fx.toFixed(1) + '" y="' + padT + '" width="' + fw.toFixed(1) + '" height="' + plotH + '">'
+               +  '<title>' + escapeHtml(tip) + '</title></rect>';
+      }
+    }
+  }
+
   return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Weekly margin, this year against last">'
     + grid + xlab + target
     + '<path class="perf-mgn-prev" d="' + pathOf(s.prev) + '" fill="none" stroke="#666666" stroke-width="1.4"/>'
     + '<path class="perf-mgn-cur" d="' + pathOf(s.cur) + '" fill="none" stroke="' + accent + '" stroke-width="2"/>'
-    + dots + hits
+    + dots + hits + fwdArt
     + '</svg>';
 }
 
@@ -38157,6 +38285,10 @@ function perfMarginCard(c){
     + '<span class="perf-key-i"><span class="perf-key-sw" style="background:#666666"></span>same weeks last year</span>'
     + '<span class="perf-key-i"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="4" fill="none" stroke="#d4af37" stroke-width="1.5" stroke-dasharray="2 2"/></svg>calls still awaiting invoice</span>'
     + (unit === 'pct' ? '<span class="perf-key-i"><span class="perf-key-sw perf-mgn-key-target"></span>target ' + PERF_MARGIN_TARGET_PCT + '%</span>' : '')
+    + ((s.fwd && !s.fwd.unavailable)
+        ? '<span class="perf-key-i"><svg width="18" height="12" aria-hidden="true"><rect x="0" y="4" width="18" height="8" fill="' + perfRgba('#d4af37', 0.16) + '"/><line x1="0" y1="4" x2="18" y2="4" stroke="#d4af37" stroke-width="1.6" stroke-dasharray="4 3"/></svg>est. all seats</span>'
+          + '<span class="perf-key-i"><svg width="18" height="12" aria-hidden="true"><line x1="0" y1="6" x2="18" y2="6" stroke="#d4af37" stroke-width="2"/></svg>est. confirmed seats</span>'
+        : '')
     + '</div>';
 
   // The exceptions: crew paid, invoice exists, nothing on it for this call and
@@ -38185,15 +38317,109 @@ function perfMarginCard(c){
     foldBody += '<div class="perf-note">No invoice line in SmartStaff for these calls, and invoices are never added to in Xero — likely unbilled.</div>';
   }
 
+  const fwdHtml = perfMarginForwardHtml(s.fwd);
+
   return '<div class="perf-card perf-mgn">' + head
     + tiles
     + perfMarginChartSvg(s, '#d4af37')
     + key
     + cov
-    + perfFold('marginExceptions', 'Paid, not on invoice (' + ex.length + (((c.exceptions || {}).truncated) ? '+' : '') + ')', foldBody)
+    + fwdHtml.line
+    // Each fold in its own block: the toggles are inline-block, so two in a
+    // row would otherwise share one line when both are closed.
+    + '<div>' + perfFold('marginForward', 'How the forward estimate works', fwdHtml.fold) + '</div>'
+    + '<div>' + perfFold('marginExceptions', 'Paid, not on invoice (' + ex.length + (((c.exceptions || {}).truncated) ? '+' : '') + ')', foldBody) + '</div>'
     + '</div>';
 }
 
+
+// ── slice D: the forward estimate's summary line and fold ─────────────────
+// ESTIMATED, always, in words as well as in the dashed drawing. Never added
+// to the measured totals above, and the Gross margin tile never reads it (D3).
+// The fold carries the backtest so the estimate is never shown without the
+// evidence for it (DESIGN-performance-d-v0_2.md §4).
+function perfMarginForwardHtml(fwd){
+  if(!fwd) return { line: '', fold: '' };
+  if(fwd.unavailable){
+    return { line: '<div class="perf-note">Forward estimate unavailable' + (fwd.error ? ' — ' + escapeHtml(String(fwd.error)) : '') + '.</div>', fold: '' };
+  }
+  const fm = fwd.fm || {}, t = fm.totals || {}, bt = fm.backtest || {}, me = fm.method || {}, dq = fm.data_quality || {};
+  const pctTxt = function(v){ return (v == null) ? '—' : (Number(v).toFixed(1) + '%'); };
+  const signed = function(v){ return (v == null) ? '—' : ((v > 0 ? '+' : '') + Number(v).toFixed(1) + '%'); };
+
+  let line = '<div class="perf-note perf-mgn-fwd-line"><b>Booked ahead, estimated</b> (' + escapeHtml(perfShortDate(fm.from)) + ' – ' + escapeHtml(perfShortDate(fm.to)) + '): '
+    + 'revenue ' + perfMoneyFull(t.revenue) + ' · est. crew pay ' + perfMoneyFull(t.required_cost)
+    + ' · est. margin <b>' + perfSignedMoneyFull(t.required_margin) + ' (' + pctTxt(t.required_margin_pct) + ')</b>'
+    + ' · confirmed seats only: ' + perfSignedMoneyFull(t.secured_margin) + ' (' + pctTxt(t.secured_margin_pct) + ')';
+  if(bt.passed === false){
+    line += ' · <span class="perf-mgn-amber">the method missed its check on the latest pay — treat with care</span>';
+  }
+  line += '</div>';
+
+  const seats = me.seats_by_source || {};
+  const nSeats = ['own', 'level', 'role', 'family', 'global', 'none'].reduce(function(a, k){ return a + (seats[k] || 0); }, 0);
+  const seatRow = function(k, lbl){
+    const v = seats[k] || 0;
+    if(!v) return '';
+    return '<tr><td>' + escapeHtml(lbl) + '</td><td class="r">' + perfNum(v) + '</td><td class="r">'
+      + (nSeats ? Math.round(100 * v / nSeats) + '%' : '—') + '</td></tr>';
+  };
+
+  let fold = '<div class="perf-note">Crew pay for calls not yet worked is <b>estimated from what SmartStaff actually paid</b> over '
+    + escapeHtml(perfShortDate(me.trained_from)) + ' – ' + escapeHtml(perfShortDate(me.trained_to))
+    + '. Each call\'s booked hours are split into day, night and Sunday / public holiday hours, then scaled by '
+    + escapeHtml(me.hours_factor != null ? Number(me.hours_factor).toFixed(2) : '—')
+    + ' (hours actually paid ÷ hours booked over the same weeks). Confirmed crew are priced at their own recent rate; '
+    + 'unfilled seats at the average paid on that kind of call. Crew pay only, as above.</div>'
+    + '<div class="perf-note">Revenue is the forward book\'s price on each booking\'s rate card, which charges the <b>booked</b> hours. '
+    + 'Invoices are raised on the hours worked, so it is scaled by '
+    + escapeHtml(me.revenue_factor != null ? Number(me.revenue_factor).toFixed(3) : '—')
+    + ' — what was actually invoiced ÷ what the same rate cards price, over '
+    + perfNum(me.revenue_factor_calls || 0) + ' invoiced calls in the same weeks.</div>';
+
+  fold += '<table class="perf-mgn-ex"><thead><tr><th>How each seat was priced</th><th class="r">Seats</th><th class="r">Share</th></tr></thead><tbody>'
+    + seatRow('own', 'Confirmed — their own recent rate')
+    + seatRow('level', 'Confirmed — the rate for their level')
+    + seatRow('role', 'Average paid on that kind of call')
+    + seatRow('family', 'Average paid on similar calls (name not seen recently)')
+    + seatRow('global', 'Average of all pay (nothing closer)')
+    + seatRow('none', 'No pay history at all — priced at $0')
+    + '</tbody></table>';
+
+  if(bt.people && bt.roles){
+    const run = function(r, what, noun){
+      return what + ': estimated ' + perfMoneyFull(r.estimated) + ' against ' + perfMoneyFull(r.actual) + ' ' + (noun || 'paid') + ' (' + signed(r.total_pct) + ')'
+        + ', worst single week ' + Number(r.worst_week_pct).toFixed(1) + '% out';
+    };
+    const mark = bt.pass_mark || {};
+    fold += '<div class="perf-note"><b>Checked against real pay.</b> Learned from '
+      + escapeHtml(perfShortDate(bt.trained_from)) + ' – ' + escapeHtml(perfShortDate(bt.tested_from))
+      + ', then used to estimate ' + escapeHtml(perfShortDate(bt.tested_from)) + ' – ' + escapeHtml(perfShortDate(bt.tested_to))
+      + ' as if it had not been worked yet:<br>'
+      + escapeHtml(run(bt.people, 'Confirmed crew at their own rates')) + '<br>'
+      + escapeHtml(run(bt.roles, 'Every seat at the average for its call')) + '<br>'
+      + (bt.revenue ? escapeHtml(run(bt.revenue, 'Revenue at the rate card × ' + Number(bt.revenue.ratio).toFixed(3), 'invoiced')) + '<br>' : '')
+      + 'Pass mark: within ' + escapeHtml(String(mark.total_pct)) + '% over the period and ' + escapeHtml(String(mark.week_pct)) + '% in any week — '
+      + (bt.passed ? '<b>passed</b>' : '<span class="perf-mgn-amber">missed</span>')
+      + '. Reliable over several weeks; a single week can be out by more, mostly from early finishes.</div>';
+  }
+
+  const left = [];
+  if(dq.not_priced_calls) left.push(perfNum(dq.not_priced_calls) + ' call' + (dq.not_priced_calls === 1 ? '' : 's') + ' with no rate-card price (' + perfNum(dq.not_priced_seats) + ' seats)');
+  if(dq.zero_length_calls) left.push(perfNum(dq.zero_length_calls) + ' with no booked length');
+  if(dq.cancelled_calls) left.push(perfNum(dq.cancelled_calls) + ' cancelled');
+  if(left.length) fold += '<div class="perf-note">Left out of both revenue and cost: ' + escapeHtml(left.join(' · ')) + '.</div>';
+  if(dq.untimed_calls) fold += '<div class="perf-note">' + perfNum(dq.untimed_calls) + ' call' + (dq.untimed_calls === 1 ? ' has' : 's have') + ' no start time and ' + (dq.untimed_calls === 1 ? 'is' : 'are') + ' priced as day work (or Sunday / public holiday).</div>';
+
+  return { line: line, fold: fold };
+}
+
+// "2026-11-17" -> "17 Nov". A bad value prints as given.
+function perfShortDate(iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if(!m) return String(iso || '');
+  return (+m[3]) + ' ' + PERF_MONTHS[(+m[2]) - 1];
+}
 
 // ── MARGIN BY CUSTOMER (slice B) ───────────────────────────────────────────
 // The SAME eight customers the revenue charts name, in the same order, plus

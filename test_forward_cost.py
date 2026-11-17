@@ -268,6 +268,56 @@ def test_split_history():
     assert len(older) == 4 and len(newer) == 2
 
 
+# ── revenue calibration ─────────────────────────────────────────────────────
+
+def _inv(cid, d, invoiced, invoice=1, half="older"):
+    return {"id": cid, "date_iso": d, "invoice": invoice, "invoiced": invoiced, "half": half}
+
+
+def test_revenue_ratio_counts_only_priced_invoiced_calls():
+    calls = [_inv(1, "2026-08-19", 90), _inv(2, "2026-08-19", 45),
+             _inv(3, "2026-08-19", 50, invoice=0),     # not invoiced yet
+             _inv(4, "2026-08-19", 70),                # no rate-card price
+             _inv(5, "2026-08-19", 0)]                 # invoiced nothing
+    ratio, n, inv, pri = fc.revenue_ratio(calls, {1: 100.0, 2: 50.0, 3: 60.0, 5: 10.0})
+    assert (n, inv, pri) == (2, 135.0, 150.0)
+    assert ratio == pytest.approx(0.9)
+
+
+def test_revenue_ratio_with_no_evidence_is_one():
+    assert fc.revenue_ratio([], {})[0] == 1.0
+
+
+def test_revenue_backtest_applies_the_learned_ratio():
+    train = [_inv(1, "2026-08-19", 90)]
+    test = [_inv(2, "2026-09-16", 180, half="newer"), _inv(3, "2026-09-23", 99, half="newer")]
+    r = fc.revenue_backtest(train, test, {1: 100.0, 2: 200.0, 3: 100.0})
+    assert r["ratio"] == 0.9 and r["calls"] == 2
+    assert r["weeks"][0]["pct"] == 0.0
+    assert r["weeks"][1]["pct"] == pytest.approx(-9.09, abs=0.01)
+    assert r["passed"]
+
+
+def test_revenue_backtest_with_nothing_to_compare_fails():
+    assert not fc.revenue_backtest([], [], {})["passed"]
+
+
+def test_combine_forward_scales_revenue_not_cost():
+    est = {"weeks": {"2026-W48": {"required_cost": 300.0, "secured_cost": 150.0, "calls": 1}}}
+    rows, tot = fc.combine_forward(["2026-W48"], [{"key": "2026-W48", "revenue": 1000.0,
+                                                   "secured_revenue": 500.0}], est, revenue_factor=0.9)
+    assert rows[0]["rate_card_revenue"] == 1000.0
+    assert rows[0]["revenue"] == 900.0 and rows[0]["secured_revenue"] == 450.0
+    assert rows[0]["required_cost"] == 300.0
+    assert tot["required_margin_pct"] == pytest.approx(100 * 600 / 900, abs=0.01)
+
+
+def test_iso_and_dense_week_keys():
+    assert fc.iso_week_key("2026-11-17") == "2026-W47"
+    assert fc.iso_week_key("2027-01-01") == "2026-W53"
+    assert fc.dense_week_keys("2026-12-30", "2027-01-15") == ["2026-W53", "2027-W01", "2027-W02"]
+
+
 # ── the command-line runner ─────────────────────────────────────────────────
 
 def test_cli_runs_on_a_saved_file(capsys):

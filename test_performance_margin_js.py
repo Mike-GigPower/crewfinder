@@ -14,6 +14,10 @@ Skips when node isn't installed.
   - perfMarginOn() is false unless whoami.margin is exactly true, so an ops
     login and an admin who isn't Mike or Joe get no slot at all
   - the basis strip changes for margin users only
+  - slice D: no forward_margin -> the chart is drawn exactly as before; an
+    estimate draws a forward zone (dashed required area, solid secured line),
+    the empty tail reads "not yet booked", the summary line says ESTIMATED,
+    and the fold carries the backtest; unavailable says so
 """
 
 import json
@@ -37,6 +41,7 @@ NAMES = (
     "perfDeltaPct", "perfDeltaText", "perfFold", "perfBasisStrip", "renderPerformance",
     "perfHeadTile", "perfGmTileHtml", "perfSparkSvg", "perfRgba",
     "perfMarginCustomerRows", "perfMarginCustomerCard",
+    "perfMarginForward", "perfMarginForwardHtml", "perfShortDate",
 )
 FUNCS = H.extract(*NAMES) if H.NODE else ""
 
@@ -317,6 +322,145 @@ class Wiring(unittest.TestCase):
         self.assertIn("[data-perf-margin-unit],[data-perf-call]", page)
         self.assertIn("perfSetMarginUnit(t.getAttribute('data-perf-margin-unit'))", page)
         self.assertIn("openCallDialog(parts[0], parts[1])", page)
+
+
+# Slice D: a forward estimate as build_forward_margin returns it. Synthetic.
+FWD = json.dumps({"estimated": True, "from": "2026-11-17", "to": "2027-01-15",
+  "week_keys": ["2026-W47", "2026-W48", "2026-W49"],
+  "weeks": [
+    {"key": "2026-W47", "revenue": 1000, "secured_revenue": 600, "required_cost": 600, "secured_cost": 360,
+     "unfilled_seats": 2, "calls": 3, "has_work": True, "required_margin": 400, "required_margin_pct": 40,
+     "secured_margin": 240, "secured_margin_pct": 40},
+    {"key": "2026-W48", "revenue": 500, "secured_revenue": 0, "required_cost": 550, "secured_cost": 0,
+     "unfilled_seats": 4, "calls": 1, "has_work": True, "required_margin": -50, "required_margin_pct": -10,
+     "secured_margin": 0, "secured_margin_pct": None},
+    {"key": "2026-W49", "revenue": 0, "secured_revenue": 0, "required_cost": 0, "secured_cost": 0,
+     "unfilled_seats": 0, "calls": 0, "has_work": False, "required_margin": 0, "required_margin_pct": None,
+     "secured_margin": 0, "secured_margin_pct": None}],
+  "totals": {"revenue": 1500, "secured_revenue": 600, "required_cost": 1150, "secured_cost": 360,
+             "required_margin": 350, "required_margin_pct": 23.33, "secured_margin": 240, "secured_margin_pct": 40},
+  "backtest": {"trained_from": "2026-05-18", "tested_from": "2026-08-17", "tested_to": "2026-11-15",
+               "people": {"estimated": 101, "actual": 100, "total_pct": 1.0, "worst_week_pct": 13.4, "weeks": 13, "passed": True},
+               "roles": {"estimated": 102, "actual": 100, "total_pct": 2.0, "worst_week_pct": 13.7, "weeks": 13, "passed": True},
+               "revenue": {"estimated": 98, "actual": 100, "total_pct": -2.0, "worst_week_pct": 9.1, "weeks": 13, "passed": True,
+                           "ratio": 0.9123, "calls": 900},
+               "passed": True, "pass_mark": {"total_pct": 5.0, "week_pct": 15.0}, "hours_factor": 0.9554},
+  "method": {"trained_from": "2026-08-17", "trained_to": "2026-11-15", "hours_factor": 0.93,
+             "revenue_factor": 0.9123, "revenue_factor_calls": 900,
+             "seats_by_source": {"own": 3, "level": 0, "role": 6, "family": 1, "global": 0, "none": 0}},
+  "data_quality": {"calls_costed": 4, "not_priced_calls": 1, "not_priced_seats": 3, "zero_length_calls": 0,
+                   "untimed_calls": 1, "cancelled_calls": 2}})
+
+
+@unittest.skipUnless(H.NODE, "node not installed")
+class ForwardZone(unittest.TestCase):
+
+    def test_without_forward_margin_the_chart_is_unchanged(self):
+        out = run(r"""
+          var s = perfMarginSeries(P, 'dollars');
+          var svg = perfMarginChartSvg(s, '#d4af37');
+          console.log(JSON.stringify({fwd: s.fwd, zone: svg.indexOf('perf-mgn-fwd') >= 0,
+                                      est: svg.indexOf('ESTIMATED') >= 0}));
+        """)
+        self.assertEqual(out, {"fwd": None, "zone": False, "est": False})
+
+    def test_zone_draws_required_area_secured_line_and_tail(self):
+        out = run(r"""
+          P.forward_margin = """ + FWD + r""";
+          var s = perfMarginSeries(P, 'dollars');
+          var svg = perfMarginChartSvg(s, '#d4af37');
+          console.log(JSON.stringify({drawn: s.fwd.drawn, req: s.fwd.required, sec: s.fwd.secured,
+            area: (svg.match(/perf-mgn-fwd-area/g) || []).length,
+            reqline: (svg.match(/perf-mgn-fwd-req/g) || []).length,
+            secline: (svg.match(/perf-mgn-fwd-sec/g) || []).length,
+            tail: svg.indexOf('not yet') >= 0, est: (svg.match(/ESTIMATED/g) || []).length,
+            empty: svg.indexOf('nothing booked into this week yet') >= 0,
+            unfilled: svg.indexOf('4 unfilled seats') >= 0}));
+        """)
+        self.assertEqual(out["drawn"], 2)
+        self.assertEqual(out["req"], [400, -50, None])        # the empty week is not drawn at $0
+        self.assertEqual(out["sec"], [240, 0, None])
+        self.assertEqual(out["area"], 1)
+        self.assertEqual(out["reqline"], 1)
+        self.assertEqual(out["secline"], 1)
+        self.assertTrue(out["tail"])
+        self.assertEqual(out["est"], 3)                      # every forward week's tooltip says so
+        self.assertTrue(out["empty"])
+        self.assertTrue(out["unfilled"])
+
+    def test_pct_view_breaks_the_secured_line_where_there_is_no_revenue(self):
+        out = run(r"""
+          P.forward_margin = """ + FWD + r""";
+          var s = perfMarginSeries(P, 'pct');
+          var svg = perfMarginChartSvg(s, '#d4af37');
+          console.log(JSON.stringify({sec: s.fwd.secured, req: s.fwd.required,
+                                      lone: (svg.match(/<circle[^>]*fill="none" stroke="#d4af37" stroke-width="1.5"\/>/g) || []).length}));
+        """)
+        self.assertEqual(out["sec"], [40, None, None])
+        self.assertEqual(out["req"], [40, -10, None])
+        self.assertGreaterEqual(out["lone"], 1)              # a one-week run is a dot, not nothing
+        self.assertNotIn("perf-mgn-fwd-area", run(r"""
+          P.forward_margin = """ + FWD + r""";
+          console.log(JSON.stringify({svg: perfMarginChartSvg(perfMarginSeries(P, 'pct'), '#d4af37')}));
+        """)["svg"])                                         # no fill in the % view
+
+    def test_card_summary_line_and_fold(self):
+        out = run(r"""
+          P.forward_margin = """ + FWD + r""";
+          _prefs['perffold:marginForward'] = true;
+          var h = perfMarginCard(P);
+          console.log(JSON.stringify({h: h}));
+        """)
+        h = out["h"]
+        self.assertIn("Booked ahead, estimated", h)
+        self.assertIn("17 Nov – 15 Jan", h)
+        self.assertIn("(23.3%)", h)
+        self.assertIn("confirmed seats only: $240 (40.0%)", h)
+        self.assertIn("How the forward estimate works", h)
+        self.assertIn("Checked against real pay", h)
+        self.assertIn("(+1.0%)", h)
+        self.assertIn("worst single week 13.7% out", h)
+        self.assertIn("scaled by 0.912", h)
+        self.assertIn("over 900 invoiced calls", h)
+        self.assertIn("Revenue at the rate card × 0.912: estimated $98 against $100 invoiced (-2.0%)", h)
+        self.assertIn("<b>passed</b>", h)
+        self.assertIn("1 call with no rate-card price (3 seats)", h)
+        self.assertIn("2 cancelled", h)
+        self.assertIn("est. all seats", h)
+        self.assertNotIn("treat with care", h)
+        self.assertIn('<div><div class="perf-fold-t" data-perf-fold="marginForward"', h)
+        self.assertIn('<div><div class="perf-fold-t" data-perf-fold="marginExceptions"', h)
+
+    def test_failed_backtest_is_said_on_the_line(self):
+        out = run(r"""
+          var f = """ + FWD + r""";
+          f.backtest.passed = false;
+          P.forward_margin = f;
+          console.log(JSON.stringify({h: perfMarginCard(P)}));
+        """)
+        self.assertIn("treat with care", out["h"])
+
+    def test_unavailable_says_so_and_draws_a_labelled_zone(self):
+        out = run(r"""
+          P.forward_margin = {unavailable: true, error: 'pricing rules unavailable: x'};
+          var s = perfMarginSeries(P, 'dollars');
+          console.log(JSON.stringify({h: perfMarginCard(P), svg: perfMarginChartSvg(s, '#d4af37')}));
+        """)
+        self.assertIn("Forward estimate unavailable — pricing rules unavailable: x", out["h"])
+        self.assertIn("unavailable", out["svg"])
+        self.assertNotIn("est. all seats", out["h"])
+
+    def test_gm_tile_ignores_the_estimate(self):
+        out = run(r"""
+          _perfCost = P; var a = perfGmTileHtml();
+          P.forward_margin = """ + FWD + r"""; var b = perfGmTileHtml();
+          console.log(JSON.stringify({same: a === b}));
+        """)
+        self.assertTrue(out["same"])
+
+    def test_short_date(self):
+        out = run(r"""console.log(JSON.stringify([perfShortDate('2026-11-07'), perfShortDate('x'), perfShortDate(null)]));""")
+        self.assertEqual(out, ["7 Nov", "x", ""])
 
 
 if __name__ == "__main__":
