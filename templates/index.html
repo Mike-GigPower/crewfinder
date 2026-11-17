@@ -36305,6 +36305,17 @@ function perfIsoWeekMonday(key){
   const dow  = (jan4.getDay() + 6) % 7;             // 0 = Monday
   return new Date(year, 0, 4 - dow + (week - 1) * 7);
 }
+
+// The x-axis month label for the week starting Monday d, or null. A month is
+// labelled at its FIRST week — the first Monday that falls in it — and only
+// there. Earlier this was "a new month, at least four weeks after the last
+// label", which let a part-month at the left edge take the first slot and
+// pushed every later label one to three weeks late (found 17 Nov 2026 on the
+// margin year card: the 9 Nov point sat left of "Nov").
+function perfMonthTick(d){
+  if(!d || d.getDate() > 7) return null;
+  return PERF_MONTHS[d.getMonth()] + (d.getMonth() === 0 ? " '" + String(d.getFullYear()).slice(2) : '');
+}
 function perfWeekLabel(key){
   const d = perfIsoWeekMonday(key);
   if(!d) return String(key || '');
@@ -36511,16 +36522,11 @@ function perfWeeklyChartSvg(s, fmt, fmtFull, accent){
           + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + fmt(v) + '</text>';
   }
 
-  // x axis: one label per month, never closer than 4 weeks apart
-  let xlab = '', lastMonth = -1, lastAt = -99;
+  // x axis: each month labelled at its first week (perfMonthTick)
+  let xlab = '';
   for(let i = 0; i < n; i++){
-    const d = perfIsoWeekMonday(s.labels[i]);
-    if(!d) continue;
-    if(d.getMonth() !== lastMonth && (i - lastAt) >= 4){
-      lastMonth = d.getMonth(); lastAt = i;
-      const txt = PERF_MONTHS[d.getMonth()] + (d.getMonth() === 0 ? " '" + String(d.getFullYear()).slice(2) : '');
-      xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (baseY + 15) + '" text-anchor="middle">' + txt + '</text>';
-    }
+    const txt = perfMonthTick(perfIsoWeekMonday(s.labels[i]));
+    if(txt) xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (baseY + 15) + '" text-anchor="middle">' + txt + '</text>';
   }
 
   // areas
@@ -37883,7 +37889,7 @@ function perfMarginSlotHtml(){
   if(_perfCostErr) return '<div class="ops-unavail">Margin is unavailable — ' + escapeHtml(String(_perfCostErr)) + '</div>';
   if(!_perfCost)   return '<div class="perf-card"><div class="ops-lane-status">Loading margin…</div></div>';
   try{
-    return perfMarginCard(_perfCost) + perfMarginCustomerCard(_perfCost, _perfData);
+    return perfMarginCard(_perfCost) + perfMarginCustomerCard(_perfCost, _perfData) + perfMarginFyCardSafe(_perfCost);
   }catch(e){
     // A shape change must cost this card only, never the revenue charts above it.
     return '<div class="ops-unavail">Margin is unavailable — ' + escapeHtml(String((e && e.message) || e)) + '</div>';
@@ -38062,15 +38068,11 @@ function perfMarginChartSvg(s, accent){
     grid += '<line class="perf-mgn-zero" x1="' + padL + '" y1="' + Y(0).toFixed(1) + '" x2="' + (padL + plotW) + '" y2="' + Y(0).toFixed(1) + '"/>';
   }
 
-  let xlab = '', lastMonth = -1, lastAt = -99;
+  // x axis: each month labelled at its first week (perfMonthTick)
+  let xlab = '';
   for(let i = 0; i < n; i++){
-    const d = perfIsoWeekMonday(s.labels[i]);
-    if(!d) continue;
-    if(d.getMonth() !== lastMonth && (i - lastAt) >= 4){
-      lastMonth = d.getMonth(); lastAt = i;
-      const txt = PERF_MONTHS[d.getMonth()] + (d.getMonth() === 0 ? " '" + String(d.getFullYear()).slice(2) : '');
-      xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (padT + plotH + 15) + '" text-anchor="middle">' + txt + '</text>';
-    }
+    const txt = perfMonthTick(perfIsoWeekMonday(s.labels[i]));
+    if(txt) xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (padT + plotH + 15) + '" text-anchor="middle">' + txt + '</text>';
   }
 
   // A null (no revenue, % view) breaks the line rather than drawing it to 0.
@@ -38332,6 +38334,249 @@ function perfMarginCard(c){
     + '</div>';
 }
 
+
+// ── MARGIN — FINANCIAL YEAR (slice C) ──────────────────────────────────────
+// Cumulative margin % for this financial year and last, against the 30%
+// target (Mike, 17 Nov 2026: the main line is cumulative margin %, not $),
+// with the booked-ahead weeks continuing it from slice D's estimate.
+//
+// CUMULATIVE MEANS Σ margin ÷ Σ revenue to that week — never an average of
+// weekly percentages, which would let a $5k week weigh the same as a $500k
+// one. The weeks and the year boundary are the revenue FY card's own
+// (perfFyStartMonday / perfFyOfWeek), so both cards agree on what week 1 is.
+//
+// Measured weeks come from the margin payload (matched invoices only, the
+// weekly card's own figures). Booked-ahead weeks are ESTIMATED (slice D,
+// every seat charged) and are drawn in the book colour, dashed, never as a
+// continuation of the earned line. Margin users only: it lives in the margin
+// slot, which nobody else gets.
+
+function perfMarginFySeries(c){
+  const all = (c && Array.isArray(c.weeks)) ? c.weeks : [];
+  if(all.length < 2) return null;
+  const curFy = perfFyOfWeek(all[all.length - 1].key);
+  if(curFy == null) return null;
+  const priorFy   = curFy - 1;
+  const startCur  = perfFyStartMonday(curFy);
+  const startPrev = perfFyStartMonday(priorFy);
+  const N         = perfWeeksBetween(startPrev, startCur);
+  if(!(N > 1)) return null;
+
+  // Last FY is drawn only when the payload covers ALL of it. A cumulative
+  // line that starts mid-year is a different number wearing the same label.
+  const haveFullPrior = perfIsoWeekMonday(all[0].key) <= startPrev;
+
+  const slot = function(mon0){
+    const v = new Array(N);
+    for(let i = 0; i < N; i++) v[i] = null;
+    all.forEach(function(w){
+      const m = perfIsoWeekMonday(w.key);
+      if(!m) return;
+      const i = perfWeeksBetween(mon0, m);
+      if(i >= 0 && i < N) v[i] = { rev: +(w.revenue || 0), mar: +(w.margin || 0) };
+    });
+    return v;
+  };
+  // Stops at the first week the payload does not carry: the current FY is a
+  // part-year, and its line ends at the last COMPLETE week.
+  const cum = function(raw){
+    const out = []; let r = 0, m = 0;
+    for(let i = 0; i < raw.length; i++){
+      if(raw[i] == null) break;
+      r += raw[i].rev; m += raw[i].mar;
+      out.push({ rev: r, mar: m, pct: (r > 0) ? 100 * m / r : null });
+    }
+    return out;
+  };
+  const actual = cum(slot(startCur));
+  const prior  = haveFullPrior ? cum(slot(startPrev)) : [];
+
+  // ── booked ahead (slice D, estimated) ─────────────────────────────────────
+  const fm   = c.forward_margin;
+  const fwks = (fm && !fm.unavailable && Array.isArray(fm.weeks)) ? fm.weeks : [];
+  const bslot = new Array(N);
+  for(let i = 0; i < N; i++) bslot[i] = null;
+  fwks.forEach(function(w){
+    if(!w.has_work) return;
+    const m = perfIsoWeekMonday(w.key);
+    if(!m) return;
+    const i = perfWeeksBetween(startCur, m);
+    if(i >= actual.length && i < N) bslot[i] = { rev: +(w.revenue || 0), mar: +(w.required_margin || 0) };
+  });
+  // Trailing empty weeks are the pipeline, not a forecast of nothing: the
+  // line stops at the last week carrying work (the revenue FY card's rule).
+  let lastB = -1;
+  for(let i = N - 1; i >= actual.length; i--){ if(bslot[i]){ lastB = i; break; } }
+  const booked = [];
+  let r = actual.length ? actual[actual.length - 1].rev : 0;
+  let mg = actual.length ? actual[actual.length - 1].mar : 0;
+  for(let i = actual.length; i <= lastB; i++){
+    if(bslot[i]){ r += bslot[i].rev; mg += bslot[i].mar; }
+    booked.push({ i: i, rev: r, mar: mg, pct: (r > 0) ? 100 * mg / r : null, has: !!bslot[i] });
+  }
+
+  return { fy: curFy, priorFy: priorFy, N: N, startCur: startCur, startPrev: startPrev,
+           haveFullPrior: haveFullPrior, actual: actual, prior: prior, booked: booked,
+           forwardUnavailable: !!(fm && fm.unavailable), hasForward: !!fm };
+}
+
+function perfMarginFySvg(s){
+  const N = s.N;
+  const W = 1000, H = 300, padL = 64, padR = 18, padT = 16, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const C = PERF_FY_COLORS;
+
+  let hi = 60, lo = 0;
+  const scan = function(v){ if(v == null || !isFinite(v)) return; if(v > hi) hi = v; if(v < lo) lo = v; };
+  s.actual.forEach(function(p){ scan(p.pct); });
+  s.prior.forEach(function(p){ scan(p.pct); });
+  s.booked.forEach(function(p){ scan(p.pct); });
+  const step = 15;
+  const top = Math.ceil(hi / step) * step, bot = Math.floor(lo / step) * step;
+  const rng = (top - bot) || 1;
+  const X = function(i){ return padL + plotW * i / (N - 1); };
+  const Y = function(v){ return padT + plotH * ((top - v) / rng); };
+
+  let grid = '';
+  for(let v = bot; v <= top + 1e-9; v += step){
+    const y = Y(v).toFixed(1);
+    grid += '<line class="perf-grid" x1="' + padL + '" y1="' + y + '" x2="' + (padL + plotW) + '" y2="' + y + '"/>'
+          + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (+y + 3.5).toFixed(1) + '" text-anchor="end">' + v + '%</text>';
+  }
+  if(bot < 0){
+    grid += '<line class="perf-mgn-zero" x1="' + padL + '" y1="' + Y(0).toFixed(1) + '" x2="' + (padL + plotW) + '" y2="' + Y(0).toFixed(1) + '"/>';
+  }
+  // x axis: each month labelled at its first week (perfMonthTick).
+  let xlab = '';
+  for(let i = 0; i < N; i++){
+    const txt = perfMonthTick(new Date(s.startCur.getFullYear(), s.startCur.getMonth(), s.startCur.getDate() + i * 7));
+    if(txt) xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (padT + plotH + 15) + '" text-anchor="middle">' + txt + '</text>';
+  }
+
+  const ty = Y(PERF_MARGIN_TARGET_PCT).toFixed(1);
+  const target = '<line class="perf-mgn-target" x1="' + padL + '" y1="' + ty + '" x2="' + (padL + plotW) + '" y2="' + ty + '"/>'
+    + '<text class="perf-ax perf-mgn-target-lbl" x="' + (padL + plotW - 6) + '" y="' + (+ty - 5).toFixed(1) + '" text-anchor="end">target ' + PERF_MARGIN_TARGET_PCT + '%</text>';
+
+  // A null % (no revenue yet) breaks a line rather than drawing it at 0%.
+  const pathOf = function(pts, xi){
+    let d = '', pen = false;
+    pts.forEach(function(p, k){
+      if(p.pct == null){ pen = false; return; }
+      d += (pen ? ' L' : ' M') + X(xi(p, k)).toFixed(1) + ' ' + Y(p.pct).toFixed(1);
+      pen = true;
+    });
+    return d.trim();
+  };
+  const byIndex = function(p, k){ return k; };
+
+  let body = '';
+  if(s.prior.length > 1){
+    body += '<path class="perf-mgn-fy-prior" d="' + pathOf(s.prior, byIndex) + '" fill="none" stroke="' + C.prior + '" stroke-width="1.75"/>';
+  }
+  if(s.actual.length){
+    const xk = X(s.actual.length - 1);
+    body += '<line x1="' + xk.toFixed(1) + '" y1="' + padT + '" x2="' + xk.toFixed(1) + '" y2="' + (padT + plotH) + '" stroke="' + C.actual + '" stroke-width="1" stroke-dasharray="2 3" opacity="0.5"/>';
+  }
+  if(s.booked.length && s.actual.length){
+    const last = s.actual[s.actual.length - 1];
+    const lead = (last.pct != null) ? 'M' + X(s.actual.length - 1).toFixed(1) + ' ' + Y(last.pct).toFixed(1) + ' ' : '';
+    const rest = pathOf(s.booked, function(p){ return p.i; });
+    body += '<path class="perf-mgn-fy-booked" d="' + lead + rest.replace(/^M/, lead ? 'L' : 'M') + '" fill="none" stroke="' + C.booked + '" stroke-width="2.25" stroke-dasharray="5 3"/>';
+    s.booked.forEach(function(p){
+      if(!p.has || p.pct == null) return;
+      body += '<circle cx="' + X(p.i).toFixed(1) + '" cy="' + Y(p.pct).toFixed(1) + '" r="3" fill="' + C.booked + '"><title>'
+            + escapeHtml('Week ' + (p.i + 1) + ' — ESTIMATED, with the book added: ' + Number(p.pct).toFixed(1) + '% on ' + perfMoneyFull(p.rev)) + '</title></circle>';
+    });
+  }
+  if(s.actual.length > 1){
+    body += '<path class="perf-mgn-fy-actual" d="' + pathOf(s.actual, byIndex) + '" fill="none" stroke="' + C.actual + '" stroke-width="2.5"/>';
+  }
+  s.actual.forEach(function(p, i){
+    if(p.pct == null) return;
+    const pr = s.prior[i];
+    body += '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(p.pct).toFixed(1) + '" r="' + (i === s.actual.length - 1 ? 4 : 2.5) + '" fill="' + C.actual + '"><title>'
+          + escapeHtml('Week ' + (i + 1) + ' — ' + Number(p.pct).toFixed(1) + '% year to date (' + perfSignedMoneyFull(p.mar) + ' on ' + perfMoneyFull(p.rev) + ')'
+              + (pr && pr.pct != null ? '\n' + perfFyLabel(s.priorFy) + ' at this week: ' + Number(pr.pct).toFixed(1) + '%' : '')) + '</title></circle>';
+  });
+
+  return '<svg class="perf-chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Cumulative margin percent, financial year to date, against target">'
+    + grid + xlab + target + body + '</svg>';
+}
+
+function perfMarginFyCard(c){
+  const s = perfMarginFySeries(c);
+  if(!s) return '';
+  const k   = s.actual.length;
+  const a   = k ? s.actual[k - 1] : null;
+  const pr  = (k && s.prior.length >= k) ? s.prior[k - 1] : null;
+  const end = s.booked.length ? s.booked[s.booked.length - 1] : null;
+  const pts = function(d){ return (d >= 0 ? '▲ ' : '▼ ') + Math.abs(d).toFixed(1) + ' pts'; };
+
+  const vsT = (a && a.pct != null) ? a.pct - PERF_MARGIN_TARGET_PCT : null;
+  const vsP = (a && a.pct != null && pr && pr.pct != null) ? a.pct - pr.pct : null;
+
+  const tile = function(val, lbl, sub, neg){
+    return '<div class="perf-head"><div class="perf-head-in">'
+      + '<div class="perf-head-val' + (neg ? ' perf-mgn-negval' : '') + '">' + escapeHtml(val) + '</div>'
+      + '<div class="perf-head-lbl">' + escapeHtml(lbl) + '</div>'
+      + (sub ? '<div class="perf-head-sub">' + sub + '</div>' : '')
+      + '</div></div>';
+  };
+  const heads = '<div class="perf-heads perf-mgn-tots">'
+    + tile(a ? perfPctFmtFull(a.pct) : '—', 'margin %, year to date',
+           a ? escapeHtml(perfSignedMoneyFull(a.mar) + ' on ' + perfMoneyFull(a.rev) + ' · ' + k + ' complete week' + (k === 1 ? '' : 's')) : 'no complete week yet',
+           a && a.pct != null && a.pct < 0)
+    + tile(vsT != null ? pts(vsT) : '—', 'against the ' + PERF_MARGIN_TARGET_PCT + '% target', 'crew pay only, before super and on-costs')
+    + tile(vsP != null ? pts(vsP) : '—', 'against ' + perfFyLabel(s.priorFy) + ' at this week',
+           (pr && pr.pct != null) ? escapeHtml(perfFyLabel(s.priorFy) + ' was ' + Number(pr.pct).toFixed(1) + '% at week ' + k)
+                                  : (s.haveFullPrior ? 'no prior-year figure at this week' : 'last year is not fully in the window'))
+    + tile(end && end.pct != null ? Number(end.pct).toFixed(1) + '%' : '—', 'with the book added (est.)',
+           end ? 'estimated, to the last booked week' : (s.forwardUnavailable ? 'forward estimate unavailable' : 'nothing on the books'))
+    + '</div>';
+
+  const C = PERF_FY_COLORS;
+  const key = '<div class="perf-key">'
+    + '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + C.actual + ';height:3px"></span>' + escapeHtml(perfFyLabel(s.fy)) + ' earned</span>'
+    + (s.booked.length ? '<span class="perf-key-i"><span class="perf-key-sw" style="background:linear-gradient(90deg,' + C.booked + ' 0 5px,transparent 5px 8px,' + C.booked + ' 8px 14px);height:3px"></span>on the books — estimated</span>' : '')
+    + '<span class="perf-key-i"><span class="perf-key-sw perf-mgn-key-target"></span>target ' + PERF_MARGIN_TARGET_PCT + '%</span>'
+    + (s.prior.length ? '<span class="perf-key-i"><span class="perf-key-sw" style="background:' + C.prior + ';height:2px"></span>' + escapeHtml(perfFyLabel(s.priorFy)) + ' actual</span>' : '')
+    + '</div>';
+
+  let cap = '';
+  if(a && a.pct != null){
+    cap = '<div class="perf-cap"><b>' + k + ' week' + (k === 1 ? '' : 's') + ' in:</b> ' + Number(a.pct).toFixed(1) + '% margin on '
+      + perfMoneyFull(a.rev) + ' of matched revenue, <b>' + Math.abs(vsT).toFixed(1) + ' points ' + (vsT >= 0 ? 'above' : 'below') + '</b> the '
+      + PERF_MARGIN_TARGET_PCT + '% target'
+      + (vsP != null ? ', and ' + Math.abs(vsP).toFixed(1) + ' points ' + (vsP >= 0 ? 'above' : 'below') + ' ' + escapeHtml(perfFyLabel(s.priorFy)) + ' at the same week' : '')
+      + '.' + (end && end.pct != null ? ' The book, estimated, takes it to ' + Number(end.pct).toFixed(1) + '%.' : '') + '</div>';
+  }
+
+  const notes = perfFold('marginFyNotes', 'how this is worked out',
+      '<div class="perf-note"><b>Cumulative, not averaged.</b> Each point is all margin since the start of the financial year '
+    +   'divided by all matched revenue since then — a big week counts for more than a small one, as it does in the accounts. '
+    +   'That is why the line settles quickly and moves slowly: by November one week shifts it by a fraction of a point.</div>'
+    + '<div class="perf-note"><b>The same weeks and matching as the weekly card above.</b> Matched invoices only, crew pay '
+    +   'only (no super, on-costs or salaried staff). The financial year starts with the week beginning '
+    +   escapeHtml(s.startCur.getDate() + ' ' + PERF_MONTHS[s.startCur.getMonth()] + ' ' + s.startCur.getFullYear())
+    +   ', by the same rule as the revenue year card.</div>'
+    + '<div class="perf-note"><b>The book is an estimate.</b> The dashed blue line adds the booked-ahead weeks using the forward '
+    +   'estimate above (every seat charged, crew pay estimated from recent pay, revenue scaled to what invoices come to). '
+    +   'It is never added to the earned figure.</div>'
+    + (s.haveFullPrior ? '' : '<div class="perf-note">Last year is not drawn: the window does not reach back over the whole of '
+    +   escapeHtml(perfFyLabel(s.priorFy)) + ', and a cumulative line that starts part-way through a year is a different number.</div>'));
+
+  return '<div class="perf-card perf-mgn-fy">'
+    + '<div class="perf-card-head"><span class="perf-card-title">MARGIN — FINANCIAL YEAR</span>'
+    + '<span class="perf-card-sub">cumulative margin %, ' + escapeHtml(perfFyLabel(s.fy)) + (s.prior.length ? ' against ' + escapeHtml(perfFyLabel(s.priorFy)) : '') + ' and the ' + PERF_MARGIN_TARGET_PCT + '% target</span></div>'
+    + heads + perfMarginFySvg(s) + key + cap + notes
+    + '</div>';
+}
+
+// The FY card must never take the weekly margin card down with it.
+function perfMarginFyCardSafe(c){
+  try{ return perfMarginFyCard(c); }
+  catch(e){ return '<div class="ops-unavail">Financial-year margin is unavailable — ' + escapeHtml(String((e && e.message) || e)) + '</div>'; }
+}
 
 // ── slice D: the forward estimate's summary line and fold ─────────────────
 // ESTIMATED, always, in words as well as in the dashed drawing. Never added
@@ -39186,17 +39431,13 @@ function perfFySvg(s, fmt, fmtFull, range){
           + '<text class="perf-ax" x="' + (padL - 8) + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="end">' + fmt(v) + '</text>';
   }
 
-  // x axis: month names walked off the CURRENT FY's own Mondays, so week 1 is
-  // labelled Jul whichever calendar day it started on.
-  let xlab = '', lastM = -1, lastAt = -99;
-  const gap = (N > 20) ? 4 : 2;
+  // x axis: month names walked off the CURRENT FY's own Mondays, each month
+  // at its first week (perfMonthTick). Week 1 usually starts in late June and
+  // is then left unlabelled; "Jul" sits on the first Monday in July.
+  let xlab = '';
   for(let i = 0; i < N; i++){
-    const dt = new Date(s.startCur.getFullYear(), s.startCur.getMonth(), s.startCur.getDate() + i * 7);
-    if(dt.getMonth() !== lastM && (i - lastAt) >= gap){
-      lastM = dt.getMonth(); lastAt = i;
-      xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (baseY + 15) + '" text-anchor="middle">'
-            + PERF_MONTHS[dt.getMonth()] + (dt.getMonth() === 0 ? " '" + String(dt.getFullYear()).slice(2) : '') + '</text>';
-    }
+    const txt = perfMonthTick(new Date(s.startCur.getFullYear(), s.startCur.getMonth(), s.startCur.getDate() + i * 7));
+    if(txt) xlab += '<text class="perf-ax" x="' + X(i).toFixed(1) + '" y="' + (baseY + 15) + '" text-anchor="middle">' + txt + '</text>';
   }
 
   const C = PERF_FY_COLORS;
