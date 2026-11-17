@@ -185,7 +185,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.109.0"
+APP_VERSION    = "5.110.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -23847,6 +23847,116 @@ def api_admin_grade_change_stale(crew_id):
     rows = [r for r in prev.get("rows") or []
             if r.get("call_id") not in ignore and r.get("direction") == "up"]
     return jsonify({"count": len(rows), "grade": grade})
+
+
+# ── Change pay grade, Slice 2: Employment Hero ───────────────────────────────
+# Moves the person's EH record to the level matching their new SmartStaff grade:
+# Pay Rate Template, Primary Pay Category and the one "Level n" tag
+# (DESIGN-promotion-paygrade-cascade §6, FINDINGS-eh-pay-level-probe-2026-11-17).
+#
+# Every byte of EH traffic goes through the keypay-pay-level edge function; the
+# payroll key never reaches Flask or the browser. The EH employee is the one
+# whose External ID is the SmartStaff EIN. The EIN is read HERE from SmartStaff,
+# never taken from the browser, and the commit refuses unless SmartStaff already
+# holds the grade being written to EH, so EH can't get ahead of SmartStaff.
+#
+# Best-effort by design: SmartStaff has already been changed by the time this
+# runs, and an EH failure is reported with a Retry, never rolled back.
+
+KEYPAY_PAY_LEVEL_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/keypay-pay-level"
+GC_LADDER = (10, 26, 25)
+
+
+def _pay_level_call(payload, timeout):
+    """(status, data) from keypay-pay-level. Status 0 = no response. Never raises."""
+    if not GOAT_RECRUITMENT_KEY:
+        return 0, {"ok": False, "code": "NOT_CONFIGURED", "error": "Recruitment key not configured"}
+    try:
+        r = http.post(KEYPAY_PAY_LEVEL_URL, json=payload,
+                      headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY}, timeout=timeout)
+    except Exception as e:
+        print(f"[keypay-pay-level] {payload.get('mode')} request failed: {type(e).__name__}")
+        return 0, {"ok": False, "code": "EH_UNREACHABLE", "error": "Employment Hero service unavailable"}
+    try:
+        data = r.json()
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        data = {"ok": False, "error": f"Employment Hero service error (HTTP {r.status_code})"}
+    return r.status_code, data
+
+
+def _crew_ein_grade(ss, cid):
+    """(ein, grade, error) for this crew member, read from SmartStaff."""
+    crew, err = ss_get_crew(ss, cid)
+    if err or not crew:
+        return None, None, err or "crew member not found"
+    ein = str(crew.get("ein") or "").strip()
+    if not ein.isdigit():
+        return None, None, "This crew member has no EIN in SmartStaff, so they can't be matched in Employment Hero"
+    return ein, _as_pos_int(crew.get("paygrade_id")), None
+
+
+def _eh_status_code(st):
+    return st if st in (200, 400, 403, 409, 502, 504) else 502
+
+
+@app.route("/api/admin/crew/<crew_id>/grade-change/eh-preview")
+@require_cohort("admin")
+def api_admin_grade_change_eh_preview(crew_id):
+    """What moving this person's Employment Hero record to new_grade would change. Read only."""
+    cid = _as_pos_int(crew_id)
+    new_grade = _as_pos_int(request.args.get("new_grade"))
+    if cid is None or new_grade not in GC_LADDER:
+        return jsonify({"ok": False, "error": "crew id and a ladder new_grade are required"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    ein, _grade, err = _crew_ein_grade(ss, cid)
+    if err:
+        return jsonify({"ok": False, "code": "NO_EIN", "error": err})
+    st, data = _pay_level_call({"mode": "preview", "ein": ein, "new_grade": new_grade}, timeout=45)
+    if st == 0:
+        return jsonify(data), 502
+    return jsonify(data), _eh_status_code(st)
+
+
+@app.route("/api/admin/crew/<crew_id>/grade-change/eh", methods=["POST"])
+@require_cohort("admin")
+def api_admin_grade_change_eh(crew_id):
+    """Write the Employment Hero side of a grade change. Runs after SmartStaff has
+    been changed; refuses unless SmartStaff already holds new_grade."""
+    cid = _as_pos_int(crew_id)
+    body = request.get_json(silent=True) or {}
+    new_grade = _as_pos_int(body.get("new_grade"))
+    employee_id = _as_pos_int(body.get("employee_id"))
+    before_hash = str(body.get("before_hash") or "")
+    if cid is None or new_grade not in GC_LADDER or employee_id is None or not before_hash:
+        return jsonify({"ok": False, "error": "new_grade, employee_id and before_hash are required"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    applied_by = current_user_id()
+    if applied_by is None:
+        return jsonify({"ok": False, "error": "couldn't identify who is making the change (no SmartStaff userID)"}), 400
+    ein, grade, err = _crew_ein_grade(ss, cid)
+    if err:
+        return jsonify({"ok": False, "code": "NO_EIN", "error": err}), 409
+    if grade != new_grade:
+        return jsonify({"ok": False, "code": "SMARTSTAFF_NOT_CHANGED",
+                        "error": "SmartStaff doesn't hold this grade yet, so Employment Hero wasn't changed"}), 409
+    payload = {"mode": "commit", "ein": ein, "new_grade": new_grade, "employee_id": employee_id,
+               "before_hash": before_hash, "acting_user_id": str(applied_by)}
+    log_id = _as_pos_int(body.get("log_id"))
+    if log_id:
+        payload["log_id"] = log_id
+    # Up to three EH reads and one write, each capped at 30 s inside the function.
+    st, data = _pay_level_call(payload, timeout=150)
+    if st == 0:
+        data["error"] = ("Couldn't reach the Employment Hero service. The change may or may not "
+                         "have been made: check the employee in EH before retrying.")
+        return jsonify(data), 502
+    return jsonify(data), _eh_status_code(st)
 
 # ── Manage Venues ────────────────────────────────────────────────────────────
 # Authored-endpoint pattern, mirroring Manage Crew: get-venue.php (read one,
