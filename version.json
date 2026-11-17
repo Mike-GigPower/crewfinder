@@ -1,6 +1,6 @@
 {
-  "version": "5.108.0",
+  "version": "5.109.0",
   "release_date": "2026-11-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.108.0/TheGOAT.dmg",
-  "release_notes": "Import Times now shows each call's date and time beside its name, so same-named calls can be told apart. Performance shows crew-pay margin for selected admin accounts."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.109.0/TheGOAT.dmg",
+  "release_notes": "Admins can change a crew member's pay grade from their crew record, and the calls they're already booked on move to the matching grade."
 }
