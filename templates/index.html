@@ -14595,11 +14595,12 @@ function ceOpenGradeChange(crewId, opts){
 async function _gcStart(crewId, opts){
   var who = window._crewEditNameLF || window._crewEditName || ('ID ' + crewId);
   window._gc = {crewId: Number(crewId), who: who, cur: null, newGrade: opts.grade || null,
-                wef: '', prev: null, seq: 0, busy: false, done: false};
+                wef: '', prev: null, seq: 0, busy: false, done: false,
+                eh: null, ehGrade: null, ehSeq: 0};
   document.getElementById('entity-modal-title').textContent = 'Change pay grade';
   document.getElementById('entity-modal-sub').textContent = decodeEntities(who);
   document.getElementById('entity-modal-body').innerHTML =
-      '<div id="gc-choose"></div><div id="gc-warn"></div><div id="gc-preview" style="font-size:12px;color:var(--muted)">Loading…</div>';
+      '<div id="gc-choose"></div><div id="gc-warn"></div><div id="gc-preview" style="font-size:12px;color:var(--muted)">Loading…</div><div id="gc-eh"></div>';
   _gcActions();
   // First read: with the suggested grade, to learn the person's current grade,
   // today and the earliest WEF. The suggestion is corrected once we know them.
@@ -14682,6 +14683,7 @@ async function _gcRefresh(){
   if(hint) hint.textContent = 'Earliest ' + _gcFmtDate(d.pay_period_start) + ' (start of the current pay week) · latest today';
   _gcRenderPreview();
   _gcActions();
+  if(gc.ehGrade !== gc.newGrade || !gc.eh) _gcLoadEh(); else _gcRenderEh();
 }
 
 function _gcCallLink(r){
@@ -14817,9 +14819,13 @@ async function _gcApply(){
     _gcActions();
     return;
   }
+  var ehBox = document.getElementById('gc-eh-on');
+  var doEh = !!(ehBox && ehBox.checked && _gcEhCanWrite() && gc.ehGrade === d.new_grade);
   gc.done = true;
   _gcRenderResult(res);
   _gcActions();
+  if(doEh) await _gcEhCommit(res.log_id || null);
+  else _gcEhNotDone();
 }
 
 var GC_SKIP = {locked: 'call locked since the preview', before_wef: 'before the WEF date', already_target: 'already on the new grade',
@@ -14853,6 +14859,168 @@ function _gcRenderResult(res){
   document.getElementById('gc-choose').innerHTML = '';
   document.getElementById('gc-warn').innerHTML = '';
   document.getElementById('gc-preview').innerHTML = html;
+}
+
+// ── Employment Hero section (Slice 2) ───────────────────────────────────────
+// The EH record moves with the grade: template, primary pay category and the
+// one Level tag. Checked once per chosen grade (the WEF doesn't affect EH), and
+// written only AFTER SmartStaff succeeds. A failure is reported with a Retry,
+// which re-checks first, so a write that did land is never made twice.
+
+var GC_EH_FIELDS = {payRateTemplate: 'Pay rate template', primaryPayCategory: 'Primary pay category', tags: 'Tags'};
+
+function _gcEhHead(){
+  return '<div style="margin-top:16px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Employment Hero</div>';
+}
+function _gcEhAmber(msg){
+  return '<div style="font-size:12px;color:#f59e0b;padding:2px 0">&#9888; ' + msg + '</div>';
+}
+function _gcEhWho(e){
+  var emp = e.employee || {};
+  var name = [emp.firstName, emp.surname].filter(Boolean).join(' ');
+  return '<div style="font-size:12px;color:var(--text);padding:2px 0 6px">' + escapeHtml(name || 'Employee')
+    + ' <span style="color:var(--muted)">· External ID ' + escapeHtml(String(emp.externalId || e.ein || '')) + '</span>'
+    + (e.eh_url ? ' · <a href="' + escapeHtml(e.eh_url) + '" target="_blank" rel="noopener" style="color:var(--accent)">Open in EH</a>' : '')
+    + '</div>';
+}
+function _gcEhCanWrite(){
+  var gc = window._gc, e = gc && gc.eh;
+  return !!(e && e.ok && e.verdict === 'ready' && e.write_enabled && e.write_allowlisted);
+}
+
+async function _gcLoadEh(){
+  var gc = window._gc;
+  if(!gc) return;
+  var g = gc.newGrade, seq = ++gc.ehSeq;
+  gc.eh = null;
+  _gcRenderEh();
+  var d;
+  try{
+    var r = await fetch('/api/admin/crew/' + encodeURIComponent(gc.crewId) + '/grade-change/eh-preview?new_grade=' + g);
+    d = await r.json();
+  }catch(e){
+    d = {ok: false, error: 'Couldn\'t check Employment Hero: ' + e.message};
+  }
+  if(window._gc !== gc || seq !== gc.ehSeq || gc.done) return;
+  gc.eh = d || {ok: false, error: 'No answer from Employment Hero'};
+  gc.ehGrade = g;
+  if(gc.ehOn === undefined) gc.ehOn = true;
+  _gcRenderEh();
+}
+
+function _gcRenderEh(){
+  var gc = window._gc, box = document.getElementById('gc-eh');
+  if(!gc || !box || gc.done) return;
+  var e = gc.eh, html = _gcEhHead();
+  if(!e){
+    box.innerHTML = html + '<div style="font-size:12px;color:var(--muted)">Checking Employment Hero…</div>';
+    return;
+  }
+  if(!e.ok){
+    box.innerHTML = html + _gcEhAmber(escapeHtml(e.error || 'Couldn\'t check Employment Hero') + '. Update EH by hand.');
+    return;
+  }
+  html += _gcEhWho(e);
+  if(e.verdict === 'already'){
+    box.innerHTML = html + '<div style="font-size:12px;color:var(--muted)">' + escapeHtml(e.verdict_text) + ': nothing to change.</div>';
+    return;
+  }
+  if(e.verdict !== 'ready'){
+    box.innerHTML = html + _gcEhAmber(escapeHtml(e.verdict_text) + (e.detail ? ' (' + escapeHtml(e.detail) + ')' : '') + '. Update EH by hand.');
+    return;
+  }
+  html += '<table class="gc-table"><thead><tr><th style="width:150px">Field</th><th>Now</th><th>After</th></tr></thead><tbody>'
+    + (e.diff || []).map(function(f){
+        return '<tr><td>' + escapeHtml(GC_EH_FIELDS[f.field] || f.field) + '</td>'
+          + '<td>' + escapeHtml(f.current || '(blank)') + '</td>'
+          + '<td' + (f.changes ? ' style="color:var(--accent)"' : '') + '>' + escapeHtml(f.next || '(blank)') + '</td></tr>';
+      }).join('')
+    + '</tbody></table>'
+    + '<div style="font-size:11px;color:var(--muted);padding:2px 0 6px">The pay rate follows the new template; it isn&#39;t overridden. Nothing else on the EH record changes.</div>';
+  if(_gcEhCanWrite()){
+    html += '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text);cursor:pointer">'
+      + '<input type="checkbox" id="gc-eh-on"' + (gc.ehOn ? ' checked' : '') + ' onchange="window._gc.ehOn=this.checked"> Also update Employment Hero</label>';
+  }else{
+    html += _gcEhAmber(e.write_enabled ? 'Employment Hero updates are limited to a test list for now. Update EH by hand.'
+                                       : 'Employment Hero updates are switched off for now. Update EH by hand.');
+  }
+  box.innerHTML = html;
+}
+
+// After SmartStaff succeeded and EH wasn't written: say why, so nobody assumes it was.
+function _gcEhNotDone(){
+  var gc = window._gc, box = document.getElementById('gc-eh'), e = gc && gc.eh;
+  if(!box) return;
+  var msg;
+  if(!e) msg = _gcEhAmber('Employment Hero wasn&#39;t checked. Update EH by hand.');
+  else if(e.ok && e.verdict === 'already') msg = '<div style="font-size:12px;color:var(--muted)">Employment Hero already matched: nothing changed there.</div>';
+  else if(_gcEhCanWrite()) msg = _gcEhAmber('Employment Hero not changed (you unticked it). Update EH by hand. '
+      + '<a href="#" onclick="event.preventDefault();_gcEhRetry()" style="color:var(--accent)">Update it now</a>');
+  else msg = _gcEhAmber('Employment Hero not changed' + (e.ok ? ': ' + escapeHtml(e.verdict_text || '') : (e.error ? ': ' + escapeHtml(e.error) : '')) + '. Update EH by hand.');
+  box.innerHTML = _gcEhHead() + msg;
+}
+
+async function _gcEhCommit(logId){
+  var gc = window._gc, box = document.getElementById('gc-eh');
+  if(!gc || !gc.eh) return;
+  gc.ehLogId = logId;
+  if(box) box.innerHTML = _gcEhHead() + '<div style="font-size:12px;color:var(--muted)">Updating Employment Hero…</div>';
+  var r, d;
+  try{
+    r = await fetch('/api/admin/crew/' + encodeURIComponent(gc.crewId) + '/grade-change/eh', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({new_grade: gc.prev.new_grade, employee_id: gc.eh.employee_id,
+                            before_hash: gc.eh.before_hash, log_id: logId})});
+    d = await r.json();
+  }catch(e){
+    d = {ok: false, error: 'Couldn\'t reach THE GOAT (' + e.message + '). The change may or may not have been made.'};
+  }
+  _gcRenderEhResult(d || {ok: false, error: 'No answer'});
+}
+
+function _gcRenderEhResult(d){
+  var box = document.getElementById('gc-eh');
+  if(!box) return;
+  var emp = d.employee || {};
+  var html = _gcEhHead();
+  if(d.ok){
+    var rate = (emp.rate !== undefined && emp.rate !== null) ? ' · rate $' + Number(emp.rate).toFixed(2) + (emp.rateUnit === 'Hourly' ? '/h' : '') : '';
+    html += '<div style="font-size:12px;color:var(--ok, #22c55e)">&#10003; ' + (d.unchanged ? 'Employment Hero already matched' : 'Employment Hero updated')
+      + ': ' + escapeHtml(emp.payRateTemplate || '') + ' · ' + escapeHtml(emp.primaryPayCategory || '') + ' · tags ' + escapeHtml(emp.tags || '(blank)') + escapeHtml(rate)
+      + (d.eh_url ? ' · <a href="' + escapeHtml(d.eh_url) + '" target="_blank" rel="noopener" style="color:var(--accent)">Open in EH</a>' : '')
+      + '</div>';
+  }else{
+    // A suspected duplicate must be looked at in EH, never retried from here.
+    var retry = d.code !== 'DUPLICATE_SUSPECTED'
+      ? ' <a href="#" onclick="event.preventDefault();_gcEhRetry()" style="color:var(--accent)">Retry Employment Hero</a>' : '';
+    html += _gcEhAmber('Employment Hero: ' + escapeHtml(d.error || 'not updated')
+      + (d.keypay_detail ? ' <span style="color:var(--muted)">(' + escapeHtml(String(d.keypay_detail).slice(0, 200)) + ')</span>' : '')
+      + ' SmartStaff was changed.' + retry);
+  }
+  box.innerHTML = html;
+}
+
+// Re-check first: if an earlier attempt did land, the check says "already" and
+// nothing is written again.
+async function _gcEhRetry(){
+  var gc = window._gc, box = document.getElementById('gc-eh');
+  if(!gc || gc.ehBusy) return;
+  gc.ehBusy = true;
+  if(box) box.innerHTML = _gcEhHead() + '<div style="font-size:12px;color:var(--muted)">Checking Employment Hero again…</div>';
+  var d;
+  try{
+    var r = await fetch('/api/admin/crew/' + encodeURIComponent(gc.crewId) + '/grade-change/eh-preview?new_grade=' + gc.prev.new_grade);
+    d = await r.json();
+  }catch(e){ d = {ok: false, error: 'Couldn\'t check Employment Hero: ' + e.message}; }
+  gc.eh = d;
+  if(d && d.ok && d.verdict === 'already'){
+    _gcRenderEhResult({ok: true, unchanged: true, employee: d.employee, eh_url: d.eh_url});
+  }else if(_gcEhCanWrite()){
+    await _gcEhCommit(gc.ehLogId || null);
+  }else{
+    _gcEhNotDone();
+  }
+  gc.ehBusy = false;
 }
 
 // ── VISA REGISTER (admin) ────────────────────────────────────────────────────
