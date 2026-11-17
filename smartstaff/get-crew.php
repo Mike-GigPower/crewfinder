@@ -39,9 +39,11 @@
 	$sql = "SELECT u.id, u.firstname, u.lastname, u.ein, u.mobile, u.phone, u.dob,
 	               u.address, u.suburb, u.state, u.postcode, u.email,
 	               u.emergency_contact, u.emergency_phone, u.active, u.rating,
-	               u.notes, u.is_visa_worker, v.visa_expiry
+	               u.notes, u.is_visa_worker, v.visa_expiry,
+	               u.paygradeID, pg.day_desc AS pg_day, pg.night_desc AS pg_night
 	        FROM users u
 	        LEFT JOIN user_visa v ON v.`user` = u.id
+	        LEFT JOIN paygrades pg ON pg.id = u.paygradeID
 	        WHERE u.id = " . $id . "
 	        LIMIT 1";
 
@@ -158,6 +160,11 @@
 		'notes'             => $u->notes,
 		'is_visa_worker'    => (int) $u->is_visa_worker,
 		'visa_expiry'       => $visaExpiryOut,
+		/* Pay grade, for the Details tab and Change pay grade
+		/* (BRIEF-promotion-paygrade-slice1 §4.2). Additive keys. */
+		'paygrade_id'       => (int) $u->paygradeID,
+		'paygrade_day'      => html_entity_decode((string) $u->pg_day, ENT_QUOTES),
+		'paygrade_night'    => html_entity_decode((string) $u->pg_night, ENT_QUOTES),
 		'stats'             => $stats,
 		'all_groups'        => $allGroups,
 		'group_ids'         => $groupIds
