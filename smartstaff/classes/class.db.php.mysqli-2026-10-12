@@ -178,7 +178,12 @@
 			mysqli_report(MYSQLI_REPORT_OFF);
 			
 			if($connect = mysqli_connect($this->server, $this->username, $this->password, $this->database))
+			{
 				$this->connection = $connect;
+				// Pin utf8mb4. PHP 5.6 already gets it by default; PHP 8.3 defaults to latin1,
+				// which changes the bytes of accented text (measured on test, 18 Nov 2026, G27-34).
+				mysqli_set_charset($connect, 'utf8mb4');
+			}
 			else
 				$this->errors->addError('CONNECT: '. mysqli_connect_error());
 			
