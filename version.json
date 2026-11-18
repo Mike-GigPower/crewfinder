@@ -1,6 +1,6 @@
 {
-  "version": "5.109.0",
-  "release_date": "2026-11-17",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.109.0/TheGOAT.dmg",
-  "release_notes": "Admins can change a crew member's pay grade from their crew record, and the calls they're already booked on move to the matching grade."
+  "version": "5.110.0",
+  "release_date": "2026-11-18",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.110.0/TheGOAT.dmg",
+  "release_notes": "Change pay grade now updates Employment Hero too: the pay rate template, pay category and Level tag move with the new grade."
 }
