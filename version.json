@@ -1,6 +1,6 @@
 {
-  "version": "5.111.0",
-  "release_date": "2026-11-18",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.111.0/TheGOAT.dmg",
-  "release_notes": "New Accounting › Invoicing: a read-only list of SmartStaff invoices you can search, open and view as PDF. Totals match the PDF to the cent."
+  "version": "5.111.1",
+  "release_date": "2026-11-19",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.111.1/TheGOAT.dmg",
+  "release_notes": "Backups no longer make a full call look like it needs chasing. A backup's unanswered time change now shows as a grey tag on their row instead."
 }
