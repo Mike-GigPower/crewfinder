@@ -63,6 +63,7 @@ import pricing_rules
 import forward_cost
 import call_types
 import invoice_expect
+import accounting_invoices
 import name_match
 import drive_contracts
 import accred_names
@@ -185,7 +186,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.110.0"
+APP_VERSION    = "5.111.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -802,6 +803,30 @@ def current_accounting_user_id():
     except (TypeError, ValueError):
         return None
     return uid if uid in ACCOUNTING_USERS else None
+
+def require_accounting(fn):
+    """Route guard for every /api/accounting/* route.
+
+    401 if not logged in, 403 unless the cohort is admin, then 403 unless
+    current_accounting_user_id() is set. It sits ON TOP of require_cohort
+    ("admin"), so a non-admin is refused for being a non-admin before the
+    narrower "not enabled for this account" is ever considered.
+
+    This decorator exists so no route repeats the check by hand: HIDING THE TAB
+    IS NOT ACCESS CONTROL (BRIEF-accounting-tab.md, and the note on
+    ACCOUNTING_USERS above). The matching check is also made in
+    list-invoices.php and get-invoice.php, because an admin logged straight
+    into SmartStaff could otherwise open those URLs in a browser.
+    """
+    @functools.wraps(fn)
+    def inner(*args, **kwargs):
+        if current_accounting_user_id() is None:
+            return jsonify({"error": "Not enabled for this account"}), 403
+        return fn(*args, **kwargs)
+    # Applied here rather than written as a second decorator at every route, so
+    # the admin test can never be left off one of them.
+    return require_cohort("admin")(inner)
+
 
 # ─── PERFORMANCE MARGIN (crew pay) ────────────────────────────────────────────
 # The margin cards on Today › Performance (weekly, by customer, forward,
@@ -26980,6 +27005,194 @@ def api_docs_reload():
         return jsonify({"ok": True, "count": _docs.index()["count"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ═══ ACCOUNTING › INVOICING (slice A — READ ONLY) ═════════════════════════
+# BRIEF-accounting-slice-a.md §5.2. Three routes, all reads:
+#
+#   GET /api/accounting/invoices                 the Existing Invoices page
+#   GET /api/accounting/invoices/<id>            one invoice: header, lines, calls
+#   GET /api/accounting/invoices/<id>/pdf        SmartStaff's own PDF, streamed
+#
+# NOTHING HERE WRITES. Generate, Edit, Delete, Email and Export stay in
+# SmartStaff for now (design D2); those are slices B–E.
+#
+# EVERY ROUTE IS @require_accounting — admin cohort AND an ACCOUNTING_USERS
+# account. The two PHP endpoints check the same thing again.
+#
+# THE PDF IS SMARTSTAFF'S. THE GOAT does not re-render it, so the number on the
+# paper the customer got is the number Mike sees. The money THE GOAT does
+# compute (the list column and the detail totals) is computed the PDF's way, in
+# accounting_invoices.py, in Decimal, rounded once.
+#
+# NO CACHING, anywhere in this block. These are cheap reads (about 0.2 s), and
+# a stale invoice total is worse than a 0.2 s wait — unlike /api/performance/cost,
+# whose 10-minute cache buys a 2.2 s scan.
+#
+# A FAILURE IS NEVER AN EMPTY LIST. An empty `invoices` means "no invoices",
+# which on a failed query would be a lie; every failure is a status and a
+# message naming what failed.
+
+ACCOUNTING_PDF_TIMEOUT = 120   # dompdf is slow on a 20-line invoice (§5.2)
+
+
+def _accounting_ss():
+    """(ss, None) or (None, (response, status)) when there is no session."""
+    ss = get_ss_session()
+    if not ss:
+        return None, (jsonify({"error": "Not logged in"}), 401)
+    return ss, None
+
+
+def _accounting_json(ss, path, params, label):
+    """GET one accounting endpoint, as JSON. Returns (data, err, status).
+
+    A 403 from the PHP is passed STRAIGHT THROUGH with its own message, because
+    "Admin only" and "Not enabled for this account" say different things and
+    the PHP is the one that knows which. Anything else is a 502 naming what
+    failed. A body that is not JSON is a 502 too — SmartStaff answers a lapsed
+    session with an HTML login page and an HTTP 200, so the status alone proves
+    nothing.
+    """
+    url = f"{BASE_URL}/ajax/crew/{path}"
+    try:
+        resp = ss.get(url, params=params, timeout=60)
+    except Exception as e:
+        return None, f"{label} could not be reached: {e}", 502
+
+    data = None
+    try:
+        data = json.loads(resp.text or "")
+    except Exception:
+        data = None
+
+    phpmsg = data.get("error") if isinstance(data, dict) else None
+
+    if resp.status_code in (400, 403, 404):
+        return None, phpmsg or f"{label} refused the request", resp.status_code
+    if resp.status_code != 200:
+        return None, phpmsg or f"{label} failed (HTTP {resp.status_code})", 502
+    if not isinstance(data, dict):
+        return None, f"{label} did not return JSON — the SmartStaff session may have lapsed", 502
+    if phpmsg:
+        return None, phpmsg, 502
+
+    return data, None, 200
+
+
+def _no_store(payload, status=200):
+    """A JSON response that is never cached (see the block comment)."""
+    resp = jsonify(payload)
+    resp.status_code = status
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/accounting/invoices", methods=["GET"])
+@require_accounting
+def api_accounting_invoices():
+    """One page of SmartStaff invoices, newest first, with totals added.
+
+    `q` and `page` are forwarded verbatim and URL-encoded; list-invoices.php
+    owns the search, the page size and the clamping, so there is one definition
+    of each. The totals are added here, per invoice, by invoice_totals() — PHP
+    returns the three unrounded sums and all rounding happens once, in Decimal.
+    """
+    ss, bad = _accounting_ss()
+    if bad:
+        return bad
+
+    q    = (request.args.get("q") or "").strip()[:100]
+    page = request.args.get("page") or "0"
+
+    data, err, status = _accounting_json(
+        ss, "list-invoices.php", {"q": q, "p": page}, "The invoice list")
+    if err:
+        return _no_store({"error": err}, status)
+
+    rows = data.get("invoices")
+    if not isinstance(rows, list):
+        return _no_store({"error": "The invoice list came back in an unexpected shape"}, 502)
+
+    for inv in rows:
+        if not isinstance(inv, dict):
+            continue
+        inv["totals"] = accounting_invoices.invoice_totals(
+            inv.get("hourly_sum"), inv.get("flat_sum_pdf"), inv.get("flat_sum_qty"))
+
+    return _no_store({
+        "page":     int(data.get("page") or 0),
+        "per_page": int(data.get("per_page") or 50),
+        "total":    int(data.get("total") or 0),
+        "q":        data.get("q", q),
+        "invoices": rows,
+    })
+
+
+@app.route("/api/accounting/invoices/<int:invoice_id>", methods=["GET"])
+@require_accounting
+def api_accounting_invoice(invoice_id):
+    """One invoice: header, every line with its display fields, and its calls.
+
+    The DETAIL totals are built from the lines themselves, not from the list's
+    SQL sums (§5.3), so the panel can show the workings of the number it
+    prints. Spacer rows are kept in `lines`, marked is_spacer, and excluded
+    from the totals and the line count.
+    """
+    ss, bad = _accounting_ss()
+    if bad:
+        return bad
+
+    data, err, status = _accounting_json(
+        ss, "get-invoice.php", {"id": invoice_id}, "The invoice")
+    if err:
+        return _no_store({"error": err}, status)
+
+    detail = accounting_invoices.invoice_detail(data.get("lines"))
+    data["lines"]  = detail["lines"]
+    data["totals"] = detail["totals"]
+
+    return _no_store(data)
+
+
+@app.route("/api/accounting/invoices/<int:invoice_id>/pdf", methods=["GET"])
+@require_accounting
+def api_accounting_invoice_pdf(invoice_id):
+    """SmartStaff's own invoice PDF, streamed through THE GOAT's session.
+
+    THE FIRST BYTES ARE CHECKED (BOOKING_DOC_TYPES does the same, and for the
+    same reason): SmartStaff answers a lapsed or non-admin session with an HTML
+    LOGIN PAGE AND AN HTTP 200, so a status check alone would hand Mike a file
+    his PDF viewer cannot open and no explanation. Not %PDF is a 502.
+
+    Inline, never a forced download, exactly as api_admin_crew_payslip_pdf —
+    the browser's own viewer opens it in the new tab the link already made.
+    """
+    ss, bad = _accounting_ss()
+    if bad:
+        return bad
+
+    url = f"{BASE_URL}/invoice.php"
+    try:
+        resp = ss.get(url, params={"method": "pdf", "id": invoice_id},
+                      timeout=ACCOUNTING_PDF_TIMEOUT)
+    except Exception as e:
+        return _no_store({"error": f"The invoice PDF could not be reached: {e}"}, 502)
+
+    if resp.status_code == 403:
+        return _no_store({"error": "SmartStaff refused the invoice PDF"}, 403)
+    if resp.status_code != 200:
+        return _no_store({"error": f"The invoice PDF failed (HTTP {resp.status_code})"}, 502)
+
+    body = resp.content or b""
+    if not body[:4] == b"%PDF":
+        return _no_store({"error": "SmartStaff did not return a PDF"}, 502)
+
+    return Response(body, mimetype="application/pdf", headers={
+        "Content-Disposition": f'inline; filename="invoice_{invoice_id}.pdf"',
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    })
 
 
 if __name__ == "__main__":
