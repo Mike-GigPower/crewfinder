@@ -1112,7 +1112,88 @@ body.cohort-readonly #unavail-add-section{display:none}
    unreachable. Override both for this tab only. */
 #tab-administration{overflow-y:auto;flex-direction:column}
 #tab-administration .admin-hub{max-width:880px;margin:0 auto;padding:26px 22px 40px}
-#tab-invoicing .admin-hub,#tab-payroll .admin-hub,#tab-accounting-dashboard .admin-hub{max-width:880px;margin:0 auto;padding:26px 22px 40px}
+/* Same two overrides Administration needs: .tab-panel is overflow:hidden and
+   flex-direction:row for the CrewFinder split pane, which clips a single
+   centred column and puts its lower half out of reach. The placeholders were
+   short enough never to show it; an invoice list is not. */
+#tab-invoicing,#tab-payroll,#tab-accounting-dashboard{overflow-y:auto;flex-direction:column}
+#tab-payroll .admin-hub,#tab-accounting-dashboard .admin-hub{max-width:880px;margin:0 auto;padding:26px 22px 40px}
+/* Invoicing is WIDER than the other hubs: nine columns of invoice need about
+   1,200px, and 880 would wrap the money. The other two stay as they were. */
+#tab-invoicing .admin-hub{max-width:1200px;margin:0 auto;padding:26px 22px 40px}
+/* ── Accounting › Invoicing (slice A, read only) ── */
+.inv-bar{display:flex;align-items:center;gap:8px;margin:18px 0 12px}
+.inv-search{flex:0 0 320px;background:#0a0a0a;border:1px solid var(--border);color:var(--text);
+  border-radius:4px;padding:7px 9px;font-family:'Rajdhani',sans-serif;font-size:13px}
+.inv-search:focus{outline:none;border-color:var(--accent)}
+.inv-clear{background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;
+  padding:6px 10px;font-size:12px;cursor:pointer;font-family:'Share Tech Mono',monospace}
+.inv-clear:hover{border-color:var(--accent);color:var(--accent)}
+.inv-count{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.inv-table{width:100%;border-collapse:collapse;font-family:'Rajdhani',sans-serif;font-size:13px}
+.inv-table th{text-align:left;font-family:'Bebas Neue',sans-serif;font-size:12px;letter-spacing:.12em;
+  color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border);padding:7px 9px;white-space:nowrap}
+.inv-table td{padding:8px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+.inv-table tbody tr.inv-row{cursor:pointer}
+.inv-table tbody tr.inv-row:hover{background:var(--surface2)}
+.inv-num{font-family:'Share Tech Mono',monospace;color:var(--accent);white-space:nowrap}
+.inv-n{text-align:right;font-family:'Share Tech Mono',monospace;white-space:nowrap}
+.inv-link{background:none;border:none;padding:0 0 0 6px;color:var(--muted);cursor:pointer;
+  font-family:'Share Tech Mono',monospace;font-size:11px;text-decoration:underline}
+.inv-link:hover{color:var(--accent)}
+.inv-ok{color:var(--ok,#10b981)}
+.inv-warn{color:var(--accent)}
+.inv-chip{display:inline-block;margin-left:6px;padding:1px 6px;border:1px solid var(--border-gold);
+  border-radius:3px;background:rgba(212,175,55,0.10);color:var(--accent);
+  font-family:'Share Tech Mono',monospace;font-size:10px;white-space:nowrap;cursor:help}
+.inv-pdf{text-decoration:none;font-size:15px}
+.inv-pdf-btn{display:inline-block;background:var(--surface2);border:1px solid var(--border-gold);
+  border-radius:5px;padding:7px 12px;font-family:'Share Tech Mono',monospace;font-size:11px;
+  color:var(--accent);text-decoration:none;cursor:pointer}
+.inv-loading,.inv-empty{color:var(--muted);font-family:'Rajdhani',sans-serif;font-size:13px;padding:14px 2px}
+.inv-error{padding:12px 13px;border:1px solid var(--conflict);border-radius:5px;
+  background:rgba(227,30,36,0.07);color:var(--conflict);font-family:'Rajdhani',sans-serif;font-size:13px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.inv-retry{background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;
+  padding:5px 11px;font-size:12px;cursor:pointer;font-family:'Share Tech Mono',monospace}
+.inv-pager{display:flex;align-items:center;gap:12px;margin-top:14px;
+  font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.inv-pg{background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;
+  padding:5px 11px;font-size:11px;cursor:pointer;font-family:'Share Tech Mono',monospace}
+.inv-pg:disabled{opacity:.4;cursor:not-allowed}
+.inv-pg:not(:disabled):hover{border-color:var(--accent);color:var(--accent)}
+/* One invoice, in the shared dialog shell */
+.inv-dlg{font-family:'Rajdhani',sans-serif;font-size:13px}
+.inv-head-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 22px;margin-bottom:4px}
+.inv-head-block{min-width:0}
+.inv-head-lbl{font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:.14em;color:var(--muted);
+  text-transform:uppercase;margin-bottom:3px}
+.inv-head-val{color:var(--text);line-height:1.4;word-break:break-word}
+.inv-sec{font-family:'Bebas Neue',sans-serif;font-size:14px;letter-spacing:.14em;color:var(--muted);
+  text-transform:uppercase;margin:20px 0 8px;border-bottom:1px solid var(--border);padding-bottom:5px}
+.inv-ln-wrap{overflow-x:auto}
+.inv-ln{width:100%;border-collapse:collapse;font-size:12px}
+.inv-ln th{text-align:left;font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:.1em;
+  color:var(--muted);text-transform:uppercase;border-bottom:1px solid var(--border);padding:5px 7px;white-space:nowrap}
+.inv-ln td{padding:5px 7px;border-bottom:1px solid rgba(255,255,255,0.05);vertical-align:top}
+.inv-ln-sp td{border-bottom:1px solid var(--border);height:7px;padding:0}
+.inv-ln-note{color:var(--muted);font-size:11px}
+/* The small italic suffix the PDF prints after a line's name, e.g.
+   "Crew Boss (Night/Crew Boss)". Built by THE GOAT; only the TEXT
+   comes from the data (fix 1 §2). */
+.inv-desc-note{color:var(--muted);font-size:11px;font-style:italic}
+.inv-ln-raw{color:var(--accent);border-bottom:1px dotted var(--accent);cursor:help}
+.inv-amber{color:var(--accent);font-size:11px;font-family:'Share Tech Mono',monospace}
+.inv-tot{margin-top:14px;display:flex;flex-direction:column;align-items:flex-end;gap:3px;
+  font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--muted)}
+.inv-tot-big{font-family:'Bebas Neue',sans-serif;font-size:21px;letter-spacing:.04em;color:var(--accent)}
+.inv-call{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;padding:6px 0;
+  border-bottom:1px solid rgba(255,255,255,0.05)}
+.inv-call-link{background:none;border:none;padding:0;color:var(--text);cursor:pointer;
+  font-family:'Rajdhani',sans-serif;font-size:13px;text-align:left;text-decoration:underline}
+.inv-call-link:hover{color:var(--accent)}
+.inv-call-when{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.inv-note{color:var(--muted);font-size:12px;margin-top:8px}
 .admin-hub-head{margin-bottom:8px}
 .admin-hub-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
 .admin-hub-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin-top:6px;max-width:560px}
@@ -2968,12 +3049,26 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   <!-- ── ACCOUNTING (Mike only for now — ACCOUNTING_USERS) ── -->
   <!-- Placeholders. Contents are built over the coming weeks; each will need
        its own server-side gate, not just this tab's visibility. -->
+  <!-- Invoicing, slice A: the Existing Invoices list, READ ONLY.
+       The SmartStaff buttons (Generate, Edit, Email, Export) are deliberately
+       absent rather than greyed out — a disabled button invites a question
+       this slice cannot answer (BRIEF §6.3). The tab button itself still
+       ships display:none and is revealed only by whoami.accounting. -->
   <div class="tab-panel" id="tab-invoicing">
     <div class="admin-hub">
       <div class="admin-hub-head">
-        <div class="admin-hub-title">Invoicing</div>
-        <div class="admin-hub-sub">Coming soon.</div>
+        <div class="admin-hub-title">Invoices</div>
+        <div class="admin-hub-sub">Read-only view of SmartStaff invoices. Generate, edit and export are still
+          done in SmartStaff for now.</div>
       </div>
+      <div class="inv-bar">
+        <input id="inv-q" class="inv-search" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Invoice #, booking or customer">
+        <button id="inv-clear" class="inv-clear" title="Clear the search">✕</button>
+        <span id="inv-count" class="inv-count"></span>
+      </div>
+      <div id="inv-list"></div>
+      <div id="inv-pager" class="inv-pager"></div>
     </div>
   </div>
   <div class="tab-panel" id="tab-payroll">
@@ -7048,6 +7143,10 @@ function switchTab(tab){
   if(tab==='recruitment') loadRecruitment();
   if(tab==='administration'){ loadPublicHolidays(false); loadPricingRules(false); }
   if(tab==='recruitment-dashboard') loadRecruitMetrics();
+  // First entry only. Re-entering keeps the list, the search and the page
+  // that were on screen (BRIEF §6.1) — a refetch on every entry would throw
+  // away a search Mike had just typed.
+  if(tab==='invoicing' && _invState && !_invState.loaded) loadInvoices();
   // Unconditional, not `if(!_recruitRows.length)`: book-on-behalf filters
   // _recruitRows and Sessions is now reachable directly (deep link, or the group's
   // remembered child), so a Sessions entry that skipped the fetch would offer an
@@ -22056,6 +22155,7 @@ function entityBack(){
 var ENTITY_MODAL_W = 560;
 var ENTITY_MODAL_W_BOOKING = 760;
 var ENTITY_MODAL_W_CALL = 680;
+var ENTITY_MODAL_W_INVOICE = 1000;   // nine line columns, as the PDF prints them
 function entityModalWidth(px){
   var p = document.getElementById('entity-modal-panel');
   if(p) p.style.width = (px || ENTITY_MODAL_W) + 'px';
@@ -42028,6 +42128,463 @@ function applyGoldRows(){
     if(stars >= 10) tr.classList.add('gold-row');
     else tr.classList.remove('gold-row');
   });
+}
+
+// ── ACCOUNTING › INVOICING (slice A — READ ONLY) ─────────────────────────────
+// BRIEF-accounting-slice-a.md §6. The Existing Invoices list, and one invoice
+// in the shared dialog shell (the same shell the booking and call dialogs use,
+// so the breadcrumb trail works when an invoice opens a booking or a call).
+//
+// READ ONLY. There is no Generate, Edit, Delete, Email or Export here, not even
+// disabled: a greyed button invites a question this slice cannot answer (§6.3).
+// The PDF is SmartStaff's own, streamed by /api/accounting/invoices/<id>/pdf.
+//
+// HANDLERS ARE DELEGATED, NEVER INLINE. Rows are built as HTML strings, but
+// every click is caught by ONE listener on the container and dispatched off
+// data- attributes. An inline onclick carrying a customer name would break on
+// the first O'Lack & Sons, and node --check cannot see inside an onclick
+// attribute at all (REFERENCE §3). The only inline onclicks here are in the
+// dialog's action buttons, and they carry nothing but integers.
+//
+// MONEY IS NEVER COMPUTED IN THE BROWSER. Every figure drawn comes from
+// accounting_invoices.py, which does the arithmetic in Decimal and rounds once.
+// Adding two of these on screen would re-introduce exactly the rounding error
+// that module exists to avoid.
+
+var _invState = { q: '', page: 0, per: 50, total: 0, loaded: false };
+
+// Names arrive HTML-ENCODED from SmartStaff, so they are decoded and then
+// re-escaped for this page — the house order (decodeEntities then escapeHtml).
+function invSafe(s){ return escapeHtml(decodeEntities(s == null ? '' : String(s))); }
+
+function invMoney(n){
+  if(n === null || n === undefined || n === '') return '—';
+  return '$' + Number(n).toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+function invDate(ts){
+  var n = Number(ts || 0);
+  if(!(n > 0)) return '—';
+  return new Date(n * 1000).toLocaleDateString('en-AU',
+    {timeZone:'Australia/Melbourne', day:'2-digit', month:'2-digit', year:'2-digit'});
+}
+
+function invChip(label, title){
+  return '<span class="inv-chip" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</span>';
+}
+
+// A line's description, as the PDF prints it: the name, then a small italic
+// suffix. The generator stores that suffix AS MARKUP —
+//   Crew Boss <i style="font-size: 9px;">(Night/Crew Boss)</i>
+// — and the PDF renders it. THE GOAT must not.
+//
+// THE SPLITTING IS PYTHON'S (accounting_invoices.description_parts). What
+// arrives here is desc_main and desc_note, both ALREADY PLAIN TEXT: tags
+// stripped, entities decoded ONCE. So this function escapes them and supplies
+// its own <span>, which means the only thing that ever comes out of the data
+// is text. Nothing here sets innerHTML from a description.
+//
+// NO decodeEntities() on these two. Python already decoded them, and decoding
+// twice would turn a customer stored as `&amp;amp;` into a bare `&`.
+function invDescHtml(line){
+  var main = escapeHtml(line.desc_main == null ? '' : String(line.desc_main));
+  var note = line.desc_note == null ? '' : String(line.desc_note);
+  return main + (note ? ' <span class="inv-desc-note">' + escapeHtml(note) + '</span>' : '');
+}
+
+// ── The list ────────────────────────────────────────────────────────────────
+
+async function loadInvoices(){
+  var el = document.getElementById('inv-list');
+  if(!el) return;
+  invBind();
+  _invState.loaded = true;                      // set before the await: a second
+                                                // tab entry must not refetch
+  el.innerHTML = '<div class="inv-loading">Loading invoices…</div>';
+  var pager = document.getElementById('inv-pager');
+  if(pager) pager.innerHTML = '';
+  try{
+    var r = await fetch('/api/accounting/invoices?q=' + encodeURIComponent(_invState.q)
+                        + '&page=' + encodeURIComponent(_invState.page), {cache:'no-store'});
+    var d = {};
+    try{ d = await r.json(); }catch(e){ d = {}; }
+    // An error is shown as an error. NEVER an empty table — "no invoices" and
+    // "the query failed" look identical in a blank table and mean opposite
+    // things (§5.2).
+    if(!r.ok || d.error){ invError(d.error || ('the server answered HTTP ' + r.status)); return; }
+    _invState.total = Number(d.total || 0);
+    _invState.per   = Number(d.per_page || 50) || 50;
+    invRender(d);
+  }catch(e){
+    invError(e && e.message ? e.message : 'the request failed');
+  }
+}
+
+// One listener per control, attached once. innerHTML replaces the rows but not
+// the container, so the delegated listener survives every render.
+function invBind(){
+  if(window._invBound) return;
+  var el = document.getElementById('inv-list');
+  if(!el) return;
+  el.addEventListener('click', invListClick);
+  var q = document.getElementById('inv-q');
+  if(q) q.addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){ e.preventDefault(); invSearch(); }
+  });
+  var c = document.getElementById('inv-clear');
+  if(c) c.addEventListener('click', invClearSearch);
+  window._invBound = true;
+}
+
+function invListClick(ev){
+  var t = ev.target;
+  if(!t || !t.closest) return;
+  if(t.closest('a.inv-pdf')) return;                  // a plain link; let it open
+  var b = t.closest('button.inv-link');
+  if(b){                                              // the booking crumb link
+    ev.stopPropagation();
+    invOpenBooking(Number(b.getAttribute('data-booking')), Number(b.getAttribute('data-inv')));
+    return;
+  }
+  var row = t.closest('tr.inv-row');
+  if(row) openInvoiceDialog(Number(row.getAttribute('data-inv')));
+}
+
+function invRender(d){
+  var el = document.getElementById('inv-list');
+  var rows = (d && d.invoices) || [];
+  var countEl = document.getElementById('inv-count');
+  if(countEl){
+    // textContent, so a search term with an & or a < in it is text, not markup.
+    countEl.textContent = _invState.q
+      ? (_invState.total.toLocaleString('en-AU') + " matching '" + _invState.q + "'")
+      : (_invState.total.toLocaleString('en-AU') + ' invoice' + (_invState.total === 1 ? '' : 's'));
+  }
+  if(!rows.length){
+    el.innerHTML = '<div class="inv-empty">' +
+      (_invState.q ? 'No invoice matches that search.' : 'No invoices yet.') + '</div>';
+    invPagerRender();
+    return;
+  }
+  var h = '<table class="inv-table"><thead><tr>'
+        + '<th>Invoice #</th><th>Date</th><th>Booking</th><th>Customer</th>'
+        + '<th style="text-align:right">Calls</th><th style="text-align:right">Ex GST</th>'
+        + '<th style="text-align:right">Inc GST</th><th>Exported</th><th>Actions</th>'
+        + '</tr></thead><tbody>';
+  rows.forEach(function(inv){
+    var id = Number(inv.id);
+    var t  = inv.totals || {};
+    var flags = '';
+    if(t.pdf_xero_differ)
+      flags += invChip('Xero differs',
+        'The PDF charges each flat-rate line once; the Xero export charges it × qty. '
+        + 'Open the invoice to see which line, and by how much (design Q11).');
+    if(!Number(inv.line_count))
+      flags += invChip('No lines',
+        'This invoice has no invoice lines at all, so it bills nothing.');
+    var bk = Number(inv.booking_id) > 0
+      ? '<button class="inv-link" data-booking="' + Number(inv.booking_id) + '" data-inv="' + id
+        + '" title="Open booking #' + Number(inv.booking_id) + '">#' + Number(inv.booking_id) + '</button>'
+      : '';
+    h += '<tr class="inv-row" data-inv="' + id + '">'
+       + '<td class="inv-num">#' + id + '</td>'
+       + '<td>' + invDate(inv.generated) + '</td>'
+       + '<td>' + invSafe(inv.booking_name) + bk + flags + '</td>'
+       + '<td>' + invSafe(inv.customer_name) + '</td>'
+       + '<td class="inv-n">' + Number(inv.call_count || 0) + '</td>'
+       + '<td class="inv-n">' + invMoney(t.ex_gst) + '</td>'
+       + '<td class="inv-n">' + invMoney(t.inc_gst) + '</td>'
+       + '<td>' + (Number(inv.exported)
+                    ? '<span class="inv-ok">✓</span>'
+                    : '<span class="inv-warn">Not exported</span>') + '</td>'
+       + '<td><a class="inv-pdf" href="/api/accounting/invoices/' + id + '/pdf" target="_blank"'
+       + ' rel="noopener" title="Open the SmartStaff PDF">📄</a></td>'
+       + '</tr>';
+  });
+  h += '</tbody></table>';
+  el.innerHTML = h;
+  invPagerRender();
+}
+
+function invError(msg){
+  var el = document.getElementById('inv-list');
+  if(!el) return;
+  el.innerHTML = '<div class="inv-error"><div>Couldn\'t load the invoice list: <b></b></div>'
+               + '<button class="inv-retry" id="inv-retry">Retry</button></div>';
+  // textContent: the message is the route's own and may quote a query label.
+  var b = el.querySelector('.inv-error b');
+  if(b) b.textContent = String(msg);
+  var r = document.getElementById('inv-retry');
+  if(r) r.addEventListener('click', function(){ loadInvoices(); });
+  var countEl = document.getElementById('inv-count');
+  if(countEl) countEl.textContent = '';
+  var pager = document.getElementById('inv-pager');
+  if(pager) pager.innerHTML = '';
+}
+
+function invPagerRender(){
+  var el = document.getElementById('inv-pager');
+  if(!el) return;
+  var pages = Math.max(1, Math.ceil(_invState.total / _invState.per));
+  if(pages <= 1){ el.innerHTML = ''; return; }
+  var cur = _invState.page + 1;
+  el.innerHTML = '<button class="inv-pg" id="inv-prev"' + (cur <= 1 ? ' disabled' : '') + '>‹ Prev</button>'
+               + '<span>Page ' + cur + ' of ' + pages + '</span>'
+               + '<button class="inv-pg" id="inv-next"' + (cur >= pages ? ' disabled' : '') + '>Next ›</button>';
+  var p = document.getElementById('inv-prev');
+  if(p) p.addEventListener('click', function(){ invPage(-1); });
+  var n = document.getElementById('inv-next');
+  if(n) n.addEventListener('click', function(){ invPage(1); });
+}
+
+function invPage(delta){
+  var pages = Math.max(1, Math.ceil(_invState.total / _invState.per));
+  var next = _invState.page + Number(delta);
+  if(next < 0 || next >= pages) return;
+  _invState.page = next;
+  loadInvoices();
+}
+
+function invSearch(){
+  var q = document.getElementById('inv-q');
+  _invState.q = q ? String(q.value).trim().slice(0, 100) : '';
+  _invState.page = 0;            // a new search starts at page 1, never page 7
+  loadInvoices();
+}
+
+function invClearSearch(){
+  var q = document.getElementById('inv-q');
+  if(q) q.value = '';
+  _invState.q = '';
+  _invState.page = 0;
+  loadInvoices();
+}
+
+// ── One invoice ─────────────────────────────────────────────────────────────
+
+// The SHARED dialog shell, not a modal of its own: the booking and call links
+// below open their existing dialogs, and only the shared shell carries the
+// breadcrumb trail that gets Mike back to the invoice afterwards.
+async function openInvoiceDialog(invoiceId){
+  var id = Number(invoiceId);
+  if(!(id > 0)) return;
+  openEntityModal();
+  entityModalWidth(ENTITY_MODAL_W_INVOICE);
+  entityStackTrim('invoice:' + id);          // re-entry by breadcrumb trims, never stacks
+  document.getElementById('entity-modal-title').textContent = 'Invoice';
+  document.getElementById('entity-modal-sub').textContent = '#' + id;
+  document.getElementById('entity-modal-body').innerHTML =
+    '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading invoice…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  try{
+    var r = await fetch('/api/accounting/invoices/' + id, {cache:'no-store'});
+    var d = {};
+    try{ d = await r.json(); }catch(e){ d = {}; }
+    if(!r.ok || d.error){ invDialogError(id, d.error || ('the server answered HTTP ' + r.status)); return; }
+    invRenderDialog(id, d);
+  }catch(e){
+    invDialogError(id, e && e.message ? e.message : 'the request failed');
+  }
+}
+
+function invDialogError(id, msg){
+  var body = document.getElementById('entity-modal-body');
+  body.innerHTML = '<div style="color:var(--conflict);font-size:12px"></div>';
+  body.firstChild.textContent = "Couldn't load invoice #" + id + ': ' + String(msg);
+  var back = entityStackTop();
+  document.getElementById('entity-modal-actions').innerHTML =
+      (back ? entityBtn('‹ Back to ' + escapeHtml(back.name || back.label), 'entityBack()') : '')
+    + entityBtn('Close', 'closeEntityModal()');
+}
+
+function invRenderDialog(id, d){
+  var inv  = d.invoice  || {};
+  var bk   = d.booking  || {};
+  var cu   = d.customer || {};
+  var ct   = d.contact  || {};
+  var ve   = d.venue    || {};
+  var t    = d.totals   || {};
+  var bid  = Number(bk.id || 0);
+
+  document.getElementById('entity-modal-sub').textContent =
+    '#' + id + ' · ' + invDate(inv.generated)
+    + (Number(inv.exported) ? ' · exported' : ' · not exported');
+  // The crumb a child view shows for this one: "#34782" alone means nothing
+  // three dialogs deep.
+  entitySetCrumb('Invoice #' + id);
+
+  var addr = [cu.address, cu.suburb, cu.state, cu.postcode]
+             .filter(function(x){ return x !== null && x !== undefined && String(x).trim() !== ''; })
+             .map(function(x){ return invSafe(x); }).join(', ');
+
+  var contact = [ct.first_name, ct.last_name]
+                .filter(function(x){ return x !== null && x !== undefined && String(x).trim() !== ''; })
+                .map(function(x){ return invSafe(x); }).join(' ');
+
+  var h = '<div class="inv-dlg">';
+
+  h += '<div class="inv-head-grid">'
+     + '<div class="inv-head-block"><div class="inv-head-lbl">Customer</div><div class="inv-head-val">'
+     +   (invSafe(cu.name) || '<span style="color:var(--muted)">no customer on the booking</span>')
+     +   (addr ? '<div class="inv-ln-note">' + addr
+                 + (cu.billing_is_fallback ? ' <span class="inv-ln-note">(no billing address — main address shown)</span>' : '')
+                 + '</div>' : '')
+     +   ((cu.phone || cu.email)
+            ? '<div class="inv-ln-note">'
+              + [cu.phone, cu.email].filter(function(x){ return x; }).map(function(x){ return invSafe(x); }).join(' · ')
+              + '</div>'
+            : '')
+     + '</div>'
+     + '<div class="inv-head-block"><div class="inv-head-lbl">Booking</div><div class="inv-head-val">'
+     +   invSafe(bk.name)
+     +   (bid ? ' <button class="inv-link" data-booking="' + bid + '" data-inv="' + id
+                + '" id="inv-dlg-booking">#' + bid + '</button>' : '')
+     +   (bk.reference ? '<div class="inv-ln-note">Reference ' + invSafe(bk.reference) + '</div>' : '')
+     +   (contact ? '<div class="inv-ln-note">Contact ' + contact + '</div>' : '')
+     +   (ve.name ? '<div class="inv-ln-note">' + invSafe(ve.name) + '</div>' : '')
+     + '</div></div>';
+
+  // ── the lines, in the PDF's columns and the PDF's order ──
+  var lines = d.lines || [];
+  h += '<div class="inv-sec">Lines</div>';
+  if(!lines.length){
+    h += '<div class="inv-empty">This invoice has no lines, so it bills nothing. '
+       + 'That is what the list’s "No lines" flag reports.</div>';
+  }else{
+    h += '<div class="inv-ln-wrap"><table class="inv-ln"><thead><tr>'
+       + '<th style="text-align:right">Qty</th><th>Description</th><th>Date</th><th>Times</th>'
+       + '<th style="text-align:right">Hours</th><th>Break</th><th style="text-align:right">Hourly rate</th>'
+       + '<th style="text-align:right">Per worker</th><th style="text-align:right">Line total</th>'
+       + '</tr></thead><tbody>';
+    lines.forEach(function(l){
+      if(l.is_spacer){ h += '<tr class="inv-ln-sp"><td colspan="9"></td></tr>'; return; }
+      var times = '';
+      if(l.start || l.end){
+        times = (l.start_raw ? '<span class="inv-ln-raw" title="Stored in a shape THE GOAT does not recognise, shown exactly as stored">' + escapeHtml(l.start) + '</span>' : escapeHtml(l.start))
+              + ' – '
+              + (l.end_raw ? '<span class="inv-ln-raw" title="Stored in a shape THE GOAT does not recognise, shown exactly as stored">' + escapeHtml(l.end) + '</span>' : escapeHtml(l.end));
+      }
+      var flat = l.kind === 'flat';
+      var xeroNote = (flat && l.xero_differs)
+        ? '<div class="inv-amber" title="design Q11 — the PDF and the Xero export disagree about this line">'
+          + 'Xero file counts this × qty: ' + invMoney(l.xero_line_total_display) + '</div>'
+        : '';
+      h += '<tr>'
+         + '<td class="inv-n">' + Number(l.qty || 0) + '</td>'
+         + '<td>' + invDescHtml(l) + '</td>'
+         + '<td>' + (l.date ? escapeHtml(l.date) + '<div class="inv-ln-note">' + escapeHtml(l.weekday) + '</div>' : '—') + '</td>'
+         + '<td>' + (times || '—') + '</td>'
+         + '<td class="inv-n">' + (flat ? '—' : Number(l.hours || 0)) + '</td>'
+         + '<td>' + (l.break_time ? escapeHtml(String(l.break_time)) : '—') + '</td>'
+         + '<td class="inv-n">' + (flat ? '<span class="inv-ln-note">flat</span>' : invMoney(l.rate)) + '</td>'
+         + '<td class="inv-n">' + (l.per_worker_display === null || l.per_worker_display === undefined
+                                    ? '—' : invMoney(l.per_worker_display)) + '</td>'
+         + '<td class="inv-n">' + invMoney(l.line_total_display) + xeroNote + '</td>'
+         + '</tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+
+  // ── the totals, in the PDF's words ──
+  h += '<div class="inv-tot">'
+     + '<div>Ex GST ' + invMoney(t.ex_gst) + '</div>'
+     + '<div>GST component ' + invMoney(t.gst) + '</div>'
+     + '<div class="inv-tot-big">Invoice total ' + invMoney(t.inc_gst) + '</div>';
+  if(t.pdf_xero_differ){
+    h += '<div class="inv-amber" style="text-align:right;max-width:430px">Xero export amount: '
+       + invMoney(t.xero_ex_gst)
+       + ' ex GST (counts flat-rate lines × qty, see design Q11).</div>';
+  }
+  h += '</div>';
+
+  // ── the calls this invoice covers ──
+  var calls = d.calls || [];
+  h += '<div class="inv-sec">Calls on this invoice</div>';
+  if(!calls.length){
+    h += '<div class="inv-empty">This invoice names no calls.</div>';
+  }else{
+    calls.forEach(function(c){
+      var cid = Number(c.call_id);
+      var cbid = Number(c.booking_id || 0) || bid;
+      h += '<div class="inv-call">';
+      if(c.found && cbid){
+        h += '<button class="inv-call-link" data-call="' + cid + '" data-cbook="' + cbid
+           + '" data-inv="' + id + '">' + (invSafe(c.call_name) || ('Call #' + cid)) + '</button>';
+      }else{
+        h += '<span>' + (invSafe(c.call_name) || ('Call #' + cid)) + '</span>';
+      }
+      h += '<span class="inv-call-when">#' + cid + (c.start_date ? ' · ' + invDate(c.start_date) : '') + '</span>';
+      if(!c.found)
+        h += invChip('no call record', 'call_list names this call but there is no row for it in calls — it may have been deleted.');
+      if(!Number(c.has_lines))
+        h += invChip('no lines on this invoice',
+          'Call is on this invoice but has no invoice line, so it may not have been billed.');
+      if(Number(c.current_invoice_id) && Number(c.current_invoice_id) !== id)
+        h += invChip('now on #' + Number(c.current_invoice_id),
+          'The call itself now points at invoice #' + Number(c.current_invoice_id)
+          + ', not this one.');
+      h += '</div>';
+    });
+  }
+  if(Number(d.hand_added_lines) > 0){
+    h += '<div class="inv-note">' + Number(d.hand_added_lines)
+       + ' hand-added line' + (Number(d.hand_added_lines) === 1 ? '' : 's')
+       + ' (not tied to a call).</div>';
+  }
+  var extra = d.extra_line_call_ids || [];
+  if(extra.length){
+    h += '<div class="inv-amber" style="margin-top:8px">Lines on this invoice bill call'
+       + (extra.length === 1 ? ' ' : 's ')
+       + extra.map(function(x){ return '#' + Number(x); }).join(', ')
+       + ', which the invoice does not list as covered.</div>';
+  }
+
+  h += '</div>';
+
+  document.getElementById('entity-modal-body').innerHTML = h;
+
+  // Delegated again, for the same reason as the list: these rows carry names.
+  // ONCE ONLY: #entity-modal-body outlives every render, so binding on each
+  // one would stack handlers and a single click would push two stack frames.
+  if(!window._invDlgBound){
+    document.getElementById('entity-modal-body').addEventListener('click', invDialogClick);
+    window._invDlgBound = true;
+  }
+
+  var back = entityStackTop();
+  var acts = (back ? entityBtn('‹ Back to ' + escapeHtml(back.name || back.label), 'entityBack()') : '')
+           + '<a class="inv-pdf-btn" href="/api/accounting/invoices/' + id + '/pdf"'
+           + ' target="_blank" rel="noopener">📄 Open PDF</a>';
+  if(bid) acts += entityBtn('Open booking', 'invOpenBooking(' + bid + ',' + id + ')');
+  acts += entityBtn('Close', 'closeEntityModal()');
+  document.getElementById('entity-modal-actions').innerHTML = acts;
+}
+
+function invDialogClick(ev){
+  var t = ev.target;
+  if(!t || !t.closest) return;
+  var b = t.closest('button.inv-link');
+  if(b){ invOpenBooking(Number(b.getAttribute('data-booking')), Number(b.getAttribute('data-inv'))); return; }
+  var c = t.closest('button.inv-call-link');
+  if(c){
+    invOpenCall(Number(c.getAttribute('data-cbook')), Number(c.getAttribute('data-call')),
+                Number(c.getAttribute('data-inv')));
+  }
+}
+
+// Both of these PUSH THE INVOICE ONTO THE BACK-STACK FIRST, so the child view
+// draws a "‹ Back to Invoice #n" button and a breadcrumb that returns here. A
+// bare openBookingDialog() would replace the invoice with no way back to it.
+function invOpenBooking(bookingId, invoiceId){
+  var id = Number(invoiceId);
+  if(id > 0) entityStackPush('invoice:' + id, 'invoice', function(){ openInvoiceDialog(id); });
+  openBookingDialog(Number(bookingId));
+}
+
+function invOpenCall(bookingId, callId, invoiceId){
+  var id = Number(invoiceId);
+  if(id > 0) entityStackPush('invoice:' + id, 'invoice', function(){ openInvoiceDialog(id); });
+  openCallDialog(Number(bookingId), Number(callId));
 }
 </script>
 <!-- ── UNAVAILABILITY MANAGER MODAL ── -->
