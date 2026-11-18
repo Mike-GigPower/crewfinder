@@ -21,10 +21,16 @@
 	/*
 	/* THE PREDICATE IS LIFTED VERBATIM from get-calls-bulk.php (v4.28.0) — do not
 	/* recompose it. The two ack tables have OPPOSITE lifecycles and the guards are
-	/* load-bearing (they mirror get-booking.php exactly):
+	/* load-bearing:
 	/*   - call_change_ack : the row is DELETED on answer (respond-to-change.php),
-	/*     so its mere EXISTENCE is the pending flag. Applies to confirmed (5) AND
-	/*     backup (7) crew.
+	/*     so its mere EXISTENCE is the pending flag. CONFIRMED (5) ONLY —
+	/*     backups (7) are excluded per DESIGN-backup-leave-standby D5: a backup
+	/*     holds no place, so an unanswered change on one leaves nothing unfilled
+	/*     and is not a job for this lane.
+	/*     This half NO LONGER mirrors get-booking.php, whose per-row
+	/*     change_pending deliberately stays 5/7 so the call dialog can still tag
+	/*     the backup's own row, in grey (D4). get-calls-bulk.php's `awaiting` is
+	/*     the one this still matches exactly.
 	/*   - call_promo_ack  : the row is KEPT for the audit trail, stamped acked_at
 	/*     on answer, so the pending test is acked_at IS NULL. Confirmed (5) only.
 	/* Both tables carry UNIQUE (callID, userID), so each LEFT JOIN is at most 1:1
@@ -167,8 +173,9 @@
 		  AND c.start_date <  $end_i
 		  AND (b.hidden IS NULL OR b.hidden = 0)
 		  AND b.status <> 1   /* exclude Completed bookings — match the admin /bookings view */
+		  /* Backups (7) excluded per DESIGN-backup-leave-standby D5 — the same rule as get-calls-bulk.php `awaiting`. */
 		  AND (
-		        (ccm.status IN (5,7) AND cca.id IS NOT NULL)
+		        (ccm.status = 5 AND cca.id IS NOT NULL)
 		     OR (ccm.status = 5 AND cpa.id IS NOT NULL AND cpa.acked_at IS NULL)
 		      )
 		ORDER BY c.start_date ASC, c.start_time ASC
@@ -202,7 +209,7 @@
 
 		/* Classify from the SAME guards the WHERE used — never a second, drifting
 		/* evaluation. Subsumption: a row with both pending flags is one "change". */
-		$has_change = ($row->cca_id !== null && ($status_i === 5 || $status_i === 7));
+		$has_change = ($row->cca_id !== null && $status_i === 5);
 		$has_promo  = ($row->cpa_id !== null && $row->cpa_acked_at === null && $status_i === 5);
 
 		if ($has_change)

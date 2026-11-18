@@ -172,11 +172,17 @@
 			COUNT(CASE WHEN ccm.status = 5 THEN 1 END) AS booked,
 			COUNT(CASE WHEN ccm.status IN (0,1,2,5) THEN 1 END) AS committed,
 			/* Crew who have answered nothing since a timing change or a
-			/* promotion. change_ack rows are DELETED on answer, so existence is
-			/* the test; promo_ack rows are KEPT for the audit trail, so the test
-			/* is acked_at IS NULL. Guards mirror get-booking.php exactly:
-			/* change is 5/7, promotion is 5 only. */
-			COUNT(CASE WHEN (ccm.status IN (5,7) AND cca.id IS NOT NULL)
+			/* promotion, AND HOLD A PLACE. change_ack rows are DELETED on
+			/* answer, so existence is the test; promo_ack rows are KEPT for the
+			/* audit trail, so the test is acked_at IS NULL.
+			/*
+			/* Status 5 only, for BOTH halves (DESIGN-backup-leave-standby D4).
+			/* A backup (7) holds no place, so an unanswered time change on one
+			/* leaves nothing unfilled and must not turn the call amber. It is
+			/* counted separately in backup_change_pending, for the tooltip only.
+			/* get-booking.php's per-row change_pending deliberately stays 5/7:
+			/* the dialog still tags the backup's own row, in grey. */
+			COUNT(CASE WHEN (ccm.status = 5 AND cca.id IS NOT NULL)
 			             OR (ccm.status = 5 AND cpa.id IS NOT NULL AND cpa.acked_at IS NULL)
 			           THEN 1 END) AS awaiting,
 			/* Promotion-pending: status 5 with an unanswered promotion. The SAME
@@ -185,6 +191,10 @@
 			/* older GOAT behaves exactly as before (promotion brief, decision 8). */
 			COUNT(CASE WHEN ccm.status = 5 AND cpa.id IS NOT NULL AND cpa.acked_at IS NULL
 			           THEN 1 END) AS promo_pending,
+			/* Backups with an unanswered time change. Display only — never
+			/* feeds a colour. Additive: an older GOAT ignores it. */
+			COUNT(CASE WHEN ccm.status = 7 AND cca.id IS NOT NULL
+			           THEN 1 END) AS backup_change_pending,
 			/* Call-out (brief §D7). backups = rows on standby. callout_open
 			/* comes from a derived table of calls with an open call-out —
 			/* DISTINCT, so the join can never multiply crew rows and skew the
@@ -267,6 +277,7 @@
 			'committed'    => (int) $row->committed,
 			'awaiting'     => (int) $row->awaiting,
 			'promo_pending' => (int) $row->promo_pending,
+			'backup_change_pending' => (int) $row->backup_change_pending,
 			'backups'      => (int) $row->backups,
 			'callout_open' => (int) $row->callout_open,
 			'link_group'   => ($row->link_group === null ? null : (int) $row->link_group),
