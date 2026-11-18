@@ -24750,10 +24750,21 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         var ctTag = ctId ? '<span id="ct-tag-' + ctId + '"></span>' : '';
         var ctCtl = ctId ? '<span id="ct-ctl-' + ctId + '" data-ct-row="' + callId + '" data-uid="' + Number(c.id) + '" style="display:flex;align-items:center;gap:4px"></span>' : '';
         var ctEdit = ctId ? '<div id="ct-edit-' + ctId + '"></div>' : '';
-        // A confirmed/backup crew member with an outstanding timing change hasn't
-        // re-confirmed yet — the filling risk ops watch for (get-booking.php sets
-        // change_pending, guarded to status 5/7).
-        var chg = c.change_pending ? ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>' : '';
+        // A crew member with an outstanding timing change hasn't re-confirmed yet
+        // (get-booking.php sets change_pending, still guarded to status 5/7 — the
+        // grey tag below needs the backup half).
+        //
+        // Only a CONFIRMED (5) row is a filling risk, so only that one is amber.
+        // A backup (7) holds no place: an unanswered change there leaves nothing
+        // unfilled and no longer colours the call, so it shows grey, for
+        // information before ops promote them (DESIGN-backup-leave-standby D4).
+        // get-booking.php returns status LABELS, so crewStatusInt() is correct here.
+        var chg = '';
+        if(c.change_pending){
+          chg = (crewStatusInt(c.status) === 7)
+            ? ' <span title="Timing changed while on standby — not answered yet. Doesn&#39;t hold a place, so the call isn&#39;t flagged." style="font-size:9px;color:var(--muted);background:rgba(148,163,184,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">time change not answered</span>'
+            : ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>';
+        }
         var promo = crewPromoAckPill(c, bookingId, callId);
         // Re-offered by an open backup call-out and not yet answered
         // (get-booking.php callout_member, guarded to status 1). Amber, the
@@ -25378,7 +25389,14 @@ function renderCallResponses(bookingId, callId){
 
     let colour, text;
     if(pending){
-      colour = '#f59e0b';
+      // D4: a backup (7) holds no place, so an unanswered time change on one is
+      // information, not a chase — muted, not amber. Text and tooltip unchanged.
+      //
+      // THIS TAB'S ROWS CARRY AN INTEGER status (get-call-responses.php casts it;
+      // acceptCell compares c.status === 0 / === 1 and CREW_STATUS_LABEL_BY_INT
+      // keys on it). crewStatusInt() maps get-booking.php's LABEL STRINGS and
+      // would throw on a number here, so compare the int directly.
+      colour = (c.status === 7) ? 'var(--muted)' : '#f59e0b';
       text   = 'time changed — no answer yet';
     }else{
       const last = answers[answers.length - 1];
@@ -40314,8 +40332,14 @@ function _schedCalloutTitle(c){
 function _schedAwaitTitle(c){
   const pp = c.promo_pending || 0;
   const rc = Math.max(0, (c.awaiting || 0) - pp);
+  // `|| 0` as above: the scrape_schedule fallback carries no backup_change_pending
+  // and must degrade to today's string.
+  const bc = c.backup_change_pending || 0;
   return (rc > 0 ? ` · ⏳ ${rc} awaiting re-confirm` : '')
-       + (pp > 0 ? ` · ${pp} promoted, awaiting reply` : '');
+       + (pp > 0 ? ` · ${pp} promoted, awaiting reply` : '')
+       + (bc > 0
+           ? ` · ${bc} backup${bc === 1 ? '' : 's'} ${bc === 1 ? "hasn't" : "haven't"} answered a time change`
+           : '');
 }
 
 /* Staffing colour for one call block in the Schedule.
