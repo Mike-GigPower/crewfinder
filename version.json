@@ -1,6 +1,6 @@
 {
-  "version": "5.110.0",
+  "version": "5.111.0",
   "release_date": "2026-11-18",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.110.0/TheGOAT.dmg",
-  "release_notes": "Change pay grade now updates Employment Hero too: the pay rate template, pay category and Level tag move with the new grade."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.111.0/TheGOAT.dmg",
+  "release_notes": "New Accounting › Invoicing: a read-only list of SmartStaff invoices you can search, open and view as PDF. Totals match the PDF to the cent."
 }
