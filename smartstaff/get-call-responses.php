@@ -27,7 +27,7 @@
 	/*
 	/* WHAT IT RETURNS, per crew row on the call:
 	/*   timing      : offered_at, responded_at, responded_src, respond_seconds
-	/*   standing    : status, prev_status, is_call_boss
+	/*   standing    : status, prev_status, is_call_boss, left_at (status 13 only)
 	/*   commitment  : other_calls_on_booking — live rows on the SAME booking
 	/*   history     : worked_90d — confirmed on calls that have already started
 	/*
@@ -142,6 +142,35 @@
 	/* definition lives in one place and matches get-crew-offer-stats.php exactly.
 	*/
 
+	/*
+	/* left_at: when they took themselves off standby, for the muted
+	/* "left standby" line under the accept time on a status-13 row. Guarded on
+	/* the table existing, the same shape as get-booking.php's
+	/* goat_have_standby_leave() and for the same reason — joining a table that
+	/* MIGRATION-leave-standby.sql has not created yet would fail the roster
+	/* read and empty the whole Responses tab, rather than blanking one field.
+	/*
+	/* MAX() is the latest: a row can leave, be re-offered (D6), accept back
+	/* onto standby and leave again.
+	*/
+
+	$lsHave = false;
+	$lsr    = mysql_query("SHOW TABLES LIKE 'call_standby_leave'");
+
+	if ($lsr !== false && mysql_num_rows($lsr) > 0)
+	{
+		$lsHave = true;
+	}
+
+	$lsSel  = $lsHave ? ', lsx.left_at AS left_at' : '';
+	$lsJoin = $lsHave
+	        ? ' LEFT JOIN (SELECT userID, MAX(left_at) AS left_at
+	                         FROM call_standby_leave
+	                        WHERE callID = ' . $callID . '
+	                        GROUP BY userID) lsx
+	                   ON lsx.userID = ccm.userID'
+	        : '';
+
 	$sql = "SELECT ccm.userID          AS user_id,
 	               ccm.status          AS status,
 	               ccm.prev_status     AS prev_status,
@@ -158,9 +187,9 @@
 	               users.firstname     AS firstname,
 	               users.lastname      AS lastname,
 	               users.ein           AS ein,
-	               users.mobile        AS mobile
+	               users.mobile        AS mobile" . $lsSel . "
 	          FROM call_crew_map ccm
-	          LEFT JOIN users ON ccm.userID = users.id
+	          LEFT JOIN users ON ccm.userID = users.id" . $lsJoin . "
 	         WHERE ccm.callID = " . $callID;
 
 	$res = mysql_query($sql);
@@ -192,6 +221,12 @@
 			'responded_at'           => $row->responded_at,
 			'responded_src'          => $row->responded_src,
 			'respond_seconds'        => ($row->respond_seconds === null ? null : (int) $row->respond_seconds),
+			/*
+			/* Melbourne stamp, not the raw unix int, so goatFmtStamp() renders it
+			/* exactly like every other time on this tab (answered_at, changed_at).
+			/* goat_resp_mel_stamp is declared below and hoisted.
+			*/
+			'left_at'                => (isset($row->left_at) && $row->left_at !== null) ? goat_resp_mel_stamp($row->left_at) : null,
 			'other_calls_on_booking' => 0,
 			'worked_90d'             => 0
 		);

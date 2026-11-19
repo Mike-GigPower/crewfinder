@@ -39,7 +39,8 @@
 		/* call_crew_map statuses a grade change applies to (design D7):
 		/*   0 unconfirmed, 1 pending, 5 confirmed, 7 backup, 9 cancelled
 		/*   (a paid late cancellation pays at the row's grade).
-		/* Never 6 declined, 8 no-show, 10/11/12 withdrawn offers. */
+		/* Never 6 declined, 8 no-show, 10/11/12 withdrawn offers, 13 left
+		/* standby -- none of them can produce delivered work to pay for. */
 		function goat_grade_change_statuses()
 		{
 			return array(0, 1, 5, 7, 9);

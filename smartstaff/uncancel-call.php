@@ -38,6 +38,9 @@
 	/*   0        0         unchanged
 	/*   6        6         they declined; re-offering is an ops decision
 	/*   8        8         unchanged
+	/*   13       13        they took themselves off standby; reinstating the
+	/*                      call must not put them back on it (D1/D6 -- the
+	/*                      re-offer is an ops decision, like 6)
 	/*
 	/* A Confirmed crew member returns UNCONFIRMED (0), not Pending (1), and the
 	/* difference is not cosmetic. get-open-offers-bulk.php buckets on exactly this

@@ -7,6 +7,7 @@
 	include('../../global.php');
 	include('cohort.php');
 	include('call-change-log.php');
+	include_once('leave-standby-lib.php');
 
 	/*
 	/* JSON response */
@@ -35,9 +36,16 @@
 	/*       7 stays 7) — accepting a change is not a re-offer, just an ack.
 	/*   decline (confirmed drops out, OR a backup opts off standby):
 	/*     - never time-gated
-	/*     - status 5/7 -> 6 (Declined); if it WAS 5, removeFromCalendar (a backup
-	/*       has no calendar row, so that path is skipped)
-	/*     - DELETE the ack row
+	/*     - status 5 -> 6 (Declined), and removeFromCalendar
+	/*     - status 7 -> 13 (Left standby), NOT 6 (S5). It is the same intent as
+	/*       the Take me off standby button, so it must land on the same status;
+	/*       sending it to 6 would count a withdrawal from standby against them
+	/*       and contradict D1. It cascades to locked-upstream standby rows
+	/*       through goat_leave_standby_scope(), the same helper
+	/*       leave-standby.php writes from, and records src 'change'.
+	/*       No calendar work: a backup holds no place (and an existing row from
+	/*       an ops 5 -> 7 demotion is left alone, exactly as before).
+	/*     - DELETE the ack row — for every call that moved, not just the seed
 	/*
 	/* HISTORY: every successful answer also appends one row to call_change_log
 	/* (answer, answer_src 'crew', prior/result status, answered_at, plus the
@@ -178,23 +186,114 @@
 	}
 
 	/*
-	/* action == decline (never time-gated). Only a row currently Confirmed (5) or
-	/* Backup (7) flips to Declined (6); anything else is a no-op status-wise but
-	/* still clears the flag.
+	/* action == decline (never time-gated). TWO destinations, chosen by what the
+	/* row IS, not by what $priorStatus said it was when we read it further up:
+	/*
+	/*   status 7 -> 13  Left standby (S5), with the locked-upstream cascade
+	/*   status 5 ->  6  Declined, as before
+	/*
+	/* Driven by each UPDATE's own guard rather than by $priorStatus, so a row
+	/* that moved between the read and here lands correctly either way. The
+	/* standby path is tried first: goat_leave_standby_scope() returns an empty
+	/* set unless this user's seed row is actually at 7, so a Confirmed row
+	/* falls straight through to the 5 -> 6 path below.
+	/*
+	/* Anything at another status is a no-op status-wise but still clears the flag.
 	*/
-	$db->update(
-		'call_crew_map',
-		array('status' => $db->sc(6)),
-		'status IN (5, 7) AND callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
-	);
 
-	if (mysql_error())
+	$leftStandby = array();   /* call ids moved 7 -> 13 */
+	$scope       = goat_leave_standby_scope($userID, $callID);
+
+	/*
+	/* false means the scope read failed, NOT that they hold nothing. Falling
+	/* through would be the dangerous outcome: the 5 -> 6 update below is guarded
+	/* on status 5, so a backup's row would stay at 7 while the ack was cleared
+	/* and the response reported success — a crew member told they are off
+	/* standby who is still on it. Refuse instead; nothing has been written yet.
+	*/
+	if ($scope === false)
 	{
 		http_response_code(500);
-		die('{"error":"decline update failed: ' . addslashes(mysql_error()) . '"}');
+		die('{"error":"leave standby scope read failed"}');
 	}
 
-	$declined = ($db->affected_rows > 0);
+	if (count($scope))
+	{
+		$idList = implode(',', array_map('intval', $scope));
+
+		/*
+		/* `status = 7` is load-bearing for the same reason it is in
+		/* leave-standby.php: a promotion landing between the scope read and
+		/* this statement must not be rewritten to 13.
+		*/
+		mysql_query('UPDATE call_crew_map SET status = 13
+		             WHERE status = 7 AND userID = ' . intval($userID) . '
+		               AND callID IN (' . $idList . ')');
+
+		if (mysql_error())
+		{
+			http_response_code(500);
+			die('{"error":"leave standby update failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		/* which rows actually moved — settled by a re-read, not affected_rows */
+
+		$lres = mysql_query('SELECT callID FROM call_crew_map
+		                     WHERE userID = ' . intval($userID) . ' AND status = 13
+		                       AND callID IN (' . $idList . ')');
+
+		if ($lres !== false)
+		{
+			while ($lrow = mysql_fetch_object($lres))
+			{
+				$leftStandby[] = (int) $lrow->callID;
+			}
+		}
+
+		/*
+		/* History, src 'change': this withdrawal came from answering a timing
+		/* change, not from the Take me off standby button. Degrades if
+		/* MIGRATION-leave-standby.sql has not run — the status write stands
+		/* either way, which matters more than the audit row.
+		*/
+		if (count($leftStandby))
+		{
+			$lsr = mysql_query("SHOW TABLES LIKE 'call_standby_leave'");
+
+			if ($lsr !== false && mysql_num_rows($lsr) > 0)
+			{
+				$nowStamp = time();
+				$vals     = array();
+
+				foreach ($leftStandby as $lc)
+				{
+					$vals[] = '(' . intval($lc) . ',' . intval($userID) . ',' . $nowStamp . ",'change')";
+				}
+
+				mysql_query('INSERT INTO call_standby_leave (callID, userID, left_at, src)
+				             VALUES ' . implode(',', $vals));
+			}
+		}
+	}
+
+	$declined = false;
+
+	if (!count($leftStandby))
+	{
+		$db->update(
+			'call_crew_map',
+			array('status' => $db->sc(6)),
+			'status = 5 AND callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
+		);
+
+		if (mysql_error())
+		{
+			http_response_code(500);
+			die('{"error":"decline update failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		$declined = ($db->affected_rows > 0);
+	}
 
 	/* A prior Confirmed (5) had a calendar row — remove it. Backups (7) never do. */
 	if ($declined && $priorStatus === 5)
@@ -202,8 +301,17 @@
 		$sss->removeFromCalendar($callID, $userID);
 	}
 
+	/*
+	/* Clear the flag. For a standby withdrawal that means every call that moved,
+	/* not just the seed: they are no longer waiting to hear about any of their
+	/* timings. The seed is always in $leftStandby when the cascade ran, so this
+	/* covers it.
+	*/
+
+	$ackCalls = count($leftStandby) ? $leftStandby : array((int) $callID);
+
 	mysql_query(
-		'DELETE FROM call_change_ack WHERE callID=' . intval($callID) .
+		'DELETE FROM call_change_ack WHERE callID IN (' . implode(',', array_map('intval', $ackCalls)) . ')' .
 		' AND userID=' . intval($userID)
 	);
 
@@ -213,8 +321,15 @@
 		die('{"error":"ack clear failed: ' . addslashes(mysql_error()) . '"}');
 	}
 
-	/* History row — 6 if the flip happened, otherwise the status it already had. */
-	goat_log_change_answer($callID, $userID, $ack, 'decline', 'crew', $priorStatus, $declined ? 6 : $priorStatus);
+	/*
+	/* History row — the status actually written: 13 for a standby withdrawal
+	/* (S5), 6 for a confirmed decline, otherwise the status it already had.
+	/* Crew Hub reads this to choose the toast tone, so 13 must be recorded
+	/* truthfully or a withdrawal is toasted as a decline (crew-data.ts:845).
+	*/
+	$resultStatus = count($leftStandby) ? 13 : ($declined ? 6 : $priorStatus);
+
+	goat_log_change_answer($callID, $userID, $ack, 'decline', 'crew', $priorStatus, $resultStatus);
 
 	/*
 	/* Subsume any pending promotion acknowledgement: answering the timing
@@ -233,7 +348,13 @@
 	echo json_encode(array(
 		'ok'            => true,
 		'action'        => 'decline',
-		'result_status' => $declined ? 6 : $priorStatus
+		'result_status' => $resultStatus,
+		/*
+		/* Additive (S5). The calls this answer took off standby, seed first in
+		/* scope order, so the Hub can name them in the toast exactly as the
+		/* Take me off standby flow does. Empty on an ordinary 5 -> 6 decline.
+		*/
+		'left_standby'  => $leftStandby
 	));
 
 ?>

@@ -720,11 +720,11 @@
 				return array($callID);
 			}
 
-			/* calls this user holds a declined or No Response row on */
+			/* calls this user holds a declined, No Response or Left standby row on */
 
 			$held = array();
 			$res  = mysql_query("SELECT callID FROM call_crew_map
-			                     WHERE userID = " . $userID . " AND status IN (6, 10)");
+			                     WHERE userID = " . $userID . " AND status IN (6, 10, 13)");
 
 			if ($res !== false)
 			{

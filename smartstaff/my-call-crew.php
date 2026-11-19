@@ -283,6 +283,16 @@
 	/* as a list; this is read as a set of people.)
 	*/
 
+	/*
+	/* 5 AND 7 ONLY, AND 13 (LEFT STANDBY) MUST STAY OUT.
+	/*
+	/* Crew Hub maps any non-confirmed label on this payload to standby
+	/* (crew-data.ts:1458, the deliberately weaker claim of the two), so a 13
+	/* row leaking in would be shown to a Call Boss as somebody to ring about a
+	/* call the crew member has already taken themselves off. The filter here is
+	/* what keeps that from happening; there is no client-side guard behind it.
+	*/
+
 	$crres = mysql_query("SELECT u.id, u.firstname, u.lastname, u.mobile, u.phone,
 	                             ccm.status, ccm.is_call_boss
 	                      FROM call_crew_map ccm

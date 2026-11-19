@@ -22,6 +22,13 @@
 	include_once('supervision-graph.php');
 
 	/*
+	/* also_leaves (slice 2, D2): the upstream standby calls that leaving THIS
+	/* one would also drop. The same helper leave-standby.php writes from, so
+	/* the warning and the action can't disagree.
+	*/
+	include_once('leave-standby-lib.php');
+
+	/*
 	/* JSON response */
 
 	header('Content-Type: application/json');
@@ -42,8 +49,9 @@
 	/*
 	/* Read-only: a backup can't be confirmed or declined by the crew member from
 	/* here (that guard lives in respond-to-call.php, which only acts on status
-	/* <= 1). Promotion is an admin action. Whether a crew member may withdraw
-	/* from standby is a Phase 3 UX decision — see the handover doc.
+	/* <= 1). Promotion is an admin action. A crew member CAN now take themselves
+	/* off standby — slice 2, status 13 via leave-standby.php — and `also_leaves`
+	/* below is this endpoint's half of that: the preview the confirm sheet reads.
 	/*
 	/* PHP 5.x -- mysql_*, no null-coalescing (??), no short array syntax.
 	*/
@@ -131,6 +139,19 @@
 
 		if ($endUnix >= time())
 			$entry['contacts'] = goat_resolve_call_contact((int) $row->call_id, $userID);
+
+		/*
+		/* D2 preview. Always emitted, as an array, even when empty: the Crew
+		/* Hub confirm sheet tests `also_leaves.length` and an absent key would
+		/* make "take me off this one only" indistinguishable from "we haven't
+		/* worked it out".
+		/*
+		/* One walk per standby row. The chain is short (depth-capped at 10 in
+		/* goat_calls_traverse) and a crew member holds few standby rows, so
+		/* this is cheaper than it looks — but it IS per row, so if the standby
+		/* list ever grows large this is the first thing to batch.
+		*/
+		$entry['also_leaves'] = goat_leave_standby_also($userID, (int) $row->call_id);
 
 		/*
 		/* A matched call_change_ack row means this standby call's timing changed

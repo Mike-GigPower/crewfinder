@@ -89,7 +89,10 @@
 		9 => 'Cancelled',
 		10 => 'No response',
 		11 => 'Not delivered',
-		12 => 'Withdrawn'
+		12 => 'Withdrawn',
+		/* 13: without this the fallback at the bottom of this file renders a
+		/* literal "Status 13" in THE GOAT's crew record Calls tab. */
+		13 => 'Left standby'
 	);
 
 	$shifts = array();

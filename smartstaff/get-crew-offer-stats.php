@@ -211,11 +211,17 @@
 	/* member's history is still history.
 	/*
 	/* 'unclassified' should always be 0. It counts rows that responded (so they
-	/* are inside `responded`) but whose current status is none of 5/6/7/8, which
-	/* would break the second identity. The only known route is an ops user
+	/* are inside `responded`) but whose current status is none of 5/6/7/8/13,
+	/* which would break the second identity. The only known route is an ops user
 	/* setting an already-answered row back to status 1; the update trigger's
 	/* re-offer arm only resets on status 0. Surfaced rather than hidden so it
 	/* cannot rot silently.
+	/*
+	/* 13 (Left standby) counts as ACCEPTED, not declined and not unclassified
+	/* (S3). Their answer to the OFFER was yes — they accepted and landed on
+	/* standby; taking themselves off standby afterwards is a separate act and
+	/* D1 says it must not count against them. Without 13 in both sets a
+	/* withdrawal would silently inflate `unclassified` and deflate `accepted`.
 	*/
 
 	$timed_when = "ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND ccm.responded_src IS NULL";
@@ -235,17 +241,17 @@
 	   member in any figure on this page.
 
 	   COALESCE to -1 is load-bearing. prev_status can be NULL, and both
-	   `NULL IN (5,7,8)` and `NULL NOT IN (5,6,7,8)` evaluate to NULL — so
+	   `NULL IN (5,7,8,13)` and `NULL NOT IN (5,6,7,8,13)` evaluate to NULL — so
 	   without it a 9 carrying no prev_status would fall out of EVERY bucket
 	   below, including `unclassified`, which exists to catch precisely that.
 	   -1 matches nothing and lands there, loudly. */
 
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8))     AS accepted,
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8,13))  AS accepted,
 			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 6)            AS declined,
 			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 8)            AS no_show,
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) NOT IN (5,6,7,8)) AS unclassified,
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) NOT IN (5,6,7,8,13)) AS unclassified,
 
-			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8)) AS phone_accepted,
+			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8,13)) AS phone_accepted,
 			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 6)        AS phone_declined,
 
 			/* How many times WE stood this person down. Outside both identities,
@@ -368,6 +374,15 @@
 	*/
 
 	$now_i = (int) time();
+
+	/*
+	/* NO 13 IN THE SETS BELOW, DELIBERATELY. They read as though they need it,
+	/* but this query's WHERE requires `responded_at IS NULL` and a 13 row always
+	/* has responded_at set: the 0 -> 7 accept fires arm 3 of
+	/* ccm_responded_at_upd (which stamps on NEW.status 5/6/7), and the later
+	/* 7 -> 13 fires no arm at all. So a 13 row never reaches these buckets and
+	/* can never be counted as didnt_respond.
+	*/
 
 	$sql2 = "
 		SELECT

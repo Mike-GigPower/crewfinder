@@ -96,7 +96,7 @@
 	/* corrupt crew response-rate stats, which read 6 as a crew DECISION.
 	*/
 
-	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 7 => 'backup', 9 => 'cancelled', 0 => 'unconfirmed', 10 => 'noresponse', 11 => 'notdelivered', 12 => 'withdrawn');
+	$crewStatusMap = array(5 => 'confirmed', 1 => 'sent', 6 => 'declined', 8 => 'noshow', 7 => 'backup', 9 => 'cancelled', 0 => 'unconfirmed', 10 => 'noresponse', 11 => 'notdelivered', 12 => 'withdrawn', 13 => 'leftstandby');
 
 	/*
 	/* Capability checks for the cancellation columns, mirroring
@@ -130,6 +130,29 @@
 		if ($has === null)
 		{
 			$r   = mysql_query("SHOW COLUMNS FROM call_crew_map LIKE 'prev_status'");
+			$has = ($r !== false && mysql_num_rows($r) > 0);
+		}
+
+		return $has;
+	}
+
+	/*
+	/* Does call_standby_leave exist yet (MIGRATION-leave-standby.sql)?
+	/*
+	/* Same shape and same reason as the two above: joining a table that is not
+	/* there would fail the whole crew query and take the booking dialog down
+	/* for ops, rather than degrading one display field. Absent table emits
+	/* left_at null, which is what "nobody has left standby on this call" means
+	/* anyway, so the degradation states nothing untrue.
+	*/
+
+	function goat_have_standby_leave()
+	{
+		static $has = null;
+
+		if ($has === null)
+		{
+			$r   = mysql_query("SHOW TABLES LIKE 'call_standby_leave'");
 			$has = ($r !== false && mysql_num_rows($r) > 0);
 		}
 
@@ -445,13 +468,30 @@
 
 			$prevSel = goat_ccm_have_prev_status() ? ', call_crew_map.prev_status' : '';
 
+			/*
+			/* When they took themselves off standby (status 13). MAX(left_at) is
+			/* the LATEST: a row can leave standby, be re-offered (D6), accept
+			/* back onto standby and leave again, so call_standby_leave can hold
+			/* more than one row per user and call. The newest is the one the
+			/* dialog should show.
+			*/
+
+			$lsSel  = goat_have_standby_leave() ? ', lsx.left_at AS left_at' : '';
+			$lsJoin = goat_have_standby_leave()
+			        ? ' LEFT JOIN (SELECT userID, MAX(left_at) AS left_at
+			                         FROM call_standby_leave
+			                        WHERE callID = ' . $callID . '
+			                        GROUP BY userID) lsx
+			                   ON lsx.userID = call_crew_map.userID'
+			        : '';
+
 			$crres = mysql_query("SELECT users.id, users.firstname, users.lastname, users.mobile, users.phone,
 			                             users.ein, users.email,
 			                             call_crew_map.status, call_crew_map.is_call_boss" . $prevSel . $paidSel . ",
 			                             cca.id AS change_ack_id,
 			                             cpa.promoted_at AS promo_at,
 			                             cpa.acked_at    AS promo_acked_at,
-			                             COALESCE(ohx.n, 0) AS expired_rounds
+			                             COALESCE(ohx.n, 0) AS expired_rounds" . $lsSel . "
 			                      FROM call_crew_map" . $paidJoin . "
 			                      LEFT JOIN users ON call_crew_map.userID = users.id
 			                      LEFT JOIN call_change_ack cca
@@ -464,7 +504,7 @@
 			                                   FROM offer_history
 			                                  WHERE callID = " . $callID . "
 			                                  GROUP BY userID) ohx
-			                             ON ohx.userID = call_crew_map.userID
+			                             ON ohx.userID = call_crew_map.userID" . $lsJoin . "
 			                      WHERE call_crew_map.callID = " . $callID . "
 			                      ORDER BY users.lastname ASC, users.firstname ASC");
 
@@ -532,6 +572,13 @@
 						/* anyone raising the invoice asks.
 						*/
 						'prev_status'    => (isset($cr->prev_status) && $cr->prev_status !== null) ? (int) $cr->prev_status : null,
+						/*
+						/* Unix time they took themselves off standby, for the muted
+						/* "Left standby {when}" on a status-13 row. Null on every
+						/* other row, and null everywhere if the migration has not
+						/* run — the client treats both the same.
+						*/
+						'left_at'        => (isset($cr->left_at) && $cr->left_at !== null) ? (int) $cr->left_at : null,
 						/*
 						/* Paid as if the call went ahead, and still open for times
 						/* (goat_ccm_cancel_editable_sql: stood down from Confirmed,

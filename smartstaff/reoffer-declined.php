@@ -31,15 +31,16 @@
 	/*                calls:[{call_id, call_name, start, started, cancelled,
 	/*                        full, required, confirmed}], refused}
 	/*   apply     : refuse on started / cancelled (409, nothing written);
-	/*               otherwise 6/10 -> 0 on every package row still at 6 or 10
+	/*               otherwise 6/10/13 -> 0 on every package row still at 6, 10
+	/*               or 13
 	/*               {ok, dry_run:false, ..., calls, reopened:[call ids]}
 	/*
-	/* 409 not_declined when the seed row is missing or not status 6 or 10 -- a
-	/* stale dialog, or someone else already moved it.
+	/* 409 not_declined when the seed row is missing or not status 6, 10 or 13
+	/* -- a stale dialog, or someone else already moved it.
 	/*
 	/* NO CALENDAR CHANGE: nobody becomes confirmed. NO responded_src TAGGING:
 	/* arm 2 of the ccm_responded_at_upd trigger resets offered_at and clears
-	/* responded_at / responded_src on 6 -> 0, so the re-offer counts as a
+	/* responded_at / responded_src on 6 -> 0 (and on 13 -> 0, S2), so the re-offer counts as a
 	/* fresh offer in the response stats.
 	/*
 	/* update-crew-status.php is left as it is. "Change without sending" in
@@ -49,7 +50,7 @@
 	/* with the credentials goat-db.php resolves. The call-graph.php helpers
 	/* (goat_reoffer_scope, goat_feed_step) are mysql_* on the
 	/* legacy connection. No transaction spans the two; the
-	/* `AND status = 6` guard on the UPDATE is what keeps a row that moved
+	/* `AND status IN (6, 10, 13)` guard on the UPDATE is what keeps a row that moved
 	/* since the read from being rewritten.
 	/*
 	/* PHP 5.6 -- array(), no null-coalescing, no short array syntax. */
@@ -167,7 +168,7 @@
 
 	$seed = mysqli_fetch_object($sres);
 
-	if (!$seed || !in_array((int) $seed->status, array(6, 10), true))
+	if (!$seed || !in_array((int) $seed->status, array(6, 10, 13), true))
 	{
 		reoffer_fail(409, 'Conflict', array(
 			'ok'     => false,
@@ -309,15 +310,20 @@
 	}
 
 	/*
-	/* `AND status = 6` IS LOAD-BEARING. A row that moved since the read above
-	/* (accepted, cancelled, set by another operator) is left exactly as it
-	/* is. Success is gated on the mysqli error, not affected_rows: zero rows
-	/* changed is a valid outcome of that guard. */
+	/* `AND status IN (6, 10, 13)` IS LOAD-BEARING. A row that moved since the
+	/* read above (accepted, cancelled, set by another operator) is left exactly
+	/* as it is. Success is gated on the mysqli error, not affected_rows: zero
+	/* rows changed is a valid outcome of that guard.
+	/*
+	/* 13 (Left standby) re-offers like a decline (D6): the crew member took
+	/* themselves off standby and ops want to ask again. Arm 2 of
+	/* ccm_responded_at_upd lists 13, so 13 -> 0 restarts the offer clock the
+	/* same way 6 -> 0 does (S2). */
 
 	mysqli_query($link, "UPDATE call_crew_map SET status = 0
 	                     WHERE userID = " . $userID . "
 	                       AND callID IN (" . $idList . ")
-	                       AND status IN (6, 10)");
+	                       AND status IN (6, 10, 13)");
 
 	if (mysqli_error($link) !== '')
 	{
