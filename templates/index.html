@@ -28656,13 +28656,22 @@ async function tiLoadCheckinButton(bookingId){
     if(r.ok){ const j = await r.json(); if(j && !j.error) mode = String(j.mode || 'off'); }
   }catch(e){ /* mode unknown -> no button */ }
   if(!slot.isConnected || !mode || mode === 'off') return;
-  slot.innerHTML =
-      '<div onclick="tiLoadCheckin(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:6px">✅ Import from check-in</div>'
-    + (mode === 'shadow' ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 12px">' + escapeHtml(TI_CHECKIN_SHADOW_LINE) + '</div>' : '<div style="height:6px"></div>');
+  slot.innerHTML = _tiCheckinButtonHtml(bookingId, mode);
 }
 
-// Wording to change when official mode exists (brief, Part 2 UI).
+// The check-in button always sits first, above the Google Sheet, with the line
+// for its mode under it.
+function _tiCheckinButtonHtml(bookingId, mode){
+  const line = _tiCheckinModeLine(mode);
+  return '<div onclick="tiLoadCheckin(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:6px">✅ Import from check-in</div>'
+    + (line ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 12px">' + escapeHtml(line) + '</div>' : '<div style="height:6px"></div>');
+}
+
 const TI_CHECKIN_SHADOW_LINE = 'Shadow booking — check these times carefully; the check-in sheet is the only record for this booking.';
+const TI_CHECKIN_LIVE_LINE   = 'Live booking — the check-in sheet is the record.';
+function _tiCheckinModeLine(mode){
+  return mode === 'shadow' ? TI_CHECKIN_SHADOW_LINE : mode === 'live' ? TI_CHECKIN_LIVE_LINE : '';
+}
 
 async function tiLoadCheckin(bookingId, keep){
   _tiSay('Reading the check-in sheet…');
@@ -28696,7 +28705,7 @@ function _tiCheckinBlock(d){
   const unk = d.unknown_call_ids || [];
   return '<div style="font-size:11px;color:var(--muted);padding:0 0 8px">✅ From the check-in sheet'
     + (src.generated_at ? ' · read at ' + escapeHtml(_tiIsoHHMM(src.generated_at)) : '') + '</div>'
-    + (src.mode === 'shadow' ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + escapeHtml(TI_CHECKIN_SHADOW_LINE) + '</div>' : '')
+    + (_tiCheckinModeLine(src.mode) ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + escapeHtml(_tiCheckinModeLine(src.mode)) + '</div>' : '')
     + (unk.length ? '<div style="font-size:11px;color:var(--conflict);padding:0 0 8px">⚠ Check-in doesn\'t know call' + (unk.length===1?' ':'s ') + escapeHtml(unk.join(', ')) + '.</div>' : '')
     + (held ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + held + ' row' + (held===1?' needs':'s need') + ' a look — flagged in amber and left unticked. Tick a row to write it.</div>' : '');
 }
@@ -29221,9 +29230,33 @@ function _gsheetShowExists(bookingId, sheets){
 // each click would otherwise create a separate Google Sheet for the booking.
 var _gsheetInFlight = false;
 
+// On a Live check-in booking the check-in sheet is the record. Warn, don't block
+// (BRIEF-checkin-live-mode, Part B). An unreadable mode warns nothing: it must
+// never stop a sheet being made.
+var GSHEET_LIVE_WARNING = 'This booking\'s times are recorded on the check-in sheet. Generate a Google Sheet anyway?';
+
+async function _gsheetLiveDeclined(bookingId){
+  var mode = null;
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/checkin-mode',
+                        { headers: { 'Accept': 'application/json' } });
+    if(r.ok){ var j = await r.json(); if(j && !j.error) mode = String(j.mode || 'off'); }
+  }catch(e){ /* unknown -> no warning */ }
+  if(mode !== 'live') return false;
+  return !(await goatAsk('Live check-in booking', GSHEET_LIVE_WARNING, 'Generate anyway'));
+}
+
 async function generateGoogleSheet(bookingId, force){
   if(_gsheetInFlight) return;
   _gsheetInFlight = true;
+  // `force` is "Create another anyway" from the exists dialog — the first click
+  // already asked, so it isn't asked twice.
+  if(!force){
+    var declined = false;
+    try{ declined = await _gsheetLiveDeclined(bookingId); }
+    catch(e){ declined = false; }
+    if(declined){ _gsheetInFlight = false; return; }
+  }
 
   // Working state — opened immediately so the click is unmistakably registered,
   // and persistent (unlike showFeedback, which self-clears after 2.5s) because
@@ -31764,8 +31797,11 @@ async function bkSaveRateCard(bookingId, hostId){
 
 var _bkCheckinBusy = {};
 
+// Booking-dialog / All Bookings switch: Off · Shadow · Live (Live added 5.114.0,
+// BRIEF-checkin-live-mode Part B). Each mode highlights its own button — before
+// 5.114.0 a 'live' booking highlighted neither and fell through to the Off note.
 function bkCheckinControl(mode, bookingId, hostId){
-  var btns = [['off', 'Off'], ['shadow', 'Shadow']].map(function(o){
+  var btns = [['off', 'Off'], ['shadow', 'Shadow'], ['live', 'Live']].map(function(o){
     var on = (mode === o[0]);
     var style = 'background:' + (on ? 'var(--surface)' : 'var(--surface2)')
       + ';border:1px solid ' + (on ? 'var(--border-gold)' : 'var(--border)')
@@ -31781,8 +31817,8 @@ function bkCheckinControl(mode, bookingId, hostId){
       : "bkSetCheckinMode('" + bookingId + "','" + hostId + "','" + o[0] + "')";
     return '<button onclick="' + click + '" style="' + style + '">' + o[1] + '</button>';
   }).join('');
-  var note = (mode === 'shadow')
-    ? 'Running alongside the Google Sheet. The sheet is still the record.'
+  var note = (mode === 'shadow') ? 'Running alongside the Google Sheet. The sheet is still the record.'
+    : (mode === 'live') ? 'Live — the check-in sheet is the record. Import times from check-in.'
     : 'Off for this booking. The Google Sheet is the only timesheet.';
   return '<div>' + btns + '</div>'
     + '<div style="font-size:10px;color:var(--muted);margin-top:6px">' + note + '</div>';
@@ -31802,10 +31838,13 @@ function bkCheckinMarkup(state, bookingId, hostId, msg){
       + 'style="color:var(--accent);cursor:pointer;margin-left:8px">Retry</span></div>';
   } else if(state.can_switch){
     body = bkCheckinControl(state.mode, bookingId, hostId);
-  } else if(state.mode === 'shadow'){
+  } else if(state.mode === 'shadow' || state.mode === 'live'){
     body = '<div style="font-size:11px;color:var(--muted);border:1px solid var(--border);'
       + 'border-radius:4px;padding:7px 9px;background:var(--surface2)">'
-      + 'Live check-in pilot — the Google Sheet is still the record</div>';
+      + (state.mode === 'live'
+          ? 'Live check-in — the check-in sheet is the record'
+          : 'Live check-in pilot — the Google Sheet is still the record')
+      + '</div>';
   } else {
     return '';   // Off, and not the switcher: nothing at all (test 7)
   }
@@ -31836,7 +31875,15 @@ async function bkLoadCheckinMode(bookingId, hostId, msg){
   host.innerHTML = bkCheckinMarkup(state, bookingId, hostId, msg);
 }
 
+// Live confirm text (BRIEF-checkin-live-mode, Part B).
+var BK_CHECKIN_LIVE_CONFIRM = 'Make check-in the record for this booking? No Google Sheet. Times reach SmartStaff only through Import from check-in.';
+var BK_CHECKIN_MODE_LABEL = {off: 'Off', shadow: 'Shadow', live: 'Live'};
+
 async function bkSetCheckinMode(bookingId, hostId, mode){
+  if(_bkCheckinBusy[hostId]) return;
+  // Asked before the busy flag: a cancelled confirm leaves the control as it was.
+  if(mode === 'live'
+     && !(await goatAsk('Make check-in the record?', BK_CHECKIN_LIVE_CONFIRM, 'Make it Live'))) return;
   if(_bkCheckinBusy[hostId]) return;
   _bkCheckinBusy[hostId] = true;
   var host = document.getElementById(hostId);
@@ -31853,7 +31900,7 @@ async function bkSetCheckinMode(bookingId, hostId, mode){
   }catch(e){
     msg = "Couldn't reach the check-in service.";
   }
-  if(!msg) showFeedback('Live check-in: ' + (mode === 'shadow' ? 'Shadow' : 'Off'));
+  if(!msg) showFeedback('Live check-in: ' + (BK_CHECKIN_MODE_LABEL[mode] || mode));
   // Always re-read rather than assume the write took. The edge function upserts
   // the mode and appends the log separately, so there is a real path where the
   // mode changed and the log did not — the message says so, and the control
