@@ -23,10 +23,13 @@ Run:  python3 test_accounting_generate_js.py
 """
 import json
 import unittest
+from html.parser import HTMLParser
 
+import accounting_invoices as AI
 import js_harness as H
 
 FUNCS = H.extract("escapeHtml", "invMoney", "invSafe", "invGenerateModal",
+                  "invGenBookingUsable", "invGenCallsHtml",
                   "rdyBookingHtml", "rdyCallsHtml", "rdyError") if H.NODE else ""
 
 # A DOM just rich enough for the modal: elements whose innerHTML is a string,
@@ -118,8 +121,8 @@ function sleep(){ return new Promise(function(r){ setTimeout(r, 0); }); }
 """
 
 BOOKING = {
-    "booking_id": 11734, "booking_name": "FIVE @ RLA",
-    "booking_reference": "RLA-1", "customer_id": 24, "customer_name": "Live Nation",
+    "booking_id": 90001, "booking_name": "Test Show @ Test Venue",
+    "booking_reference": "TEST-1", "customer_id": 90024, "customer_name": "Test Customer Pty Ltd",
     "ready_calls": [{"call_id": 37598, "call_name": "Show", "start_date": 1748131200,
                      "crew_rows": 9, "hours": "72.00", "expected_charge": "32783.95",
                      "date_text": "Sat 23 May", "expected_ex_gst": 32783.95}],
@@ -219,7 +222,7 @@ class CannotFireTwice(unittest.TestCase):
         """)
         self.assertEqual(out["method"], "POST")
         self.assertEqual(out["url"], "/api/accounting/invoices/generate")
-        self.assertEqual(out["body"], {"booking_id": 11734, "fingerprint": "a" * 40})
+        self.assertEqual(out["body"], {"booking_id": 90001, "fingerprint": "a" * 40})
 
 
 @unittest.skipUnless(H.NODE, "node not installed")
@@ -381,8 +384,8 @@ class ConfirmStatesTheConsequence(unittest.TestCase):
 
     def test_it_names_the_booking_and_the_money_both_ways(self):
         h = self.body()
-        self.assertIn("FIVE @ RLA", h)
-        self.assertIn("#11734", h)
+        self.assertIn("Test Show @ Test Venue", h)
+        self.assertIn("#90001", h)
         self.assertIn("$32,783.95", h)
         self.assertIn("$36,062.35", h)
 
@@ -408,6 +411,207 @@ class ConfirmStatesTheConsequence(unittest.TestCase):
 
     def test_an_estimate_is_called_an_estimate(self):
         self.assertIn("estimate", self.body(dict(BOOKING, expected_exact=False)))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FIX 1 (test, 19 Nov): a `changed` refusal redrew "0 calls · about — ex GST"
+# with Generate still live. generate-invoice.php sends the booking as its RAW
+# accounting-ready-lib.php row, which has no ready_count or expected; app.py
+# now runs it through ready_view, the same as the list. These tests feed the
+# modal exactly that: a PHP-shaped row, put through ready_view.
+
+CHANGED_MSG = ("The calls on this booking changed since you looked. "
+               "Refresh and check before generating.")
+
+# generate-invoice.php's `booking`, key for key as goat_ready_scan() builds it
+# (accounting-ready-lib.php, the $out[$bid] array): one call locked since the
+# list was read, so 11 unlocked, two ready, and a new fingerprint.
+PHP_CHANGED_BOOKING = {
+    "booking_id": 90001, "booking_name": "Test Show @ Test Venue",
+    "booking_reference": "TEST-1", "customer_id": 90024,
+    "customer_name": "Test Customer Pty Ltd",
+    "ready_calls": [
+        {"call_id": 37598, "call_name": "Load in", "start_date": 1748131200,
+         "crew_rows": 9, "hours": "72.000000", "expected_charge": "1000.0000"},
+        {"call_id": 37599, "call_name": "Show call", "start_date": 1748217600,
+         "crew_rows": 4, "hours": "20.000000", "expected_charge": "442.4000"},
+    ],
+    "stuck_calls": [], "unlocked_calls": 11, "locked_no_crew_calls": 0,
+    "blocked": False, "expected_exact": True, "mixed_groups": 0, "null_calc": 0,
+    "fingerprint": "b" * 40,
+}
+
+
+@unittest.skipUnless(H.NODE, "node not installed")
+class ChangedRefusal(unittest.TestCase):
+
+    def press_then_press_again(self, booking_in_409):
+        """One press answered `changed`, then a second press, answered OK."""
+        return run(r"""
+        _answer = {ok:false, status:409, body:%s};
+        invGenerateModal(B);
+        btn('gen-go').onclick();
+        (async function(){
+          await sleep(); await sleep();
+          var after = {html: shownHtml(), disabled: btn('gen-go').disabled,
+                       closed: _overlays[0]._removed};
+          _answer = {ok:true, status:200, body:{ok:true, invoice_id:34337, totals:{}}};
+          if(!btn('gen-go').disabled) btn('gen-go').onclick();
+          await sleep(); await sleep();
+          after.posts = _fetchCalls.map(function(c){ return c.body; });
+          console.log(JSON.stringify(after));
+        })();
+        """ % json.dumps(dict({"error": CHANGED_MSG, "reason": "changed"},
+                              **({} if booking_in_409 is None
+                                 else {"booking": booking_in_409}))))
+
+    def test_the_redrawn_calls_and_amount_are_what_came_back(self):
+        shaped = AI.ready_view(json.loads(json.dumps(PHP_CHANGED_BOOKING)))
+        out = self.press_then_press_again(shaped)
+        h = out["html"]
+        self.assertIn("changed since you looked", h)
+        self.assertIn("2 calls", h)
+        self.assertNotIn("0 calls", h)
+        self.assertNotIn("about <b>— ex GST", h)
+        self.assertIn("$1,442.40 ex GST", h)     # 1000.00 + 442.40, from ready_view
+        self.assertIn("$1,586.64 inc GST", h)
+        self.assertIn("Load in", h)
+        self.assertIn("Show call", h)
+        self.assertIn("$1,000.00", h)
+        self.assertIn("$442.40", h)
+        self.assertIn("11 calls on this booking", h)   # the unlocked warning
+        self.assertFalse(out["disabled"])
+        self.assertFalse(out["closed"])
+
+    def test_the_second_press_sends_the_new_fingerprint(self):
+        shaped = AI.ready_view(json.loads(json.dumps(PHP_CHANGED_BOOKING)))
+        out = self.press_then_press_again(shaped)
+        self.assertEqual(len(out["posts"]), 2)
+        self.assertEqual(out["posts"][0]["fingerprint"], "a" * 40)
+        self.assertEqual(out["posts"][1], {"booking_id": 90001, "fingerprint": "b" * 40})
+
+    def assert_refuses_to_redraw(self, booking_in_409):
+        out = self.press_then_press_again(booking_in_409)
+        self.assertTrue(out["disabled"], "Generate must be disabled")
+        self.assertIn("Refresh list", out["html"])
+        self.assertIn("data-rdyrefresh", out["html"])
+        self.assertIn("changed since you looked", out["html"])
+        self.assertEqual(len(out["posts"]), 1)    # no second request
+        self.assertFalse(out["closed"])
+
+    def test_no_booking_at_all_disables_generate(self):
+        self.assert_refuses_to_redraw(None)
+
+    def test_an_empty_call_list_disables_generate(self):
+        self.assert_refuses_to_redraw(AI.ready_view(dict(PHP_CHANGED_BOOKING, ready_calls=[])))
+
+    def test_the_raw_php_row_unshaped_disables_generate(self):
+        """What the browser got before the fix: no `expected`. Never again
+        "0 calls · about — ex GST" with a live button."""
+        self.assert_refuses_to_redraw(json.loads(json.dumps(PHP_CHANGED_BOOKING)))
+
+    def test_a_call_list_that_is_not_a_list_disables_generate(self):
+        self.assert_refuses_to_redraw(dict(BOOKING, ready_calls={"37598": {}}))
+
+    def test_a_different_booking_disables_generate(self):
+        self.assert_refuses_to_redraw(dict(BOOKING, booking_id=90002))
+
+    def test_a_missing_fingerprint_disables_generate(self):
+        self.assert_refuses_to_redraw(dict(BOOKING, fingerprint=""))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FIX 2 (test, 19 Nov): on #34336 and #34337 the lines table, the totals and
+# the calls filled half the 1,000 px invoice dialog. The Customer block never
+# closed and nor did .inv-head-grid, so every section below became a cell of
+# that two-column grid. Checked on the real markup invRenderDialog writes.
+
+DIALOG_FUNCS = H.extract("escapeHtml", "invMoney", "invSafe", "invDate",
+                         "invDescHtml", "invChip", "invRenderDialog") if H.NODE else ""
+
+DIALOG_PRELUDE = r"""
+var window = globalThis;
+function decodeEntities(s){ return s == null ? '' : String(s); }
+var _els = {};
+var document = { getElementById: function(id){
+  return _els[id] || (_els[id] = {id:id, innerHTML:'', textContent:'',
+                                  addEventListener:function(){}}); } };
+function entitySetCrumb(){}
+function entityStackTop(){ return null; }
+function entityBtn(label){ return '<button>' + label + '</button>'; }
+function ssUrl(p){ return p; }
+function invDialogClick(){}
+"""
+
+DIALOG_DATA = {
+    "invoice": {"id": 90100, "generated": 1748131200, "exported": 0},
+    "booking": {"id": 90001, "name": "Test Show @ Test Venue", "reference": "TEST-1"},
+    "customer": {"name": "Test Customer Pty Ltd", "address": "1 Test St",
+                 "suburb": "Testville", "state": "VIC", "postcode": "3000",
+                 "phone": "03 9000 0000", "email": "accounts@example.com"},
+    "contact": {"first_name": "Test", "last_name": "Person"},
+    "venue": {"name": "Test Venue"},
+    "lines": [{"is_spacer": False, "kind": "hourly", "qty": 2, "desc_main": "Crew",
+               "desc_note": "", "date": "23/05/26", "weekday": "Saturday",
+               "start": "09:00", "end": "17:00", "hours": 8, "break_time": "0:30",
+               "rate": 45.0, "per_worker_display": 360.0, "line_total_display": 720.0}],
+    "totals": {"ex_gst": 720.0, "gst": 72.0, "inc_gst": 792.0},
+    "calls": [{"call_id": 37598, "call_name": "Show call", "found": True,
+               "booking_id": 90001, "has_lines": 1, "current_invoice_id": 90100,
+               "start_date": 1748131200}],
+}
+
+
+class _DivStack(HTMLParser):
+    """Records which divs are open when each .inv-sec / .inv-tot starts."""
+    def __init__(self):
+        super().__init__()
+        self.stack, self.seen = [], []
+    def handle_starttag(self, tag, attrs):
+        if tag != "div":
+            return
+        cls = dict(attrs).get("class") or ""
+        if cls in ("inv-sec", "inv-tot", "inv-ln-wrap", "inv-call"):
+            self.seen.append((cls, list(self.stack)))
+        self.stack.append(cls)
+    def handle_endtag(self, tag):
+        if tag == "div" and self.stack:
+            self.stack.pop()
+
+
+@unittest.skipUnless(H.NODE, "node not installed")
+class InvoiceDialogLayout(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        out = H.run(DIALOG_PRELUDE + DIALOG_FUNCS + "\ninvRenderDialog(90100, "
+                    + json.dumps(DIALOG_DATA) + ");\n"
+                    "console.log(JSON.stringify({h: _els['entity-modal-body'].innerHTML}));")
+        cls.html = out["h"]
+        cls.p = _DivStack()
+        cls.p.feed(cls.html)
+
+    def test_it_rendered_the_sections(self):
+        names = [c for c, _ in self.p.seen]
+        for c in ("inv-sec", "inv-tot", "inv-ln-wrap", "inv-call"):
+            self.assertIn(c, names)
+
+    def test_no_section_sits_inside_the_head_grid(self):
+        for cls, open_divs in self.p.seen:
+            self.assertNotIn("inv-head-grid", open_divs, cls + " is inside .inv-head-grid")
+            self.assertNotIn("inv-head-block", open_divs, cls + " is inside .inv-head-block")
+
+    def test_every_section_is_a_direct_child_of_the_dialog(self):
+        for cls, open_divs in self.p.seen:
+            if cls in ("inv-sec", "inv-tot", "inv-ln-wrap"):
+                self.assertEqual(open_divs, ["inv-dlg"], cls)
+
+    def test_every_div_is_closed(self):
+        self.assertEqual(self.p.stack, [])
+
+    def test_the_lines_keep_their_scroll_fallback(self):
+        self.assertIn('<div class="inv-ln-wrap"><table class="inv-ln">', self.html)
+        self.assertIn(".inv-ln-wrap{overflow-x:auto}", H.page())
 
 
 if __name__ == "__main__":

@@ -34,11 +34,11 @@ PHP  = shutil.which("php")
 def booking(**over):
     """A ready booking in list-ready-to-invoice.php's own shape."""
     b = {
-        "booking_id": 11734,
-        "booking_name": "FIVE @ RLA",
-        "booking_reference": "RLA-2026-05",
-        "customer_id": 24,
-        "customer_name": "Live Nation",
+        "booking_id": 90001,
+        "booking_name": "Test Show @ Test Venue",
+        "booking_reference": "TEST-2026-05",
+        "customer_id": 90024,
+        "customer_name": "Test Customer Pty Ltd",
         "ready_calls": [
             {"call_id": 37598, "call_name": "Load in", "start_date": 1748131200,
              "crew_rows": 9, "hours": "72.000000", "expected_charge": "4428.0000"},
@@ -262,21 +262,21 @@ class Grouping(unittest.TestCase):
 
     def test_bookings_are_grouped_by_customer(self):
         g = AI.ready_groups([
-            booking(booking_id=1, customer_id=24, customer_name="Live Nation"),
-            booking(booking_id=2, customer_id=24, customer_name="Live Nation"),
-            booking(booking_id=3, customer_id=9,  customer_name="Frontier"),
+            booking(booking_id=1, customer_id=90024, customer_name="Test Customer Pty Ltd"),
+            booking(booking_id=2, customer_id=90024, customer_name="Test Customer Pty Ltd"),
+            booking(booking_id=3, customer_id=90009, customer_name="Other Test Customer"),
         ])
         by = {x["customer_id"]: x for x in g["groups"]}
-        self.assertEqual(len(by[24]["bookings"]), 2)
-        self.assertEqual(len(by[9]["bookings"]), 1)
+        self.assertEqual(len(by[90024]["bookings"]), 2)
+        self.assertEqual(len(by[90009]["bookings"]), 1)
 
     def test_the_biggest_customer_is_first(self):
-        small = booking(booking_id=1, customer_id=9, customer_name="Frontier",
+        small = booking(booking_id=1, customer_id=90009, customer_name="Other Test Customer",
                         ready_calls=[{"call_id": 1, "call_name": "a", "start_date": 0,
                                       "crew_rows": 1, "hours": "1",
                                       "expected_charge": "100.0000"}])
         g = AI.ready_groups([small, booking(booking_id=2)])
-        self.assertEqual(g["groups"][0]["customer_id"], 24)
+        self.assertEqual(g["groups"][0]["customer_id"], 90024)
 
     def test_a_booking_with_no_customer_still_appears(self):
         g = AI.ready_groups([booking(customer_id=0, customer_name=None)])
@@ -359,7 +359,7 @@ class Consequence(unittest.TestCase):
         self.assertEqual(c["ready_count"], 2)
         self.assertEqual(c["expected"]["ex_gst"], 10332.00)
         self.assertEqual(c["expected"]["inc_gst"], 11365.20)
-        self.assertEqual(c["booking_id"], 11734)
+        self.assertEqual(c["booking_id"], 90001)
 
 
 if __name__ == "__main__":

@@ -26,14 +26,14 @@ MIKE  = sorted(A.ACCOUNTING_USERS)[0]
 OTHER = 2973                      # an admin who is NOT an accounting user
 
 FP    = "a" * 40                  # a well-formed fingerprint
-BKID  = 11734
+BKID  = 90001
 
 READY_BODY = {
     "window_months": 12, "all": False, "truncated": False, "total_found": 1,
     "bookings": [{
-        "booking_id": BKID, "booking_name": "FIVE @ RLA",
-        "booking_reference": "RLA-1", "customer_id": 24,
-        "customer_name": "Live Nation",
+        "booking_id": BKID, "booking_name": "Test Show @ Test Venue",
+        "booking_reference": "TEST-1", "customer_id": 90024,
+        "customer_name": "Test Customer Pty Ltd",
         "ready_calls": [{"call_id": 37598, "call_name": "Show",
                          "start_date": 1748131200, "crew_rows": 9,
                          "hours": "72.000000", "expected_charge": "32783.9500"}],
@@ -307,6 +307,32 @@ class Refusals(Base):
         self.assertEqual(body["reason"], "changed")
         self.assertEqual(body["booking"]["booking_id"], BKID)
 
+    def test_changed_booking_is_shaped_like_a_list_row(self):
+        """FIX 1 (test, 19 Nov). The PHP sends its RAW row: no ready_count, no
+        expected. The modal redrew "0 calls · about — ex GST" from it. It now
+        goes through the same ready_view as the list."""
+        raw = json.loads(json.dumps(READY_BODY["bookings"][0]))
+        raw["fingerprint"] = "b" * 40
+        raw["unlocked_calls"] = 11
+        r, body = self.refuse("changed", {"booking": raw})
+        b = body["booking"]
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(b["ready_count"], 1)
+        self.assertEqual(b["expected"]["ex_gst"], 32783.95)
+        self.assertEqual(b["expected"]["inc_gst"], 36062.35)
+        self.assertEqual(b["ready_calls"][0]["expected_ex_gst"], 32783.95)
+        self.assertTrue(b["ready_calls"][0]["date_text"])
+        self.assertEqual(b["fingerprint"], "b" * 40)      # the NEW one, untouched
+        self.assertEqual(b["unlocked_calls"], 11)
+
+    def test_changed_with_an_unusable_booking_drops_it(self):
+        """The modal then disables Generate and offers Refresh list."""
+        for junk in ("nope", [], {"booking_id": BKID}, {"ready_calls": "x"}):
+            r, body = self.refuse("changed", {"booking": junk})
+            self.assertEqual(r.status_code, 409)
+            self.assertEqual(body["reason"], "changed")
+            self.assertNotIn("booking", body, repr(junk))
+
     def test_the_php_message_is_what_the_person_reads(self):
         self.answer = FakeResp(409, json.dumps(
             {"error": "Nothing to invoice: the calls were invoiced since you "
@@ -456,7 +482,7 @@ class ReadyRoute(Base):
         r, body = self.call("/api/accounting/ready")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(body["groups"]), 1)
-        self.assertEqual(body["groups"][0]["customer_name"], "Live Nation")
+        self.assertEqual(body["groups"][0]["customer_name"], "Test Customer Pty Ltd")
         self.assertEqual(body["ready_bookings"], 1)
         self.assertEqual(body["totals"]["ex_gst"], 32783.95)
         self.assertEqual(body["totals"]["inc_gst"], 36062.35)

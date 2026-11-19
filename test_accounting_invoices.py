@@ -401,7 +401,10 @@ class Invoice34334(unittest.TestCase):
         different invoice, every figure below silently starts pinning the wrong
         thing -- so the file has to identify itself first."""
         self.assertEqual(self.fix["invoice"]["id"], 34334)
-        self.assertEqual(self.fix["booking"]["name"], "FIVE @ RLA")
+        # The booking's NAME is deliberately not asserted: it is a real
+        # customer's, and this repo is public. The invoice id and its call
+        # list below identify the file just as well.
+        self.assertTrue(str(self.fix["booking"]["name"] or "").strip())
         self.assertEqual(len(self.lines), 34)
         self.assertEqual(len(self.priced), 22)
         self.assertEqual(len(self.lines) - len(self.priced), 12)   # the spacers
