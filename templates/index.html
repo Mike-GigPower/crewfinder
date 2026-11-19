@@ -1194,6 +1194,58 @@ body.cohort-readonly #unavail-add-section{display:none}
 .inv-call-link:hover{color:var(--accent)}
 .inv-call-when{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
 .inv-note{color:var(--muted);font-size:12px;margin-top:8px}
+/* -- Accounting > Invoicing: the two views (slice B 5.1) -- */
+.inv-views{display:flex;gap:0;margin:18px 0 2px;border-bottom:1px solid var(--border)}
+.inv-vtab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);
+  font-family:'Bebas Neue',sans-serif;font-size:14px;letter-spacing:.12em;text-transform:uppercase;
+  padding:8px 14px;cursor:pointer}
+.inv-vtab:hover{color:var(--text)}
+.inv-vtab.on{color:var(--accent);border-bottom-color:var(--accent)}
+.inv-view{display:none}
+.inv-view.on{display:block}
+/* -- Ready to invoice -- */
+.rdy-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:14px 0 4px;
+  font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted)}
+.rdy-head-sum{color:var(--text)}
+.rdy-older{display:flex;align-items:center;gap:6px;cursor:pointer;
+  font-family:'Share Tech Mono',monospace;font-size:11px}
+.rdy-grp{margin-top:18px}
+.rdy-grp-head{display:flex;align-items:baseline;gap:12px;padding:6px 9px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:5px 5px 0 0}
+.rdy-grp-name{font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:.08em;color:var(--text)}
+.rdy-grp-tot{margin-left:auto;font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--accent)}
+.rdy-bk{display:flex;align-items:flex-start;gap:12px;padding:10px 9px;border:1px solid var(--border);
+  border-top:none;font-family:'Rajdhani',sans-serif;font-size:13px}
+.rdy-bk:last-child{border-radius:0 0 5px 5px}
+.rdy-bk-main{flex:1 1 auto;min-width:0}
+.rdy-bk-name{color:var(--text);font-weight:600}
+.rdy-bk-meta{color:var(--muted);font-size:12px;margin-top:2px}
+.rdy-bk-note{color:var(--muted);font-size:11px;margin-top:3px;font-style:italic}
+.rdy-bk-money{flex:0 0 auto;text-align:right;font-family:'Share Tech Mono',monospace;
+  font-variant-numeric:tabular-nums;font-size:14px;color:var(--text);white-space:nowrap}
+.rdy-bk-money small{display:block;color:var(--muted);font-size:10px}
+.rdy-bk-act{flex:0 0 auto;display:flex;flex-direction:column;gap:5px;align-items:flex-end}
+.rdy-gen{background:var(--surface2);border:1px solid var(--border-gold);color:var(--accent);
+  border-radius:5px;padding:7px 12px;font-family:'Share Tech Mono',monospace;font-size:11px;cursor:pointer;
+  white-space:nowrap}
+.rdy-gen:hover:not(:disabled){background:rgba(212,175,55,0.12)}
+.rdy-gen:disabled{opacity:.5;cursor:not-allowed}
+.rdy-expand{background:none;border:none;color:var(--muted);cursor:pointer;padding:0;
+  font-family:'Share Tech Mono',monospace;font-size:11px;text-decoration:underline}
+.rdy-expand:hover{color:var(--accent)}
+.rdy-blocked{display:inline-block;margin-left:7px;padding:1px 6px;border:1px solid var(--border-gold);
+  border-radius:3px;background:rgba(212,175,55,0.10);color:var(--accent);
+  font-family:'Share Tech Mono',monospace;font-size:10px}
+.rdy-block-why{color:var(--accent);font-size:11px;margin-top:3px}
+.rdy-calls{border:1px solid var(--border);border-top:none;background:#0a0a0a;padding:4px 9px 9px}
+.rdy-calls table{width:100%;border-collapse:collapse;font-size:12px}
+.rdy-calls th{text-align:left;font-family:'Bebas Neue',sans-serif;font-size:10px;letter-spacing:.1em;
+  color:var(--muted);text-transform:uppercase;padding:5px 6px;border-bottom:1px solid var(--border)}
+.rdy-calls td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.05)}
+.rdy-calls td.n{text-align:right;font-family:'Share Tech Mono',monospace;font-variant-numeric:tabular-nums}
+.rdy-ss{background:none;border:none;padding:0;color:var(--muted);cursor:pointer;
+  font-family:'Share Tech Mono',monospace;font-size:11px;text-decoration:underline}
+.rdy-ss:hover{color:var(--accent)}
 .admin-hub-head{margin-bottom:8px}
 .admin-hub-title{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:.06em;color:var(--accent);line-height:1}
 .admin-hub-sub{font-family:'Rajdhani',sans-serif;font-size:13px;color:var(--muted);margin-top:6px;max-width:560px}
@@ -3057,18 +3109,36 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   <div class="tab-panel" id="tab-invoicing">
     <div class="admin-hub">
       <div class="admin-hub-head">
-        <div class="admin-hub-title">Invoices</div>
-        <div class="admin-hub-sub">Read-only view of SmartStaff invoices. Generate, edit and export are still
-          done in SmartStaff for now.</div>
+        <div class="admin-hub-title">Invoicing</div>
+        <div class="admin-hub-sub">Bookings ready to invoice, and the invoices SmartStaff has already made.
+          Edit, email and export are still done in SmartStaff.</div>
       </div>
-      <div class="inv-bar">
-        <input id="inv-q" class="inv-search" type="text" autocomplete="off" spellcheck="false"
-               placeholder="Invoice #, booking or customer">
-        <button id="inv-clear" class="inv-clear" title="Clear the search">✕</button>
-        <span id="inv-count" class="inv-count"></span>
+      <!-- TWO VIEWS (slice B §5.1). Ready to invoice opens first when there is
+           anything in it; the choice is then remembered for the session. The
+           count on the tab is bookings that are NOT blocked — a blocked one
+           has no Generate button, so counting it would promise a button that
+           isn't there. -->
+      <div class="inv-views">
+        <button id="inv-tab-ready" class="inv-vtab" type="button" data-view="ready">Ready to invoice</button>
+        <button id="inv-tab-list"  class="inv-vtab" type="button" data-view="list">Invoices</button>
       </div>
-      <div id="inv-list"></div>
-      <div id="inv-pager" class="inv-pager"></div>
+      <div id="inv-view-ready" class="inv-view">
+        <div class="rdy-head">
+          <span id="rdy-count" class="rdy-head-sum"></span>
+          <label class="rdy-older"><input id="rdy-older" type="checkbox"> Include older</label>
+        </div>
+        <div id="rdy-list"></div>
+      </div>
+      <div id="inv-view-list" class="inv-view">
+        <div class="inv-bar">
+          <input id="inv-q" class="inv-search" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Invoice #, booking or customer">
+          <button id="inv-clear" class="inv-clear" title="Clear the search">✕</button>
+          <span id="inv-count" class="inv-count"></span>
+        </div>
+        <div id="inv-list"></div>
+        <div id="inv-pager" class="inv-pager"></div>
+      </div>
     </div>
   </div>
   <div class="tab-panel" id="tab-payroll">
@@ -7151,7 +7221,7 @@ function switchTab(tab){
   // First entry only. Re-entering keeps the list, the search and the page
   // that were on screen (BRIEF §6.1) — a refetch on every entry would throw
   // away a search Mike had just typed.
-  if(tab==='invoicing' && _invState && !_invState.loaded) loadInvoices();
+  if(tab==='invoicing') invViewEnter();
   // Unconditional, not `if(!_recruitRows.length)`: book-on-behalf filters
   // _recruitRows and Sessions is now reachable directly (deep link, or the group's
   // remembered child), so a Sessions entry that skipped the fetch would offer an
@@ -42321,6 +42391,17 @@ function invChip(label, title){
   return '<span class="inv-chip" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</span>';
 }
 
+// Straight into SmartStaff's own Edit Invoice page, on whichever SmartStaff
+// this GOAT is pointed at (ssUrl uses whoami's ss_base, so a test build opens
+// test). Everything THE GOAT cannot do yet — edit a line, email, delete — is
+// done there, so until cutover every invoice carries this way out (notes §10).
+function invSsLink(id){
+  return ' <a class="inv-pdf" style="font-size:11px;text-decoration:underline;'
+    + 'font-family:\'Share Tech Mono\',monospace" href="'
+    + escapeHtml(ssUrl('/edit-invoice.php?id=' + Number(id)))
+    + '" target="_blank" rel="noopener" title="Open this invoice in SmartStaff">SS</a>';
+}
+
 // A line's description, as the PDF prints it: the name, then a small italic
 // suffix. The generator stores that suffix AS MARKUP —
 //   Crew Boss <i style="font-size: 9px;">(Night/Crew Boss)</i>
@@ -42446,7 +42527,8 @@ function invRender(d){
                     ? '<span class="inv-ok">✓</span>'
                     : '<span class="inv-warn">Not exported</span>') + '</td>'
        + '<td><a class="inv-pdf" href="/api/accounting/invoices/' + id + '/pdf" target="_blank"'
-       + ' rel="noopener" title="Open the SmartStaff PDF">📄</a></td>'
+       + ' rel="noopener" title="Open the SmartStaff PDF">📄</a>'
+       + invSsLink(id) + '</td>'
        + '</tr>';
   });
   h += '</tbody></table>';
@@ -42702,7 +42784,11 @@ function invRenderDialog(id, d){
   var back = entityStackTop();
   var acts = (back ? entityBtn('‹ Back to ' + escapeHtml(back.name || back.label), 'entityBack()') : '')
            + '<a class="inv-pdf-btn" href="/api/accounting/invoices/' + id + '/pdf"'
-           + ' target="_blank" rel="noopener">📄 Open PDF</a>';
+           + ' target="_blank" rel="noopener">📄 Open PDF</a>'
+           // Until cutover, every invoice carries a way through to SmartStaff,
+           // where editing, emailing and deleting still live (notes §10).
+           + '<a class="inv-pdf-btn" href="' + escapeHtml(ssUrl('/edit-invoice.php?id=' + id)) + '"'
+           + ' target="_blank" rel="noopener">Open in SmartStaff</a>';
   if(bid) acts += entityBtn('Open booking', 'invOpenBooking(' + bid + ',' + id + ')');
   acts += entityBtn('Close', 'closeEntityModal()');
   document.getElementById('entity-modal-actions').innerHTML = acts;
@@ -42733,6 +42819,492 @@ function invOpenCall(bookingId, callId, invoiceId){
   var id = Number(invoiceId);
   if(id > 0) entityStackPush('invoice:' + id, 'invoice', function(){ openInvoiceDialog(id); });
   openCallDialog(Number(bookingId), Number(callId));
+}
+
+// ── READY TO INVOICE, AND GENERATE (slice B) ─────────────────────────────────
+//
+// GENERATE IS THE ONLY WRITE IN ACCOUNTING. Everything in this block exists to
+// make sure it happens once, deliberately, and that what happened is reported
+// — including the case where it half worked, which cannot be undone.
+//
+// THREE RULES THE CODE KEEPS:
+//   1. A blocked booking has NO Generate button. Not a disabled one: a
+//      disabled button invites "why?", and the reason is already on the row.
+//   2. The button cannot fire twice. It is disabled before the await and the
+//      modal keeps its own `busy` flag, so a double click, a double Enter and
+//      an impatient second click all make exactly one request.
+//   3. A refusal keeps the modal OPEN with the reason in it. Closing it would
+//      lose the one piece of information worth having, and `changed` and
+//      `nothing_to_invoice` each need a different next step.
+
+var _rdyState = { loaded: false, all: false, data: null, open: {} };
+
+function invSetView(view){
+  var isReady = (view !== 'list');
+  var ids = [['inv-tab-ready', 'inv-view-ready', isReady],
+             ['inv-tab-list',  'inv-view-list',  !isReady]];
+  ids.forEach(function(x){
+    var tab = document.getElementById(x[0]);
+    var pan = document.getElementById(x[1]);
+    if(tab) tab.classList.toggle('on', x[2]);
+    if(pan) pan.classList.toggle('on', x[2]);
+  });
+  if(isReady){ if(!_rdyState.loaded) loadReady(); }
+  else       { if(!_invState.loaded) loadInvoices(); }
+}
+
+// Entering the tab. A remembered choice wins; otherwise Ready to invoice is
+// opened and rdyRender flips to Invoices if there turns out to be nothing in
+// it — which is the only point at which n is known.
+function invViewEnter(){
+  var r = null;
+  try{ r = sessionStorage.getItem('goat_inv_view'); }catch(e){}
+  if(r === 'list' || r === 'ready'){ window._invViewChosen = true; invSetView(r); return; }
+  invSetView('ready');
+}
+
+function invViewBind(){
+  if(window._invViewBound) return;
+  ['inv-tab-ready', 'inv-tab-list'].forEach(function(id){
+    var b = document.getElementById(id);
+    if(!b) return;
+    b.addEventListener('click', function(){
+      var v = b.getAttribute('data-view');
+      window._invViewChosen = true;
+      try{ sessionStorage.setItem('goat_inv_view', v); }catch(e){}
+      invSetView(v);
+    });
+  });
+  var older = document.getElementById('rdy-older');
+  if(older) older.addEventListener('change', function(){
+    _rdyState.all    = !!older.checked;
+    _rdyState.loaded = false;
+    _rdyState.open   = {};
+    loadReady();
+  });
+  window._invViewBound = true;
+}
+
+async function loadReady(){
+  var el = document.getElementById('rdy-list');
+  if(!el) return;
+  rdyBind();
+  _rdyState.loaded = true;                 // before the await, as loadInvoices does
+  el.innerHTML = '<div class="inv-loading">Looking for bookings ready to invoice…</div>';
+  var cnt = document.getElementById('rdy-count');
+  if(cnt) cnt.textContent = '';
+  try{
+    var r = await fetch('/api/accounting/ready?all=' + (_rdyState.all ? '1' : '0'),
+                        {cache:'no-store'});
+    var d = {};
+    try{ d = await r.json(); }catch(e){ d = {}; }
+    // An error is shown as an error, NEVER an empty list — "nothing is ready"
+    // and "the query failed" look identical in a blank panel and mean opposite
+    // things.
+    if(!r.ok || d.error){ rdyError(d.error || ('the server answered HTTP ' + r.status)); return; }
+    _rdyState.data = d;
+    rdyRender(d);
+  }catch(e){
+    rdyError(e && e.message ? e.message : 'the request failed');
+  }
+}
+
+function rdyError(msg){
+  var el = document.getElementById('rdy-list');
+  if(el) el.innerHTML = '<div class="inv-error"><span>Couldn\'t load the ready list — '
+    + escapeHtml(String(msg)) + '</span>'
+    + '<button class="inv-retry" data-rdy-retry="1">Try again</button></div>';
+  var cnt = document.getElementById('rdy-count');
+  if(cnt) cnt.textContent = '';
+}
+
+function rdyBind(){
+  invViewBind();
+  if(window._rdyBound) return;
+  var el = document.getElementById('rdy-list');
+  if(!el) return;
+  el.addEventListener('click', rdyListClick);
+  window._rdyBound = true;
+}
+
+function rdyTabCount(n){
+  var t = document.getElementById('inv-tab-ready');
+  if(t) t.textContent = 'Ready to invoice' + (n > 0 ? ' (' + n + ')' : '');
+}
+
+function rdyFind(bookingId){
+  var id = Number(bookingId);
+  var gs = (_rdyState.data && _rdyState.data.groups) || [];
+  for(var i = 0; i < gs.length; i++){
+    var bs = gs[i].bookings || [];
+    for(var j = 0; j < bs.length; j++)
+      if(Number(bs[j].booking_id) === id) return bs[j];
+  }
+  return null;
+}
+
+function rdyRender(d){
+  var el = document.getElementById('rdy-list');
+  if(!el) return;
+  var groups = d.groups || [];
+  var n      = Number(d.ready_bookings || 0);
+
+  rdyTabCount(n);
+
+  // Nothing to generate and the person has not picked a view: show them the
+  // list they can actually use.
+  if(n === 0 && !window._invViewChosen && !_rdyState.all){
+    window._invViewChosen = true;            // only ever flip once
+    try{ sessionStorage.setItem('goat_inv_view', 'list'); }catch(e){}
+    invSetView('list');
+  }
+
+  var cnt = document.getElementById('rdy-count');
+  if(cnt){
+    if(n === 0){
+      cnt.textContent = '';
+    }else{
+      var when = d.all ? 'all time'
+                       : ('last ' + (Number(d.window_months) || 12) + ' months');
+      var txt = n + ' booking' + (n === 1 ? '' : 's') + ' ready · about '
+              + invMoney(d.totals && d.totals.ex_gst) + ' ex GST · ' + when;
+      if(d.truncated) txt += ' · showing ' + Number(d.booking_count)
+                           + ' of ' + Number(d.total_found);
+      cnt.textContent = txt;
+    }
+  }
+
+  if(!groups.length){
+    el.innerHTML = '<div class="inv-empty">Nothing is ready to invoice in the '
+      + (d.all ? 'whole history' : 'last ' + (Number(d.window_months) || 12) + ' months') + '.'
+      + (d.all ? '' : ' <span style="color:var(--accent)">Include older calls?</span>') + '</div>';
+    return;
+  }
+
+  var h = [];
+
+  groups.forEach(function(g){
+    h.push('<div class="rdy-grp"><div class="rdy-grp-head">'
+      + '<span class="rdy-grp-name">' + invSafe(g.customer_name || 'No customer') + '</span>'
+      + '<span class="rdy-grp-tot">' + invMoney(g.totals && g.totals.ex_gst) + ' ex GST</span>'
+      + '</div>');
+
+    (g.bookings || []).forEach(function(b){ h.push(rdyBookingHtml(b)); });
+
+    h.push('</div>');
+  });
+
+  el.innerHTML = h.join('');
+
+  // Re-open whatever was expanded before the reload.
+  Object.keys(_rdyState.open).forEach(function(id){
+    if(_rdyState.open[id]) rdySetExpanded(id, true);
+  });
+}
+
+function rdyBookingHtml(b){
+  var id      = Number(b.booking_id);
+  var blocked = !!b.blocked;
+  var nCalls  = Number(b.ready_count || 0);
+
+  var meta = [];
+  if(b.booking_reference) meta.push(invSafe(b.booking_reference));
+  if(nCalls) meta.push(nCalls + ' call' + (nCalls === 1 ? '' : 's'));
+  if(b.date_range) meta.push(escapeHtml(String(b.date_range)));
+
+  var h = '<div class="rdy-bk" data-bk="' + id + '">'
+    + '<div class="rdy-bk-main">'
+    +   '<div class="rdy-bk-name">' + invSafe(b.booking_name || ('Booking ' + id))
+    +     ' <button class="rdy-ss" type="button" data-bkopen="' + id + '">#' + id + '</button>'
+    +     (blocked ? '<span class="rdy-blocked">Blocked</span>' : '')
+    +   '</div>'
+    +   (meta.length ? '<div class="rdy-bk-meta">' + meta.join(' · ') + '</div>' : '')
+    +   ((b.notes || []).length
+          ? '<div class="rdy-bk-note">' + escapeHtml((b.notes || []).join(' · ')) + '</div>' : '')
+    +   (blocked && b.block_reason
+          ? '<div class="rdy-block-why">' + escapeHtml(String(b.block_reason)) + '</div>' : '')
+    + '</div>'
+    + '<div class="rdy-bk-money">' + invMoney(b.expected && b.expected.ex_gst)
+    +   '<small>ex GST' + (b.expected_exact === false ? ' (estimate)' : '') + '</small></div>'
+    + '<div class="rdy-bk-act">'
+    // RULE 1: a blocked booking gets no button at all.
+    +   (blocked ? '' : '<button class="rdy-gen" type="button" data-gen="' + id
+                        + '">Generate invoice…</button>')
+    +   (nCalls ? '<button class="rdy-expand" type="button" data-exp="' + id + '">'
+                  + (_rdyState.open[id] ? 'hide calls' : 'show ' + nCalls + ' call'
+                     + (nCalls === 1 ? '' : 's')) + '</button>' : '')
+    + '</div>'
+    + '</div>'
+    + '<div class="rdy-calls" data-calls="' + id + '" style="display:none"></div>';
+
+  return h;
+}
+
+function rdyCallsHtml(b){
+  var rows = (b.ready_calls || []).map(function(c){
+    return '<tr>'
+      + '<td><button class="inv-call-link" type="button" data-callopen="'
+        + Number(c.call_id) + '" data-bkid="' + Number(b.booking_id) + '">'
+        + invSafe(c.call_name || ('Call ' + c.call_id)) + '</button></td>'
+      + '<td>' + escapeHtml(String(c.date_text || '')) + '</td>'
+      + '<td class="n">' + Number(c.crew_rows || 0) + '</td>'
+      + '<td class="n">' + escapeHtml(String(c.hours == null ? '' : Number(c.hours).toFixed(2))) + '</td>'
+      + '<td class="n">' + invMoney(c.expected_ex_gst) + '</td>'
+      + '</tr>';
+  }).join('');
+  return '<table><thead><tr><th>Call</th><th>Date</th><th style="text-align:right">Crew</th>'
+    + '<th style="text-align:right">Hours</th><th style="text-align:right">Expected ex GST</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function rdySetExpanded(bookingId, open){
+  var id  = Number(bookingId);
+  var box = document.querySelector('.rdy-calls[data-calls="' + id + '"]');
+  var btn = document.querySelector('.rdy-expand[data-exp="' + id + '"]');
+  var b   = rdyFind(id);
+  if(!box || !b) return;
+  _rdyState.open[id] = !!open;
+  if(open){
+    box.innerHTML   = rdyCallsHtml(b);
+    box.style.display = '';
+    if(btn) btn.textContent = 'hide calls';
+  }else{
+    box.style.display = 'none';
+    var n = Number(b.ready_count || 0);
+    if(btn) btn.textContent = 'show ' + n + ' call' + (n === 1 ? '' : 's');
+  }
+}
+
+function rdyListClick(ev){
+  var t = ev.target;
+  if(!t || !t.closest) return;
+
+  if(t.closest('[data-rdy-retry]')){ _rdyState.loaded = false; loadReady(); return; }
+
+  var open = t.closest('button[data-bkopen]');
+  if(open){ openBookingDialog(Number(open.getAttribute('data-bkopen'))); return; }
+
+  var call = t.closest('button[data-callopen]');
+  if(call){
+    openCallDialog(Number(call.getAttribute('data-bkid')),
+                   Number(call.getAttribute('data-callopen')));
+    return;
+  }
+
+  var exp = t.closest('button[data-exp]');
+  if(exp){
+    var eid = Number(exp.getAttribute('data-exp'));
+    rdySetExpanded(eid, !_rdyState.open[eid]);
+    return;
+  }
+
+  var gen = t.closest('button[data-gen]');
+  if(gen){
+    var b = rdyFind(Number(gen.getAttribute('data-gen')));
+    if(b) invGenerateModal(b);
+  }
+}
+
+// ── The Generate confirm ─────────────────────────────────────────────────────
+//
+// Its own overlay rather than goatChoice, because goatChoice resolves and
+// CLOSES on a button press and this modal has to survive the request: it shows
+// "Generating…", then either closes on success or stays open with the refusal
+// in it (rule 3 above).
+function invGenerateModal(booking){
+  var b    = booking;
+  var busy = false;
+
+  var ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99995;'
+    + 'display:flex;align-items:center;justify-content:center;padding:16px';
+
+  var box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border:1px solid var(--border-gold);'
+    + 'border-left:3px solid var(--accent);border-radius:6px;max-width:560px;width:100%;'
+    + 'max-height:85vh;overflow:auto;padding:16px 18px;box-shadow:0 8px 30px rgba(0,0,0,.5)';
+
+  function close(){
+    document.removeEventListener('keydown', onKey, true);
+    ov.remove();
+  }
+  function onKey(e){
+    // Esc cancels — but NOT while the request is in flight, when there is
+    // nothing safe to assume about what SmartStaff has already written.
+    if(e.key === 'Escape' && !busy){
+      e.preventDefault(); e.stopImmediatePropagation(); close();
+    }
+  }
+
+  function body(){
+    var n   = Number(b.ready_count || 0);
+    var ex  = b.expected && b.expected.ex_gst;
+    var inc = b.expected && b.expected.inc_gst;
+    var h = '<div style="font-size:15px;font-weight:600;color:var(--accent);margin-bottom:10px">'
+      + 'Generate invoice for ' + invSafe(b.booking_name || '') + ' (#' + Number(b.booking_id) + ')?'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--text);line-height:1.5">'
+      + n + ' call' + (n === 1 ? '' : 's') + ' · about <b>' + invMoney(ex) + ' ex GST</b> ('
+      + invMoney(inc) + ' inc GST)'
+      + (b.expected_exact === false
+          ? '<div style="color:var(--accent);margin-top:6px">The expected amount on this booking '
+            + 'is an estimate — check the invoice against its PDF afterwards.</div>' : '')
+      + '<div style="margin-top:10px;color:var(--muted)">'
+      + 'SmartStaff creates the invoice and assigns its number now. It will be included in the '
+      + 'next Xero export from SmartStaff.</div>'
+      + '<div style="margin-top:6px;color:var(--muted)">'
+      + 'Lines can\'t be edited in THE GOAT yet; use SmartStaff\'s Edit if a line needs '
+      + 'changing.</div>';
+
+    var un = Number(b.unlocked_calls || 0);
+    if(un > 0){
+      h += '<div style="margin-top:10px;padding:7px 10px;border:1px solid var(--border-gold);'
+        + 'border-radius:4px;background:rgba(212,175,55,0.08);color:var(--accent)">'
+        + un + ' call' + (un === 1 ? '' : 's') + ' on this booking '
+        + (un === 1 ? "isn't" : "aren't") + ' locked yet and will <b>not</b> be on this invoice. '
+        + "They'll need a second invoice.</div>";
+    }
+
+    h += '</div><div id="gen-msg"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px">'
+      + '<button type="button" id="gen-cancel" style="font-size:12px;padding:6px 12px;'
+      + 'border-radius:4px;cursor:pointer;background:var(--surface2);border:1px solid var(--border);'
+      + 'color:var(--text)">Cancel</button>'
+      + '<button type="button" id="gen-go" style="font-size:12px;padding:6px 12px;border-radius:4px;'
+      + 'cursor:pointer;background:var(--surface2);border:1px solid var(--accent);'
+      + 'color:var(--accent)">Generate invoice</button>'
+      + '</div>';
+    return h;
+  }
+
+  function wire(){
+    var cancel = box.querySelector('#gen-cancel');
+    var go     = box.querySelector('#gen-go');
+    if(cancel) cancel.onclick = function(){ if(!busy) close(); };
+    if(go)     go.onclick     = function(){ run(go); };
+  }
+
+  function msg(html){
+    var m = box.querySelector('#gen-msg');
+    if(m) m.innerHTML = html;
+  }
+
+  function openInvoiceBtnHtml(id){
+    return ' <button type="button" class="inv-retry" data-openinv="' + Number(id)
+      + '">Open invoice #' + Number(id) + '</button>';
+  }
+
+  function wireOpenInvoice(){
+    var b2 = box.querySelector('[data-openinv]');
+    if(b2) b2.onclick = function(){
+      var id = Number(b2.getAttribute('data-openinv'));
+      close();
+      openInvoiceDialog(id);
+    };
+  }
+
+  async function run(btn){
+    // RULE 2: one request, whatever the user does with the mouse.
+    if(busy) return;
+    busy = true;
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+    msg('');
+
+    try{
+      var r = await fetch('/api/accounting/invoices/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({booking_id: Number(b.booking_id), fingerprint: b.fingerprint})
+      });
+      var j = {};
+      try{ j = await r.json(); }catch(e){ j = {}; }
+
+      if(r.ok && j.ok){
+        close();
+        goatInfoToast('Invoice #' + Number(j.invoice_id) + ' created · '
+          + invMoney(j.totals && j.totals.inc_gst) + ' inc GST');
+        openInvoiceDialog(Number(j.invoice_id));
+        rdyRefreshAfterGenerate();
+        return;
+      }
+
+      busy = false;
+      btn.disabled = false;
+      btn.textContent = 'Generate invoice';
+
+      var reason = j.reason || '';
+      var text   = escapeHtml(String(j.error || ('the server answered HTTP ' + r.status)));
+
+      // The invoice EXISTS and is not trusted. This is the one message that
+      // must not read like "try again".
+      if(j.failed && j.failed.length){
+        var items = j.failed.map(function(f){ return '<li>' + escapeHtml(String(f)) + '</li>'; }).join('');
+        msg('<div class="inv-error" style="margin-top:12px;display:block">'
+          + '<div>' + text + '</div><ul style="margin:6px 0 0 18px">' + items + '</ul>'
+          + (j.invoice_id ? '<div style="margin-top:8px">' + openInvoiceBtnHtml(j.invoice_id) + '</div>' : '')
+          + '</div>');
+        btn.disabled = true;               // nothing good can come of a second press
+        wireOpenInvoice();
+        return;
+      }
+
+      if(reason === 'changed'){
+        // Ask again, against what is true now.
+        if(j.booking){
+          b = j.booking;
+          box.innerHTML = body();
+          wire();
+        }
+        msg('<div style="margin-top:12px;padding:8px 11px;border:1px solid var(--border-gold);'
+          + 'border-radius:4px;background:rgba(212,175,55,0.08);color:var(--accent)">'
+          + text + '</div>');
+        return;
+      }
+
+      if(reason === 'nothing_to_invoice'){
+        msg('<div style="margin-top:12px;padding:8px 11px;border:1px solid var(--border-gold);'
+          + 'border-radius:4px;background:rgba(212,175,55,0.08);color:var(--accent)">' + text
+          + (j.latest_invoice ? openInvoiceBtnHtml(j.latest_invoice) : '') + '</div>');
+        btn.disabled = true;
+        wireOpenInvoice();
+        rdyRefreshAfterGenerate();
+        return;
+      }
+
+      msg('<div class="inv-error" style="margin-top:12px;display:block">' + text
+        + (j.invoice_id ? '<div style="margin-top:8px">' + openInvoiceBtnHtml(j.invoice_id) + '</div>' : '')
+        + '</div>');
+      if(j.invoice_id) wireOpenInvoice();
+
+    }catch(e){
+      busy = false;
+      btn.disabled = false;
+      btn.textContent = 'Generate invoice';
+      msg('<div class="inv-error" style="margin-top:12px;display:block">'
+        + escapeHtml(e && e.message ? e.message : 'the request failed')
+        + ' — check Invoices before generating again.</div>');
+    }
+  }
+
+  box.innerHTML = body();
+  wire();
+  ov.appendChild(box);
+  ov.addEventListener('click', function(e){ if(e.target === ov && !busy) close(); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(ov);
+}
+
+// Both views are stale after a Generate: the booking has left the ready list
+// and a new invoice is at the top of the other one.
+function rdyRefreshAfterGenerate(){
+  _rdyState.loaded = false;
+  _rdyState.open   = {};
+  _invState.loaded = false;
+  _invState.page   = 0;
+  loadReady();
+  var lv = document.getElementById('inv-view-list');
+  if(lv && lv.classList.contains('on')) loadInvoices();
 }
 </script>
 <!-- ── UNAVAILABILITY MANAGER MODAL ── -->

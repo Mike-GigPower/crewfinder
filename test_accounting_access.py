@@ -329,6 +329,10 @@ class TabStaysFailClosed(unittest.TestCase):
         with open("templates/index.html", encoding="utf-8") as f:
             cls.page = f.read()
 
+    def panel(self):
+        p = self.page[self.page.index('id="tab-invoicing"'):]
+        return p[:p.index('id="tab-payroll"')]
+
     def test_the_tab_button_still_ships_display_none(self):
         """Revealed only by whoami.accounting === true. If this ever ships
         visible, every admin sees a tab whose routes refuse them."""
@@ -337,16 +341,46 @@ class TabStaysFailClosed(unittest.TestCase):
         self.assertIn('display:none', m.group(0))
 
     def test_the_panel_is_the_real_one_not_the_placeholder(self):
-        self.assertIn('id="inv-list"', self.page)
-        self.assertNotIn('<div class="admin-hub-title">Invoicing</div>', self.page)
+        """Keyed on the placeholder's "Coming soon.", not on its title.
 
-    def test_no_write_buttons_crept_in(self):
-        """Slice A has no Generate, Edit, Delete, Email or Export — not even
-        disabled (§6.3)."""
-        panel = self.page[self.page.index('id="tab-invoicing"'):]
-        panel = panel[:panel.index('id="tab-payroll"')]
-        for word in ("Generate", "Regenerate", "Delete", "Email", "Export"):
+        Slice A replaced the placeholder and titled the panel "Invoices";
+        slice B holds two views and titles it "Invoicing" again, which is the
+        placeholder's old title — so the title is not a discriminator and this
+        test used to fail on a correct page. The sub-heading is.
+        """
+        self.assertIn('id="inv-list"', self.page)
+        self.assertNotIn('Coming soon.', self.panel())
+
+    def test_the_static_panel_still_has_no_write_button(self):
+        """Unchanged from slice A, and it has to stay that way even though
+        slice B writes: the Generate button belongs to ONE booking and is
+        drawn per row by rdyBookingHtml(), which omits it entirely for a
+        blocked booking. A button in the static markup could not do that.
+        """
+        panel = self.panel()
+        self.assertNotIn('class="rdy-gen"', panel)
+        for word in ("Generate", "Regenerate", "Edit", "Delete", "Email", "Export"):
             self.assertNotIn(">" + word, panel, word)
+
+    def test_generate_is_in_the_row_renderer_instead(self):
+        """So the test above cannot pass by there being no Generate at all.
+        test_accounting_generate_js then proves the blocked case omits it."""
+        i = self.page.index("function rdyBookingHtml(")
+        j = self.page.index("function rdyCallsHtml(", i)
+        renderer = self.page[i:j]
+        self.assertIn('class="rdy-gen"', renderer)
+        self.assertIn("Generate invoice", renderer)
+        self.assertIn("blocked ? ''", renderer)      # no button when blocked
+
+    def test_slice_b_still_adds_no_edit_email_or_export(self):
+        """Regenerate, Edit, Delete and Email are slice E; the Xero export is
+        slice D (slice B §1, "Not in this slice"). "Open in SmartStaff" is a
+        LINK to SmartStaff's own page, not an edit control."""
+        i = self.page.index("// ── READY TO INVOICE")
+        j = self.page.index("function rdyRefreshAfterGenerate(", i)
+        block = self.page[i:j]
+        for word in ("Regenerate", ">Edit", ">Delete", ">Email", ">Export"):
+            self.assertNotIn(word, block, word)
 
 
 if __name__ == "__main__":

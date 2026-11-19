@@ -27060,19 +27060,38 @@ def _accounting_ss():
     return ss, None
 
 
-def _accounting_json(ss, path, params, label):
-    """GET one accounting endpoint, as JSON. Returns (data, err, status).
+def _accounting_call(ss, path, label, params=None, body=None, timeout=60):
+    """One accounting endpoint, as JSON. Returns (data, err, status).
 
-    A 403 from the PHP is passed STRAIGHT THROUGH with its own message, because
-    "Admin only" and "Not enabled for this account" say different things and
-    the PHP is the one that knows which. Anything else is a 502 naming what
-    failed. A body that is not JSON is a 502 too — SmartStaff answers a lapsed
-    session with an HTML login page and an HTTP 200, so the status alone proves
-    nothing.
+    POSTs `body` as JSON when it is given, otherwise GETs with `params`.
+
+    A 403 or a 404 from the PHP is passed STRAIGHT THROUGH with its own
+    message, because "Admin only", "Not enabled for this account" and "Invoice
+    not found" say different things and the PHP is the one that knows which.
+    Anything else is a 502 naming what failed.
+
+    THE WORDING MATTERS (design §11, review B25). "SmartStaff refused the
+    request" sent Mike to the wrong place three times, so the three failures
+    that actually happen now say what to do about them:
+
+      a 404 with no JSON body   the FILE is not there — a web-server 404, not
+                                the endpoint's own "not found" — which on a
+                                fresh box means the PHP was never deployed
+      an HTML body with a 200   the session lapsed. SmartStaff answers a lapsed
+                                session with a LOGIN PAGE AND AN HTTP 200, so
+                                the status alone proves nothing, and the only
+                                fix is to sign out and back in
+      a timeout                 say how long was waited, so "it's broken" and
+                                "dompdf is slow again" can be told apart
     """
     url = f"{BASE_URL}/ajax/crew/{path}"
     try:
-        resp = ss.get(url, params=params, timeout=60)
+        if body is not None:
+            resp = ss.post(url, json=body, timeout=timeout)
+        else:
+            resp = ss.get(url, params=params, timeout=timeout)
+    except http.exceptions.Timeout:
+        return None, f"SmartStaff didn't answer within {timeout} s.", 504
     except Exception as e:
         return None, f"{label} could not be reached: {e}", 502
 
@@ -27084,16 +27103,31 @@ def _accounting_json(ss, path, params, label):
 
     phpmsg = data.get("error") if isinstance(data, dict) else None
 
-    if resp.status_code in (400, 403, 404):
-        return None, phpmsg or f"{label} refused the request", resp.status_code
+    # A 404 the ENDPOINT produced has a JSON body and its own message; a 404
+    # from the web server has neither, and means the file is not deployed.
+    if resp.status_code == 404 and not isinstance(data, dict):
+        return None, (f"SmartStaff doesn't have {path} (404). "
+                      f"It may not be deployed on this server."), 404
+
+    if resp.status_code in (400, 403, 404, 405, 409):
+        return (data if isinstance(data, dict) else None,
+                phpmsg or f"{label} was refused (HTTP {resp.status_code})",
+                resp.status_code)
     if resp.status_code != 200:
-        return None, phpmsg or f"{label} failed (HTTP {resp.status_code})", 502
+        return (data if isinstance(data, dict) else None,
+                phpmsg or f"{label} failed (HTTP {resp.status_code})", 502)
     if not isinstance(data, dict):
-        return None, f"{label} did not return JSON — the SmartStaff session may have lapsed", 502
+        return None, "SmartStaff session expired. Sign out and back in.", 502
     if phpmsg:
         return None, phpmsg, 502
 
     return data, None, 200
+
+
+def _accounting_json(ss, path, params, label):
+    """Slice A's GET helper, unchanged in behaviour: see _accounting_call."""
+    data, err, status = _accounting_call(ss, path, label, params=params)
+    return (None if err else data), err, status
 
 
 def _no_store(payload, status=200):
@@ -27209,6 +27243,156 @@ def api_accounting_invoice_pdf(invoice_id):
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
     })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ACCOUNTING, SLICE B — READY TO INVOICE, AND GENERATE
+# ──────────────────────────────────────────────────────────────────────────────
+#
+#   GET  /api/accounting/ready?all=0|1      bookings that can be invoiced now
+#   POST /api/accounting/invoices/generate   create ONE booking's invoice
+#
+# GENERATE IS THE FIRST THING IN ACCOUNTING THAT WRITES. It writes nothing
+# itself: generate-invoice.php calls SmartStaff's own
+# generateAccountingData($bookingID, 0), so the maths is the maths SmartStaff
+# has always used (design D2). What this layer adds is the fingerprint round
+# trip, the audit row and the wording.
+#
+# THE FINGERPRINT IS NOT A CSRF TOKEN — it is a statement about the booking.
+# The list computes it from the ready call ids; Generate recomputes it at the
+# moment of the write and refuses `changed` when it differs. That is what stops
+# a Generate pressed on a screen that has been open since this morning from
+# quietly invoicing three calls that were locked in the meantime.
+#
+# EVERY ATTEMPT THAT REACHES SMARTSTAFF IS AUDITED — success, refusal and
+# failure alike. An invoice is money leaving the building; "who generated this
+# and when" has to survive the session that did it. A 400 is NOT audited: it
+# never reached SmartStaff and wrote nothing.
+#
+# A 500 FROM THE PHP BECOMES A 502 WITH `failed` KEPT. That is the one case
+# where an invoice EXISTS and is not trusted, so the list of checks that failed
+# has to reach the screen intact — the UI turns it into "don't generate again,
+# open the invoice and check it in SmartStaff".
+
+ACCOUNTING_GENERATE_TIMEOUT = 120   # SmartStaff writes every line in PHP, one INSERT each
+
+
+@app.route("/api/accounting/ready", methods=["GET"])
+@require_accounting
+def api_accounting_ready():
+    """Bookings with locked, uninvoiced work, grouped by customer.
+
+    `all=1` drops the 12-month window; the PHP owns the window and the 300
+    cap, so there is one definition of each. The money arrives as unrounded
+    decimal strings and is summed and rounded ONCE here, in Decimal, by
+    accounting_invoices.ready_groups.
+    """
+    ss, bad = _accounting_ss()
+    if bad:
+        return bad
+
+    all_time = (request.args.get("all") or "0") == "1"
+
+    data, err, status = _accounting_call(
+        ss, "list-ready-to-invoice.php", "The ready-to-invoice list",
+        params={"all": "1" if all_time else "0"})
+    if err:
+        return _no_store({"error": err}, status)
+
+    rows = data.get("bookings")
+    if not isinstance(rows, list):
+        return _no_store(
+            {"error": "The ready-to-invoice list came back in an unexpected shape"}, 502)
+
+    return _no_store(accounting_invoices.ready_groups(
+        rows,
+        truncated     = bool(data.get("truncated")),
+        window_months = data.get("window_months"),
+        all_time      = all_time,
+        total_found   = data.get("total_found")))
+
+
+@app.route("/api/accounting/invoices/generate", methods=["POST"])
+@require_accounting
+def api_accounting_generate():
+    """Generate one booking's invoice in SmartStaff, then report what happened.
+
+    Both inputs are validated HERE as well as in the PHP: a booking_id that is
+    not a positive integer, or a fingerprint that is not 40 hex characters,
+    never reaches SmartStaff at all (and is not audited, having written
+    nothing).
+    """
+    ss, bad = _accounting_ss()
+    if bad:
+        return bad
+
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        booking_id = int(payload.get("booking_id"))
+    except (TypeError, ValueError):
+        booking_id = 0
+
+    fingerprint = str(payload.get("fingerprint") or "").strip().lower()
+
+    if booking_id < 1:
+        return _no_store({"error": "A booking is required", "reason": "bad_booking_id"}, 400)
+
+    if not re.fullmatch(r"[0-9a-f]{40}", fingerprint):
+        return _no_store({"error": "Refresh the list and try again",
+                          "reason": "bad_fingerprint"}, 400)
+
+    data, err, status = _accounting_call(
+        ss, "generate-invoice.php", "Generate",
+        body={"booking_id": booking_id, "fingerprint": fingerprint},
+        timeout=ACCOUNTING_GENERATE_TIMEOUT)
+
+    body = data if isinstance(data, dict) else {}
+
+    # ---- audited before anything is returned, on every path that got there ----
+    _write_audit("invoice.generate", "booking", booking_id, {
+        "invoice_id": body.get("invoice_id"),
+        "ok":         bool(body.get("ok")) and not err,
+        "reason":     body.get("reason"),
+        "failed":     body.get("failed"),
+        "call_ids":   body.get("call_ids"),
+    })
+
+    if err:
+        out = {"error": err}
+
+        # A refusal says WHICH refusal, so the modal can offer the right next
+        # step: `nothing_to_invoice` gets an Open-invoice link, `changed` gets
+        # the booking as it is now, `busy` gets "try again in a moment".
+        for k in ("reason", "latest_invoice", "booking", "stuck_calls", "failed",
+                  "invoice_id"):
+            if k in body:
+                out[k] = body[k]
+
+        # A 500 from the PHP means the invoice EXISTS and did not pass its
+        # checks. 502 upwards, with `failed` intact — never a bare error.
+        if status == 502 and body.get("failed"):
+            out["error"] = ("SmartStaff created the invoice but these checks failed. "
+                            "Don't generate again — open the invoice and check it "
+                            "in SmartStaff.")
+
+        # A TIMEOUT IS NOT A "NO". generate-invoice.php may have been most of
+        # the way through writing the lines when we stopped waiting, so the
+        # invoice may well exist. The one thing Mike must not do is press
+        # Generate again, which is exactly what "it failed" would invite.
+        if status == 504:
+            out["reason"] = "timeout"
+            out["error"] = (f"SmartStaff didn't answer within "
+                            f"{ACCOUNTING_GENERATE_TIMEOUT} s. It may still have "
+                            f"created the invoice — check Invoices for this booking "
+                            f"before generating again.")
+
+        return _no_store(out, status)
+
+    body["totals"] = accounting_invoices.invoice_totals(
+        body.get("hourly_sum"), body.get("flat_sum_pdf"), body.get("flat_sum_qty"))
+
+    return _no_store(body)
 
 
 if __name__ == "__main__":

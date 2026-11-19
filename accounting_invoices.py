@@ -52,6 +52,7 @@ THE THREE THINGS MOST EASILY GOT WRONG
    raw, so an unrecognised value is visibly odd rather than quietly wrong.
 """
 
+import hashlib
 import re
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -435,3 +436,231 @@ def invoice_detail(lines):
     """
     views = [line_view(l) for l in (lines or [])]
     return {"lines": views, "totals": detail_totals(views)}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ready to invoice (Slice B)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Everything here is PURE. list-ready-to-invoice.php has already done the
+# classification — which calls are ready, which are stuck, whether the expected
+# amount can be trusted — because only SQL can see the tables it reads. These
+# functions turn that answer into the figures and the words the panel shows, and
+# they do the one thing PHP deliberately did not: round the money, once, in
+# Decimal (the Slice A rule, and fix 1's lesson).
+
+
+def ready_fingerprint(call_ids):
+    """sha1 of the ready call ids, sorted ascending and joined with commas.
+
+    THE SAME ALGORITHM AS goat_ready_fingerprint() in accounting-ready-lib.php,
+    and the reason it is duplicated here is that nothing else could test the PHP
+    one: test_accounting_ready.py pins the two against each other, so a change
+    to either shows up as a failing test rather than as a Generate that refuses
+    every booking with `changed`.
+
+    Sorted, so the order the rows arrived in cannot change it. Non-numeric ids
+    are dropped rather than guessed at — PHP's (int) cast would make them 0.
+    """
+    ids = []
+    for c in (call_ids or []):
+        try:
+            ids.append(int(c))
+        except (TypeError, ValueError):
+            continue
+    return hashlib.sha1(",".join(str(i) for i in sorted(ids)).encode("utf-8")).hexdigest()
+
+
+def _short_date(ts):
+    """A unix date as "Sat 23 May" in Melbourne, or "" (notes §9)."""
+    try:
+        n = int(ts or 0)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    try:
+        d = datetime.fromtimestamp(n, MELBOURNE)
+    except (OverflowError, OSError, ValueError):
+        return ""
+    return "%s %d %s" % (d.strftime("%a"), d.day, d.strftime("%b"))
+
+
+def _date_range(stamps):
+    """"Sat 23 May", or "Fri 22 May – Sun 24 May" for a spread."""
+    days = [s for s in sorted(set(int(x or 0) for x in (stamps or []))) if s > 0]
+    if not days:
+        return ""
+    first, last = _short_date(days[0]), _short_date(days[-1])
+    return first if first == last else "%s \u2013 %s" % (first, last)
+
+
+def _sum_expected(calls):
+    """Σ expected_charge over calls, EXACT — no rounding here.
+
+    The strings come from SQL already summed with DECIMAL casts; adding them in
+    Decimal keeps that exactness all the way to the single _money() at the end.
+    """
+    total = Decimal(0)
+    for c in (calls or []):
+        total += _dec(c.get("expected_charge"))
+    return total
+
+
+def ready_view(booking):
+    """One booking row for the Ready-to-invoice list.
+
+    Adds the expected totals and the words; keeps every field PHP sent, so the
+    fingerprint and the call ids travel through untouched.
+
+    BLOCKED IS PHP'S DECISION, not re-derived here: a stuck call means Generate
+    would write that call's lines onto the new invoice (class.accounting.php
+    l. 406 does not filter on invoiceID), so the booking is refused. This
+    function only puts it into words.
+    """
+    b = dict(booking or {})
+
+    ready = b.get("ready_calls") or []
+    stuck = b.get("stuck_calls") or []
+
+    exact = _sum_expected(ready)
+    b["expected"] = invoice_totals(exact, "0", "0")
+
+    b["ready_count"] = len(ready)
+    b["date_range"]  = _date_range([c.get("start_date") for c in ready])
+
+    for c in ready:
+        c["date_text"]       = _short_date(c.get("start_date"))
+        c["expected_ex_gst"] = _f(_money(_dec(c.get("expected_charge"))))
+
+    for c in stuck:
+        c["date_text"] = _short_date(c.get("start_date"))
+
+    b["blocked"] = bool(b.get("blocked")) or len(stuck) > 0
+
+    if stuck:
+        b["block_reason"] = "; ".join(
+            "Call #%s is on invoice #%s but was never marked invoiced"
+            % (c.get("call_id"), c.get("invoice_id")) for c in stuck)
+    else:
+        b["block_reason"] = ""
+
+    notes = []
+
+    n = int(b.get("unlocked_calls") or 0)
+    if n:
+        notes.append("%d call%s not locked yet" % (n, "" if n == 1 else "s"))
+
+    n = int(b.get("locked_no_crew_calls") or 0)
+    if n:
+        notes.append("%d locked call%s with no crew will be included"
+                     % (n, "" if n == 1 else "s"))
+
+    # Said out loud rather than hidden: when the prediction is not exact, the
+    # figure on screen is an estimate and generate-invoice.php will skip its
+    # money check. Mike should check this one against its PDF.
+    if not b.get("expected_exact", True):
+        notes.append("the expected amount is an estimate on this booking "
+                     "— check it against the PDF")
+
+    b["notes"] = notes
+
+    return b
+
+
+def ready_groups(bookings, truncated=False, window_months=None, all_time=False,
+                 total_found=None):
+    """The whole Ready-to-invoice payload, grouped by customer (design §11).
+
+    Group and overall totals cover the bookings that CAN be generated: a
+    blocked booking's money is not money anyone can invoice today, and putting
+    it in the header total would overstate what the button would produce. The
+    blocked bookings are still listed, with their reason.
+
+    Summed in Decimal from the raw per-call strings and rounded ONCE per group,
+    so a group total is never the sum of rounded parts.
+    """
+    views  = [ready_view(b) for b in (bookings or [])]
+    groups = []
+    index  = {}
+
+    for v in views:
+        key = v.get("customer_id") or 0
+        if key not in index:
+            index[key] = {
+                "customer_id":   key,
+                "customer_name": v.get("customer_name"),
+                "bookings":      [],
+                "_exact":        Decimal(0),
+                "ready_bookings": 0,
+            }
+            groups.append(index[key])
+
+        g = index[key]
+        g["bookings"].append(v)
+
+        if not v.get("blocked"):
+            g["_exact"] += _sum_expected(v.get("ready_calls"))
+            g["ready_bookings"] += 1
+
+    overall = Decimal(0)
+    ready_n = 0
+
+    for g in groups:
+        overall += g["_exact"]
+        ready_n += g["ready_bookings"]
+        g["totals"] = invoice_totals(g.pop("_exact"), "0", "0")
+
+    # Biggest first — the one most worth invoicing today is at the top.
+    groups.sort(key=lambda g: (-(g["totals"]["ex_gst"]), g["customer_name"] or ""))
+
+    return {
+        "groups":          groups,
+        "totals":          invoice_totals(overall, "0", "0"),
+        "ready_bookings":  ready_n,
+        "booking_count":   len(views),
+        "truncated":       bool(truncated),
+        # How many the PHP found before the 300 cap, so "showing 300 of 412"
+        # can be honest about what is missing.
+        "total_found":     len(views) if total_found is None else int(total_found),
+        "window_months":   window_months,
+        "all":             bool(all_time),
+    }
+
+
+# The two sentences that never change, kept here so the confirm modal and its
+# test read the same words (review R5: a confirm has to state the consequence).
+GENERATE_CONSEQUENCE = (
+    "SmartStaff creates the invoice and assigns its number now. "
+    "It will be included in the next Xero export from SmartStaff.",
+    "Lines can't be edited in THE GOAT yet; use SmartStaff's Edit if a line "
+    "needs changing.",
+)
+
+
+def generate_consequence(booking):
+    """What the Generate confirm says for this booking (§5.3).
+
+    `warning` is the amber line, and it is present only when the booking has
+    calls that are not locked yet — those will NOT be on this invoice and will
+    need a second one, which is the part a person would otherwise find out
+    about a fortnight later.
+    """
+    b = ready_view(booking)
+
+    n = int(b.get("unlocked_calls") or 0)
+
+    warning = None
+    if n:
+        warning = ("%d call%s on this booking %s locked yet and will not be on "
+                   "this invoice. They'll need a second invoice."
+                   % (n, "" if n == 1 else "s", "isn't" if n == 1 else "aren't"))
+
+    return {
+        "booking_id":   b.get("booking_id"),
+        "booking_name": b.get("booking_name"),
+        "ready_count":  b.get("ready_count"),
+        "expected":     b.get("expected"),
+        "lines":        list(GENERATE_CONSEQUENCE),
+        "warning":      warning,
+    }
