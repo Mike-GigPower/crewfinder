@@ -27369,6 +27369,21 @@ def api_accounting_generate():
             if k in body:
                 out[k] = body[k]
 
+        # `changed` CARRIES THE PHP'S RAW BOOKING ROW — the same row the list
+        # gets from list-ready-to-invoice.php, BEFORE ready_view() has added
+        # ready_count, expected and each call's date_text / expected_ex_gst.
+        # Passed through raw, the modal redrew "0 calls · about — ex GST" with
+        # Generate still live (test, 19 Nov). So it goes through the SAME
+        # ready_view the list uses: one definition of the money, summed once
+        # in Decimal. Anything that is not a booking-shaped dict is dropped,
+        # and the modal then refuses to redraw and offers Refresh list.
+        if body.get("reason") == "changed":
+            bk = body.get("booking")
+            if isinstance(bk, dict) and isinstance(bk.get("ready_calls"), list):
+                out["booking"] = accounting_invoices.ready_view(bk)
+            else:
+                out.pop("booking", None)
+
         # A 500 from the PHP means the invoice EXISTS and did not pass its
         # checks. 502 upwards, with `failed` intact — never a bare error.
         if status == 502 and body.get("failed"):

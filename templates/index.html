@@ -42664,7 +42664,7 @@ function invRenderDialog(id, d){
               + [cu.phone, cu.email].filter(function(x){ return x; }).map(function(x){ return invSafe(x); }).join(' · ')
               + '</div>'
             : '')
-     + '</div>'
+     + '</div></div>'          // closes .inv-head-val AND .inv-head-block (fix 2, 19 Nov)
      + '<div class="inv-head-block"><div class="inv-head-lbl">Booking</div><div class="inv-head-val">'
      +   invSafe(bk.name)
      +   (bid ? ' <button class="inv-link" data-booking="' + bid + '" data-inv="' + id
@@ -42672,7 +42672,12 @@ function invRenderDialog(id, d){
      +   (bk.reference ? '<div class="inv-ln-note">Reference ' + invSafe(bk.reference) + '</div>' : '')
      +   (contact ? '<div class="inv-ln-note">Contact ' + contact + '</div>' : '')
      +   (ve.name ? '<div class="inv-ln-note">' + invSafe(ve.name) + '</div>' : '')
-     + '</div></div>';
+     + '</div></div>'
+     // CLOSES .inv-head-grid. Without it (and the Customer block's own close
+     // above) every section below — Lines, the totals, Calls on this invoice —
+     // became a cell of this two-column grid, so the lines table got half the
+     // dialog and scrolled after Break (#34336, #34337, test 19 Nov).
+     + '</div>';
 
   // ── the lines, in the PDF's columns and the PDF's order ──
   var lines = d.lines || [];
@@ -43111,6 +43116,35 @@ function rdyListClick(ev){
 // CLOSES on a button press and this modal has to survive the request: it shows
 // "Generating…", then either closes on success or stays open with the refusal
 // in it (rule 3 above).
+// True when a booking (the one a `changed` 409 carries) is complete enough for
+// the confirm to redraw from it AND for Generate to be pressed against it:
+// the same booking, at least one ready call, the money already worked out by
+// app.py's ready_view, a fingerprint, and not blocked. Anything less and the
+// modal disables Generate and offers Refresh list instead (fix 1, 19 Nov).
+function invGenBookingUsable(bk, bookingId){
+  if(!bk || typeof bk !== 'object') return false;
+  if(Number(bk.booking_id) !== Number(bookingId)) return false;
+  if(!Array.isArray(bk.ready_calls) || bk.ready_calls.length < 1) return false;
+  if(!/^[0-9a-f]{40}$/i.test(String(bk.fingerprint || ''))) return false;
+  if(!bk.expected || bk.expected.ex_gst == null || bk.expected.inc_gst == null) return false;
+  if(bk.blocked) return false;
+  return true;
+}
+
+// The calls the confirm is about to invoice, one line each, so a person asked
+// to "check and confirm again" after a `changed` refusal has something to check.
+function invGenCallsHtml(calls){
+  if(!calls || !calls.length) return '';
+  var rows = calls.map(function(c){
+    return '<div style="display:flex;gap:8px;justify-content:space-between">'
+      + '<span>' + escapeHtml(String(c.date_text || '')) + (c.date_text ? ' · ' : '')
+      + invSafe(c.call_name || ('Call ' + c.call_id)) + '</span>'
+      + '<span style="white-space:nowrap">' + invMoney(c.expected_ex_gst) + '</span></div>';
+  }).join('');
+  return '<div class="gen-calls" style="margin-top:8px;padding:6px 10px;border:1px solid var(--border);'
+    + 'border-radius:4px;max-height:160px;overflow:auto;color:var(--muted)">' + rows + '</div>';
+}
+
 function invGenerateModal(booking){
   var b    = booking;
   var busy = false;
@@ -43137,7 +43171,8 @@ function invGenerateModal(booking){
   }
 
   function body(){
-    var n   = Number(b.ready_count || 0);
+    var calls = Array.isArray(b.ready_calls) ? b.ready_calls : [];
+    var n   = (b.ready_count != null) ? Number(b.ready_count) : calls.length;
     var ex  = b.expected && b.expected.ex_gst;
     var inc = b.expected && b.expected.inc_gst;
     var h = '<div style="font-size:15px;font-weight:600;color:var(--accent);margin-bottom:10px">'
@@ -43146,6 +43181,7 @@ function invGenerateModal(booking){
       + '<div style="font-size:12px;color:var(--text);line-height:1.5">'
       + n + ' call' + (n === 1 ? '' : 's') + ' · about <b>' + invMoney(ex) + ' ex GST</b> ('
       + invMoney(inc) + ' inc GST)'
+      + invGenCallsHtml(calls)
       + (b.expected_exact === false
           ? '<div style="color:var(--accent);margin-top:6px">The expected amount on this booking '
             + 'is an estimate — check the invoice against its PDF afterwards.</div>' : '')
@@ -43250,15 +43286,28 @@ function invGenerateModal(booking){
       }
 
       if(reason === 'changed'){
-        // Ask again, against what is true now.
-        if(j.booking){
+        var amber = '<div style="margin-top:12px;padding:8px 11px;border:1px solid var(--border-gold);'
+          + 'border-radius:4px;background:rgba(212,175,55,0.08);color:var(--accent)">' + text;
+
+        // Ask again, against what is true now: the calls, the money, the
+        // warnings AND the new fingerprint all come from the 409's booking,
+        // so the next press is a statement about the booking as it is now.
+        if(invGenBookingUsable(j.booking, b.booking_id)){
           b = j.booking;
           box.innerHTML = body();
           wire();
+          msg(amber + '</div>');
+          return;
         }
-        msg('<div style="margin-top:12px;padding:8px 11px;border:1px solid var(--border-gold);'
-          + 'border-radius:4px;background:rgba(212,175,55,0.08);color:var(--accent)">'
-          + text + '</div>');
+
+        // No usable booking came back. NEVER leave Generate live over a
+        // booking this modal can't describe: disable it and send them back to
+        // the list, which re-reads everything.
+        btn.disabled = true;
+        msg(amber + ' <button type="button" class="inv-retry" data-rdyrefresh="1">'
+          + 'Refresh list</button></div>');
+        var rf = box.querySelector('[data-rdyrefresh]');
+        if(rf) rf.onclick = function(){ close(); rdyRefreshAfterGenerate(); };
         return;
       }
 
