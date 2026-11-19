@@ -67,6 +67,7 @@ import accounting_invoices
 import name_match
 import drive_contracts
 import accred_names
+import checkin_import
 # When running inside a PyInstaller bundle, use the executable's directory
 # When running as a script, use the script's directory
 if getattr(_sys, 'frozen', False):
@@ -719,6 +720,10 @@ GOAT_RECRUITMENT_KEY = os.environ.get("GOAT_RECRUITMENT_KEY", "") or load_config
 # through edge functions, so this proxies checkin-booking-mode exactly as the
 # recruitment routes above proxy theirs. See BRIEF-live-checkin-slices-1-2.md §2.
 CHECKIN_BOOKING_MODE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/checkin-booking-mode"
+# Crew Hub's read-only settlement feed (BRIEF-import-times-from-checkin, Part 1):
+# every call's crew rows with PAID times, computed by the check-in Times view's own
+# code. Same GOAT_CHECKIN_KEY, same X-Goat-Service-Key header, server-side only.
+CHECKIN_SETTLEMENT_URL = "https://crew.gigpower.com/api/goat/checkin-settlement"
 # A NEW, DEDICATED secret — deliberately not GOAT_RECRUITMENT_KEY, so the pilot
 # switch can be revoked on its own without taking recruitment down with it. Same
 # discipline as every other key here: env first, then the gitignored config.json,
@@ -21565,6 +21570,98 @@ def api_import_times_preview_live(booking_id):
 
     preview["source"] = {"spreadsheet_id": ssid, "url": (link or {}).get("url")}
     return jsonify(preview)
+
+
+def _fetch_checkin_settlement(booking_id, call_ids=None):
+    """(feed_dict, None) or (None, operator_message). One GET to Crew Hub's
+    settlement feed; the key is sent server-side and never logged or returned."""
+    if not GOAT_CHECKIN_KEY:
+        return None, "THE GOAT's check-in key (goat_checkin_key) isn't configured on this machine."
+    params = [("booking_id", int(booking_id))] + [("call_id", int(c)) for c in (call_ids or [])]
+    try:
+        r = http.get(CHECKIN_SETTLEMENT_URL, params=params,
+                     headers={"X-Goat-Service-Key": GOAT_CHECKIN_KEY}, timeout=60)
+    except Exception as e:
+        print(f"[checkin] settlement feed request failed: {e}")
+        return None, "Couldn't reach Crew Hub's check-in feed. Check the connection and try again."
+    if r.status_code != 200:
+        try:
+            upstream = str((r.json() or {}).get("error") or "")
+        except Exception:
+            upstream = ""
+        print(f"[checkin] settlement feed returned {r.status_code}")
+        return None, checkin_import.feed_error_message(r.status_code, upstream)
+    try:
+        data = r.json()
+    except Exception:
+        return None, "Crew Hub's check-in feed sent back something that isn't JSON."
+    if not isinstance(data, dict) or not isinstance(data.get("calls"), list):
+        return None, "Crew Hub's check-in feed sent back an unexpected shape."
+    return data, None
+
+
+@app.route("/api/booking/<booking_id>/import-times/preview-checkin", methods=["GET"])
+@require_cohort("admin")
+def api_import_times_preview_checkin(booking_id):
+    """Import Times from the live check-in sheet (BRIEF-import-times-from-checkin,
+    Part 2). Read-only. Reads Crew Hub's settlement feed, reshapes it into the same
+    {tabs, skipped_tabs} the Google Sheet reader produces (checkin_import.convert_feed
+    -- one tab per call, Call ID set, so every tab maps exactly), and runs it through
+    _build_import_preview UNCHANGED. The review flags are then ADDED to the result
+    (checkin_import.attach_flags); no existing key is altered, and the write is the
+    same /api/call/<b>/<c>/times -> update-call-times.php as every other import."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    bid = _checkin_booking_id(booking_id)
+    if bid is None:
+        return jsonify({"error": "booking_id must be an integer"}), 400
+    call_ids = []
+    for v in request.args.getlist("call_id"):
+        try:
+            call_ids.append(int(v))
+        except (TypeError, ValueError):
+            return jsonify({"error": "call_id must be an integer"}), 400
+
+    feed, err = _fetch_checkin_settlement(bid, call_ids)
+    if err:
+        return jsonify({"error": err}), 502
+
+    parsed = checkin_import.convert_feed(feed)
+    rec = _CallTimesRecorder(ss)
+    preview, err = _build_import_preview(rec, booking_id, parsed)
+    if err:
+        return jsonify({"error": err}), 502
+    checkin_import.attach_flags(
+        preview, feed,
+        roster_status=checkin_import.roster_status_from_call_times(rec.answers))
+    return jsonify(preview)
+
+
+class _CallTimesRecorder(object):
+    """Wraps the SmartStaff session for ONE check-in preview and keeps each
+    get-call-times.php answer _build_import_preview fetches, so the review can
+    show the status of rostered people who aren't on check-in without a second
+    request per call (and without changing _build_import_preview). Everything
+    else is passed straight through; nothing is retried or altered."""
+
+    def __init__(self, ss):
+        self._ss = ss
+        self.answers = {}
+
+    def get(self, url, *a, **kw):
+        resp = self._ss.get(url, *a, **kw)
+        if "get-call-times.php" in str(url):
+            try:
+                cid = int((kw.get("params") or {}).get("id"))
+                if resp.status_code == 200:
+                    self.answers[cid] = resp.json()
+            except Exception:
+                pass   # status stays unknown; the preview itself is unaffected
+        return resp
+
+    def __getattr__(self, name):
+        return getattr(self._ss, name)
 
 
 def _gather_timesheet_calls(ss, booking_id):

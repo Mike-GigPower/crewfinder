@@ -70,6 +70,8 @@ pyinstaller \
   --hidden-import name_match \
   --hidden-import drive_contracts \
   --hidden-import accred_names \
+  --hidden-import checkin_import \
+  --hidden-import derivation \
   dock_launcher.py
 
 if [ ! -d "$BUNDLE" ]; then

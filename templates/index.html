@@ -28568,14 +28568,55 @@ function _tiMapPairs(manual){
 
 // Carry the operator's include/untick choices across a reload, so mapping one tab
 // by hand doesn't silently re-tick rows they had already excluded.
-function _tiSeedInclude(data, keep){
+// A check-in card starts ticked only if it has a row to write: its held rows start
+// unticked, so a card of them alone is "0 to write" and starts unticked too. The
+// sheet and .xlsx imports keep their rule (any matched row ticks the card).
+function _tiSeedInclude(data, keep, source){
   const inc = {};
+  const probe = {rowOff: {}, rowOnHeld: (keep && keep.rowOnHeld) || {}};
   (data.calls||[]).forEach(function(c){
     inc[c.call_id] = (keep && keep.include && (c.call_id in keep.include))
       ? keep.include[c.call_id]
-      : (c.matched.length > 0);
+      : (source === 'checkin' ? _tiCallRows(probe, c).length > 0 : c.matched.length > 0);
   });
   return inc;
+}
+
+// Rostered in SmartStaff, no times written, and NOT on the check-in feed at all.
+// Anyone the feed does carry without times (never tapped, no-show, stranded
+// sign-off) is a skipped row, already named under its own flag, so is left out.
+// roster_only.status is the SmartStaff status, added by checkin_import.attach_flags.
+function _tiOffFeed(c){
+  const onFeed = {};
+  (c.skipped || []).forEach(function(r){ if(r.ein != null) onFeed[String(r.ein)] = true; });
+  return (c.roster_only || []).filter(function(r){ return !onFeed[String(r.ein)]; });
+}
+
+// The card's "booked but absent" count. Sheet and .xlsx: every rostered person
+// not matched, as always. Check-in: only people off the feed whose SmartStaff
+// status is not Confirmed (5) — the Confirmed ones are a warning, not a count
+// (_tiMissingConfirmedLines).
+function _tiAbsentExtra(c, source){
+  const ro = c.roster_only || [];
+  if(source !== 'checkin'){
+    return ro.length ? ro.length+' booked but absent from sheet' : '';
+  }
+  const n = _tiOffFeed(c).filter(function(r){ return r.status != null && Number(r.status) !== 5; }).length;
+  return n ? n+' on SmartStaff but not Confirmed (not expected on check-in)' : '';
+}
+
+// Confirmed in SmartStaff but not on check-in: no times, and they need checking
+// before the call is locked. A status THE GOAT couldn't read is shown too rather
+// than dropped, because it might be a Confirmed person.
+function _tiMissingConfirmedLines(c){
+  const off = _tiOffFeed(c);
+  const nm = function(r){ return decodeEntities(String(r.name || ('EIN ' + r.ein))); };
+  const conf = off.filter(function(r){ return r.status != null && Number(r.status) === 5; }).map(nm);
+  const unk  = off.filter(function(r){ return r.status == null; }).map(nm);
+  const out = [];
+  if(conf.length) out.push('<div>⚠ Confirmed in SmartStaff but missing from check-in ('+conf.length+'): '+escapeHtml(conf.join('; '))+'</div>');
+  if(unk.length)  out.push('<div>⚠ Not on check-in, SmartStaff status unknown ('+unk.length+'): '+escapeHtml(unk.join('; '))+'</div>');
+  return out;
 }
 
 function openTimesImport(bookingId){
@@ -28586,6 +28627,7 @@ function openTimesImport(bookingId){
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="padding:6px 0">'
     + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Pull the actual times worked back onto each call. Read the Google Sheet THE GOAT generated, or upload a finished workbook — you\'ll review everything before anything is written.</div>'
+    + '<div id="ti-checkin-slot"></div>'
     + '<div onclick="tiLoadLive(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:12px">📊 Import from the Google Sheet</div>'
     + '<div style="font-size:11px;color:var(--muted);padding:0 0 6px">or upload a finished workbook (.xlsx)</div>'
     + '<input id="ti-file" type="file" accept=".xlsx" onchange="tiHandleFile(this,\''+bookingId+'\')" style="font-size:12px;color:var(--text)">'
@@ -28593,6 +28635,96 @@ function openTimesImport(bookingId){
     + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('‹ Back to booking',"openBookingDialog('"+bookingId+"')") + entityBtn('Close','closeEntityModal()');
+  tiLoadCheckinButton(bookingId);
+}
+
+// ── Import from check-in (BRIEF-import-times-from-checkin, Part 2) ───────────
+// A third source next to the Google Sheet and the .xlsx: Crew Hub's settlement
+// feed, already in PAID times, reshaped server-side into the same tabs the sheet
+// reader makes and reviewed on the same screen. Shown only when the booking's
+// check-in mode is not Off; an unreadable mode shows nothing (the sheet is still
+// there), exactly as the booking dialog's pilot control behaves.
+async function tiLoadCheckinButton(bookingId){
+  const slot = document.getElementById('ti-checkin-slot');
+  if(!slot) return;
+  let mode = null;
+  try{
+    const r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/checkin-mode',
+                          { headers: { 'Accept': 'application/json' } });
+    if(r.ok){ const j = await r.json(); if(j && !j.error) mode = String(j.mode || 'off'); }
+  }catch(e){ /* mode unknown -> no button */ }
+  if(!slot.isConnected || !mode || mode === 'off') return;
+  slot.innerHTML =
+      '<div onclick="tiLoadCheckin(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:6px">✅ Import from check-in</div>'
+    + (mode === 'shadow' ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 12px">' + escapeHtml(TI_CHECKIN_SHADOW_LINE) + '</div>' : '<div style="height:6px"></div>');
+}
+
+// Wording to change when official mode exists (brief, Part 2 UI).
+const TI_CHECKIN_SHADOW_LINE = 'Shadow booking — check these times carefully; the check-in sheet is the only record for this booking.';
+
+async function tiLoadCheckin(bookingId, keep){
+  _tiSay('Reading the check-in sheet…');
+  try{
+    const res  = await fetch('/api/booking/'+bookingId+'/import-times/preview-checkin');
+    let data = {};
+    try{ data = await res.json(); }catch(_){ data = {error: 'THE GOAT sent back something unreadable (HTTP '+res.status+').'}; }
+    if(data.error){ _tiSay(data.error, 'var(--conflict)'); return; }
+    _tiState = {bookingId: bookingId, data: data, include: _tiSeedInclude(data, keep, 'checkin'),
+                rowOff: (keep && keep.rowOff) || {}, rowOnHeld: (keep && keep.rowOnHeld) || {},
+                source: 'checkin', manual: {}, file: null};
+    renderTimesheetImportPreview();
+  }catch(e){
+    _tiSay('Couldn\'t read the check-in sheet: ' + e.message, 'var(--conflict)');
+  }
+}
+
+// HH:MM in Melbourne from the feed's ISO-with-offset, read as written.
+function _tiIsoHHMM(iso){
+  const m = /T(\d{2}):(\d{2})/.exec(String(iso || ''));
+  return m ? m[1] + ':' + m[2] : '';
+}
+
+// Top-of-review lines for a check-in import: where it came from, the Shadow
+// warning, call ids the feed didn't know, and how many rows are held back.
+function _tiCheckinBlock(d){
+  const src = d.source || {};
+  if(src.kind !== 'checkin') return '';
+  let held = 0;
+  (d.calls || []).forEach(function(c){ (c.matched || []).forEach(function(m){ if(m.checkin_hold) held++; }); });
+  const unk = d.unknown_call_ids || [];
+  return '<div style="font-size:11px;color:var(--muted);padding:0 0 8px">✅ From the check-in sheet'
+    + (src.generated_at ? ' · read at ' + escapeHtml(_tiIsoHHMM(src.generated_at)) : '') + '</div>'
+    + (src.mode === 'shadow' ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + escapeHtml(TI_CHECKIN_SHADOW_LINE) + '</div>' : '')
+    + (unk.length ? '<div style="font-size:11px;color:var(--conflict);padding:0 0 8px">⚠ Check-in doesn\'t know call' + (unk.length===1?' ':'s ') + escapeHtml(unk.join(', ')) + '.</div>' : '')
+    + (held ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + held + ' row' + (held===1?' needs':'s need') + ' a look — flagged in amber and left unticked. Tick a row to write it.</div>' : '');
+}
+
+// A row's check-in flags, inline after the name. Amber = held (unticked), grey = info.
+function _tiFlagChips(m){
+  return (m.checkin_flags || []).map(function(f){
+    return ' <span style="font-size:9px;letter-spacing:.3px;color:'+(f.level==='warn'?'#f59e0b':'var(--muted)')+'">'+escapeHtml(f.text)+'</span>';
+  }).join('');
+}
+
+// Flagged people on a call who are NOT among the writable rows (never tapped,
+// no Crew Hub record, sign-off with no sign-on, off the roster), named so the
+// operator can see who is missing.
+// Check-in cards only (the caller gates on source): sheet rows carry no
+// checkin_notes and their roster_only no status.
+function _tiCheckinCardNotes(c){
+  if(!c || !Array.isArray(c.checkin_notes)) return '';
+  const notes = c.checkin_notes;
+  const shown = {};
+  (c.matched || []).forEach(function(m){ shown[String(m.ein)] = true; });
+  const rest = notes.filter(function(n){ return n.ein == null || !shown[String(n.ein)]; });
+  const by = {};
+  rest.forEach(function(n){ (by[n.text] = by[n.text] || []).push(decodeEntities(n.name)); });
+  const lines = Object.keys(by).map(function(t){
+    return '<div>⚠ '+escapeHtml(t)+' ('+by[t].length+'): '+escapeHtml(by[t].join('; '))+'</div>';
+  });
+  if(c.checkin_future) lines.unshift('<div>⚠ This call hasn\'t started yet — nothing here should be written.</div>');
+  Array.prototype.push.apply(lines, _tiMissingConfirmedLines(c));
+  return lines.length ? '<div style="font-size:10px;color:#f59e0b;border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5">'+lines.join('')+'</div>' : '';
 }
 
 async function tiLoadLive(bookingId, manual, keep){
@@ -28665,8 +28797,11 @@ function _tiStatusChip(st){
 
 // A flagged (non-confirmed) row is written unless the operator unticks it.
 // Confirmed rows have no per-row control and are always in.
+// A check-in row held for review (checkin_hold — only the check-in import sets
+// it) starts unticked, confirmed or not, and is written only once ticked.
 function _tiRowOn(s, callId, m){
   if(_tiPromoPending(m)) return false;
+  if(m && m.checkin_hold) return !!(s.rowOnHeld && s.rowOnHeld[callId + ':' + m.user_id]);
   if(_tiIsConfirmed(m)) return true;
   return !s.rowOff[callId + ':' + m.user_id];
 }
@@ -28783,7 +28918,7 @@ function renderTimesheetImportPreview(){
       ? 'matched by Call ID'
       : ('EIN overlap '+c.overlap+'/'+c.tab_ein_count+(c.delta_min?(' · '+c.delta_min+'min off'):''));
 
-    const flagged = (c.matched||[]).filter(function(m){ return !_tiIsConfirmed(m) && !_tiPromoPending(m); });
+    const flagged = (c.matched||[]).filter(function(m){ return !_tiIsConfirmed(m) && !_tiPromoPending(m) && !m.checkin_hold; });
     totalFlagged += flagged.length;
     const promoLocked = (c.matched||[]).filter(_tiPromoPending);
     totalPromo += promoLocked.length;
@@ -28793,23 +28928,26 @@ function renderTimesheetImportPreview(){
       const ok  = _tiIsConfirmed(m);
       const on  = _tiRowOn(s, c.call_id, m);
       const pp  = _tiPromoPending(m);
-      const box = ok ? ''
+      const box = (ok && !m.checkin_hold) ? ''
         : pp ? '<input type="checkbox" disabled title="Promoted off backup and has not accepted — cannot be written" style="margin:0 6px 0 0;vertical-align:middle">'
         : '<input type="checkbox" '+(on?'checked':'')+' onchange="tiToggleRow('+c.call_id+','+m.user_id+',this)" style="margin:0 6px 0 0;vertical-align:middle">';
-      const dim = (ok || on) ? '' : 'opacity:.45;';
+      const dim = on ? '' : 'opacity:.45;';
       return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;color:var(--text);'+dim+'">'
         + '<span>'+box+escapeHtml(m.name)+(m.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')
-        +   (ok?'':(pp ? ' <span style="font-size:9px;letter-spacing:.5px;color:#f59e0b">PROMOTED · NOT ACCEPTED</span>' : ' '+_tiStatusChip(m.status)))+'</span>'
+        +   (ok?'':(pp ? ' <span style="font-size:9px;letter-spacing:.5px;color:#f59e0b">PROMOTED · NOT ACCEPTED</span>' : ' '+_tiStatusChip(m.status)))
+        +   _tiFlagChips(m)+'</span>'
         + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml((m.on||'—')+'–'+(m.off||'—')+brk)+'</span>'
         + '</div>';
     }).join('');
 
+    const src = (s.source === 'checkin') ? 'check-in' : 'sheet';
     const extras = [];
     if(flagged.length)       extras.push(flagged.length+' not confirmed in SmartStaff');
     if(promoLocked.length)   extras.push(promoLocked.length+' promoted, not accepted — locked');
-    if(c.unmatched.length)   extras.push(c.unmatched.length+' on sheet, not booked on this call');
+    if(c.unmatched.length)   extras.push(c.unmatched.length+' on '+src+', not booked on this call');
     if(c.skipped.length)     extras.push(c.skipped.length+' with no times (no-show / blank)');
-    if(c.roster_only.length) extras.push(c.roster_only.length+' booked but absent from sheet');
+    const absent = _tiAbsentExtra(c, s.source);
+    if(absent)               extras.push(absent);
 
     return '<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:10px;background:var(--surface2);padding:10px 12px">'
       + '<div style="display:flex;align-items:center;gap:10px">'
@@ -28820,6 +28958,7 @@ function renderTimesheetImportPreview(){
       + '</div></div>'
       + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>')
       + (extras.length ? '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'+extras.map(escapeHtml).join(' · ')+'</div>' : '')
+      + (s.source === 'checkin' ? _tiCheckinCardNotes(c) : '')
       + '</div>';
   }).join('');
 
@@ -28842,13 +28981,14 @@ function renderTimesheetImportPreview(){
     + (d.unmapped_tabs && d.unmapped_tabs.length
         ? '<div style="font-size:11px;color:var(--conflict);padding-bottom:8px">Tabs with no matching call: '+escapeHtml(d.unmapped_tabs.map(function(t){return t.tab_name;}).join(', '))+'</div>'
         : '')
+    + _tiCheckinBlock(d)
     + _tiDuplicateBlock(d)
     + _tiNeedsCallBlock(d)
     + _tiCancelledBlock(d)
     + _tiRecoveredBlock(d)
     + flagNote
     + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found.</div>')
-    + '<div style="font-size:11px;color:var(--muted);padding-top:4px">Ignored support tabs: '+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>';
+    + '<div style="font-size:11px;color:var(--muted);padding-top:4px">'+(s.source === 'checkin' ? 'Calls with nobody on them: ' : 'Ignored support tabs: ')+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>';
 
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Write '+totalWrite+' times', "writeTimesImport()", {primary:true, id:'ti-write-btn'})
@@ -28871,8 +29011,10 @@ function tiPickCall(sel){
   if(!tabName || !callId) return;
   const manual = Object.assign({}, _tiState.manual || {});
   manual[tabName] = callId;
-  const keep = {include: _tiState.include, rowOff: _tiState.rowOff};
-  if(_tiState.source === 'file'){
+  const keep = {include: _tiState.include, rowOff: _tiState.rowOff, rowOnHeld: _tiState.rowOnHeld};
+  if(_tiState.source === 'checkin'){
+    tiLoadCheckin(_tiState.bookingId, keep);   // every check-in tab carries its Call ID
+  } else if(_tiState.source === 'file'){
     if(!_tiState.file){
       _tiSay('The workbook is no longer in memory — upload it again to map that tab.', 'var(--conflict)');
       return;
@@ -28886,8 +29028,19 @@ function tiPickCall(sel){
 function tiToggleRow(callId, userId, el){
   if(!_tiState) return;
   const key = callId + ':' + userId;
-  if(el.checked) delete _tiState.rowOff[key];
-  else _tiState.rowOff[key] = true;
+  const c = (_tiState.data.calls || []).find(function(x){ return String(x.call_id) === String(callId); });
+  const m = c && (c.matched || []).find(function(x){ return String(x.user_id) === String(userId); });
+  if(m && m.checkin_hold){
+    _tiState.rowOnHeld = _tiState.rowOnHeld || {};
+    if(el.checked){
+      _tiState.rowOnHeld[key] = true;
+      _tiState.include[c.call_id] = true;   // the card started unticked at 0 to write
+    }
+    else delete _tiState.rowOnHeld[key];
+  } else {
+    if(el.checked) delete _tiState.rowOff[key];
+    else _tiState.rowOff[key] = true;
+  }
   renderTimesheetImportPreview();
 }
 
