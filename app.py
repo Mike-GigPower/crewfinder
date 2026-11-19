@@ -186,7 +186,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.111.1"
+APP_VERSION    = "5.112.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -3108,7 +3108,7 @@ def _ss_booking_graph(ss, booking_ids):
 
     get-booking.php emits crew[].status as a LABEL, not an int:
       5 -> 'confirmed', 1 -> 'sent', 6 -> 'declined', 8 -> 'noshow',
-      7 -> 'backup', anything else -> 'unconfirmed'
+      7 -> 'backup', 13 -> 'leftstandby', anything else -> 'unconfirmed'
     (see $crewStatusMap in get-booking.php). Status 2 falls through to
     'unconfirmed', which is fine — callers only need "is there a row, and is it
     a declined one".
@@ -3171,6 +3171,12 @@ def _held_blocking(held, crew_id, call_id):
     A 'declined' row is the deliberate exception: re-offering someone who said
     no is a normal ops action, and delete-then-insert is how it works today.
     Preserving that keeps existing behaviour intact.
+
+    'leftstandby' (13) is NOT given that exception, deliberately. Re-offering
+    one is also a normal ops action (D6), but it happens in place through the
+    status dropdown's 13 -> 0, so nothing needs re-adding; letting addToCall
+    delete the row instead would throw away its call_standby_leave history for
+    no gain.
     """
     st = held.get((str(crew_id), str(call_id)))
     if st is None:
@@ -3182,7 +3188,14 @@ def _held_blocking(held, crew_id, call_id):
 # They must not be told it is on offer — by SMS or by push. Crew still at
 # unconfirmed/sent are NOT here: re-notifying someone who hasn't answered is a
 # legitimate chase and is how ops use Send SMS today.
-ANSWERED = ("confirmed", "backup", "noshow")
+#
+# 'leftstandby' (status 13) IS here. They answered the offer — they accepted
+# and landed on standby — and then took themselves off it. Without this entry
+# an SMS or push blast on the call would re-offer it to them with no ops
+# decision behind it, which is exactly what D6 makes an explicit ops action
+# (the dropdown's 13 -> 0 re-offer). That path writes status 0 first, so the
+# row stops being "answered" before the push goes and D6 still works.
+ANSWERED = ("confirmed", "backup", "noshow", "leftstandby")
 
 
 def _already_answered(held, crew_id, call_id):
@@ -3485,7 +3498,10 @@ def _linked_rows(graph, held, call_id, user_id):
 
     def row(cid, d):
         st = held.get((str(user_id), cid))
-        if st is None or st in ("declined", "cancelled", "noshow"):
+        # 'leftstandby' (13) belongs with these: settled, holding nothing. The
+        # ✕ Remove prompt warns about linked calls the person would still be
+        # holding, and a call they took themselves off standby for is not one.
+        if st is None or st in ("declined", "cancelled", "noshow", "leftstandby"):
             return None
         node = graph.get(cid) or {}
         if node.get("cancelled_at"):
