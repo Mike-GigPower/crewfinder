@@ -730,9 +730,11 @@ CHECKIN_SETTLEMENT_URL = "https://crew.gigpower.com/api/goat/checkin-settlement"
 # never hardcoded, and never sent to the browser.
 GOAT_CHECKIN_KEY = os.environ.get("GOAT_CHECKIN_KEY", "") or load_config().get("goat_checkin_key", "")
 # The only modes this doorway may set — must match the edge function exactly.
-# 'live' is absent ON PURPOSE. It reaches payroll, and it is added by slice 7's
-# own migration only after the pilot's exit criteria are met (design §2.1, Q45).
-CHECKIN_VALID_MODES = {"off", "shadow"}
+# 'live' added for 5.114.0 (BRIEF-checkin-live-mode, Part B). It is NARROWER than
+# the design's slice 7: on a Live booking the check-in sheet is the record and no
+# Google Sheet is made, but Crew Hub still writes nothing to call_time_submissions.
+# Times reach SmartStaff only through Import from check-in, reviewed by Ops.
+CHECKIN_VALID_MODES = {"off", "shadow", "live"}
 # The pilot switch is held by one person until the exit criteria are met
 # (DESIGN-live-checkin-v0_1 §2.2, §9). Keyed on SmartStaff userID, NOT EIN:
 # admin accounts return ein "0" from whoami, so an EIN gate would either match
@@ -753,9 +755,9 @@ CHECKIN_VALID_MODES = {"off", "shadow"}
 #
 # Be clear about what this is: the key ships inside every DMG, so this is
 # enforced by THE GOAT, not by cryptography. That is acceptable here only
-# because the worst available misuse is putting a booking into Shadow — which
-# cannot reach payroll, because the table's check constraint refuses 'live'.
-# Widening this set is a decision for the end of the pilot.
+# because the worst available misuse is switching a booking's mode — and even
+# Live reaches SmartStaff only through an Ops-reviewed Import from check-in,
+# never on its own. Widening this set is a decision for the end of the pilot.
 #
 # NOTE for testing: admin elevation replaces the session identity wholesale (see
 # /api/elevate-admin), so elevating with a SHARED admin account puts that
@@ -22406,13 +22408,12 @@ def api_checkin_mode_set(booking_id):
     # Validate here too, so an invalid mode costs no round trip. The table's
     # check constraint is the real guarantee — this is only a readable message.
     #
-    # Ordered BEFORE the key check on purpose: asking for 'live' is wrong whether
+    # Ordered BEFORE the key check on purpose: an unknown mode is wrong whether
     # or not this machine is configured, and answering "key not configured" to it
     # would hide a caller's error behind an operator's. Everything above this is
     # an authorisation answer, which must not depend on the body at all.
     if mode not in CHECKIN_VALID_MODES:
-        return jsonify({"error": "Mode must be off or shadow. 'live' is not "
-                                 "available during the pilot."}), 422
+        return jsonify({"error": "Mode must be off, shadow or live."}), 422
 
     if not GOAT_CHECKIN_KEY:
         return jsonify({"error": "Check-in key not configured"}), 500
