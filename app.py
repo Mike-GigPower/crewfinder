@@ -186,7 +186,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.113.0"
+APP_VERSION    = "5.113.1"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2226,7 +2226,7 @@ INDUCTION_VENUE_MAP = {
     "AAMI":              ["aami park"],
     "Sidney Myer":       ["sidney myer music bowl"],
     "Federation Square": ["federation square"],
-    "Crown":             ["crown melbourne - palms", "crown melbourne"],
+    "Crown":             ["crown melbourne - palms", "crown melbourne", "crown live", "crown palladium"],
     "Docklands":         ["docklands studios"],
     "Hanging Rock":      ["hanging rock reserve"],
     "GMHBA":             ["gmhba stadium"],
@@ -2240,7 +2240,7 @@ INDUCTION_VENUE_MAP = {
 
 # Venues with 24-month induction validity (all others are 12 months)
 # Matches against lowercase venue name from SmartStaff
-INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne"}
+INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne", "crown live", "crown palladium"}
 
 # ─── INDUCTION CATALOGUE (Phase 1b) ───────────────────────────────────────────
 # Validity policy lives in SmartStaff MySQL (venue_induction_catalogue +
