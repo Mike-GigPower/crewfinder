@@ -1,6 +1,6 @@
 {
-  "version": "5.112.0",
+  "version": "5.113.0",
   "release_date": "2026-11-19",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.112.0/TheGOAT.dmg",
-  "release_notes": "Crew on standby can now take themselves off it. THE GOAT shows them as Left standby, greyed, and you can re-offer them like a decline."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.113.0/TheGOAT.dmg",
+  "release_notes": "Accounting › Invoicing can now create invoices: a Ready to invoice list and a Generate button that uses SmartStaff's own invoicing and is safe to click twice."
 }
