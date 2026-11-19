@@ -1,6 +1,6 @@
 {
-  "version": "5.111.1",
+  "version": "5.112.0",
   "release_date": "2026-11-19",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.111.1/TheGOAT.dmg",
-  "release_notes": "Backups no longer make a full call look like it needs chasing. A backup's unanswered time change now shows as a grey tag on their row instead."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.112.0/TheGOAT.dmg",
+  "release_notes": "Crew on standby can now take themselves off it. THE GOAT shows them as Left standby, greyed, and you can re-offer them like a decline."
 }
