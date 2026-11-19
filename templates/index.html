@@ -5444,10 +5444,15 @@ function _normName(n){return String(n||'').toLowerCase().replace(/,/g,' ').split
 // settled answer to an offer, and both should stay visible.
 // noresponse / notdelivered / withdrawn (offer withdrawn by the reminder cron)
 // map to 'declined': settled, not coming (offer reminders Q18).
+// leftstandby (13) maps there too, and must: it is settled and they are not
+// coming. Left on the 'waiting' fall-through it read as an unanswered offer, so
+// cfShouldHideSettled() would not hide them with "hide declined" ticked and the
+// ALREADY BOOKED panel labelled them waiting. Spelled out rather than folded
+// into crewStatusIsWithdrawn, which means "the offer was withdrawn from them".
 function relFromStatusWord(s){
   return s==='confirmed' ? 'booked'
        : s==='backup'    ? 'backup'
-       : s==='declined' || crewStatusIsWithdrawn(s) ? 'declined'
+       : s==='declined' || s==='leftstandby' || crewStatusIsWithdrawn(s) ? 'declined'
        : 'waiting';   // unconfirmed / waiting / sent / noshow / cancelled
 }
 
@@ -22914,7 +22919,9 @@ var CREW_WITHDRAWN_WORDS = {noresponse: 10, notdelivered: 11, withdrawn: 12};
 var CREW_WITHDRAWN_LABEL = {10: 'No response', 11: 'Not delivered', 12: 'Withdrawn'};
 function crewStatusIsWithdrawn(s){ return CREW_WITHDRAWN_WORDS.hasOwnProperty(String(s||'').toLowerCase()); }
 
-function crewStatusBadge(status){
+// `title` is optional: a tooltip for the badge, used by the status-13 rows to
+// say WHEN they took themselves off standby (the status word alone does not).
+function crewStatusBadge(status, title){
   const s = (status||'').toLowerCase();
   let color='var(--muted)', bg='var(--surface2)';
   if(s==='confirmed'){ color='var(--available)'; bg='var(--avail-bg)'; }
@@ -22929,7 +22936,27 @@ function crewStatusBadge(status){
   // like Declined); Not delivered / Withdrawn do not (slate, like Cancelled).
   else if(s==='noresponse'){ color='var(--conflict)'; bg='var(--conf-bg)'; }
   else if(s==='notdelivered'||s==='withdrawn'){ color='#64748b'; bg='rgba(100,116,139,0.14)'; }
-  return '<span style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+color+';background:'+bg+';border-radius:3px;padding:2px 7px">'+escapeHtml(crewStatusIsWithdrawn(s) ? CREW_WITHDRAWN_LABEL[CREW_WITHDRAWN_WORDS[s]] : (status||'—'))+'</span>';
+  // Left standby (13): muted, like Cancelled and Withdrawn, and EXPLICIT for
+  // the same reason they are — the default below is also what an unrecognised
+  // value gets, and a status this release introduces must not be
+  // indistinguishable from "this UI does not know what that is". Grey, never
+  // red: D1 says leaving standby is not a decline and must not read like one.
+  else if(s==='leftstandby'){ color='var(--muted)'; bg='var(--surface2)'; }
+  const _lbl = s==='leftstandby' ? 'Left standby'
+             : crewStatusIsWithdrawn(s) ? CREW_WITHDRAWN_LABEL[CREW_WITHDRAWN_WORDS[s]]
+             : (status||'—');
+  const _t = title ? ' title="'+escapeHtml(title)+'"' : '';
+  return '<span'+_t+' style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:'+color+';background:'+bg+';border-radius:3px;padding:2px 7px">'+escapeHtml(_lbl)+'</span>';
+}
+
+// "Took themselves off standby Wed 19 Nov 14:30" for a status-13 row, or '' for
+// anything else. get-booking.php sends left_at as a unix int (null on every
+// other row, and null everywhere if MIGRATION-leave-standby.sql has not run),
+// so an absent figure degrades to the bare badge rather than a broken date.
+function crewLeftStandbyTitle(c){
+  if(!c || crewStatusInt(c.status) !== 13) return '';
+  if(!c.left_at) return 'Took themselves off standby';
+  return 'Took themselves off standby ' + fmtStamp24(new Date(Number(c.left_at)*1000));
 }
 // ── Crew status editing (admin only) ─────────────────────────
 // Status labels <-> SmartStaff call_crew_map.status ints. The endpoint owns the
@@ -22958,6 +22985,11 @@ function crewStatusInt(status){
   if(s==='declined')              return 6;
   if(s==='noshow'||s==='no-show') return 8;
   if(s==='cancelled')             return 9;
+  // 13 is NOT in CREW_WITHDRAWN_WORDS: that map means "the offer was withdrawn
+  // from them", and this is the opposite — they withdrew themselves. It needs
+  // its own line, above the fall-through, because the default below is 0
+  // (Unconfirmed), which would be a SILENT wrong answer rather than a loud one.
+  if(s==='leftstandby')           return 13;
   if(CREW_WITHDRAWN_WORDS.hasOwnProperty(s)) return CREW_WITHDRAWN_WORDS[s];
   return 0;   // unconfirmed / waiting / unknown
 }
@@ -22982,6 +23014,7 @@ function crewStatusColors(v){
   if(v===10)            return ['var(--conflict)','var(--conf-bg)'];       // No response
   if(v===11 || v===12)  return ['#64748b','rgba(100,116,139,0.14)'];       // Not delivered / Withdrawn
   if(v===9)        return ['#64748b','rgba(100,116,139,0.14)'];   // cancelled
+  if(v===13)       return ['var(--muted)','var(--surface2)'];     // left standby
   return ['var(--muted)','var(--surface2)'];
 }
 
@@ -22999,7 +23032,8 @@ function crewIsPromoPending(c){
 
 function crewStatusControl(c, bookingId, callId){
   var promo = crewIsPromoPending(c);
-  if(window._cohort !== 'admin' || !c.id) return crewStatusBadge(promo ? 'pending' : c.status);
+  var _lsT  = crewLeftStandbyTitle(c);
+  if(window._cohort !== 'admin' || !c.id) return crewStatusBadge(promo ? 'pending' : c.status, _lsT);
   var cur  = crewStatusInt(c.status);
   // A CANCELLED ROW IS EVIDENCE, NOT A SETTING. Two reasons this is an early
   // return and not an extra option:
@@ -23019,13 +23053,20 @@ function crewStatusControl(c, bookingId, callId){
     if(promo && o[0] === 1) return '<option value="promo" selected>Pending</option>';
     return '<option value="'+o[0]+'"'+((!promo && o[0]===cur)?' selected':'')+'>'+o[1]+'</option>';
   }).join('');
-  // 10-12 (offer withdrawn by the reminder cron) are never targets, so they are
-  // not in CREW_STATUS_OPTS. Without an option for cur the <select> would show
-  // its FIRST option and label the row "Confirmed" (the cancelled problem
-  // above). One current-value-only option, disabled so it can't be re-picked;
-  // every ordinary option stays selectable (Q17).
-  var curOpt = (cur >= 10 && cur <= 12)
-    ? '<option value="'+cur+'" selected disabled>'+CREW_WITHDRAWN_LABEL[cur]+'</option>'
+  // 10-12 (offer withdrawn by the reminder cron) and 13 (left standby) are
+  // never targets, so they are not in CREW_STATUS_OPTS. Without an option for
+  // cur the <select> would show its FIRST option and label the row "Confirmed"
+  // (the cancelled problem above). One current-value-only option, disabled so
+  // it can't be re-picked; every ordinary option stays selectable (Q17), which
+  // is what lets ops put a 13 row back to Backup or Unconfirmed by hand.
+  //
+  // THE RANGE IS LOAD-BEARING. When 13 arrived, leaving this at <= 12 put a
+  // status-13 row through the no-matching-option path and labelled the person
+  // "Confirmed" — the exact failure the two comments above exist to prevent.
+  // Labels come from goatStatusLabel() rather than CREW_WITHDRAWN_LABEL so
+  // there is ONE read-only label source covering all of 10-13.
+  var curOpt = (cur >= 10 && cur <= 13)
+    ? '<option value="'+cur+'" selected disabled>'+goatStatusLabel(cur)+'</option>'
     : '';
   // data-promo-pending: refreshCallCrewSummary() must not count an unanswered
   // promotion as booked, or any status change elsewhere in the dialog would
@@ -23035,6 +23076,19 @@ function crewStatusControl(c, bookingId, callId){
   var _crewName = (decodeEntities((c && c.firstname) || '').trim() + ' '
     + decodeEntities((c && c.lastname) || '').trim()).trim() || decodeEntities((c && c.name) || '').trim();
   return '<select id="crew-status-'+callId+'-'+c.id+'" data-prev="'+(promo ? 'promo' : cur)+'"'
+    // Admins get the <select>, not the badge, so a status-13 row's "when" has
+    // to hang off the control itself or it is nowhere on this row.
+    + (_lsT ? ' title="'+escapeHtml(_lsT)+'"' : '')
+    // data-left-at: the unix figure behind that title, carried for
+    // reofferDeclinedFlow's prompt. THE PROMPT MUST NOT READ
+    // preview.responded_at ON A 13 ROW: that stamp is when they ACCEPTED
+    // standby (0 -> 7 fires arm 3 of ccm_responded_at_upd; 7 -> 13 fires no
+    // arm at all), so the declined wording named the wrong event at the wrong
+    // time. Emitted only for a 13 row that has a figure -- left_at is null on
+    // every other row, and null everywhere until MIGRATION-leave-standby.sql
+    // has run, and the prompt drops the "on ..." clause rather than printing
+    // a broken date.
+    + ((cur === 13 && c.left_at) ? ' data-left-at="'+(Number(c.left_at) || 0)+'"' : '')
     + ' data-crew-name="'+escapeHtml(_crewName)+'"'
     + (c.promo_pending ? ' data-promo-pending="1"' : '')
     + ' onchange="changeCrewStatus(\''+bookingId+'\',\''+callId+'\','+c.id+',this)"'
@@ -23080,6 +23134,13 @@ function reofferRefusalText(ref){
 async function reofferDeclinedFlow(bookingId, callId, userId, sel, prev){
   var name = sel.getAttribute('data-crew-name') || 'them';
   var url  = '/api/call/'+bookingId+'/'+callId+'/crew/'+userId+'/reoffer';
+  // What they are on this call RIGHT NOW, for the two 409 race alerts below.
+  // changeCrewStatus only reaches this flow with prev 6, 10 or 13, and
+  // goatStatusLabel covers all three -- ONE read-only label source, as
+  // crewStatusControl's curOpt uses. Hoisted because the ternary was written
+  // out twice and only one copy ever got updated: when 13 arrived, both told
+  // ops a row that had left standby was "no longer Declined".
+  var prevWord = goatStatusLabel(prev);
   var buttons = [
     {label: 'Cancel', value: 'cancel'},
     {label: 'Change without sending', value: 'plain'}
@@ -23093,7 +23154,7 @@ async function reofferDeclinedFlow(bookingId, callId, userId, sel, prev){
     var j = await r.json();
     if(r.status === 409 && j.error === 'not_declined'){
       sel.disabled = false;
-      alert("They're no longer " + (prev === 10 ? 'No response' : 'Declined') + " on this call — someone changed it. Reloading.");
+      alert("They're no longer " + prevWord + " on this call — someone changed it. Reloading.");
       openCallDialog(bookingId, callId);
       return 'handled';
     }
@@ -23112,8 +23173,22 @@ async function reofferDeclinedFlow(bookingId, callId, userId, sel, prev){
   }else{
     var when = preview.responded_at ? reofferWhen(preview.responded_at, true) : '';
     // A No response row has no responded_at (a withdrawal never stamps it).
+    //
+    // A LEFT STANDBY ROW IS NOT A DECLINE (slice 2 D1) and must not be
+    // described as one -- nor dated from preview.responded_at, which on a 13
+    // row is when they accepted standby, not when they left it. The figure
+    // comes from get-booking.php via data-left-at (crewStatusControl), as a
+    // unix int, formatted by the same fmtStamp24() as the badge title so the
+    // prompt and the row agree. No figure -> the bare sentence.
+    var lsWhen = '';
+    if(prev === 13){
+      var _la = Number(sel.getAttribute('data-left-at') || 0);
+      lsWhen = _la ? fmtStamp24(new Date(_la * 1000)) : '';
+    }
     html = '<div>'+(prev === 10
         ? 'They didn\'t respond to this offer (withdrawn after 30 hours).'
+        : prev === 13
+        ? 'They took themselves off standby'+(lsWhen ? ' on '+escapeHtml(lsWhen) : '')+'.'
         : 'They declined this call'+(when ? ' on '+escapeHtml(when) : '')+'.')
       + (preview.refused ? '' : ' Sending re-opens it in Crew Hub and pushes a new offer.')+'</div>';
     var calls = preview.calls || [];
@@ -23152,7 +23227,7 @@ async function reofferDeclinedFlow(bookingId, callId, userId, sel, prev){
                                body: JSON.stringify({dry_run: false})});
     var j2 = await r2.json();
     if(r2.status === 409 && j2.error === 'not_declined'){
-      alert("They're no longer " + (prev === 10 ? 'No response' : 'Declined') + " on this call — someone changed it. Reloading.");
+      alert("They're no longer " + prevWord + " on this call — someone changed it. Reloading.");
       openCallDialog(bookingId, callId);
       return 'handled';
     }
@@ -23198,11 +23273,12 @@ async function changeCrewStatus(bookingId, callId, userId, sel, ackOver){
     return;
   }
   if(!promoPrev && next === prev) return;
-  // Declined or No response -> Unconfirmed: ask whether to send a new offer
-  // (DESIGN-reoffer-declined §2; offer reminders D12). Only 'plain' (Change
-  // without sending) carries on to the ordinary one-row status write below.
-  // 11/12 -> anything, and 10 -> anything but 0, are ordinary writes (Q17).
-  if(!promoPrev && (prev === 6 || prev === 10) && next === 0){
+  // Declined, No response or Left standby -> Unconfirmed: ask whether to send a
+  // new offer (DESIGN-reoffer-declined §2; offer reminders D12; slice 2 D6).
+  // Only 'plain' (Change without sending) carries on to the ordinary one-row
+  // status write below. 11/12 -> anything, 10 -> anything but 0, and 13 ->
+  // anything but 0 (Backup, say) are ordinary writes (Q17).
+  if(!promoPrev && (prev === 6 || prev === 10 || prev === 13) && next === 0){
     if((await reofferDeclinedFlow(bookingId, callId, userId, sel, prev)) !== 'plain') return;
   }
   sel.disabled = true;
@@ -23284,7 +23360,12 @@ function refreshCallCrewSummary(callId){
 //
 // Chip order. Promoted-not-yet-accepted crew are status Confirmed and count
 // there, as on the Crew line.
-var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show'],[10,'No response'],[11,'Not delivered'],[12,'Withdrawn']];
+// 13 sits immediately after Declined, deliberately: this array is BOTH the chip
+// order and the status sort rank (callCrewViewApply), so one position does both
+// jobs the brief asks for — "sorts with Declined" and a chip of its own. A
+// status missing from here ranks 99 and sorts after everything, and renders no
+// chip at all while still counting towards All, so the chips would not add up.
+var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[13,'Left standby'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show'],[10,'No response'],[11,'Not delivered'],[12,'Withdrawn']];
 var CALL_CREW_ORDERS = [['status','Status'],['name','Name']];
 
 // Sort key for a Booked Crew row: surname first, then first name, lowercased
@@ -24932,23 +25013,23 @@ async function openCallStandDown(bookingId, callId){
   }catch(e){}
   window._standDownCrew = crew;
 
-  // Everyone still holding a live assignment. Declined (6), no-show (8) and
-  // offers withdrawn by the reminder cron (10-12) are shown greyed for
-  // completeness but are not people to ring about a shift they were never
-  // coming to.
+  // Everyone still holding a live assignment. Declined (6), no-show (8),
+  // offers withdrawn by the reminder cron (10-12) and crew who took themselves
+  // off standby (13) are shown greyed for completeness but are not people to
+  // ring about a shift they were never coming to.
   const live = crew.filter(function(c){
     const s = (c.status||'').toLowerCase();
-    return s !== 'declined' && s !== 'noshow' && s !== 'no-show' && s !== 'cancelled' && !crewStatusIsWithdrawn(s);
+    return s !== 'declined' && s !== 'noshow' && s !== 'no-show' && s !== 'cancelled' && s !== 'leftstandby' && !crewStatusIsWithdrawn(s);
   });
 
   const roster = crew.length
     ? crew.map(function(c){
         const s    = (c.status||'').toLowerCase();
-        const dim  = (s==='declined'||s==='noshow'||s==='no-show'||crewStatusIsWithdrawn(s));
+        const dim  = (s==='declined'||s==='noshow'||s==='no-show'||s==='leftstandby'||crewStatusIsWithdrawn(s));
         const mob  = c.mobile ? '<span style="color:var(--muted);margin-left:8px">'+escapeHtml(fmtPhone(c.mobile))+'</span>' : '';
         return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)'+(dim?';opacity:.45':'')+'">'
              +   '<span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+mob+'</span>'
-             +   crewStatusBadge(c.status)
+             +   crewStatusBadge(c.status, crewLeftStandbyTitle(c))
              + '</div>';
       }).join('')
     : '<div style="color:var(--muted);font-size:12px">No crew on this call.</div>';
@@ -25364,7 +25445,15 @@ function renderCallResponses(bookingId, callId){
   // A pending change outranks any earlier answer: it is the newest thing that
   // has happened to this row. Nothing is drawn when change_history_available
   // is false — the fields are absent, and the how-to-read note says why.
+  // RESULT_STATUS IS CHECKED BEFORE ANSWER, and must be. Since S5 a BACKUP's
+  // "No longer available" still sends answer 'decline' but lands on 13 (Left
+  // standby), not 6 — same intent as the Take me off standby button, so D1 says
+  // it must not count against them. Reading `answer` alone would label it
+  // "declined time change" and colour it conflict red, in the one screen D3
+  // says ops should read a withdrawal from. respond-to-change.php records 13 in
+  // call_change_log.result_status, which is what makes this knowable here.
   function changeWord(a){
+    if(Number(a.result_status) === 13) return 'left standby (time change)';
     if(a.answer === 'decline') return 'declined time change';
     if(a.answer === 'accept')  return 'accepted new time';
     if(a.answer === 'dismiss') return 'cleared by ops';
@@ -25400,21 +25489,47 @@ function renderCallResponses(bookingId, callId){
       text   = 'time changed — no answer yet';
     }else{
       const last = answers[answers.length - 1];
-      colour = (last.answer === 'decline') ? 'var(--conflict)' : 'var(--muted)';
+      // Muted, not red, when the decline landed on 13 — see changeWord above.
+      colour = (last.answer === 'decline' && Number(last.result_status) !== 13)
+             ? 'var(--conflict)' : 'var(--muted)';
       text   = changeWord(last)+' '+goatFmtStamp(last.answered_at);
     }
     const more = (answers.length + (pending ? 1 : 0) > 1) ? ' <span style="opacity:.7">+'+(answers.length + (pending ? 1 : 0) - 1)+'</span>' : '';
     return '<div'+title+' style="color:'+colour+';font-size:10px;line-height:1.2;cursor:help">'+escapeHtml(text)+more+'</div>';
   }
 
+  // "left standby {when}", muted, stacked under the accept time — the same
+  // shape as "recorded by ops" and changeLine(). responded_at is the answer to
+  // the ORIGINAL offer and never moves, so without this a withdrawal is
+  // invisible on this tab except as a badge with no date.
+  //
+  // SUPPRESSED when changeLine() is already reporting it: a row that reached 13
+  // by declining a time change (S5) has both a left_at and a change answer
+  // whose result_status is 13, and printing both would say the same thing
+  // twice, one line under the other.
+  function leftStandbyLine(c){
+    if(c.status !== 13 || !c.left_at) return '';
+    const answers = c.change_answers || [];
+    const last    = answers.length ? answers[answers.length - 1] : null;
+    if(last && !c.change_pending && Number(last.result_status) === 13) return '';
+    return '<div style="color:var(--muted);font-size:10px;line-height:1.2">left standby '
+         + escapeHtml(goatFmtStamp(c.left_at)) + '</div>';
+  }
+
   function whenCell(c){
-    return acceptCell(c) + changeLine(c);
+    return acceptCell(c) + leftStandbyLine(c) + changeLine(c);
   }
 
   const rows = crew.map(function(c){
     const name = escapeHtml(decodeEntities(((c.firstname||'')+' '+(c.lastname||'')).trim() || ('User #'+c.user_id)));
     const boss = c.is_call_boss ? ' <span style="font-size:8px;color:var(--accent);letter-spacing:.5px">TEAM LEAD</span>' : '';
-    const st   = crewStatusBadge(CREW_STATUS_LABEL_BY_INT[c.status] || String(c.status));
+    // This tab's rows carry an INTEGER status, so the tooltip is built here
+    // rather than through crewLeftStandbyTitle() (which expects a label string),
+    // and left_at arrives as a Melbourne stamp, not a unix int.
+    const _lsT = (c.status === 13 && c.left_at)
+      ? 'Took themselves off standby ' + goatFmtStamp(c.left_at)
+      : (c.status === 13 ? 'Took themselves off standby' : '');
+    const st   = crewStatusBadge(CREW_STATUS_LABEL_BY_INT[c.status] || String(c.status), _lsT);
     const el   = (c.respond_seconds === null || c.respond_seconds === undefined)
       ? '<span style="color:var(--muted)">—</span>'
       : escapeHtml(goatFmtElapsed(c.respond_seconds));
@@ -25478,7 +25593,7 @@ function renderCallResponses(bookingId, callId){
 // Status int -> the label crewStatusBadge() understands. The reverse of
 // crewStatusInt(); this endpoint returns ints where get-booking.php returns
 // strings.
-var CREW_STATUS_LABEL_BY_INT = {0:'unconfirmed',1:'pending',5:'confirmed',6:'declined',7:'backup',8:'noshow',9:'cancelled',10:'noresponse',11:'notdelivered',12:'withdrawn'};
+var CREW_STATUS_LABEL_BY_INT = {0:'unconfirmed',1:'pending',5:'confirmed',6:'declined',7:'backup',8:'noshow',9:'cancelled',10:'noresponse',11:'notdelivered',12:'withdrawn',13:'leftstandby'};
 
 // ── WHO WAS ACTUALLY TOLD ───────────────────────────────────────────────────
 // Shared by the Stand down and Reinstate result panels. Both ask the same
@@ -25561,7 +25676,14 @@ function goatDeliveryPanel(j, byId, missedNote, emptyNote){
 //
 // NOBODY COMES BACK CONFIRMED, and this screen exists mainly to say so.
 
-var GOAT_STATUS_LABEL = {0:'Unconfirmed', 1:'Pending', 5:'Confirmed', 6:'Declined', 7:'Backup', 8:'No-show', 9:'Cancelled'};
+// 10-13 were missing until slice 2. They DO reach this screen: cancel-call.php
+// writes prev_status for any status, so a reinstate preview on a row that was
+// withdrawn or had left standby rendered a literal "Status 10". Filled as one
+// set rather than adding 13 alone, which would have left the same line of the
+// same screen inconsistent. Also the read-only label source for
+// crewStatusControl's curOpt.
+var GOAT_STATUS_LABEL = {0:'Unconfirmed', 1:'Pending', 5:'Confirmed', 6:'Declined', 7:'Backup', 8:'No-show', 9:'Cancelled',
+                         10:'No response', 11:'Not delivered', 12:'Withdrawn', 13:'Left standby'};
 
 function goatStatusLabel(i){
   return GOAT_STATUS_LABEL[i] || ('Status ' + i);
@@ -28131,9 +28253,11 @@ async function crewlistRefreshAfterChange(bookingId){
 function _clKeepCrew(c, who){
   const st = (c.status||'').toLowerCase();
   if(who === 'confirmed') return st === 'confirmed';
-  // 'rostered' = everyone assigned except declined / no-shows / backups, and
-  // offers withdrawn by the reminder cron (10-12)
-  return st !== 'declined' && st !== 'noshow' && st !== 'backup' && !crewStatusIsWithdrawn(st);
+  // 'rostered' = everyone assigned except declined / no-shows / backups,
+  // offers withdrawn by the reminder cron (10-12), and crew who took themselves
+  // off standby (13 — they were only ever a backup, and now not even that, so
+  // they must not reach a crewlist the venue reads)
+  return st !== 'declined' && st !== 'noshow' && st !== 'backup' && st !== 'leftstandby' && !crewStatusIsWithdrawn(st);
 }
 
 // "Wednesday Jul 8, 2026 / 08:00" from unix start_date + HH:MM(:SS) start_time
