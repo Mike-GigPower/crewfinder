@@ -1,6 +1,6 @@
 {
-  "version": "5.114.0",
+  "version": "5.115.0",
   "release_date": "2026-11-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.114.0/TheGOAT.dmg",
-  "release_notes": "Crew Finder now checks inductions by venue, not venue name, so a renamed venue keeps its induction check. Arts Centre and Royal Exhibition Building calls now show induction badges."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.115.0/TheGOAT.dmg",
+  "release_notes": "Import Times can now read times from the Crew Hub check-in sheet, and a booking can be switched to Live check-in, where the check-in sheet is the timesheet."
 }
