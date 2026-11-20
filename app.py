@@ -1850,6 +1850,38 @@ def require_cohort(*allowed):
     return deco
 
 
+def require_cohort_local(*allowed):
+    """Same gate as require_cohort, but WITHOUT the SmartStaff round trip.
+
+    require_cohort calls get_ss_session(), which calls is_ss_session_valid(),
+    which is a live GET /dash. For a route that polls, that is a SmartStaff
+    request per poll: measured at 4 calls in 12 s with the System tab merely
+    open, which both added load to the thing being measured and swamped the
+    sample with cheap /dash rows.
+
+    It is also the difference between the System tab working and not working
+    when it is needed most: under require_cohort, a SmartStaff outage makes
+    get_ss_session() return None, so the health tab answers 401 exactly when
+    someone is trying to find out why nothing is responding.
+
+    So this gate checks only what it can answer locally — a Flask session and
+    the cohort captured at login in _ss_identity, neither of which the client
+    can influence. Use it ONLY for routes that read local state. Any route that
+    actually talks to SmartStaff must keep require_cohort, which proves the
+    session is live before it tries.
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not session.get("sid") or not current_identity():
+                return jsonify({"error": "Not logged in"}), 401
+            if current_cohort() not in allowed:
+                return jsonify({"error": "Forbidden for your access level"}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
+
+
 def create_ss_session(username, password):
     """Login to SmartStaff and return a session object.
 
@@ -27801,14 +27833,22 @@ HEALTH_PING_ENDPOINT = "/ajax/crew/health-ping.php"
 
 
 @app.route("/api/health/summary", methods=["GET"])
-@require_cohort("admin")
+@require_cohort_local("admin")
 def api_health_summary():
     """Everything the System sub-tab draws, from memory only.
 
-    Deliberately does NOT call get_ss_session(): that would fire a GET /dash of
-    its own on every 30-second poll, which would both pollute the numbers this
-    tab exists to report and add load to the thing being measured. The cohort
-    decorator already proves the caller is a logged-in Admin.
+    Gated with require_cohort_local, NOT require_cohort. The ordinary decorator
+    calls get_ss_session(), which is a live GET /dash — so at the 5-second poll
+    this route would make a SmartStaff request every poll. Measured before the
+    change: 4 calls in 12 s with the tab merely open. That both added load to
+    the thing being measured and swamped the sample with cheap /dash rows.
+
+    It also kept the tab from working when it is needed most: a SmartStaff
+    outage makes get_ss_session() return None, so the health tab would answer
+    401 exactly when someone is trying to find out why nothing responds.
+
+    Reading the ring buffer needs no SmartStaff session — only proof of a
+    logged-in Admin, which the local gate gives.
     """
     # ?demo=1 injects synthetic rows so the gauges, the trace and the busy lamps
     # can be checked against a bad spell without waiting for one (graphics
@@ -27892,7 +27932,7 @@ def api_health_ping():
 
 
 @app.route("/api/health/reveal-log", methods=["POST"])
-@require_cohort("admin")
+@require_cohort_local("admin")
 def api_health_reveal_log():
     """Open the log folder in Finder so Rich or Monty can send the file.
 
