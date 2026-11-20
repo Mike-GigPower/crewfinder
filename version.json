@@ -1,6 +1,6 @@
 {
-  "version": "5.116.0",
+  "version": "5.116.1",
   "release_date": "2026-11-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.116.0/TheGOAT.dmg",
-  "release_notes": "New Today → System tab (Admin) showing live response times, queued requests, re-logins and timeouts, with a log you can send to Mike."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.116.1/TheGOAT.dmg",
+  "release_notes": "Every panel on Today → System now explains itself: hover or click the ⓘ. New System tab guide in Docs Centre."
 }
