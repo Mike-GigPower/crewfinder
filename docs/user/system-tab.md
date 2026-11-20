@@ -41,6 +41,8 @@ The dot on the System tab button itself shows the worst of them.
 
 Every panel heading has an **ⓘ**. Hover it for the explanation, or click it to pin it open.
 
+On a wide window the tab splits in two: the graphs on the left, the grey stat boxes on the right, and the slowest requests across the full width underneath. On a narrower window everything stacks into one column instead. Either way the tab scrolls, so nothing is out of reach.
+
 ## Services, right now
 
 One speedo per service.
@@ -77,14 +79,18 @@ Each point is the typical time for that minute. The red dot is the slowest minut
 
 ## Right now
 
-**Busy** — how many requests are waiting at SmartStaff at this moment. SmartStaff answers one request at a time per login, so the rest queue. One or two lit is normal. When many are lit, everything you click waits behind them until they clear.
+How many requests are waiting at SmartStaff at this moment. SmartStaff answers one request at a time per login, so the rest queue. One or two lamps lit is normal. When many are lit, everything you click waits behind them until they clear.
 
-**Silent re-logins (60 min)** — times THE GOAT quietly logged you back in to SmartStaff.
+## Timeouts (60 min)
+
+Requests that gave up waiting for an answer. Usually it shows up as an error message or a panel that doesn't load. Any timeout turns the status red.
+
+## Silent re-logins (60 min)
+
+Times THE GOAT quietly logged you back in to SmartStaff.
 
 - **Expired** is normal, for example after the Mac has been asleep.
 - **Check failed** means SmartStaff was too slow to answer "am I still logged in?", so THE GOAT logged in again anyway. That can add up to 10 seconds or more to a click. **This is the number to watch when it feels slow.**
-
-**Timeouts (60 min)** — requests that gave up waiting for an answer. Usually it shows up as an error message or a panel that doesn't load. Any timeout turns the status red.
 
 ## Session checks (GET /dash, before every request)
 

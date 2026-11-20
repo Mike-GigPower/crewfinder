@@ -2114,8 +2114,21 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .cn-chip.ack{color:#f59e0b;border-color:rgba(245,158,11,0.5);background:rgba(245,158,11,0.10)}
 
 /* System health tab (Today › System) — DESIGN-system-health-v0_3 §2.1 */
-.sys-panel{padding:14px}
-.sys-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+/* The same three-part chain Performance and the Ops boards use: a column-flex
+   panel, a flex-shrink:0 header band, and ONE inner element that scrolls.
+   .tab-panel is overflow:hidden, so without this the content is just clipped. */
+.sys-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+#sys-scroll{flex:1;min-height:0;padding:14px 16px;overflow-y:auto;width:100%;max-width:1700px;margin:0 auto}
+.sys-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
+/* Two columns once the content area is wide enough; .sys-wide is set from JS
+   against #sys-scroll's own clientWidth, which is the tab's content area —
+   a viewport media query would measure the wrong box. */
+.sys-cols{display:block}
+.sys-cols.sys-wide{display:flex;align-items:flex-start;gap:18px}
+.sys-cols.sys-wide .sys-col-left{flex:1 1 auto;min-width:0}
+.sys-cols.sys-wide .sys-col-right{flex:0 0 440px;max-width:440px}
+.sys-col-right .sys-sec:first-child{margin-top:0}
+.sys-cols.sys-wide .sys-col-right .sys-sec:first-child{margin-top:0}
 .sys-asat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
 .sys-sec{margin-top:18px}
 .sys-sec-h{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
@@ -2139,8 +2152,13 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .sys-sec-h{display:flex;align-items:baseline;gap:10px}
 .sys-sec-r{margin-left:auto;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);text-transform:none;letter-spacing:0}
 /* G1 — speedos */
-.sys-g1-grid{display:flex;gap:12px;flex-wrap:wrap}
-.sys-g1{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:8px 10px 10px;width:186px}
+/* 2×2 by default, one row of four once every card can still be ~190px wide.
+   The switch is driven from sysApplyLayout against the column's real width —
+   a flex-basis would also give 3-across at intermediate widths, which the
+   brief rules out. */
+.sys-g1-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.sys-g1-grid.g1-four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.sys-g1{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:8px 10px 10px;min-width:0}
 .sys-g1-top{display:flex;align-items:center;gap:8px}
 .sys-g1-name{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sys-g1-top .sys-dot{margin-left:auto}
@@ -2172,6 +2190,10 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .sys-lamp-more{font-family:'Share Tech Mono',monospace;font-size:11px;color:#ef4444;margin-left:4px}
 .sys-card-u{font-size:10px;color:var(--muted)}
 .sys-cards{display:flex;gap:12px;flex-wrap:wrap}
+/* In the narrow right column the cards share the row evenly instead of sitting
+   at content width, so two or three fit cleanly and wrap together. */
+.sys-col-right .sys-cards > .sys-card,
+.sys-col-right .sys-cards > .sys-lamps-wrap{flex:1 1 150px;min-width:150px}
 .sys-card{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:9px 12px;min-width:150px}
 .sys-card-l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 .sys-card-v{font-size:17px;color:var(--text);font-family:'Share Tech Mono',monospace;margin-top:3px}
@@ -2196,7 +2218,8 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 #sys-tip .tip-close{display:block;margin-top:8px;font-size:9.5px;color:var(--muted);font-family:'Share Tech Mono',monospace}
 /* status legend + guide link */
 .sys-legend{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:10px;color:var(--muted);
-  margin:-4px 0 10px;font-family:'Share Tech Mono',monospace}
+  padding:7px 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;
+  font-family:'Share Tech Mono',monospace}
 .sys-legend span{display:inline-flex;align-items:center;gap:5px}
 .sys-guide{background:none;border:none;padding:0;color:var(--accent);font-family:'Share Tech Mono',monospace;
   font-size:11px;cursor:pointer;text-decoration:underline}
@@ -2556,14 +2579,27 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         <span><i class="sys-dot red"></i>red slow or failing</span>
         <span><i class="sys-dot grey"></i>grey no requests yet</span>
       </div>
-      <!-- The speedos live in their OWN container, rebuilt only when the set of
-           back ends changes. The rest of the tab is re-rendered on every 5 s
-           poll, and a replaced element cannot animate a CSS transition — so
-           keeping the gauges out of that rebuild is what makes the needles
-           sweep instead of jump. -->
-      <div id="sys-g1-host"></div>
-      <div id="sys-body">
-        <div class="ops-lane-status">Loading…</div>
+      <!-- THE SCROLLER. Everything below the toolbar and legend lives in here,
+           exactly as .perf-body does for Performance: flex:1, min-height:0,
+           overflow-y:auto. Before 5.116.2 .sys-panel was a plain padded div, so
+           the content simply overflowed .tab-panel's overflow:hidden and was
+           clipped with no way to reach it. -->
+      <div id="sys-scroll">
+        <div class="sys-cols" id="sys-cols">
+          <div class="sys-col-left">
+            <!-- The speedos live in their OWN container, rebuilt only when the
+                 set of back ends changes. Everything else is re-rendered on
+                 every 5 s poll, and a replaced element cannot animate a CSS
+                 transition — so keeping the gauges out of that rebuild is what
+                 makes the needles sweep instead of jump. -->
+            <div id="sys-g1-host"></div>
+            <div id="sys-graphics">
+              <div class="ops-lane-status">Loading…</div>
+            </div>
+          </div>
+          <div class="sys-col-right" id="sys-stats"></div>
+        </div>
+        <div id="sys-full"></div>
       </div>
     </div>
   </div>
@@ -43896,7 +43932,7 @@ function sysTipReanchor(){
   if(el.style.display === 'block') sysTipPlace(el, anchor);
 }
 
-// Delegated, because #sys-body is rebuilt every poll.
+// Delegated, because the System panel's contents are rebuilt every poll.
 document.addEventListener('mouseover', function(e){
   var b = e.target.closest ? e.target.closest('.sys-i') : null;
   if(b && !_sysTipPinned) sysTipShow(b, false);
@@ -44105,11 +44141,16 @@ function sysRangeStripSvg(d, b){
 }
 
 // ── G3: 60-minute trace (SmartStaff) ────────────────────────────────────────
-function sysTraceSvg(d, b){
+/** `W` is the container's real pixel width. The viewBox is drawn at that width
+ *  with a FIXED height, so the SVG maps 1:1 to its box: no scaling, so no
+ *  stretched text, and the trace keeps a sensible height on a wide column
+ *  instead of growing proportionally into a huge band (brief §2). */
+function sysTraceSvg(d, b, W){
   var e = (d.backends || {})[b] || {};
   var ser = e.series_60m || [];
   var th = sysTh(d, b);
-  var W = 560, H = 150, padL = 8, padR = 8, padT = 10, padB = 18;
+  W = (W && W > 80) ? Math.round(W) : 560;
+  var H = 220, padL = 8, padR = 8, padT = 10, padB = 18;
   var plotW = W - padL - padR, plotH = H - padT - padB;
   var vals = ser.map(function(p){ return p.median_ms; }).filter(function(x){ return x != null && isFinite(x); });
   var maxes = ser.map(function(p){ return p.max_ms; }).filter(function(x){ return x != null && isFinite(x); });
@@ -44214,7 +44255,21 @@ function sysLampsHtml(d){
     + '</div>';
 }
 
+// Re-render on resize: the two-column breakpoint and the trace's drawn width
+// both come from the container's measured size, so neither updates on its own.
+var _sysResizeT = null;
+window.addEventListener('resize', function(){
+  if(_activeTab !== 'system') return;
+  clearTimeout(_sysResizeT);
+  _sysResizeT = setTimeout(function(){
+    if(_healthData) renderHealth(_healthData);
+  }, 160);
+});
+
 function healthStartPolling(){
+  // Arriving at the tab always starts at the top, like the other sub-tabs.
+  var sc = document.getElementById('sys-scroll');
+  if(sc) sc.scrollTop = 0;
   loadHealth();
   if(_healthTimer) return;
   // 5 s, not 30 (graphics addendum): the needles need it to feel live, and the
@@ -44239,7 +44294,9 @@ document.addEventListener('visibilitychange', function(){
 });
 
 function loadHealth(manual){
-  var body = document.getElementById('sys-body');
+  // #sys-graphics is the top of the left column, so a loading or error message
+  // lands where the eye already is.
+  var body = document.getElementById('sys-graphics');
   if(manual && body) body.innerHTML = '<div class="ops-lane-status">Loading…</div>';
   fetch('/api/health/summary')
     .then(function(r){
@@ -44260,9 +44317,36 @@ function loadHealth(manual){
     });
 }
 
+/** Two columns once the tab's content area is at least 1280 px (brief §2).
+ *  Measured from #sys-scroll's own clientWidth rather than a viewport media
+ *  query, because the brief's breakpoint is the content area, not the window —
+ *  and the two differ by the panel padding and the scrollbar. Returns the
+ *  width available to the left column's graphics. */
+function sysApplyLayout(){
+  var scroll = document.getElementById('sys-scroll');
+  var cols   = document.getElementById('sys-cols');
+  var gfx    = document.getElementById('sys-graphics');
+  if(!scroll || !cols) return 560;
+  var wide = scroll.clientWidth >= 1280;
+  cols.classList.toggle('sys-wide', wide);
+  // Read AFTER the class is applied, so the trace is drawn to the column it
+  // will actually sit in.
+  var w = gfx ? gfx.clientWidth : 0;
+  // One row of four only while each of the four still gets ~190px. The
+  // threshold is 780, not 4×190+3×12=796: at the 1280 breakpoint the left
+  // column is exactly 790, which gives each card 188px. Holding out for 796
+  // would drop that case to 2×2 for the sake of two pixels a card, and the
+  // brief says "at least about 190 px".
+  var grid = document.querySelector('#sys-g1-host .sys-g1-grid');
+  if(grid) grid.classList.toggle('g1-four', w >= 780);
+  return w > 80 ? w : 560;
+}
+
 function renderHealth(d){
-  var body = document.getElementById('sys-body');
-  if(!body || !d) return;
+  var gfx   = document.getElementById('sys-graphics');
+  var stats = document.getElementById('sys-stats');
+  var full  = document.getElementById('sys-full');
+  if(!gfx || !stats || !full || !d) return;
   var asat = document.getElementById('sys-asat');
   if(asat) asat.textContent = 'as at ' + sysTime(d.now);
 
@@ -44297,6 +44381,10 @@ function renderHealth(d){
     _sysSpeedoKey = g1key;
   }
 
+  // Set the column class BEFORE drawing, and take the width the trace must be
+  // drawn at from the container it will land in.
+  var gfxW = sysApplyLayout();
+
   var html = '';
 
   var ssKey = (backends.smartstaff_test && ((backends.smartstaff_test['60m'] || {}).count > 0))
@@ -44320,30 +44408,77 @@ function renderHealth(d){
     + escapeHtml(ssLabel) + ', last 60 minutes' + sysInfo('trace')
     + '<span class="sys-sec-r">' + (pk == null ? 'no requests yet'
         : ('peak ' + escapeHtml(sysMs(pk)) + ' at ' + escapeHtml(pkT))) + '</span></div>'
-    + sysTraceSvg(d, ssKey)
+    + sysTraceSvg(d, ssKey, gfxW)
     + '<div class="sys-note">Grey bands are the background crew-cache refresh. '
     + 'Dashed line is the 60-minute mean. Gaps are minutes with no requests.</div></div>';
 
-  // ── G4 busy lamps + two number cards ───────────────────────────────────────
-  var sessA = d.session || {};
-  var rlA = ((sessA.relogins || {})['60m']) || {};
+  gfx.innerHTML = html;
+
+  // ── RIGHT COLUMN — the grey stat boxes ─────────────────────────────────────
+  var stat = '';
   var toA = 0;
   (d.measured || []).forEach(function(b){ toA += ((backends[b] || {})['60m'] || {}).timeouts || 0; });
-  html += '<div class="sys-sec"><div class="sys-sec-h">Right now' + sysInfo('busy') + '</div>'
-    + '<div class="sys-cards">'
-    + sysLampsHtml(d)
-    + '<div class="sys-card' + (rlA.check_failed ? ' bad' : '') + '">'
-    +   '<div class="sys-card-l">Silent re-logins (60 min)' + sysInfo('relogins') + '</div>'
-    +   '<div class="sys-card-v">' + sysInt(rlA.expired || 0) + ' <span class="sys-card-u">expired</span></div>'
-    +   '<div class="sys-card-s' + (rlA.check_failed ? ' sys-bad' : '') + '">'
-    +     sysInt(rlA.check_failed || 0) + ' check failed</div>'
-    + '</div>'
+
+  // "Right now" is the busy lamps alone. The small re-login card that used to
+  // sit beside them was a duplicate of the Silent re-logins section below
+  // (brief §3); its ⓘ moved to that section's heading.
+  stat += '<div class="sys-sec" style="margin-top:0"><div class="sys-sec-h">Right now'
+    + sysInfo('busy') + '</div><div class="sys-cards">' + sysLampsHtml(d) + '</div></div>';
+
+  stat += '<div class="sys-sec"><div class="sys-cards">'
     + '<div class="sys-card' + (toA ? ' bad' : '') + '">'
     +   '<div class="sys-card-l">Timeouts (60 min)' + sysInfo('timeouts') + '</div>'
     +   '<div class="sys-card-v">' + sysInt(toA) + '</div>'
     +   '<div class="sys-card-s">across all back ends</div>'
-    + '</div>'
+    + '</div></div></div>';
+
+  // ── 2. Session panel (the hypothesis test, §2.2) ───────────────────────────
+  var sess = d.session || {};
+  var c15 = sess['15m'] || {}, c60 = sess['60m'] || {};
+  var rl = (sess.relogins || {});
+  var rl60 = rl['60m'] || {}, rl15 = rl['15m'] || {};
+
+  // Silent re-logins: the one remaining display, now carrying the ⓘ that used
+  // to sit on the duplicate card (brief §3).
+  stat += '<div class="sys-sec"><div class="sys-sec-h">Silent re-logins (60 min)'
+    + sysInfo('relogins') + '</div>'
+    + '<div class="sys-cards">'
+    + sysCard('Session expired', sysInt(rl60.expired || 0), 'last 60 min · ' + sysInt(rl15.expired || 0) + ' in 15')
+    + sysCard('Check failed (SmartStaff slow or unreachable)',
+              sysInt(rl60.check_failed || 0),
+              'last 60 min · ' + sysInt(rl15.check_failed || 0) + ' in 15',
+              !!rl60.check_failed)
     + '</div>';
+  if(rl60.check_failed){
+    stat += '<div class="sys-warn">A re-login after a failed check means a slow SmartStaff '
+         + 'was read as an expired session. That is the path the design set out to confirm.</div>';
+  }
+  stat += '</div>';
+
+  stat += '<div class="sys-sec"><div class="sys-sec-h">Session checks (GET /dash, before every request)'
+    + sysInfo('checks') + '</div>'
+    + '<div class="sys-cards">'
+    + sysCard('Checks, 15 min', sysInt(c15.count), 'median ' + sysMs(c15.median_ms) + ' · p95 ' + sysMs(c15.p95_ms))
+    + sysCard('Checks, 60 min', sysInt(c60.count), 'median ' + sysMs(c60.median_ms) + ' · p95 ' + sysMs(c60.p95_ms))
+    + sysCard('Check timeouts, 60 min', sysInt(c60.timeouts), c60.timeouts ? 'slow or unreachable' : 'none', !!c60.timeouts)
+    + '</div></div>';
+
+  // ── 3. Background ─────────────────────────────────────────────────────────
+  var bg = d.background || {}, last = bg.last;
+  stat += '<div class="sys-sec"><div class="sys-sec-h">Background (15-minute crew-cache refresh)'
+    + sysInfo('background') + '</div>'
+    + '<div class="sys-cards">'
+    + sysCard('Last run', last ? sysTime(last.ts) : '—',
+              last ? ('started ' + sysTime(last.started)) : 'none since launch')
+    + sysCard('Duration', last ? sysMs(last.duration_ms) : '—', last ? (last.name || '') : '')
+    + sysCard('Requests', last ? sysInt(last.request_count) : '—',
+              sysInt(bg.count_60m || 0) + ' run(s) in 60 min')
+    + '</div></div>';
+
+  stats.innerHTML = stat;
+
+  // ── FULL WIDTH — warnings, Slowest 20, Test-now results, footnote ──────────
+  html = '';
   if(d.log_ok === false){
     html += '<div class="sys-warn">Health log unavailable: '
          + escapeHtml(d.log_error || 'unknown reason') + ' — the tab still works from memory.</div>';
@@ -44354,45 +44489,6 @@ function renderHealth(d){
             ? ' (first: ' + escapeHtml(d.recording_first_error) + ')' : '')
          + ' — some requests may be missing from these numbers.</div>';
   }
-  html += '</div>';
-
-  // ── 2. Session panel (the hypothesis test, §2.2) ───────────────────────────
-  var sess = d.session || {};
-  var c15 = sess['15m'] || {}, c60 = sess['60m'] || {};
-  var rl = (sess.relogins || {});
-  var rl60 = rl['60m'] || {}, rl15 = rl['15m'] || {};
-  html += '<div class="sys-sec"><div class="sys-sec-h">Session checks (GET /dash, before every request)'
-    + sysInfo('checks') + '</div>'
-    + '<div class="sys-cards">'
-    + sysCard('Checks, 15 min', sysInt(c15.count), 'median ' + sysMs(c15.median_ms) + ' · p95 ' + sysMs(c15.p95_ms))
-    + sysCard('Checks, 60 min', sysInt(c60.count), 'median ' + sysMs(c60.median_ms) + ' · p95 ' + sysMs(c60.p95_ms))
-    + sysCard('Check timeouts, 60 min', sysInt(c60.timeouts), c60.timeouts ? 'slow or unreachable' : 'none', !!c60.timeouts)
-    + '</div>'
-    + '<div class="sys-sec-h" style="margin-top:12px">Silent re-logins</div>'
-    + '<div class="sys-cards">'
-    + sysCard('Session expired', sysInt(rl60.expired || 0), 'last 60 min · ' + sysInt(rl15.expired || 0) + ' in 15')
-    + sysCard('Check failed (SmartStaff slow or unreachable)',
-              sysInt(rl60.check_failed || 0),
-              'last 60 min · ' + sysInt(rl15.check_failed || 0) + ' in 15',
-              !!rl60.check_failed)
-    + '</div>';
-  if(rl60.check_failed){
-    html += '<div class="sys-warn">A re-login after a failed check means a slow SmartStaff '
-         + 'was read as an expired session. That is the path the design set out to confirm.</div>';
-  }
-  html += '</div>';
-
-  // ── 3. Background ─────────────────────────────────────────────────────────
-  var bg = d.background || {}, last = bg.last;
-  html += '<div class="sys-sec"><div class="sys-sec-h">Background (15-minute crew-cache refresh)'
-    + sysInfo('background') + '</div>'
-    + '<div class="sys-cards">'
-    + sysCard('Last run', last ? sysTime(last.ts) : '—',
-              last ? ('started ' + sysTime(last.started)) : 'none since launch')
-    + sysCard('Duration', last ? sysMs(last.duration_ms) : '—', last ? (last.name || '') : '')
-    + sysCard('Requests', last ? sysInt(last.request_count) : '—',
-              sysInt(bg.count_60m || 0) + ' run(s) in 60 min')
-    + '</div></div>';
 
   // ── 4. Slowest 20, last hour (§2.3) ───────────────────────────────────────
   var slow = (d.slowest || []).map(function(r){
@@ -44430,7 +44526,7 @@ function renderHealth(d){
   html += '<div class="sys-note" style="margin-top:16px">'
        +  'Ask the GOAT and Google Sheets/Drive are not measured yet.</div>';
 
-  body.innerHTML = html;
+  full.innerHTML = html;
 
   // Fill the gauges now that the shells exist. Done after innerHTML, and on
   // every poll, so each needle animates from where it was.
