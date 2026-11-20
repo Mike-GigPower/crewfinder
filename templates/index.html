@@ -19689,7 +19689,7 @@ async function openInductionEdit(id){
   var matching = '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--muted)">▸ Matching (advanced)</summary>'
     + '<div style="padding-top:8px">'
     + efTextarea('ind-keywords', kw)
-    + '<div style="font-size:10px;color:var(--muted);padding-top:4px">Comma-separated. A single keyword can’t contain a comma.</div>'
+    + '<div style="font-size:10px;color:var(--muted);padding-top:4px">One per line, or comma-separated.</div>'
     + '</div></details>';
 
   document.getElementById('entity-modal-body').innerHTML =
@@ -19774,7 +19774,9 @@ function _indCollectPayload(){
     .filter(function(l){ return (l.label||'').trim() || (l.url||'').trim(); })
     .map(function(l){ return { kind: l.kind||'register', label: (l.label||'').trim(), url: (l.url||'').trim() }; });
 
-  var kw = val('ind-keywords').split(',').map(function(s){ return s.trim().toLowerCase(); }).filter(function(s){ return s; });
+  // Commas OR new lines. A newline-separated list was once saved as ONE keyword
+  // and silently broke Crown's 24-month validity (20 Nov 2026).
+  var kw = val('ind-keywords').split(/[,\n\r]+/).map(function(s){ return s.trim().toLowerCase(); }).filter(function(s){ return s; });
 
   var payload = {
     title:           val('ind-title'),

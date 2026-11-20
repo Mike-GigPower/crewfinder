@@ -187,7 +187,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.113.0"
+APP_VERSION    = "5.114.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -2233,7 +2233,7 @@ INDUCTION_VENUE_MAP = {
     "AAMI":              ["aami park"],
     "Sidney Myer":       ["sidney myer music bowl"],
     "Federation Square": ["federation square"],
-    "Crown":             ["crown melbourne - palms", "crown melbourne"],
+    "Crown":             ["crown melbourne - palms", "crown melbourne", "crown live", "crown palladium"],
     "Docklands":         ["docklands studios"],
     "Hanging Rock":      ["hanging rock reserve"],
     "GMHBA":             ["gmhba stadium"],
@@ -2247,7 +2247,7 @@ INDUCTION_VENUE_MAP = {
 
 # Venues with 24-month induction validity (all others are 12 months)
 # Matches against lowercase venue name from SmartStaff
-INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne"}
+INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne", "crown live", "crown palladium"}
 
 # ─── INDUCTION CATALOGUE (Phase 1b) ───────────────────────────────────────────
 # Validity policy lives in SmartStaff MySQL (venue_induction_catalogue +
@@ -2263,6 +2263,22 @@ INDUCTION_24_MONTH = {"crown melbourne - palms", "crown melbourne"}
 INDUCTION_CATALOGUE_TTL_MIN = 15
 _induction_catalogue_cache  = {"data": None, "fetched_at": None, "failed_at": None}
 _induction_catalogue_lock   = threading.Lock()
+
+
+def _catalogue_venue_ids(v):
+    """A catalogue venue_ids value -> frozenset of ints. Accepts a list, a
+    comma string, or nothing; drops anything that isn't a whole number."""
+    if v is None:
+        return frozenset()
+    if isinstance(v, str):
+        v = v.split(",")
+    out = set()
+    for x in v:
+        try:
+            out.add(int(str(x).strip()))
+        except (TypeError, ValueError):
+            pass
+    return frozenset(out)
 
 
 def load_induction_catalogue(ss=None):
@@ -2321,6 +2337,10 @@ def load_induction_catalogue(ss=None):
                 "sort_order":      int(r.get("sort_order") or 0),
                 "show_in_checker": bool(r.get("show_in_checker", True)),
                 "published":       bool(r.get("published", True)),
+                # The venues this induction covers, by id. What the induction
+                # gate resolves against, so a venue rename in SmartStaff can't
+                # switch a check off (Crown Live, 20 Nov 2026).
+                "venue_ids":       _catalogue_venue_ids(r.get("venue_ids")),
             })
         rows.sort(key=lambda x: (x["sort_order"], x["code"]))
         out = {"rows": rows, "warn_days_default": default_warn}
@@ -2371,6 +2391,12 @@ def _induction_catalogue_row_for_label(label, cat=None):
         cat = load_induction_catalogue()
     if not cat:
         return None
+    # A label that IS a SmartStaff venue name resolves by id, exactly — this is
+    # every crew induction record, since list-crew-bulk keys them by venue name.
+    # Keywords remain for free-text labels and venues missing from the cache.
+    row = _catalogue_row_for_venue_id(_venue_id_for_name(label), cat)
+    if row is not None:
+        return row
     ll = (label or "").lower()
     for row in cat["rows"]:                      # pre-sorted: first match wins
         for kw in row["match_keywords"]:
@@ -2465,6 +2491,64 @@ def _induction_published_for_venue_name(venue_name):
     if row is None:
         return True
     return bool(row.get("published", True))
+
+
+def _venue_id_for_name(venue_name):
+    """SmartStaff venue id for a venue NAME, by exact (normalised) lookup in
+    venue_cache.json. None when the name isn't there — an inactive venue, a cold
+    cache, or a venue renamed since the last crew-cache rebuild."""
+    if not venue_name:
+        return None
+    rec = _load_venue_cache().get(_norm_venue_key(venue_name))
+    if not rec:
+        return None
+    try:
+        return int(rec.get("id"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _catalogue_row_for_venue_id(venue_id, cat=None):
+    """The catalogue row covering this venue id, or None. venue_induction_covers
+    is UNIQUE(venue_id), so at most one row can match."""
+    if venue_id is None:
+        return None
+    if cat is None:
+        cat = load_induction_catalogue()
+    if not cat:
+        return None
+    for row in cat["rows"]:
+        if venue_id in row.get("venue_ids", ()):
+            return row
+    return None
+
+
+def _induction_gate_for_venue_name(venue_name):
+    """What a call at this venue is checked against, for Crew Finder and the
+    check_assignment_inductions AI tool:
+
+      {"row": <catalogue row>}  covered by a PUBLISHED catalogue row, by venue id
+      "<code>"                  legacy name match via INDUCTION_VENUE_MAP
+      None                      not induction-controlled, or its induction is
+                                unpublished
+
+    By id first, so renaming a venue in SmartStaff can no longer switch the check
+    off — "Crown Melbourne - Palms" became "Crown Live" and every Crown Live call
+    silently lost its badges (20 Nov 2026). The name map is used only when the id
+    route has no answer (venue not in the cache, venue covered by no row, or the
+    catalogue unreachable), so every failure leans toward checking, never away.
+    """
+    if not venue_name:
+        return None
+    cat = load_induction_catalogue()
+    if cat:
+        row = _catalogue_row_for_venue_id(_venue_id_for_name(venue_name), cat)
+        if row is not None:
+            return {"row": row} if row.get("published", True) else None
+    code = _induction_code_for_venue_name(venue_name)
+    if code and not _induction_published_for_venue_name(venue_name):
+        return None
+    return code
 
 def _resolve_induction_venue_query(q):
     """A venue filter ('RLA', 'rod laver', 'Rod Laver Arena', 'Marvel') ->
@@ -2773,6 +2857,12 @@ _INDUCTION_SORT_SCORE = {"Complete": 3, "Expiring Soon": 2, "Expired": 1, "Incom
 
 
 def induction_status_for_venue(inductions, venue_code):
+    """`venue_code` is a gate from _induction_gate_for_venue_name(): a catalogue
+    row (matched by venue id) or a legacy INDUCTION_VENUE_MAP code. See below."""
+    return _induction_status_for_gate(inductions, venue_code)
+
+
+def _induction_status_for_gate(inductions, venue_code):
     """Given inductions dict and venue code, return:
       'Complete'      — valid induction
       'Expiring Soon' — valid but within the venue's warn window
@@ -2796,9 +2886,28 @@ def induction_status_for_venue(inductions, venue_code):
     emit its keys: a crew member current at MCG - Gate 7 but lapsed at
     MCG - Brunton Ave Security was reported Expired, because Brunton sorts first.
     """
-    keywords = INDUCTION_VENUE_MAP.get(venue_code, [])
-    if not keywords:
-        return None, ""
+    # Which of the crew member's records count toward this gate.
+    #   Catalogue row: a record counts if its venue is one the row covers, BY ID.
+    #     A record whose venue isn't in the venue cache (inactive venue, renamed
+    #     since the last rebuild) falls back to the row's own keywords.
+    #   Legacy code: name containment against INDUCTION_VENUE_MAP, as before.
+    if isinstance(venue_code, dict) and venue_code.get("row"):
+        _row      = venue_code["row"]
+        _ids      = _row.get("venue_ids") or frozenset()
+        _row_kws  = _row.get("match_keywords") or []
+        def _counts(name):
+            vid = _venue_id_for_name(name)
+            if vid is not None:
+                return vid in _ids
+            nl = name.lower()
+            return any(k and k in nl for k in _row_kws)
+    else:
+        keywords = INDUCTION_VENUE_MAP.get(venue_code, []) if isinstance(venue_code, str) else []
+        if not keywords:
+            return None, ""
+        def _counts(name):
+            nl = name.lower()
+            return any(k in nl for k in keywords)
 
     # SmartStaff sends [] (not {}) for crew with no inductions — PHP encodes an
     # empty array as a JSON list. Ingestion normalises it, but crew_cache.json
@@ -2814,8 +2923,7 @@ def induction_status_for_venue(inductions, venue_code):
     best      = None
 
     for venue_name, data in inductions.items():
-        vl = venue_name.lower()
-        if not any(k in vl for k in keywords):
+        if not _counts(venue_name):
             continue
 
         # Handle both old cache format (string) and new (dict)
@@ -9878,10 +9986,7 @@ def _finder_assess(ss, data):
     # whole check — an unpublished induction yields neither warning nor tick.
     ind_code_by_call = {}
     for t in targets:
-        code = _induction_code_for_venue_name(t["venue"]) if t["venue"] else None
-        if code and not _induction_published_for_venue_name(t["venue"]):
-            code = None
-        ind_code_by_call[str(t["call_id"])] = code
+        ind_code_by_call[str(t["call_id"])] = _induction_gate_for_venue_name(t["venue"])
 
     # Step 3: check conflicts using shifts + cached unavailabilities
     for crew in candidates:
@@ -17262,7 +17367,7 @@ def execute_goat_tool(tool_name, tool_input, ss, cohort, plan_ctx=None):
             noncompliant, unassessable, checked = [], [], 0
             for c in calls[:30]:
                 venue = c.get("venue") or ""
-                code  = filt_code or _induction_code_for_venue_name(venue)
+                code  = filt_code or _induction_gate_for_venue_name(venue)
                 if not code:
                     unassessable.append({"call_id": c.get("call_id"),
                         "call_name": c.get("call_name"), "venue": venue})

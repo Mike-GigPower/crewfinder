@@ -1,6 +1,6 @@
 {
-  "version": "5.113.0",
-  "release_date": "2026-11-19",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.113.0/TheGOAT.dmg",
-  "release_notes": "Accounting › Invoicing can now create invoices: a Ready to invoice list and a Generate button that uses SmartStaff's own invoicing and is safe to click twice."
+  "version": "5.114.0",
+  "release_date": "2026-11-20",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.114.0/TheGOAT.dmg",
+  "release_notes": "Crew Finder now checks inductions by venue, not venue name, so a renamed venue keeps its induction check. Arts Centre and Royal Exhibition Building calls now show induction badges."
 }
