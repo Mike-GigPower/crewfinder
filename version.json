@@ -1,6 +1,6 @@
 {
-  "version": "5.116.2",
+  "version": "5.117.0",
   "release_date": "2026-11-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.116.2/TheGOAT.dmg",
-  "release_notes": "The System tab now scrolls and uses two columns on wide screens, so nothing is cut off."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.117.0/TheGOAT.dmg",
+  "release_notes": "Open a booking's Crew Hub check-in sheet straight from THE GOAT, and see today's check-in bookings on Today › Bookings & Calls."
 }
