@@ -1,6 +1,6 @@
 {
-  "version": "5.115.0",
+  "version": "5.116.0",
   "release_date": "2026-11-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.115.0/TheGOAT.dmg",
-  "release_notes": "Import Times can now read times from the Crew Hub check-in sheet, and a booking can be switched to Live check-in, where the check-in sheet is the timesheet."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.116.0/TheGOAT.dmg",
+  "release_notes": "New Today → System tab (Admin) showing live response times, queued requests, re-logins and timeouts, with a log you can send to Mike."
 }
