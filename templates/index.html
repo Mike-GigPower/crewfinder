@@ -24778,6 +24778,32 @@ async function callLoadFlags(bookingId, callId, msg){
   callRenderFlags(bookingId, callId, msg);
 }
 
+// The booking's check-in sheet, linked from the call dialog (BRIEF-open-checkin-
+// sheet-from-goat §3.2). The BOOKING's mode, not the call's: check-in is set per
+// booking, and one sheet carries a tab per call. There is no call-level deep
+// link to be had — see openCheckinSheet.
+//
+// Async and never awaited, exactly like callLoadFlags above: the dialog must not
+// wait on Crew Hub to draw. An unreadable mode shows NOTHING, the same rule the
+// booking dialog's control follows (slice 2 brief §2.4).
+async function callLoadCheckinSheet(bookingId, callId){
+  var host = document.getElementById('call-checkin-wrap-' + callId);
+  if(!host) return;
+  // Same race guard as callLoadFlags and bkLoadCheckinMode, for the same reason:
+  // a superseded call can be holding a DETACHED node whose own token still
+  // matches, and isConnected is what catches it.
+  var token = (host.__loadToken = (host.__loadToken || 0) + 1);
+  var mode = null;
+  try{
+    var r = await fetch('/api/booking/' + encodeURIComponent(bookingId) + '/checkin-mode',
+                        { headers: { 'Accept': 'application/json' } });
+    if(r.ok){ var j = await r.json(); if(j && !j.error) mode = String(j.mode || 'off'); }
+  }catch(e){ /* mode unknown -> no link. Deliberately silent. */ }
+  if(host.__loadToken !== token || !host.isConnected) return;   // superseded / closed
+  var link = checkinSheetLinkHtml(bookingId, mode, CHECKIN_SHEET_LINK_STYLE);
+  if(link) host.innerHTML = entityRow('Check-in', link);
+}
+
 function callRenderFlags(bookingId, callId, msg){
   var host = document.getElementById('call-af-wrap-' + callId);
   var p = _callFlags[callId];
@@ -25137,6 +25163,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
       '<div id="call-tier-wrap-'+callId+'"></div>'
     + '<div id="call-ct-wrap-'+callId+'"></div>'
     + '<div id="call-af-wrap-'+callId+'"></div>'
+    + '<div id="call-checkin-wrap-'+callId+'"></div>'
     + entityRow('Date',  escapeHtml(d.date_str||'—'))
     + entityRow('Time',  escapeHtml((d.start_str||'')+'–'+(d.end_str||''))+' · '+(d.length_hrs||0)+'h')
     + entityRow('Venue', escapeHtml(bookingVenue || d.venue || '—'))
@@ -25183,6 +25210,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   if(_notesOk) crewNotesInit({ key: _tabsKey, bookingId: bookingId, callId: callId, callIds: [callId] }, _pick.fromCarry);
   callLoadPricingThenTier(bookingId, callId);   // async, never awaited — pricing (Admin), then the tier
   callLoadFlags(bookingId, callId);             // async, never awaited — Supabase only
+  callLoadCheckinSheet(bookingId, callId);      // async, never awaited — the check-in sheet link
   callMarkDietary(callId, crew);                // async, never awaited — one dietary-flags call
   // FIND CREW AND ENTER TIMES ARE REMOVED ON A CANCELLED CALL.
   //
@@ -28790,6 +28818,14 @@ function _tiMissingConfirmedLines(c){
   return out;
 }
 
+// Import Times intro, in two versions (BRIEF-open-checkin-sheet-from-goat §3).
+// The old single line named only the Google Sheet and the workbook, which is
+// still exactly right for an Off booking and actively misleading on a Shadow or
+// Live one, where the times come off check-in. Check-in is named FIRST in that
+// version because it is the first thing to reach for.
+var TI_INTRO_SHEET   = 'Pull the actual times worked back onto each call. Read the Google Sheet THE GOAT generated, or upload a finished workbook — you\'ll review everything before anything is written.';
+var TI_INTRO_CHECKIN = 'Pull the actual times worked back onto each call — from the check-in sheet, the Google Sheet THE GOAT generated, or a finished workbook. You\'ll review everything before anything is written.';
+
 function openTimesImport(bookingId){
   entityModalWidth(ENTITY_MODAL_W);
   entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
@@ -28797,7 +28833,7 @@ function openTimesImport(bookingId){
   document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="padding:6px 0">'
-    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Pull the actual times worked back onto each call. Read the Google Sheet THE GOAT generated, or upload a finished workbook — you\'ll review everything before anything is written.</div>'
+    + '<div id="ti-intro" style="font-size:12px;color:var(--muted);padding-bottom:12px">' + TI_INTRO_SHEET + '</div>'
     + '<div id="ti-checkin-slot"></div>'
     + '<div onclick="tiLoadLive(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:12px">📊 Import from the Google Sheet</div>'
     + '<div style="font-size:11px;color:var(--muted);padding:0 0 6px">or upload a finished workbook (.xlsx)</div>'
@@ -28826,14 +28862,23 @@ async function tiLoadCheckinButton(bookingId){
   }catch(e){ /* mode unknown -> no button */ }
   if(!slot.isConnected || !mode || mode === 'off') return;
   slot.innerHTML = _tiCheckinButtonHtml(bookingId, mode);
+  // The intro follows the same single mode read — no second request for one
+  // sentence, and an unreadable mode leaves the Off wording in place, which is
+  // the honest thing to say when we don't know.
+  const intro = document.getElementById('ti-intro');
+  if(intro) intro.textContent = TI_INTRO_CHECKIN;
 }
 
 // The check-in button always sits first, above the Google Sheet, with the line
 // for its mode under it.
 function _tiCheckinButtonHtml(bookingId, mode){
-  const line = _tiCheckinModeLine(mode);
+  const line  = _tiCheckinModeLine(mode);
+  // The sheet the times are about to come off, so Ops can have it open beside
+  // the review instead of going to find the booking in Crew Hub.
+  const sheet = checkinSheetLinkHtml(bookingId, mode, CHECKIN_SHEET_LINK_STYLE);
   return '<div onclick="tiLoadCheckin(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:6px">✅ Import from check-in</div>'
-    + (line ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 12px">' + escapeHtml(line) + '</div>' : '<div style="height:6px"></div>');
+    + (line ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 6px">' + escapeHtml(line) + '</div>' : '')
+    + (sheet ? '<div style="padding:0 0 12px">' + sheet + '</div>' : '<div style="height:6px"></div>');
 }
 
 const TI_CHECKIN_SHADOW_LINE = 'Shadow booking — check these times carefully; the check-in sheet is the only record for this booking.';
@@ -28872,8 +28917,13 @@ function _tiCheckinBlock(d){
   let held = 0;
   (d.calls || []).forEach(function(c){ (c.matched || []).forEach(function(m){ if(m.checkin_hold) held++; }); });
   const unk = d.unknown_call_ids || [];
+  // The same link again on the review screen: this is where an operator decides
+  // whether a row is right, and the sheet is the thing to check it against.
+  // _tiState is the only place the booking id is still to hand here.
+  const sheet = checkinSheetLinkHtml((_tiState && _tiState.bookingId) || '', src.mode, CHECKIN_SHEET_LINK_STYLE);
   return '<div style="font-size:11px;color:var(--muted);padding:0 0 8px">✅ From the check-in sheet'
     + (src.generated_at ? ' · read at ' + escapeHtml(_tiIsoHHMM(src.generated_at)) : '') + '</div>'
+    + (sheet ? '<div style="padding:0 0 8px">' + sheet + '</div>' : '')
     + (_tiCheckinModeLine(src.mode) ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + escapeHtml(_tiCheckinModeLine(src.mode)) + '</div>' : '')
     + (unk.length ? '<div style="font-size:11px;color:var(--conflict);padding:0 0 8px">⚠ Check-in doesn\'t know call' + (unk.length===1?' ':'s ') + escapeHtml(unk.join(', ')) + '.</div>' : '')
     + (held ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + held + ' row' + (held===1?' needs':'s need') + ' a look — flagged in amber and left unticked. Tick a row to write it.</div>' : '');
@@ -32017,6 +32067,11 @@ function bkCheckinMarkup(state, bookingId, hostId, msg){
   } else {
     return '';   // Off, and not the switcher: nothing at all (test 7)
   }
+  // The way through to the sheet itself: under the SWITCH for the switcher, and
+  // under the BADGE for everyone else. Before this, a non-switcher on a Shadow
+  // booking got the badge and no way through at all. 'unknown' is a string with
+  // no .mode, so it adds nothing here — which is the rule we want anyway.
+  body += checkinSheetLinkHtml(bookingId, state.mode, CHECKIN_SHEET_LINK_STYLE + ';margin-top:7px');
   return head + body + (msg
     ? '<div style="font-size:11px;color:var(--conflict);margin-top:6px">' + escapeHtml(msg) + '</div>'
     : '');
@@ -34115,6 +34170,23 @@ const OPS_LANES = [
   { key:'times_outstanding', board:'calls', label:'Times outstanding',
     load: loadOpsTimes, render: renderOpsTimes, list: renderOpsTimesList,
     target: opsTimesTarget, dims:['status','age'] },
+  // Check-in today (BRIEF-open-checkin-sheet-from-goat §4). On THIS board, not
+  // the crew one: it is booking-and-call work for the day, like the two lanes
+  // above it. The crew board is crew-centric (Red Zone, inductions, probation).
+  //
+  // Three lane fields earn a word here:
+  //   dims:[]   — no donut and no chips. The card IS the list (see noDetail),
+  //               so there is nothing to filter. loadOps walks lane.dims, so
+  //               this must be present and empty rather than absent.
+  //   noDetail  — NEW with this lane. A row's only action opens another system,
+  //               so there is nothing behind the card to drill into; this keeps
+  //               the head's tooltip honest (the caret and the inert head come
+  //               from setOpsLaneDetail(lane, false) in the renderer).
+  //   cohorts   — the same gate as openCheckinSheet() and /api/ops/checkin-today.
+  //               Crew never see check-in in THE GOAT at all.
+  { key:'checkin_today', board:'calls', label:'Check-in today', noDetail:true,
+    cohorts:['admin','operations','leadership'],
+    load: loadOpsCheckinToday, render: renderOpsCheckinToday, dims:[] },
 
 
   // The second backward-looking lane, beside the first. Unlike every other lane
@@ -34493,7 +34565,7 @@ function opsLaneShellHtml(lane){
     return ''
       + '<div class="ops-lane" id="ops-lane-'+lane.key+'">'
       +   '<div class="ops-lane-head" onclick="opsLaneHeadClick(\''+lane.key+'\')"'
-      +     ' title="'+(lane.open ? 'Open in Recruitment' : 'Open detail')+'">'
+      +     ' title="'+(lane.noDetail ? '' : (lane.open ? 'Open in Recruitment' : 'Open detail'))+'">'
       +     '<span class="ops-lane-caret" id="ops-caret-'+lane.key+'">▸</span>'
       +     '<span class="ops-lane-label">'+escapeHtml(lane.label)+'</span>'
       +     '<span class="ops-lane-badge" id="ops-badge-'+lane.key+'">…</span>'
@@ -35158,6 +35230,106 @@ async function loadOpsRecruitWaiting(lane, force){
     st.status = 'unavailable'; st.error = (e && e.message) || 'load failed';
     renderOpsUnavailable(lane);
   }
+}
+
+// ── Lane: Check-in today ───────────────────────────────────────
+// Bookings with a call today whose check-in mode is Shadow or Live, each with
+// the way through to the sheet the boss is running on it.
+//
+// The ROUTE does all the work — one SmartStaff read for today's calls, then the
+// per-booking mode reads in parallel — and hands back only the Shadow and Live
+// bookings, so there is nothing to filter or decide here. api_ops_checkin_today
+// explains why the mode reads are per booking and why one that cannot be read is
+// dropped rather than shown.
+//
+// Refresh passes ?force=1 so the route skips its own short cache; without it a
+// Refresh could show a mode that has since been switched, which is worse than
+// the extra reads.
+async function loadOpsCheckinToday(lane, force){
+  const st = _opsLaneState[lane.key];
+  try{
+    const r = await fetch('/api/ops/checkin-today' + (force ? '?force=1' : ''), {cache:'no-store'});
+    const d = await r.json();
+    if(d && d.unavailable){
+      st.status = 'unavailable'; st.error = d.error || '';
+      renderOpsUnavailable(lane); return;
+    }
+    st.status = 'ready'; st.data = d;
+    if(d && d.generated_at) setOpsAsAt(d.generated_at);
+    renderOpsCheckinToday(lane);
+  }catch(e){
+    st.status = 'unavailable'; st.error = (e && e.message) || 'load failed';
+    renderOpsUnavailable(lane);
+  }
+}
+
+// Live is the green of a thing that is the record; Shadow takes the amber the
+// rest of the app already uses for "running alongside, check it".
+const OPS_CHECKIN_MODE_COLORS = { shadow:'var(--warn)', live:'#22c55e' };
+const OPS_CHECKIN_MODE_LABELS = { shadow:'Shadow', live:'Live' };
+
+function renderOpsCheckinToday(lane){
+  const st    = _opsLaneState[lane.key];
+  const data  = (st && st.data) || {};
+  const rows  = data.bookings || [];
+  const total = rows.length;
+  st.total = total;   // the one place the window reads a lane's headline count
+  const badge = document.getElementById('ops-badge-'+lane.key);
+  const body  = document.getElementById('ops-body-'+lane.key);
+  // A ZERO BADGE, like its neighbours (Mike, 20 Nov 2026 — the brief said hide
+  // the card when empty, and a card that vanishes on a quiet day reads as a bug
+  // rather than as "nothing on today").
+  if(badge) badge.textContent = total;
+  setOpsLaneDetail(lane, false);   // the card is the whole list; nothing behind it
+  if(!body) return;
+  if(!total){
+    body.innerHTML = '<div class="ops-empty">No booking on check-in today.</div>';
+    return;
+  }
+  body.innerHTML = '<div class="ops-subhead">'+opsCheckinTodaySubhead(data)+'</div>'
+    + rows.map(opsCheckinTodayRow).join('');
+}
+
+// "2 bookings · 1 Live · 1 Shadow", plus the cap when it bit. The cap line is
+// not a warning: it says exactly what is and is not on screen.
+function opsCheckinTodaySubhead(data){
+  const c = data.counts || {};
+  const n = (data.bookings || []).length;
+  const bits = [n + ' booking' + (n === 1 ? '' : 's')];
+  if(c.live)   bits.push(c.live + ' Live');
+  if(c.shadow) bits.push(c.shadow + ' Shadow');
+  let s = escapeHtml(bits.join(' · '));
+  if(data.capped){
+    s += ' · <span style="color:var(--warn)">checked the first '
+       + Number(data.max_bookings) + ' of ' + Number(data.seen)
+       + ' bookings with a call today</span>';
+  }
+  return s;
+}
+
+// A STATIC row (ops-row--static): the LINK is the click target, not the row.
+// Every other row on Today opens a dialog in THE GOAT; this one would open a
+// browser window on another system, and a whole row that did that by surprise
+// would be a trap. checkinSheetLinkHtml carries the cohort gate, so a cohort
+// that may not see check-in gets a row with no link rather than a dead one.
+function opsCheckinTodayRow(b){
+  const mode  = String(b.mode || '');
+  const color = OPS_CHECKIN_MODE_COLORS[mode] || 'var(--muted)';
+  const label = OPS_CHECKIN_MODE_LABELS[mode] || mode;
+  const when  = _tiIsoHHMM(b.start_iso) || '—';
+  const link  = checkinSheetLinkHtml(b.booking_id, mode, CHECKIN_SHEET_LINK_STYLE);
+  return '<div class="ops-row ops-row--static">'
+    +   '<div class="ops-row-main">'
+    +     '<div class="ops-row-title">'
+    +       '<span class="ops-row-name">'+escapeHtml(b.booking_name || ('Booking ' + b.booking_id))+'</span>'
+    +       '<span class="ops-row-when">'+escapeHtml(when)+'</span>'
+    +     '</div>'
+    +     (link ? '<span class="ops-row-meta">'+link+'</span>' : '')
+    +   '</div>'
+    +   '<div class="ops-row-side">'
+    +     '<span class="ops-pill" style="color:'+color+';border-color:'+color+'">'+escapeHtml(label)+'</span>'
+    +   '</div>'
+    + '</div>';
 }
 
 function renderOpsRecruitWaiting(lane){
@@ -41632,6 +41804,49 @@ function openCrewNotes(bookingId, callId){
   var path = '/leadership/schedule?booking=' + encodeURIComponent(bookingId);
   if(callId) path += '&call=' + encodeURIComponent(callId) + '#call-' + encodeURIComponent(callId);
   window.open(hubUrl(path), '_blank');
+}
+
+// ── OPEN THE CHECK-IN SHEET (BRIEF-open-checkin-sheet-from-goat) ─────────────
+// The screen the crew boss runs on the day, in Crew Hub. Admins and Ops used to
+// have to go and find it there themselves; this is the way through from the
+// booking they are already looking at.
+//
+// Opened exactly as openCrewNotes above opens the portal, and behind the SAME
+// gate (admin or a leadership-class cohort) for the same reason: the people who
+// read check-in are the people who read crew notes. The gate lives HERE, in the
+// one helper every call site goes through, so no new link can forget it.
+//
+// Crew Hub decides whether the viewer may see the screen (the Ops override and
+// the rest of it). THE GOAT does not second-guess that: it links, and the portal
+// answers. Hiding the link is presentation only.
+//
+// NO CALL-LEVEL DEEP LINK. The check-in screen takes a bookingId and nothing
+// else — /your-crew/checkin/[bookingId] reads `params` and declares no
+// searchParams at all — so the call dialog's link opens the BOOKING's sheet,
+// which carries a tab per call. Don't invent a ?call= parameter to scroll it:
+// the page would ignore it silently and the link would look broken.
+var CHECKIN_SHEET_LABEL = '✅ Open check-in sheet ↗';
+// One style for the link wherever it appears, so four call sites can't drift.
+var CHECKIN_SHEET_LINK_STYLE = 'font-size:11px;color:var(--accent);cursor:pointer;display:inline-block';
+
+function openCheckinSheet(bookingId){
+  if(!bookingId) return;
+  if(window._cohort !== 'admin' && !window.isReadOnlyCohort()) return;
+  window.open(hubUrl('/your-crew/checkin/' + encodeURIComponent(bookingId)), '_blank');
+}
+
+// The link's markup, or '' when there should be no link at all: Shadow and Live
+// only. Off has no sheet, and a mode we could NOT READ shows nothing either —
+// the same rule the booking dialog's control already follows. A link that may
+// 404 is worse than no link.
+//
+// The cohort test is repeated here so crew never see a control that would do
+// nothing; openCheckinSheet is still the one that decides.
+function checkinSheetLinkHtml(bookingId, mode, style){
+  if(mode !== 'shadow' && mode !== 'live') return '';
+  if(window._cohort !== 'admin' && !window.isReadOnlyCohort()) return '';
+  return '<span onclick="openCheckinSheet(\'' + bookingId + '\')" style="' + (style || '') + '">'
+    + CHECKIN_SHEET_LABEL + '</span>';
 }
 
 // ── CREW NOTES TAB (call and booking dialogs, 5.79.0, §6.4) ─────────────────

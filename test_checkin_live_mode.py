@@ -106,7 +106,8 @@ function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt
 var shown = [], asked = [], fetched = [], answer = true, modeAnswer = 'live', modeOk = true;
 function showFeedback(m){ shown.push(m); }
 function goatAsk(title, text, ok){ asked.push([title, text, ok]); return Promise.resolve(answer); }
-var window = {_cohort: 'admin'};
+var window = {_cohort: 'admin',
+  isReadOnlyCohort: function(c){ return ['leadership','operations'].includes(c || window._cohort); }};
 var _els = {};
 var document = {getElementById: function(id){
   return _els[id] || (_els[id] = {id: id, style: {}, innerHTML: '', textContent: '', isConnected: true});
@@ -131,14 +132,17 @@ class Screen(unittest.TestCase):
 
     JS = H.extract("bkCheckinControl", "bkCheckinMarkup", "bkLoadCheckinMode", "bkSetCheckinMode",
                    "_gsheetLiveDeclined", "generateGoogleSheet",
-                   "_tiCheckinButtonHtml", "_tiCheckinModeLine")
+                   "_tiCheckinButtonHtml", "_tiCheckinModeLine",
+                   # 5.117.0: both of the above now render the check-in sheet link.
+                   "checkinSheetLinkHtml")
     CONSTS = r"""
 var _bkCheckinBusy = {};
 var _gsheetInFlight = false;
 """ + "\n".join(l for l in H.page().splitlines()
                 if l.startswith(("var BK_CHECKIN_LIVE_CONFIRM", "var BK_CHECKIN_MODE_LABEL",
                                  "var GSHEET_LIVE_WARNING", "const TI_CHECKIN_SHADOW_LINE",
-                                 "const TI_CHECKIN_LIVE_LINE")))
+                                 "const TI_CHECKIN_LIVE_LINE",
+                                 "var CHECKIN_SHEET_LABEL", "var CHECKIN_SHEET_LINK_STYLE")))
 
     def js(self, body):
         return H.run(STUBS + self.CONSTS + "\n" + self.JS + "\n" + body)

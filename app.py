@@ -22650,6 +22650,47 @@ def _checkin_booking_id(booking_id):
         return None
 
 
+def checkin_mode_read(bid):
+    """One booking's check-in mode from the edge function.
+
+    Returns (mode, None) or (None, (message, http_status)). Two callers want the
+    same read and different failure behaviour, which is why the failure comes
+    back as data rather than as a response: the single-booking route answers with
+    that status, while the Today lane DROPS a booking it could not read. Two
+    copies of this would be two chances to disagree about what "readable" means.
+
+    `mode` is "off" when the booking has no row — which is every booking until
+    someone switches it.
+
+    Safe to call off the request thread (the Today lane fans these out): it reads
+    module globals and touches no Flask request or session state."""
+    if not GOAT_CHECKIN_KEY:
+        return None, ("Check-in key not configured", 500)
+    try:
+        r = http.get(
+            CHECKIN_BOOKING_MODE_URL,
+            params={"booking_id": bid},
+            headers={"X-Goat-Service-Key": GOAT_CHECKIN_KEY},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[checkin] mode read request failed: {e}")
+        return None, ("Check-in service unavailable", 502)
+    if r.status_code != 200:
+        # 503 is expected from time to time: the edge function returns it when
+        # GOAT_CHECKIN_KEY is unset on the Supabase project, and Supabase's own
+        # runtime returns it while degraded. Neither is an error the operator can
+        # act on, and neither may block a booking dialog — the browser treats
+        # every non-200 here as "mode unknown" and shows no control.
+        print(f"[checkin] mode read edge function returned {r.status_code}")
+        return None, ("Check-in service error", 502)
+    try:
+        data = r.json()
+    except Exception:
+        return None, ("Bad response from check-in service", 502)
+    return str(data.get("mode") or "off"), None
+
+
 @app.route("/api/booking/<booking_id>/checkin-mode", methods=["GET"])
 @require_cohort(*READ_ALL_COHORTS)
 def api_checkin_mode_get(booking_id):
@@ -22667,33 +22708,13 @@ def api_checkin_mode_get(booking_id):
     bid = _checkin_booking_id(booking_id)
     if bid is None:
         return jsonify({"error": "booking_id must be an integer"}), 400
-    if not GOAT_CHECKIN_KEY:
-        return jsonify({"error": "Check-in key not configured"}), 500
-    try:
-        r = http.get(
-            CHECKIN_BOOKING_MODE_URL,
-            params={"booking_id": bid},
-            headers={"X-Goat-Service-Key": GOAT_CHECKIN_KEY},
-            timeout=10,
-        )
-    except Exception as e:
-        print(f"[checkin] mode read request failed: {e}")
-        return jsonify({"error": "Check-in service unavailable"}), 502
-    if r.status_code != 200:
-        # 503 is expected from time to time: the edge function returns it when
-        # GOAT_CHECKIN_KEY is unset on the Supabase project, and Supabase's own
-        # runtime returns it while degraded. Neither is an error the operator can
-        # act on, and neither may block a booking dialog — the browser treats
-        # every non-200 here as "mode unknown" and shows no control.
-        print(f"[checkin] mode read edge function returned {r.status_code}")
-        return jsonify({"error": "Check-in service error"}), 502
-    try:
-        data = r.json()
-    except Exception:
-        return jsonify({"error": "Bad response from check-in service"}), 502
+    mode, err = checkin_mode_read(bid)
+    if err is not None:
+        msg, status = err
+        return jsonify({"error": msg}), status
     return jsonify({
         "booking_id": bid,
-        "mode":       str(data.get("mode") or "off"),
+        "mode":       mode,
         "can_switch": current_checkin_switcher_id() is not None,
     })
 
@@ -22766,6 +22787,200 @@ def api_checkin_mode_set(booking_id):
 
     print(f"[checkin] mode write edge function returned {r.status_code}")
     return jsonify({"error": "Check-in service error"}), 502
+
+
+# ─── CHECK-IN TODAY (Today › Bookings & Calls lane) ────────────────────
+# BRIEF-open-checkin-sheet-from-goat §4. Bookings with a call TODAY whose
+# check-in mode is Shadow or Live, so Ops can reach the sheet the boss is running
+# without going to find the booking in Crew Hub.
+
+# The fan-out ceiling. The edge function has NO LIST FORM — checkin-booking-mode
+# takes a single booking_id and answers with one mode — so the modes for today's
+# bookings cost one request each. That is fine at pilot scale (one or two
+# bookings are in the pilot at all, and a nine-call booking still costs ONE
+# read), and this cap is what stops it quietly becoming expensive on a big day:
+# past it the answer says so and the lane shows it, which is the signal that a
+# list endpoint in Crew Hub has become worth building.
+CHECKIN_TODAY_MAX_BOOKINGS = 25
+# The whole fan-out, not each request. checkin_mode_read already has its own 10s
+# per-request timeout; this bounds the lane as a whole so one wedged read cannot
+# hold the dashboard's slowest lane open indefinitely.
+CHECKIN_TODAY_MODE_TIMEOUT = 12
+# Long enough that switching Today sub-tabs or re-rendering the lane does not
+# re-run the fan-out, short enough that a mode flipped in the booking dialog
+# shows up on the dashboard without a Refresh being a lie. Refresh passes
+# ?force=1 and skips it.
+CHECKIN_TODAY_CACHE_TTL = 60
+
+# (sid, day) -> (expires_at_epoch, payload). Keyed on the session as well as the
+# day because the payload is built from that session's SmartStaff read.
+_checkin_today_cache = {}
+
+
+def _checkin_modes_bulk(bids):
+    """Read several bookings' check-in modes at once, bounded by one deadline.
+
+    Returns {booking_id: mode} with an entry ONLY for the bookings that answered.
+    A booking that errored, raised, or that the deadline overtook is simply
+    absent, and the caller drops it — the same thing the booking dialog and
+    Import Times do with a mode they could not read.
+
+    PARALLEL ON PURPOSE, and safe to be: this is Supabase through an edge
+    function, not SmartStaff, so none of the per-session PHP file locking that
+    forbids concurrency on the get-*-bulk endpoints applies here, and the modes
+    are independent of one another.
+
+    shutdown(wait=False) matters — the default context-manager exit blocks until
+    every future finishes, which would silently undo the deadline."""
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import wait as futures_wait
+
+    out = {}
+    if not bids:
+        return out
+
+    ex = ThreadPoolExecutor(max_workers=min(8, len(bids)))
+    try:
+        futs = {ex.submit(checkin_mode_read, b): b for b in bids}
+        done, pending = futures_wait(list(futs.keys()), timeout=CHECKIN_TODAY_MODE_TIMEOUT)
+        for f in done:
+            bid = futs[f]
+            try:
+                mode, err = f.result()
+            except Exception as e:
+                print(f"[checkin] mode read for booking {bid} raised: {e}")
+                continue
+            if err is None and mode:
+                out[bid] = mode
+        if pending:
+            print(f"[checkin] {len(pending)} mode read(s) did not answer within "
+                  f"{CHECKIN_TODAY_MODE_TIMEOUT}s — those bookings are dropped")
+    finally:
+        ex.shutdown(wait=False)
+    return out
+
+
+@app.route("/api/ops/checkin-today", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_ops_checkin_today():
+    """Ops landing — the 'Check-in today' lane.
+
+    TWO HOPS, and they are deliberately not alike:
+
+      1. ONE request to get-calls-bulk.php, for today only, through
+         fetch_calls_for_ops. One, because that endpoint holds a per-session PHP
+         file lock: a second concurrent /ajax/crew/ call on this session would
+         hang. Never parallelise this half.
+
+      2. One checkin-booking-mode read per DISTINCT BOOKING, in parallel
+         (_checkin_modes_bulk). Bookings, not calls — a nine-call booking costs
+         one read. Capped at CHECKIN_TODAY_MAX_BOOKINGS by earliest call time.
+
+    A booking whose mode could NOT BE READ is dropped silently. The alternative
+    is to claim check-in is on when we do not know, or to put up a link that may
+    not work; both are worse than leaving one booking off a dashboard list. One
+    dropped booking never fails the lane.
+
+    Gated with READ_ALL_COHORTS, matching openCheckinSheet()'s own gate and the
+    single-booking mode route beside it, so the lane and the link agree about who
+    may see check-in at all.
+
+    Soft-fails with HTTP 200 {"unavailable": true} like every other ops lane, so
+    SmartStaff or Crew Hub being down renders one unavailable card and never
+    takes the dashboard with it."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    now   = datetime.now()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # ?day= is for tests and for looking at a different date by hand; the lane
+    # never sends one. Melbourne wall-clock (the box tz), the same frame
+    # start_iso is emitted in and the same "today" the other lanes start from.
+    day = request.args.get("day") or today.strftime("%Y-%m-%d")
+    try:
+        day_dt = datetime.strptime(day, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return jsonify({"error": "day must be YYYY-MM-DD"}), 400
+
+    ck  = (session.get("sid"), day)
+    hit = _checkin_today_cache.get(ck)
+    if hit and not request.args.get("force") and hit[0] > now.timestamp():
+        return jsonify(hit[1])
+
+    # get-calls-bulk.php's `end` is EXCLUSIVE \u2014 the convention
+    # api_ops_crewlists spells out, where 15 days is start..start+15. So ONE day
+    # is [day, day + 1), and passing (day, day) asks for an EMPTY range, which
+    # the endpoint refuses with HTTP 400.
+    #
+    # This lane is the only caller that wants a single day, so it is the only one
+    # that can trip over it \u2014 which is exactly why the window is asserted in
+    # the tests rather than left to read correctly.
+    bulk_end  = (day_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    rows, err = fetch_calls_for_ops(ss, day, bulk_end)
+    if err is not None:
+        app.logger.warning(f"[ops-checkin-today] unavailable: {err}")
+        return jsonify({"unavailable": True, "error": err})
+
+    # Distinct bookings, each keeping its EARLIEST call of the day — that is the
+    # time Ops want to see, and it is also the order the cap keeps. start_iso is
+    # a computed column and normally present; a booking whose rows all lack one
+    # sorts last rather than dropping out of the lane.
+    bookings = {}
+    for r in rows:
+        bid = _checkin_booking_id(r.get("booking_id"))
+        if bid is None:
+            continue
+        iso = str(r.get("start_iso") or "")
+        cur = bookings.get(bid)
+        if cur is None:
+            bookings[bid] = {
+                "booking_id":   bid,
+                "booking_name": r.get("booking_name") or f"Booking {bid}",
+                "venue":        r.get("venue") or "",
+                "start_iso":    iso,
+            }
+        elif iso and (not cur["start_iso"] or iso < cur["start_iso"]):
+            cur["start_iso"] = iso
+
+    ordered = sorted(bookings.values(),
+                     key=lambda b: (b["start_iso"] == "", b["start_iso"], b["booking_id"]))
+    seen    = len(ordered)
+    capped  = seen > CHECKIN_TODAY_MAX_BOOKINGS
+    ordered = ordered[:CHECKIN_TODAY_MAX_BOOKINGS]
+
+    modes = _checkin_modes_bulk([b["booking_id"] for b in ordered])
+
+    out = []
+    for b in ordered:
+        mode = modes.get(b["booking_id"])
+        if mode not in ("shadow", "live"):
+            continue            # Off, or unreadable — see the docstring
+        row = dict(b)
+        row["mode"] = mode
+        out.append(row)
+
+    payload = {
+        "bookings": out,
+        "counts": {
+            "total":  len(out),
+            "shadow": sum(1 for b in out if b["mode"] == "shadow"),
+            "live":   sum(1 for b in out if b["mode"] == "live"),
+        },
+        "day":          day,
+        "window":       {"start": day, "end": bulk_end},   # end exclusive
+        "seen":         seen,
+        "capped":       capped,
+        "max_bookings": CHECKIN_TODAY_MAX_BOOKINGS,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    # Drop anything already expired before adding to it, so a box left running
+    # for months does not accumulate one dead entry per session per day.
+    cutoff = now.timestamp()
+    for k in [k for k, v in list(_checkin_today_cache.items()) if v[0] <= cutoff]:
+        _checkin_today_cache.pop(k, None)
+    _checkin_today_cache[ck] = (cutoff + CHECKIN_TODAY_CACHE_TTL, payload)
+    return jsonify(payload)
 
 
 # ─── BOOKING RATE CARD (booking dialog) ───────────────────────────────────────
