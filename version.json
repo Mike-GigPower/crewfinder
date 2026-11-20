@@ -1,6 +1,6 @@
 {
-  "version": "5.116.1",
+  "version": "5.116.2",
   "release_date": "2026-11-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.116.1/TheGOAT.dmg",
-  "release_notes": "Every panel on Today → System now explains itself: hover or click the ⓘ. New System tab guide in Docs Centre."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.116.2/TheGOAT.dmg",
+  "release_notes": "The System tab now scrolls and uses two columns on wide screens, so nothing is cut off."
 }
