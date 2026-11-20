@@ -2181,6 +2181,26 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .sys-origin.bg{color:#60a5fa;border-color:rgba(96,165,250,0.5);background:rgba(96,165,250,0.10)}
 .sys-bad{color:#ef4444}
 .sys-ping{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted);margin-top:8px;white-space:pre-wrap}
+/* ⓘ help affordance — hover shows, click pins (5.116.1) */
+.sys-i{background:none;border:none;padding:0 0 0 5px;margin:0;cursor:help;color:var(--muted);font-size:11px;line-height:1;vertical-align:baseline;font-family:inherit}
+.sys-i:hover,.sys-i.pinned{color:var(--accent)}
+.sys-i.pinned{cursor:default}
+#sys-tip{position:fixed;z-index:10000;display:none;max-width:320px;background:var(--surface);
+  border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.35);
+  padding:9px 12px;font-size:11px;color:var(--text);line-height:1.5;text-transform:none;letter-spacing:0;
+  max-height:calc(100vh - 16px);overflow-y:auto}
+#sys-tip.pinned{border-color:var(--border-gold)}
+#sys-tip b{color:var(--accent);font-weight:700}
+#sys-tip p{margin:0 0 7px}
+#sys-tip p:last-child{margin-bottom:0}
+#sys-tip .tip-close{display:block;margin-top:8px;font-size:9.5px;color:var(--muted);font-family:'Share Tech Mono',monospace}
+/* status legend + guide link */
+.sys-legend{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:10px;color:var(--muted);
+  margin:-4px 0 10px;font-family:'Share Tech Mono',monospace}
+.sys-legend span{display:inline-flex;align-items:center;gap:5px}
+.sys-guide{background:none;border:none;padding:0;color:var(--accent);font-family:'Share Tech Mono',monospace;
+  font-size:11px;cursor:pointer;text-decoration:underline}
+.sys-guide:hover{color:var(--text)}
 </style>
 </head>
 <body>
@@ -2522,12 +2542,19 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
   <div class="tab-panel" id="tab-system">
     <div class="sys-panel">
       <div class="sys-toolbar">
-        <span class="section-label" style="margin:0">SYSTEM</span>
+        <span class="section-label" style="margin:0">SYSTEM<button type="button" class="sys-i" data-tip="toolbar" aria-label="What is this?">&#9432;</button></span>
         <span class="sys-asat" id="sys-asat">as at —:—</span>
         <button class="btn" onclick="healthPing()" id="sys-btn-ping">Test now</button>
         <button class="btn" onclick="healthCopySummary()">Copy summary</button>
         <button class="btn" onclick="healthRevealLog()">Reveal log</button>
-        <button class="btn" onclick="loadHealth(true)" style="margin-left:auto">⟳ Refresh</button>
+        <button class="sys-guide" onclick="sysOpenGuide()" style="margin-left:auto">What am I looking at?</button>
+        <button class="btn" onclick="loadHealth(true)">⟳ Refresh</button>
+      </div>
+      <div class="sys-legend">
+        <span><i class="sys-dot green"></i>green normal</span>
+        <span><i class="sys-dot amber"></i>amber slower than usual</span>
+        <span><i class="sys-dot red"></i>red slow or failing</span>
+        <span><i class="sys-dot grey"></i>grey no requests yet</span>
       </div>
       <!-- The speedos live in their OWN container, rebuilt only when the set of
            back ends changes. The rest of the tab is re-rendered on every 5 s
@@ -7313,7 +7340,7 @@ function switchTab(tab){
   // System polls every 30 s, but ONLY while it is the visible tab (§2.1). Any
   // move away stops it, so a tab nobody is looking at never adds load to the
   // thing it is measuring.
-  if(tab==='system'){ healthStartPolling(); } else { healthStopPolling(); }
+  if(tab==='system'){ healthStartPolling(); } else { healthStopPolling(); sysTipHide(true); }
   if(tab==='induction-checker' && !_indData) loadInductions();
   if(tab==='import'){ loadImportHistory(); initManualBooking(); }
   if(tab==='forecast') initForecast();
@@ -43700,6 +43727,205 @@ function sysInt(v){ return (v == null || !isFinite(v)) ? '—' : String(Math.rou
 
 var SYS_DOT_RANK = { grey: 0, green: 1, amber: 2, red: 3 };
 
+// ── ⓘ help (5.116.1) ────────────────────────────────────────────────────────
+// Hover shows, click pins. Built on the same shape as fcCallCardEl /
+// fcShowCallCard — one fixed-position element appended to <body>, clamped to
+// the viewport and flipped above the anchor when it would overflow — rather
+// than a second popover component. The app's only other "tooltip" is the
+// native title= attribute (recruitGaugeCard), which cannot be pinned or sized,
+// so it could not meet this brief.
+//
+// A pinned tooltip survives the 5-second re-render: the anchor is found again
+// by its data-tip key and repositioned, so it stays put for a screenshot.
+
+var SYS_TIPS = {
+  toolbar:
+    '<p><b>as at HH:MM:SS</b> — when these figures were last updated. They refresh '
+  + 'every 5 seconds while this tab is open.</p>'
+  + '<p><b>Test now</b> — asks SmartStaff three times, one after another, for the '
+  + 'smallest possible answer. The total is the round trip from your Mac. The '
+  + 'server time is how long SmartStaff itself took, including any wait behind '
+  + 'other requests.</p>'
+  + '<p><b>Copy summary</b> — copies a plain-text snapshot of this tab, ready to '
+  + 'paste into a message to Mike.</p>'
+  + '<p><b>Reveal log</b> — opens the folder holding health.log, a record of slow '
+  + 'requests, errors, re-logins and background refreshes that survives restarts. '
+  + 'It never contains crew names or what was searched for.</p>',
+
+  services:
+    '<p><b>The needle</b> — how long a typical request has taken in the last 60 seconds.</p>'
+  + '<p><b>The coloured arc</b> — green is normal, amber is slower than usual, red is slow.</p>'
+  + '<p><b>The ticks</b> — grey marks the fastest request in the last 15 minutes, '
+  + 'white the average, red the slowest.</p>'
+  + '<p><b>The dot</b> (top right) — the overall state for the last 15 minutes.</p>'
+  + '<p><b>"idle"</b> — nothing has gone to this service in the last 60 seconds, so '
+  + 'this is the last value seen. <b>"no requests yet"</b> — nothing has gone to it '
+  + 'since THE GOAT started.</p>'
+  + '<p><b>SmartStaff</b> — the main system: bookings, calls, crew records. Almost '
+  + 'everything you click talks to SmartStaff.<br>'
+  + '<b>Supabase</b> — the database behind Crew Hub and recruitment: push delivery '
+  + 'records, applicants, check-ins.<br>'
+  + '<b>Crew Hub</b> — the crew app at crew.gigpower.com: offers and push notifications.<br>'
+  + '<b>Other</b> — the Estimator (rate cards, public holidays), the GitHub update '
+  + 'check, and anything else.</p>',
+
+  range:
+    '<p>The thin line runs from the fastest request to the slowest. The solid bar is '
+  + 'the usual range: from typical to slow (the slowest 5% start where the bar ends). '
+  + 'The red mark is the slowest. The ring is <b>now</b>.</p>'
+  + '<p>If the ring sits to the right of the bar, things are slower than usual right now.</p>',
+
+  trace:
+    '<p>Each point is the typical time for that minute. The red dot is the slowest '
+  + 'minute. The dashed line is the average for the hour. The faint amber and red '
+  + 'lines are where "slower than usual" and "slow" begin.</p>'
+  + '<p><b>Grey bands</b> are when THE GOAT\'s automatic crew-list refresh ran in the '
+  + 'background. If spikes line up with grey bands, the refresh is what slowed things '
+  + 'down.</p>'
+  + '<p><b>Gaps</b> are minutes when nothing was sent.</p>',
+
+  busy:
+    '<p>How many requests are waiting at SmartStaff at this moment. SmartStaff answers '
+  + 'one request at a time per login, so the rest queue.</p>'
+  + '<p>One or two lit is normal. When many are lit, everything you click waits behind '
+  + 'them until they clear.</p>',
+
+  relogins:
+    '<p>Times THE GOAT quietly logged you back in to SmartStaff.</p>'
+  + '<p><b>Expired</b> is normal, for example after the Mac has been asleep.</p>'
+  + '<p><b>Check failed</b> means SmartStaff was too slow to answer "am I still logged '
+  + 'in?", so THE GOAT logged in again anyway. That can add up to 10 seconds or more to '
+  + 'a click. <b>This is the number to watch when it feels slow.</b></p>',
+
+  timeouts:
+    '<p>Requests that gave up waiting for an answer. Usually it shows up as an error '
+  + 'message or a panel that doesn\'t load.</p>'
+  + '<p>Any timeout turns the status red.</p>',
+
+  checks:
+    '<p>Before almost every request, THE GOAT first asks SmartStaff "am I still logged '
+  + 'in?". These cards show how many of those checks ran and how long they took.</p>'
+  + '<p>Because one runs before nearly every click, a slow check makes everything feel '
+  + 'slow.</p>'
+  + '<p><b>Check timeouts</b> — checks that got no answer in time. Each one causes a '
+  + '"check failed" re-login.</p>',
+
+  background:
+    '<p>THE GOAT rebuilds its crew list in the background every 15 minutes. This shows '
+  + 'when that last ran, how long it took, and how many requests it made.</p>'
+  + '<p>It runs on your own SmartStaff login, so while it is working your own clicks '
+  + 'queue behind it. The grey bands on the 60-minute trace above are these runs.</p>',
+
+  slowest:
+    '<p>The 20 slowest requests of the last hour, newest figures first.</p>'
+  + '<p><b>Total</b> is the round trip from your Mac; <b>Server</b> is how long the far '
+  + 'end took, where it reports it. <b>Busy</b> is how many SmartStaff requests were '
+  + 'already in flight when this one was sent.</p>'
+  + '<p><b>Origin</b> says whether your click caused it (<i>you</i>) or the automatic '
+  + 'refresh did (<i>background</i>). <b>Result</b> is the response code, or the error '
+  + 'if it failed.</p>'
+};
+
+/** The ⓘ button markup. `key` indexes SYS_TIPS. */
+function sysInfo(key){
+  return '<button type="button" class="sys-i" data-tip="' + key
+       + '" aria-label="What is this?">&#9432;</button>';
+}
+
+var _sysTipPinned = null;   // the data-tip key currently pinned, or null
+
+function sysTipEl(){
+  var el = document.getElementById('sys-tip');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'sys-tip';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+/** Position the tooltip against an anchor, clamped to the viewport, flipped
+ *  above when it would overflow the bottom — same arithmetic as the Crew
+ *  Finder call card. */
+function sysTipPlace(el, anchor){
+  var r = anchor.getBoundingClientRect();
+  var w = el.offsetWidth, h = el.offsetHeight;
+  var left = r.left;
+  var top  = r.bottom + 6;
+  if(left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+  if(left < 8) left = 8;
+  if(top + h > window.innerHeight - 8) top = r.top - h - 6;
+  if(top < 8) top = 8;
+  el.style.left = left + 'px';
+  el.style.top  = top + 'px';
+}
+
+function sysTipShow(anchor, pin){
+  var key = anchor.getAttribute('data-tip');
+  var body = SYS_TIPS[key];
+  if(!body) return;
+  var el = sysTipEl();
+  el.innerHTML = body + (pin ? '<span class="tip-close">Click anywhere, or press Esc, to close.</span>' : '');
+  el.classList.toggle('pinned', !!pin);
+  el.style.display = 'block';
+  sysTipPlace(el, anchor);
+  if(pin){
+    _sysTipPinned = key;
+    document.querySelectorAll('.sys-i.pinned').forEach(function(b){ b.classList.remove('pinned'); });
+    anchor.classList.add('pinned');
+  }
+}
+
+function sysTipHide(force){
+  if(_sysTipPinned && !force) return;   // a pinned tip ignores mouseleave
+  var el = document.getElementById('sys-tip');
+  if(el){ el.style.display = 'none'; el.classList.remove('pinned'); }
+  if(force){
+    _sysTipPinned = null;
+    document.querySelectorAll('.sys-i.pinned').forEach(function(b){ b.classList.remove('pinned'); });
+  }
+}
+
+/** Re-anchor a pinned tip after the 5-second re-render replaces its button. */
+function sysTipReanchor(){
+  if(!_sysTipPinned) return;
+  var anchor = document.querySelector('.sys-i[data-tip="' + _sysTipPinned + '"]');
+  if(!anchor){ sysTipHide(true); return; }
+  anchor.classList.add('pinned');
+  var el = sysTipEl();
+  if(el.style.display === 'block') sysTipPlace(el, anchor);
+}
+
+// Delegated, because #sys-body is rebuilt every poll.
+document.addEventListener('mouseover', function(e){
+  var b = e.target.closest ? e.target.closest('.sys-i') : null;
+  if(b && !_sysTipPinned) sysTipShow(b, false);
+});
+document.addEventListener('mouseout', function(e){
+  var b = e.target.closest ? e.target.closest('.sys-i') : null;
+  if(b) sysTipHide(false);
+});
+document.addEventListener('click', function(e){
+  var b = e.target.closest ? e.target.closest('.sys-i') : null;
+  if(b){
+    e.preventDefault();
+    e.stopPropagation();
+    if(_sysTipPinned === b.getAttribute('data-tip')) sysTipHide(true);
+    else sysTipShow(b, true);
+    return;
+  }
+  if(_sysTipPinned) sysTipHide(true);   // click-away
+});
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape' && _sysTipPinned) sysTipHide(true);
+});
+
+/** "What am I looking at?" — open the Docs Centre at the System tab guide. */
+function sysOpenGuide(){
+  window._wantDoc = 'user/system-tab';
+  switchTab('docs');
+}
+
 // The app is dark-only: one :root block, no prefers-color-scheme and no
 // data-theme anywhere in this file. So the graphics below take their neutrals
 // from the CSS variables (--text, --muted, --border) and their green / amber /
@@ -44064,6 +44290,7 @@ function renderHealth(d){
   var g1key = order.join(',');
   if(g1host && _sysSpeedoKey !== g1key){
     g1host.innerHTML = '<div class="sys-sec" style="margin-top:0">'
+      + '<div class="sys-sec-h">Services, right now' + sysInfo('services') + '</div>'
       + '<div class="sys-g1-grid">'
       + order.map(function(b){ return sysSpeedoCardHtml(b, SYS_BACKEND_LABELS[b] || b); }).join('')
       + '</div></div>';
@@ -44079,7 +44306,7 @@ function renderHealth(d){
 
   // ── G2 range strip ─────────────────────────────────────────────────────────
   html += '<div class="sys-sec" style="margin-top:4px"><div class="sys-sec-h">'
-    + escapeHtml(ssLabel) + ' range, last 15 min'
+    + escapeHtml(ssLabel) + ' range, last 15 min' + sysInfo('range')
     + '<span class="sys-sec-r">typical ' + escapeHtml(sysMs((ssE['15m'] || {}).median_ms))
     + ' · slow (p95) ' + escapeHtml(sysMs(ssE.p95_ms)) + '</span></div>'
     + sysRangeStripSvg(d, ssKey) + '</div>';
@@ -44090,7 +44317,7 @@ function renderHealth(d){
     if(p.max_ms != null && (pk == null || p.max_ms > pk)){ pk = p.max_ms; pkT = p.t; }
   });
   html += '<div class="sys-sec"><div class="sys-sec-h">'
-    + escapeHtml(ssLabel) + ', last 60 minutes'
+    + escapeHtml(ssLabel) + ', last 60 minutes' + sysInfo('trace')
     + '<span class="sys-sec-r">' + (pk == null ? 'no requests yet'
         : ('peak ' + escapeHtml(sysMs(pk)) + ' at ' + escapeHtml(pkT))) + '</span></div>'
     + sysTraceSvg(d, ssKey)
@@ -44102,16 +44329,17 @@ function renderHealth(d){
   var rlA = ((sessA.relogins || {})['60m']) || {};
   var toA = 0;
   (d.measured || []).forEach(function(b){ toA += ((backends[b] || {})['60m'] || {}).timeouts || 0; });
-  html += '<div class="sys-sec"><div class="sys-cards">'
+  html += '<div class="sys-sec"><div class="sys-sec-h">Right now' + sysInfo('busy') + '</div>'
+    + '<div class="sys-cards">'
     + sysLampsHtml(d)
     + '<div class="sys-card' + (rlA.check_failed ? ' bad' : '') + '">'
-    +   '<div class="sys-card-l">Silent re-logins (60 min)</div>'
+    +   '<div class="sys-card-l">Silent re-logins (60 min)' + sysInfo('relogins') + '</div>'
     +   '<div class="sys-card-v">' + sysInt(rlA.expired || 0) + ' <span class="sys-card-u">expired</span></div>'
     +   '<div class="sys-card-s' + (rlA.check_failed ? ' sys-bad' : '') + '">'
     +     sysInt(rlA.check_failed || 0) + ' check failed</div>'
     + '</div>'
     + '<div class="sys-card' + (toA ? ' bad' : '') + '">'
-    +   '<div class="sys-card-l">Timeouts (60 min)</div>'
+    +   '<div class="sys-card-l">Timeouts (60 min)' + sysInfo('timeouts') + '</div>'
     +   '<div class="sys-card-v">' + sysInt(toA) + '</div>'
     +   '<div class="sys-card-s">across all back ends</div>'
     + '</div>'
@@ -44133,7 +44361,8 @@ function renderHealth(d){
   var c15 = sess['15m'] || {}, c60 = sess['60m'] || {};
   var rl = (sess.relogins || {});
   var rl60 = rl['60m'] || {}, rl15 = rl['15m'] || {};
-  html += '<div class="sys-sec"><div class="sys-sec-h">Session checks (GET /dash, before every request)</div>'
+  html += '<div class="sys-sec"><div class="sys-sec-h">Session checks (GET /dash, before every request)'
+    + sysInfo('checks') + '</div>'
     + '<div class="sys-cards">'
     + sysCard('Checks, 15 min', sysInt(c15.count), 'median ' + sysMs(c15.median_ms) + ' · p95 ' + sysMs(c15.p95_ms))
     + sysCard('Checks, 60 min', sysInt(c60.count), 'median ' + sysMs(c60.median_ms) + ' · p95 ' + sysMs(c60.p95_ms))
@@ -44155,7 +44384,8 @@ function renderHealth(d){
 
   // ── 3. Background ─────────────────────────────────────────────────────────
   var bg = d.background || {}, last = bg.last;
-  html += '<div class="sys-sec"><div class="sys-sec-h">Background (15-minute crew-cache refresh)</div>'
+  html += '<div class="sys-sec"><div class="sys-sec-h">Background (15-minute crew-cache refresh)'
+    + sysInfo('background') + '</div>'
     + '<div class="sys-cards">'
     + sysCard('Last run', last ? sysTime(last.ts) : '—',
               last ? ('started ' + sysTime(last.started)) : 'none since launch')
@@ -44182,7 +44412,8 @@ function renderHealth(d){
       + '<td class="' + (isBad ? 'sys-bad' : '') + '">' + escapeHtml(decodeEntities(result)) + '</td>'
       + '</tr>';
   }).join('');
-  html += '<div class="sys-sec"><div class="sys-sec-h">Slowest 20 requests, last hour</div>'
+  html += '<div class="sys-sec"><div class="sys-sec-h">Slowest 20 requests, last hour'
+    + sysInfo('slowest') + '</div>'
     + '<table class="sys-tbl"><thead><tr>'
     + '<th>Time</th><th>Back end</th><th>Endpoint</th>'
     + '<th style="text-align:right">Total</th><th style="text-align:right">Server</th>'
@@ -44204,6 +44435,10 @@ function renderHealth(d){
   // Fill the gauges now that the shells exist. Done after innerHTML, and on
   // every poll, so each needle animates from where it was.
   order.forEach(function(b){ sysSyncSpeedo(d, b); });
+
+  // A pinned ⓘ must survive the poll that just replaced its button, or it
+  // would close itself every 5 seconds and never hold still for a screenshot.
+  sysTipReanchor();
 
   if(_lastPingHtml){
     var sec = document.getElementById('sys-ping-sec');
