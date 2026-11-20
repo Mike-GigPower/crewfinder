@@ -2112,6 +2112,75 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .cn-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;font-size:10px;color:var(--muted);font-family:'Share Tech Mono',monospace}
 .cn-chip{font-size:9px;letter-spacing:.4px;border-radius:3px;padding:1px 6px;color:var(--muted);background:rgba(255,255,255,0.05);border:1px solid var(--border)}
 .cn-chip.ack{color:#f59e0b;border-color:rgba(245,158,11,0.5);background:rgba(245,158,11,0.10)}
+
+/* System health tab (Today › System) — DESIGN-system-health-v0_3 §2.1 */
+.sys-panel{padding:14px}
+.sys-toolbar{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.sys-asat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
+.sys-sec{margin-top:18px}
+.sys-sec-h{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.sys-note{font-size:11px;color:var(--muted);margin-top:6px}
+.sys-warn{font-size:11px;color:#f59e0b;margin-top:6px}
+.sys-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.sys-tbl th{text-align:left;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;padding:4px 8px;border-bottom:1px solid var(--border)}
+.sys-tbl td{padding:5px 8px;border-bottom:1px solid var(--border);font-family:'Share Tech Mono',monospace;color:var(--text);vertical-align:middle}
+.sys-tbl td.num{text-align:right}
+.sys-tbl tr:hover td{background:rgba(255,255,255,0.03)}
+.sys-dot{display:inline-block;width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.sys-dot.green{background:#22c55e}
+.sys-dot.amber{background:#f59e0b}
+.sys-dot.red{background:#ef4444}
+.sys-dot.grey{background:#6b7280}
+.sys-tabdot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-left:6px;vertical-align:middle}
+.sys-tabdot.green{background:#22c55e}
+.sys-tabdot.amber{background:#f59e0b}
+.sys-tabdot.red{background:#ef4444}
+.sys-tabdot.grey{background:#6b7280}
+.sys-sec-h{display:flex;align-items:baseline;gap:10px}
+.sys-sec-r{margin-left:auto;font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);text-transform:none;letter-spacing:0}
+/* G1 — speedos */
+.sys-g1-grid{display:flex;gap:12px;flex-wrap:wrap}
+.sys-g1{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:8px 10px 10px;width:186px}
+.sys-g1-top{display:flex;align-items:center;gap:8px}
+.sys-g1-name{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sys-g1-top .sys-dot{margin-left:auto}
+.sys-g1-svg{width:100%;height:auto;display:block;margin-top:2px}
+.sys-needle line{stroke:var(--accent)}
+.sys-needle{transition:transform .6s cubic-bezier(.25,.8,.3,1)}
+.sys-needle.idle line{stroke:var(--muted)}
+.sys-g1-val{text-align:center;font-family:'Share Tech Mono',monospace;font-size:19px;color:var(--text);margin-top:-6px}
+.sys-g1-val.idle{color:var(--muted)}
+.sys-g1-sub{text-align:center;font-size:9.5px;color:var(--muted);margin-top:3px;font-family:'Share Tech Mono',monospace}
+/* G2 / G3 */
+.sys-g2-wrap{position:relative;padding-top:13px}
+.sys-g2-svg{width:100%;height:44px;display:block}
+.sys-g2-labels{position:relative;height:14px;margin-top:1px}
+.sys-g2-labels span{position:absolute;font-family:'Share Tech Mono',monospace;font-size:9.5px;color:var(--muted);white-space:nowrap}
+.sys-g2-l0{left:0}
+.sys-g2-l1{right:0}
+.sys-g2-lm{transform:translateX(-50%)}
+.sys-g2-now{position:absolute;top:0;transform:translateX(-50%);font-family:'Share Tech Mono',monospace;font-size:9.5px;color:var(--text);white-space:nowrap}
+.sys-g3-svg{width:100%;height:auto;display:block}
+.sys-g3-lbl{font-family:'Share Tech Mono',monospace;font-size:8.5px;fill:var(--muted)}
+/* G4 — busy lamps */
+.sys-lamps-wrap{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:9px 12px;min-width:210px}
+.sys-lamps{display:flex;align-items:center;gap:5px;margin-bottom:6px}
+.sys-lamp{width:15px;height:15px;border-radius:3px;background:rgba(255,255,255,0.07);border:1px solid var(--border);transition:background-color .3s}
+.sys-lamp.on.g{background:#22c55e;border-color:#22c55e}
+.sys-lamp.on.a{background:#f59e0b;border-color:#f59e0b}
+.sys-lamp.on.r{background:#ef4444;border-color:#ef4444}
+.sys-lamp-more{font-family:'Share Tech Mono',monospace;font-size:11px;color:#ef4444;margin-left:4px}
+.sys-card-u{font-size:10px;color:var(--muted)}
+.sys-cards{display:flex;gap:12px;flex-wrap:wrap}
+.sys-card{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:9px 12px;min-width:150px}
+.sys-card-l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.sys-card-v{font-size:17px;color:var(--text);font-family:'Share Tech Mono',monospace;margin-top:3px}
+.sys-card-s{font-size:10px;color:var(--muted);margin-top:3px}
+.sys-card.bad .sys-card-v{color:#ef4444}
+.sys-origin{font-size:9px;letter-spacing:.4px;border-radius:3px;padding:1px 6px;color:var(--muted);background:rgba(255,255,255,0.05);border:1px solid var(--border)}
+.sys-origin.bg{color:#60a5fa;border-color:rgba(96,165,250,0.5);background:rgba(96,165,250,0.10)}
+.sys-bad{color:#ef4444}
+.sys-ping{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted);margin-top:8px;white-space:pre-wrap}
 </style>
 </head>
 <body>
@@ -2177,6 +2246,11 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
     <button class="tab-btn" id="tab-btn-ops"         data-label="Bookings & Calls" onclick="switchTab('ops')">Bookings &amp; Calls<span class="ops-tabcount" id="ops-tabcount-calls"></span></button>
     <button class="tab-btn" id="tab-btn-ops-crew"    data-label="Crew Metrics" onclick="switchTab('ops-crew')">Crew Metrics<span class="ops-tabcount" id="ops-tabcount-crew"></span></button>
     <button class="tab-btn" id="tab-btn-performance" onclick="switchTab('performance')">Performance</button>
+    <!-- System: admin only. Hidden in the markup and revealed by applyCohort for
+         the admin cohort, the same way btn-drive-contracts is — absent for other
+         cohorts, not disabled. The dot carries the worst back-end colour, where
+         the two Ops tabs carry counts. -->
+    <button class="tab-btn" id="tab-btn-system" onclick="switchTab('system')" style="display:none">System<span class="sys-tabdot grey" id="sys-tabdot"></span></button>
   </div>
   <div class="subtab-group" id="subtab-bookings">
     <button class="tab-btn active" id="tab-btn-schedule"     onclick="switchTab('schedule')">Schedule</button>
@@ -2439,6 +2513,29 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
         <button class="btn" onclick="loadPerformance(true)" style="margin-left:auto">⟳ Refresh</button>
       </div>
       <div class="perf-body" id="perf-body">
+        <div class="ops-lane-status">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SYSTEM TAB (health indicators) ── -->
+  <div class="tab-panel" id="tab-system">
+    <div class="sys-panel">
+      <div class="sys-toolbar">
+        <span class="section-label" style="margin:0">SYSTEM</span>
+        <span class="sys-asat" id="sys-asat">as at —:—</span>
+        <button class="btn" onclick="healthPing()" id="sys-btn-ping">Test now</button>
+        <button class="btn" onclick="healthCopySummary()">Copy summary</button>
+        <button class="btn" onclick="healthRevealLog()">Reveal log</button>
+        <button class="btn" onclick="loadHealth(true)" style="margin-left:auto">⟳ Refresh</button>
+      </div>
+      <!-- The speedos live in their OWN container, rebuilt only when the set of
+           back ends changes. The rest of the tab is re-rendered on every 5 s
+           poll, and a replaced element cannot animate a CSS transition — so
+           keeping the gauges out of that rebuild is what makes the needles
+           sweep instead of jump. -->
+      <div id="sys-g1-host"></div>
+      <div id="sys-body">
         <div class="ops-lane-status">Loading…</div>
       </div>
     </div>
@@ -3458,6 +3555,11 @@ function applyCohort(d){
   // (D3) — absent for other cohorts, not disabled.
   const _dciBtn = document.getElementById('btn-drive-contracts');
   if(_dciBtn) _dciBtn.style.display = (cohort === 'admin') ? '' : 'none';
+  // Today › System: admin only (§1 D2). Revealed here rather than hidden later,
+  // so no cohort path can leak it. The /api/health/* routes are admin-gated
+  // server-side regardless — this is only what's on screen.
+  const _sysBtn = document.getElementById('tab-btn-system');
+  if(_sysBtn) _sysBtn.style.display = (cohort === 'admin') ? '' : 'none';
   if(cohort === 'admin'){ hide('tab-btn-my-status'); return; }  // shared admin login — no personal view
   if(window.isReadOnlyCohort(cohort)){
     hide('tab-btn-crew-finder');                 // Crew Finder is admin-only
@@ -7142,7 +7244,7 @@ async function sendSMS(ackOver){
 // My Status is deliberately NOT here — it moved to the identity nav, so
 // groupOfTab('my-status') returns null and it sits outside the group structure.
 const TAB_GROUPS = {
-  today:       ['ops', 'ops-crew', 'performance'],
+  today:       ['ops', 'ops-crew', 'performance', 'system'],
   bookings:    ['schedule', 'crew-finder', 'all-bookings', 'import'],
   crew:        ['forecast', 'induction-checker', 'crew-records'],
   recruitment: ['recruitment', 'recruitment-dashboard', 'recruitment-sessions'],
@@ -7208,6 +7310,10 @@ function switchTab(tab){
     if(!sibling) loadOps();
   }
   if(tab==='performance') loadPerformance();
+  // System polls every 30 s, but ONLY while it is the visible tab (§2.1). Any
+  // move away stops it, so a tab nobody is looking at never adds load to the
+  // thing it is measuring.
+  if(tab==='system'){ healthStartPolling(); } else { healthStopPolling(); }
   if(tab==='induction-checker' && !_indData) loadInductions();
   if(tab==='import'){ loadImportHistory(); initManualBooking(); }
   if(tab==='forecast') initForecast();
@@ -43556,6 +43662,667 @@ function rdyRefreshAfterGenerate(){
   loadReady();
   var lv = document.getElementById('inv-view-list');
   if(lv && lv.classList.contains('on')) loadInvoices();
+}
+
+// ─── SYSTEM HEALTH TAB ───────────────────────────────────────────────────────
+// DESIGN-system-health-v0_3.md §2.1-§2.3. Reads /api/health/summary, which is
+// served from the Flask process's memory — no SmartStaff call, so opening this
+// tab does not itself add load to what it is measuring.
+
+var _healthTimer = null;
+var _healthData  = null;
+var _healthPinging = false;
+var _sysSpeedoKey = null;   // which back ends the G1 shells were built for
+
+var SYS_BACKEND_LABELS = {
+  smartstaff:      'SmartStaff',
+  smartstaff_test: 'SmartStaff (test)',
+  supabase:        'Supabase',
+  crewhub:         'Crew Hub',
+  other:           'Other (Estimator, GitHub, misc.)'
+};
+
+/** ms under 1 s, seconds to one decimal at 1 s and above (brief F). */
+function sysMs(v){
+  if(v == null || !isFinite(v)) return '—';
+  var n = Number(v);
+  return n < 1000 ? Math.round(n) + ' ms' : (n / 1000).toFixed(1) + ' s';
+}
+
+/** 24-hour clock, from the ISO local stamp the server already formats. */
+function sysTime(iso){
+  if(!iso) return '—';
+  var m = String(iso).match(/T(\d{2}):(\d{2}):(\d{2})/);
+  return m ? (m[1] + ':' + m[2] + ':' + m[3]) : '—';
+}
+
+function sysInt(v){ return (v == null || !isFinite(v)) ? '—' : String(Math.round(v)); }
+
+var SYS_DOT_RANK = { grey: 0, green: 1, amber: 2, red: 3 };
+
+// The app is dark-only: one :root block, no prefers-color-scheme and no
+// data-theme anywhere in this file. So the graphics below take their neutrals
+// from the CSS variables (--text, --muted, --border) and their green / amber /
+// red from the same three hexes the dots use, exactly as the Performance charts
+// do. Nothing here needs a light-mode variant.
+var SYS_GREEN = '#22c55e', SYS_AMBER = '#f59e0b', SYS_RED = '#ef4444';
+
+/** Thresholds for a back end, straight from health.THRESHOLDS via summary(), so
+ *  a band edge and a dot colour can never disagree (addendum Constraints). */
+function sysTh(d, b){
+  var t = (d && d.thresholds) || {};
+  return t[b] || t.other || { green_p95: 1500, amber_p95: 4000 };
+}
+
+// ── G1: speedos ─────────────────────────────────────────────────────────────
+// Semicircle, 0 to scale_max_ms, three bands at the threshold cut-offs. The
+// STRUCTURE is drawn once per back end and then only the needle's rotation and
+// the readouts are updated, because a CSS transition cannot animate an element
+// that was just replaced — and the 0.6 s sweep is the point of the gauge.
+
+var SYS_GA = { cx: 80, cy: 86, r: 62, nr: 48 };
+
+function sysGaugePt(frac, radius){
+  var a = Math.PI * (1 - Math.max(0, Math.min(1, frac)));
+  return [SYS_GA.cx + radius * Math.cos(a), SYS_GA.cy - radius * Math.sin(a)];
+}
+
+function sysGaugeArc(f0, f1, radius, colour, width){
+  var p0 = sysGaugePt(f0, radius), p1 = sysGaugePt(f1, radius);
+  return '<path d="M' + p0[0].toFixed(1) + ',' + p0[1].toFixed(1)
+       + ' A' + radius + ',' + radius + ' 0 0 1 ' + p1[0].toFixed(1) + ',' + p1[1].toFixed(1)
+       + '" fill="none" stroke="' + colour + '" stroke-width="' + width
+       + '" stroke-linecap="butt"/>';
+}
+
+/** Degrees for the needle: -90 at zero, +90 at full scale. */
+function sysNeedleDeg(frac){ return (Math.max(0, Math.min(1, frac)) * 180) - 90; }
+
+function sysSpeedoCardHtml(b, label){
+  var tickId = 'sys-g1-' + b;
+  return '<div class="sys-g1" id="' + tickId + '-card">'
+    + '<div class="sys-g1-top">'
+    +   '<span class="sys-g1-name">' + escapeHtml(label) + '</span>'
+    +   '<span class="sys-dot grey" id="' + tickId + '-dot"></span>'
+    + '</div>'
+    + '<svg class="sys-g1-svg" viewBox="0 0 160 100" role="img" aria-label="'
+    +   escapeHtml(label + ' response time gauge') + '">'
+    +   '<g id="' + tickId + '-bands"></g>'
+    +   '<g id="' + tickId + '-ticks"></g>'
+    +   '<g class="sys-needle" id="' + tickId + '-needle">'
+    +     '<line x1="' + SYS_GA.cx + '" y1="' + SYS_GA.cy + '" x2="' + SYS_GA.cx
+    +       '" y2="' + (SYS_GA.cy - SYS_GA.nr) + '" stroke-width="2.4"'
+    +       ' stroke-linecap="round"/>'
+    +   '</g>'
+    +   '<circle cx="' + SYS_GA.cx + '" cy="' + SYS_GA.cy + '" r="4" fill="var(--muted)"/>'
+    + '</svg>'
+    + '<div class="sys-g1-val" id="' + tickId + '-val">—</div>'
+    + '<div class="sys-g1-sub" id="' + tickId + '-sub">no requests yet</div>'
+    + '</div>';
+}
+
+function sysSyncSpeedo(d, b){
+  var e = (d.backends || {})[b]; if(!e) return;
+  var id = 'sys-g1-' + b;
+  var th = sysTh(d, b);
+  var scale = e.scale_max_ms || (2 * th.amber_p95);
+  var F = function(v){ return (v == null || !isFinite(v)) ? null : Math.max(0, Math.min(1, v / scale)); };
+
+  var bands = document.getElementById(id + '-bands');
+  if(bands){
+    var g1 = Math.min(1, th.green_p95 / scale), a1 = Math.min(1, th.amber_p95 / scale);
+    bands.innerHTML = sysGaugeArc(0, g1, SYS_GA.r, SYS_GREEN, 9)
+      + (a1 > g1 ? sysGaugeArc(g1, a1, SYS_GA.r, SYS_AMBER, 9) : '')
+      + (a1 < 1 ? sysGaugeArc(a1, 1, SYS_GA.r, SYS_RED, 9) : '');
+  }
+
+  // Three ticks outside the arc: fastest (grey), average (text), peak (red).
+  var ticks = document.getElementById(id + '-ticks');
+  if(ticks){
+    var marks = [[e.min_ms, 'var(--muted)'], [e.mean_ms, 'var(--text)'], [e.max_ms, SYS_RED]];
+    ticks.innerHTML = marks.map(function(m){
+      var f = F(m[0]); if(f == null) return '';
+      var p0 = sysGaugePt(f, SYS_GA.r + 5), p1 = sysGaugePt(f, SYS_GA.r + 11);
+      return '<line x1="' + p0[0].toFixed(1) + '" y1="' + p0[1].toFixed(1)
+           + '" x2="' + p1[0].toFixed(1) + '" y2="' + p1[1].toFixed(1)
+           + '" stroke="' + m[1] + '" stroke-width="1.6"/>';
+    }).join('');
+  }
+
+  var needle = document.getElementById(id + '-needle');
+  var val    = document.getElementById(id + '-val');
+  var sub    = document.getElementById(id + '-sub');
+  var dot    = document.getElementById(id + '-dot');
+  if(dot) dot.className = 'sys-dot ' + (e.status || 'grey');
+
+  var cf = F(e.current_ms);
+  if(needle){
+    // At rest (never measured) the needle sits at zero, not mid-dial.
+    needle.setAttribute('transform', 'rotate(' + sysNeedleDeg(cf == null ? 0 : cf).toFixed(2)
+      + ' ' + SYS_GA.cx + ' ' + SYS_GA.cy + ')');
+    needle.classList.toggle('idle', !!e.current_idle || cf == null);
+  }
+  if(val){
+    val.textContent = (e.current_ms == null) ? '—' : sysMs(e.current_ms);
+    val.classList.toggle('idle', !!e.current_idle || e.current_ms == null);
+  }
+  if(sub){
+    if(!(e['15m'] || {}).count && e.current_ms == null){
+      sub.textContent = 'no requests yet';
+    } else if(e.current_idle){
+      sub.textContent = 'idle · min ' + sysMs(e.min_ms) + ' · avg ' + sysMs(e.mean_ms)
+                      + ' · peak ' + sysMs(e.max_ms);
+    } else {
+      sub.textContent = 'min ' + sysMs(e.min_ms) + ' · avg ' + sysMs(e.mean_ms)
+                      + ' · peak ' + sysMs(e.max_ms);
+    }
+  }
+}
+
+// ── G2: range strip (SmartStaff only) ───────────────────────────────────────
+function sysRangeStripSvg(d, b){
+  var e = (d.backends || {})[b] || {};
+  var th = sysTh(d, b);
+  var scale = e.scale_max_ms || (2 * th.amber_p95);
+  var W = 560, H = 54, x0 = 8, x1 = W - 8, y = 30;
+  var X = function(v){
+    if(v == null || !isFinite(v)) return null;
+    return x0 + (x1 - x0) * Math.max(0, Math.min(1, v / scale));
+  };
+  var gx = X(th.green_p95), ax = X(th.amber_p95);
+  var s = '<svg class="sys-g2-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none"'
+        + ' role="img" aria-label="SmartStaff response-time range">';
+  // Faint bands.
+  s += '<rect x="' + x0 + '" y="' + (y - 7) + '" width="' + (gx - x0) + '" height="14" fill="'
+    +  perfRgba(SYS_GREEN, 0.13) + '"/>';
+  s += '<rect x="' + gx + '" y="' + (y - 7) + '" width="' + Math.max(0, ax - gx) + '" height="14" fill="'
+    +  perfRgba(SYS_AMBER, 0.13) + '"/>';
+  s += '<rect x="' + ax + '" y="' + (y - 7) + '" width="' + Math.max(0, x1 - ax) + '" height="14" fill="'
+    +  perfRgba(SYS_RED, 0.13) + '"/>';
+
+  var mn = X(e.min_ms), md = X((e['15m'] || {}).median_ms), p95 = X(e.p95_ms),
+      mx = X(e.max_ms), cur = X(e.current_ms);
+  if(mn != null && mx != null){
+    s += '<line x1="' + mn.toFixed(1) + '" y1="' + y + '" x2="' + mx.toFixed(1) + '" y2="' + y
+      +  '" stroke="var(--muted)" stroke-width="1.2"/>';
+  }
+  if(md != null && p95 != null && p95 >= md){
+    s += '<rect x="' + md.toFixed(1) + '" y="' + (y - 5) + '" width="'
+      +  Math.max(1.5, p95 - md).toFixed(1) + '" height="10" rx="2" fill="var(--accent)"/>';
+  }
+  if(mx != null){
+    s += '<rect x="' + (mx - 1).toFixed(1) + '" y="' + (y - 9) + '" width="2.4" height="18" fill="'
+      +  SYS_RED + '"/>';
+  }
+  if(cur != null){
+    s += '<circle cx="' + cur.toFixed(1) + '" cy="' + y + '" r="5.5" fill="none" stroke="'
+      +  (e.current_idle ? 'var(--muted)' : 'var(--text)') + '" stroke-width="2"/>';
+  }
+  s += '</svg>';
+
+  // The labels are HTML, not <text>. This SVG stretches with
+  // preserveAspectRatio="none" so the bands line up with the scale at any
+  // width — but that stretches glyphs too, which overprinted the left-hand
+  // labels. Positioning them as HTML keeps the geometry stretched and the type
+  // crisp.
+  var pct = function(px){ return (100 * (px - x0) / (x1 - x0)); };
+  var now = (cur == null) ? ''
+    : '<span class="sys-g2-now" style="left:' + pct(cur).toFixed(2) + '%">now</span>';
+  var lbl = '';
+  if(mn != null) lbl += '<span class="sys-g2-l0">fastest ' + escapeHtml(sysMs(e.min_ms)) + '</span>';
+  if(mx != null) lbl += '<span class="sys-g2-l1">peak ' + escapeHtml(sysMs(e.max_ms)) + '</span>';
+  if(md != null && pct(md) > 18 && pct(md) < 80){
+    lbl += '<span class="sys-g2-lm" style="left:' + pct(md).toFixed(2) + '%">typical</span>';
+  }
+  return '<div class="sys-g2-wrap">' + now + s
+       + '<div class="sys-g2-labels">' + lbl + '</div></div>';
+}
+
+// ── G3: 60-minute trace (SmartStaff) ────────────────────────────────────────
+function sysTraceSvg(d, b){
+  var e = (d.backends || {})[b] || {};
+  var ser = e.series_60m || [];
+  var th = sysTh(d, b);
+  var W = 560, H = 150, padL = 8, padR = 8, padT = 10, padB = 18;
+  var plotW = W - padL - padR, plotH = H - padT - padB;
+  var vals = ser.map(function(p){ return p.median_ms; }).filter(function(x){ return x != null && isFinite(x); });
+  var maxes = ser.map(function(p){ return p.max_ms; }).filter(function(x){ return x != null && isFinite(x); });
+  var hi = Math.max.apply(null, [th.amber_p95].concat(maxes.length ? maxes : [th.amber_p95]));
+  if(!(hi > 0)) hi = th.amber_p95;
+  var X = function(i){ return padL + (ser.length > 1 ? plotW * i / (ser.length - 1) : 0); };
+  var Y = function(v){ return padT + plotH - plotH * Math.max(0, Math.min(1, v / hi)); };
+
+  var s = '<svg class="sys-g3-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
+        + ' aria-label="SmartStaff response time, last 60 minutes">';
+
+  // Background shading where a background refresh ran (at least one minute wide
+  // so a 40-second run is still visible).
+  (d.background_runs_60m || []).forEach(function(r){
+    var idx = -1;
+    for(var i = 0; i < ser.length; i++){ if(ser[i].t === String(r.start).slice(0, 5)) { idx = i; break; } }
+    if(idx < 0) return;
+    var mins = Math.max(1, Math.round((r.duration_ms || 0) / 60000));
+    var bx = X(idx), bw = Math.max(plotW / Math.max(1, ser.length - 1), (plotW / Math.max(1, ser.length - 1)) * mins);
+    s += '<rect x="' + bx.toFixed(1) + '" y="' + padT + '" width="' + bw.toFixed(1)
+      +  '" height="' + plotH + '" fill="rgba(255,255,255,0.055)"/>';
+  });
+
+  // Faint threshold lines, then the dashed 60-minute mean.
+  [[th.green_p95, SYS_GREEN], [th.amber_p95, SYS_RED]].forEach(function(t){
+    if(t[0] > hi) return;
+    s += '<line x1="' + padL + '" y1="' + Y(t[0]).toFixed(1) + '" x2="' + (W - padR)
+      +  '" y2="' + Y(t[0]).toFixed(1) + '" stroke="' + perfRgba(t[1], 0.35)
+      +  '" stroke-width="1"/>';
+  });
+  var mean60 = (e['60m'] || {}).mean_ms;
+  if(mean60 != null && isFinite(mean60)){
+    s += '<line x1="' + padL + '" y1="' + Y(mean60).toFixed(1) + '" x2="' + (W - padR)
+      +  '" y2="' + Y(mean60).toFixed(1) + '" stroke="var(--muted)" stroke-width="1"'
+      +  ' stroke-dasharray="4 3"/>';
+  }
+
+  // The line, broken at empty minutes — never joined across a gap and never
+  // plotted as zero.
+  var segs = [], cur = [];
+  ser.forEach(function(p, i){
+    if(p.median_ms == null || !isFinite(p.median_ms)){
+      if(cur.length > 1) segs.push(cur);
+      cur = [];
+      return;
+    }
+    cur.push(X(i).toFixed(1) + ',' + Y(p.median_ms).toFixed(1));
+  });
+  if(cur.length > 1) segs.push(cur);
+  segs.forEach(function(pts){
+    s += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--accent)"'
+      +  ' stroke-width="1.6" vector-effect="non-scaling-stroke"/>';
+  });
+
+  // Peak minute, by max_ms.
+  var peakI = -1, peakV = -1;
+  ser.forEach(function(p, i){ if(p.max_ms != null && p.max_ms > peakV){ peakV = p.max_ms; peakI = i; } });
+  if(peakI >= 0){
+    s += '<circle cx="' + X(peakI).toFixed(1) + '" cy="' + Y(peakV).toFixed(1)
+      +  '" r="3.2" fill="' + SYS_RED + '"/>';
+  }
+  // Latest minute with data, in blue.
+  for(var j = ser.length - 1; j >= 0; j--){
+    if(ser[j].median_ms != null){
+      s += '<circle cx="' + X(j).toFixed(1) + '" cy="' + Y(ser[j].median_ms).toFixed(1)
+        +  '" r="3" fill="#60a5fa"/>';
+      break;
+    }
+  }
+
+  s += '<text class="sys-g3-lbl" x="' + padL + '" y="' + (H - 5) + '">&minus;60 min</text>'
+    +  '<text class="sys-g3-lbl" x="' + (W - padR) + '" y="' + (H - 5) + '" text-anchor="end">now</text>';
+
+  // Hover readout per minute — the Performance pattern: an invisible hit rect
+  // with a <title> child.
+  var step = plotW / Math.max(1, ser.length - 1);
+  ser.forEach(function(p, i){
+    var tip = p.t + '\n' + (p.count
+      ? ('median ' + sysMs(p.median_ms) + '\nmax ' + sysMs(p.max_ms) + '\n' + p.count + ' request' + (p.count === 1 ? '' : 's'))
+      : 'no requests');
+    s += '<rect class="perf-hit" x="' + Math.max(padL, X(i) - step / 2).toFixed(1) + '" y="' + padT
+      +  '" width="' + step.toFixed(1) + '" height="' + plotH + '">'
+      +  '<title>' + escapeHtml(tip) + '</title></rect>';
+  });
+  return s + '</svg>';
+}
+
+// ── G4: busy lamps ──────────────────────────────────────────────────────────
+function sysLampsHtml(d){
+  var n = d.inflight_now || 0;
+  var lit = Math.min(8, n);
+  var lamps = '';
+  for(var i = 1; i <= 8; i++){
+    var tone = i <= 2 ? 'g' : (i <= 5 ? 'a' : 'r');
+    lamps += '<span class="sys-lamp ' + tone + (i <= lit ? ' on' : '') + '"></span>';
+  }
+  return '<div class="sys-lamps-wrap">'
+    + '<div class="sys-lamps">' + lamps
+    +   (n > 8 ? '<span class="sys-lamp-more">8+</span>' : '')
+    + '</div>'
+    + '<div class="sys-card-s">Busy right now · requests queued at SmartStaff</div>'
+    + '</div>';
+}
+
+function healthStartPolling(){
+  loadHealth();
+  if(_healthTimer) return;
+  // 5 s, not 30 (graphics addendum): the needles need it to feel live, and the
+  // route only reads this process's own memory — no SmartStaff call, so the
+  // cost of polling is a dictionary walk on the user's own Mac.
+  _healthTimer = setInterval(function(){
+    // Stop burning requests while the window is in the background.
+    if(document.hidden) return;
+    loadHealth();
+  }, 5000);
+}
+
+function healthStopPolling(){
+  if(_healthTimer){ clearInterval(_healthTimer); _healthTimer = null; }
+}
+
+// Backgrounding the window stops the poll; coming back refreshes at once so the
+// numbers on screen are never stale by more than a moment.
+document.addEventListener('visibilitychange', function(){
+  if(document.hidden){ healthStopPolling(); return; }
+  if(_activeTab === 'system') healthStartPolling();
+});
+
+function loadHealth(manual){
+  var body = document.getElementById('sys-body');
+  if(manual && body) body.innerHTML = '<div class="ops-lane-status">Loading…</div>';
+  fetch('/api/health/summary')
+    .then(function(r){
+      if(r.status === 403 || r.status === 401){
+        healthStopPolling();
+        throw new Error('Admin only');
+      }
+      return r.json();
+    })
+    .then(function(d){
+      if(d && d.error) throw new Error(d.error);
+      _healthData = d;
+      renderHealth(d);
+    })
+    .catch(function(e){
+      if(body) body.innerHTML = '<div class="ops-lane-status">'
+        + escapeHtml(e.message || 'Could not read system health') + '</div>';
+    });
+}
+
+function renderHealth(d){
+  var body = document.getElementById('sys-body');
+  if(!body || !d) return;
+  var asat = document.getElementById('sys-asat');
+  if(asat) asat.textContent = 'as at ' + sysTime(d.now);
+
+  var backends = d.backends || {};
+  var order = (d.measured || []).filter(function(b){
+    // Hide the test row entirely unless this GOAT is actually pointed at test.
+    if(b !== 'smartstaff_test') return true;
+    var s = backends[b];
+    return s && ((s['60m'] || {}).count > 0);
+  });
+
+  // The tab-label dot is the worst back-end colour (addendum: unchanged).
+  var worst = 'grey';
+  order.forEach(function(b){
+    var st = (backends[b] || {}).status || 'grey';
+    if(SYS_DOT_RANK[st] > SYS_DOT_RANK[worst]) worst = st;
+  });
+  var dot = document.getElementById('sys-tabdot');
+  if(dot) dot.className = 'sys-tabdot ' + worst;
+
+  // ── G1 speedos ─────────────────────────────────────────────────────────────
+  // Built ONCE into their own host, then only updated. Rebuilding them every
+  // poll would replace the needle elements and kill the 0.6 s transition.
+  var g1host = document.getElementById('sys-g1-host');
+  var g1key = order.join(',');
+  if(g1host && _sysSpeedoKey !== g1key){
+    g1host.innerHTML = '<div class="sys-sec" style="margin-top:0">'
+      + '<div class="sys-g1-grid">'
+      + order.map(function(b){ return sysSpeedoCardHtml(b, SYS_BACKEND_LABELS[b] || b); }).join('')
+      + '</div></div>';
+    _sysSpeedoKey = g1key;
+  }
+
+  var html = '';
+
+  var ssKey = (backends.smartstaff_test && ((backends.smartstaff_test['60m'] || {}).count > 0))
+    ? 'smartstaff_test' : 'smartstaff';
+  var ssLabel = SYS_BACKEND_LABELS[ssKey];
+  var ssE = backends[ssKey] || {};
+
+  // ── G2 range strip ─────────────────────────────────────────────────────────
+  html += '<div class="sys-sec" style="margin-top:4px"><div class="sys-sec-h">'
+    + escapeHtml(ssLabel) + ' range, last 15 min'
+    + '<span class="sys-sec-r">typical ' + escapeHtml(sysMs((ssE['15m'] || {}).median_ms))
+    + ' · slow (p95) ' + escapeHtml(sysMs(ssE.p95_ms)) + '</span></div>'
+    + sysRangeStripSvg(d, ssKey) + '</div>';
+
+  // ── G3 60-minute trace ─────────────────────────────────────────────────────
+  var pk = null, pkT = '';
+  ((ssE.series_60m) || []).forEach(function(p){
+    if(p.max_ms != null && (pk == null || p.max_ms > pk)){ pk = p.max_ms; pkT = p.t; }
+  });
+  html += '<div class="sys-sec"><div class="sys-sec-h">'
+    + escapeHtml(ssLabel) + ', last 60 minutes'
+    + '<span class="sys-sec-r">' + (pk == null ? 'no requests yet'
+        : ('peak ' + escapeHtml(sysMs(pk)) + ' at ' + escapeHtml(pkT))) + '</span></div>'
+    + sysTraceSvg(d, ssKey)
+    + '<div class="sys-note">Grey bands are the background crew-cache refresh. '
+    + 'Dashed line is the 60-minute mean. Gaps are minutes with no requests.</div></div>';
+
+  // ── G4 busy lamps + two number cards ───────────────────────────────────────
+  var sessA = d.session || {};
+  var rlA = ((sessA.relogins || {})['60m']) || {};
+  var toA = 0;
+  (d.measured || []).forEach(function(b){ toA += ((backends[b] || {})['60m'] || {}).timeouts || 0; });
+  html += '<div class="sys-sec"><div class="sys-cards">'
+    + sysLampsHtml(d)
+    + '<div class="sys-card' + (rlA.check_failed ? ' bad' : '') + '">'
+    +   '<div class="sys-card-l">Silent re-logins (60 min)</div>'
+    +   '<div class="sys-card-v">' + sysInt(rlA.expired || 0) + ' <span class="sys-card-u">expired</span></div>'
+    +   '<div class="sys-card-s' + (rlA.check_failed ? ' sys-bad' : '') + '">'
+    +     sysInt(rlA.check_failed || 0) + ' check failed</div>'
+    + '</div>'
+    + '<div class="sys-card' + (toA ? ' bad' : '') + '">'
+    +   '<div class="sys-card-l">Timeouts (60 min)</div>'
+    +   '<div class="sys-card-v">' + sysInt(toA) + '</div>'
+    +   '<div class="sys-card-s">across all back ends</div>'
+    + '</div>'
+    + '</div>';
+  if(d.log_ok === false){
+    html += '<div class="sys-warn">Health log unavailable: '
+         + escapeHtml(d.log_error || 'unknown reason') + ' — the tab still works from memory.</div>';
+  }
+  if(d.recording_errors){
+    html += '<div class="sys-warn">' + sysInt(d.recording_errors)
+         + ' recording error(s)' + (d.recording_first_error
+            ? ' (first: ' + escapeHtml(d.recording_first_error) + ')' : '')
+         + ' — some requests may be missing from these numbers.</div>';
+  }
+  html += '</div>';
+
+  // ── 2. Session panel (the hypothesis test, §2.2) ───────────────────────────
+  var sess = d.session || {};
+  var c15 = sess['15m'] || {}, c60 = sess['60m'] || {};
+  var rl = (sess.relogins || {});
+  var rl60 = rl['60m'] || {}, rl15 = rl['15m'] || {};
+  html += '<div class="sys-sec"><div class="sys-sec-h">Session checks (GET /dash, before every request)</div>'
+    + '<div class="sys-cards">'
+    + sysCard('Checks, 15 min', sysInt(c15.count), 'median ' + sysMs(c15.median_ms) + ' · p95 ' + sysMs(c15.p95_ms))
+    + sysCard('Checks, 60 min', sysInt(c60.count), 'median ' + sysMs(c60.median_ms) + ' · p95 ' + sysMs(c60.p95_ms))
+    + sysCard('Check timeouts, 60 min', sysInt(c60.timeouts), c60.timeouts ? 'slow or unreachable' : 'none', !!c60.timeouts)
+    + '</div>'
+    + '<div class="sys-sec-h" style="margin-top:12px">Silent re-logins</div>'
+    + '<div class="sys-cards">'
+    + sysCard('Session expired', sysInt(rl60.expired || 0), 'last 60 min · ' + sysInt(rl15.expired || 0) + ' in 15')
+    + sysCard('Check failed (SmartStaff slow or unreachable)',
+              sysInt(rl60.check_failed || 0),
+              'last 60 min · ' + sysInt(rl15.check_failed || 0) + ' in 15',
+              !!rl60.check_failed)
+    + '</div>';
+  if(rl60.check_failed){
+    html += '<div class="sys-warn">A re-login after a failed check means a slow SmartStaff '
+         + 'was read as an expired session. That is the path the design set out to confirm.</div>';
+  }
+  html += '</div>';
+
+  // ── 3. Background ─────────────────────────────────────────────────────────
+  var bg = d.background || {}, last = bg.last;
+  html += '<div class="sys-sec"><div class="sys-sec-h">Background (15-minute crew-cache refresh)</div>'
+    + '<div class="sys-cards">'
+    + sysCard('Last run', last ? sysTime(last.ts) : '—',
+              last ? ('started ' + sysTime(last.started)) : 'none since launch')
+    + sysCard('Duration', last ? sysMs(last.duration_ms) : '—', last ? (last.name || '') : '')
+    + sysCard('Requests', last ? sysInt(last.request_count) : '—',
+              sysInt(bg.count_60m || 0) + ' run(s) in 60 min')
+    + '</div></div>';
+
+  // ── 4. Slowest 20, last hour (§2.3) ───────────────────────────────────────
+  var slow = (d.slowest || []).map(function(r){
+    var result = r.error ? r.error : (r.status == null ? '—' : String(r.status));
+    var isBad = !!r.error || !r.ok;
+    var org = r.origin === 'background' ? 'background' : 'you';
+    return '<tr>'
+      + '<td>' + sysTime(r.ts) + '</td>'
+      + '<td>' + escapeHtml(SYS_BACKEND_LABELS[r.backend] || r.backend || '') + '</td>'
+      // Endpoint paths are ours, not SmartStaff free text, but decode then
+      // escape anyway so every string on this tab goes the same way.
+      + '<td>' + escapeHtml(decodeEntities(r.endpoint || '')) + '</td>'
+      + '<td class="num">' + sysMs(r.total_ms) + '</td>'
+      + '<td class="num">' + (r.server_ms == null ? '—' : sysMs(r.server_ms)) + '</td>'
+      + '<td class="num">' + (r.inflight_at_send == null ? '—' : sysInt(r.inflight_at_send)) + '</td>'
+      + '<td><span class="sys-origin' + (org === 'background' ? ' bg' : '') + '">' + org + '</span></td>'
+      + '<td class="' + (isBad ? 'sys-bad' : '') + '">' + escapeHtml(decodeEntities(result)) + '</td>'
+      + '</tr>';
+  }).join('');
+  html += '<div class="sys-sec"><div class="sys-sec-h">Slowest 20 requests, last hour</div>'
+    + '<table class="sys-tbl"><thead><tr>'
+    + '<th>Time</th><th>Back end</th><th>Endpoint</th>'
+    + '<th style="text-align:right">Total</th><th style="text-align:right">Server</th>'
+    + '<th style="text-align:right">Busy</th><th>Origin</th><th>Result</th>'
+    + '</tr></thead><tbody>'
+    + (slow || '<tr><td colspan="8">No requests recorded yet.</td></tr>')
+    + '</tbody></table></div>';
+
+  // Test-now results persist between polls so a 30 s refresh doesn't wipe them.
+  html += '<div class="sys-sec" id="sys-ping-sec" style="display:none">'
+    + '<div class="sys-sec-h">Test now — three health-ping.php calls, one at a time</div>'
+    + '<div class="sys-ping" id="sys-ping-out"></div></div>';
+
+  html += '<div class="sys-note" style="margin-top:16px">'
+       +  'Ask the GOAT and Google Sheets/Drive are not measured yet.</div>';
+
+  body.innerHTML = html;
+
+  // Fill the gauges now that the shells exist. Done after innerHTML, and on
+  // every poll, so each needle animates from where it was.
+  order.forEach(function(b){ sysSyncSpeedo(d, b); });
+
+  if(_lastPingHtml){
+    var sec = document.getElementById('sys-ping-sec');
+    var out = document.getElementById('sys-ping-out');
+    if(sec && out){ sec.style.display = ''; out.innerHTML = _lastPingHtml; }
+  }
+}
+
+function sysCard(label, value, sub, bad){
+  return '<div class="sys-card' + (bad ? ' bad' : '') + '">'
+    + '<div class="sys-card-l">' + escapeHtml(label) + '</div>'
+    + '<div class="sys-card-v">' + escapeHtml(String(value)) + '</div>'
+    + (sub ? '<div class="sys-card-s">' + escapeHtml(sub) + '</div>' : '')
+    + '</div>';
+}
+
+var _lastPingHtml = '';
+
+function healthPing(){
+  if(_healthPinging) return;
+  _healthPinging = true;
+  var btn = document.getElementById('sys-btn-ping');
+  if(btn){ btn.disabled = true; btn.textContent = 'Testing…'; }
+  var sec = document.getElementById('sys-ping-sec');
+  var out = document.getElementById('sys-ping-out');
+  if(sec) sec.style.display = '';
+  if(out) out.textContent = 'Running three calls…';
+  fetch('/api/health/ping', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(d && d.error) throw new Error(d.error);
+      var lines = (d.results || []).map(function(r, i){
+        if(r.error === 'not_deployed'){
+          return (i + 1) + '.  health-ping.php is not deployed on this SmartStaff yet.';
+        }
+        if(r.error){
+          return (i + 1) + '.  failed: ' + r.error;
+        }
+        return (i + 1) + '.  total ' + sysMs(r.total_ms)
+             + '   ·  server ' + (r.server_ms == null ? '—' : sysMs(r.server_ms))
+             + '   ·  db ' + (r.db_ms == null ? '—' : sysMs(r.db_ms))
+             + '   ·  busy at send ' + (r.inflight_at_send == null ? '—' : sysInt(r.inflight_at_send));
+      });
+      if(d.deployed === false){
+        lines.push('');
+        lines.push('Deploy smartstaff/health-ping.php to test, then prod, and press Test now again.');
+      }
+      _lastPingHtml = escapeHtml(lines.join('\n'));
+      var o = document.getElementById('sys-ping-out');
+      if(o) o.innerHTML = _lastPingHtml;
+    })
+    .catch(function(e){
+      _lastPingHtml = escapeHtml('Test failed: ' + (e.message || 'unknown'));
+      var o = document.getElementById('sys-ping-out');
+      if(o) o.innerHTML = _lastPingHtml;
+    })
+    .then(function(){
+      _healthPinging = false;
+      var b = document.getElementById('sys-btn-ping');
+      if(b){ b.disabled = false; b.textContent = 'Test now'; }
+    });
+}
+
+/** Plain text for pasting to Mike. 24-hour times, no markup, no query strings. */
+function healthCopySummary(){
+  var d = _healthData;
+  if(!d){ showFeedback('Nothing to copy yet'); return; }
+  var L = [];
+  L.push('THE GOAT — system health at ' + sysTime(d.now));
+  L.push('');
+  (d.measured || []).forEach(function(b){
+    var e = d.backends && d.backends[b]; if(!e) return;
+    var s = e['15m'] || {};
+    if(!s.count && b === 'smartstaff_test') return;
+    L.push((SYS_BACKEND_LABELS[b] || b) + ':  ' + (e.status || 'grey'));
+    L.push('   15 min: ' + sysInt(s.count) + ' requests, median ' + sysMs(s.median_ms)
+         + ', p95 ' + sysMs(s.p95_ms) + ', ' + sysInt(s.errors) + ' errors, '
+         + sysInt(s.timeouts) + ' timeouts'
+         + ((b === 'smartstaff' || b === 'smartstaff_test')
+             ? ', busy median ' + sysInt(s.inflight_median) : ''));
+  });
+  var sess = d.session || {}, c60 = sess['60m'] || {};
+  var rl60 = ((sess.relogins || {})['60m']) || {};
+  L.push('');
+  L.push('Session checks, 60 min: ' + sysInt(c60.count) + ', median ' + sysMs(c60.median_ms)
+       + ', p95 ' + sysMs(c60.p95_ms) + ', ' + sysInt(c60.timeouts) + ' timeouts');
+  L.push('Silent re-logins, 60 min: ' + sysInt(rl60.expired || 0) + ' expired, '
+       + sysInt(rl60.check_failed || 0) + ' check failed');
+  var bg = d.background || {}, last = bg.last;
+  L.push('Background refresh: ' + (last
+    ? (sysTime(last.ts) + ', ' + sysMs(last.duration_ms) + ', ' + sysInt(last.request_count) + ' requests')
+    : 'none since launch'));
+  L.push('');
+  L.push('Slowest, last hour:');
+  (d.slowest || []).slice(0, 10).forEach(function(r){
+    L.push('   ' + sysTime(r.ts) + '  ' + (SYS_BACKEND_LABELS[r.backend] || r.backend)
+         + '  ' + (r.endpoint || '') + '  ' + sysMs(r.total_ms)
+         + '  busy ' + (r.inflight_at_send == null ? '—' : sysInt(r.inflight_at_send))
+         + '  ' + (r.origin === 'background' ? 'background' : 'you')
+         + '  ' + (r.error ? r.error : (r.status == null ? '—' : r.status)));
+  });
+  if(d.log_file){ L.push(''); L.push('Log: ' + d.log_file); }
+  L.push('Not measured yet: Ask the GOAT, Google Sheets/Drive.');
+  var text = L.join('\n');
+  try{
+    navigator.clipboard.writeText(text);
+    showFeedback('Summary copied');
+  }catch(e){
+    showFeedback('Could not copy — open Reveal log instead');
+  }
+}
+
+function healthRevealLog(){
+  fetch('/api/health/reveal-log', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      showFeedback((d && d.error) ? d.error : 'Opened the log folder');
+    })
+    .catch(function(){ showFeedback('Could not open the log folder'); });
 }
 </script>
 <!-- ── UNAVAILABILITY MANAGER MODAL ── -->

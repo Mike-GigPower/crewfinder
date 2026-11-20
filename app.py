@@ -18,11 +18,65 @@ import types
 import difflib
 import threading
 import functools
+import contextvars
 import time
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template, session, redirect, url_for, Response, send_file
 from bs4 import BeautifulSoup
-import requests as http
+import requests as _requests
+import health as _health
+
+class _HttpShim(object):
+    """A timing shim standing where `import requests as http` used to be
+    (DESIGN-system-health-v0_3 §3.1). Every one of the 61 non-SmartStaff call
+    sites in this file calls `http.get` / `http.post` / `http.put`, so routing
+    those three through health.timed() measures all of them without touching a
+    single call site.
+
+    MEASURE ONLY. health.timed() returns the response untouched and re-raises
+    any exception with a bare `raise`, so the class, message and traceback are
+    exactly what the call site would have seen. That is load-bearing, not
+    cosmetic: three sites catch `http.exceptions.Timeout` BY NAME (app.py
+    ~7164, ~9624, ~27296) and must keep matching.
+
+    Every other attribute passes straight through to `requests` via
+    __getattr__, which is what keeps `http.exceptions` (3 uses) and
+    `http.Session` (1 use, in create_ss_session) working unchanged. The
+    SmartStaff session that http.Session() builds is measured by the OTHER
+    seam, inside that function's existing get/post patch, so nothing is lost.
+
+    No call site passes a positional argument after the URL (verified across
+    all 61), so keyword-only forwarding is safe.
+    """
+
+    def get(self, url, **kw):
+        return _health.timed(_requests.get, 'GET', url, **kw)
+
+    def post(self, url, **kw):
+        return _health.timed(_requests.post, 'POST', url, **kw)
+
+    def put(self, url, **kw):
+        return _health.timed(_requests.put, 'PUT', url, **kw)
+
+    def patch(self, url, **kw):
+        return _health.timed(_requests.patch, 'PATCH', url, **kw)
+
+    def delete(self, url, **kw):
+        return _health.timed(_requests.delete, 'DELETE', url, **kw)
+
+    def head(self, url, **kw):
+        return _health.timed(_requests.head, 'HEAD', url, **kw)
+
+    def request(self, method, url, **kw):
+        def _call(u, **k):
+            return _requests.request(method, u, **k)
+        return _health.timed(_call, method, url, **kw)
+
+    def __getattr__(self, name):
+        # exceptions, Session, utils, codes, adapters, RequestException, ...
+        return getattr(_requests, name)
+
+http = _HttpShim()
 
 # The Estimator's labour pricing engine, ported (estimator_calc.py). Imported at
 # TOP LEVEL on purpose: this is the first thing in the app to import it, and a
@@ -620,6 +674,27 @@ def gp_fetch_push_reachable(detail=False):
 # is public (safe in source). The KEY is a secret — loaded from the gitignored
 # config.json (or env), exactly like GP_PUSH_SECRET above, and never hardcoded.
 RECRUITMENT_CANDIDATES_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-candidates"
+
+# ─── SYSTEM HEALTH BOOTSTRAP (DESIGN-system-health-v0_3) ──────────────────────
+# Placed here because this is the first point at which all four hosts the
+# classifier needs exist: PROD_BASE_URL / BASE_URL above, GP_PUSH_URL (Crew
+# Hub) above, and the main Supabase project URL on the line above this one.
+# health.py keeps no hostname of its own, so pointing config.json's base_url at
+# the test instance reclassifies those rows automatically.
+#
+# init() is called HERE rather than in menubar.py because app.py is imported
+# only inside the Flask child process (menubar.run_flask does `from app import
+# app` inside the function), so module level here runs exactly once, in the
+# right process. The menu-bar parent never imports this module.
+_health.configure_hosts(
+    smartstaff_prod=PROD_BASE_URL,
+    smartstaff_base=BASE_URL,
+    supabase=RECRUITMENT_CANDIDATES_URL,
+    crewhub=GP_PUSH_URL,
+)
+HEALTH_LOG_DIR = os.path.expanduser("~/Library/Logs/The GOAT")
+_health.init(HEALTH_LOG_DIR)
+
 # Same base URL, different function: this one UPDATES an applicant's status.
 RECRUITMENT_SET_STATUS_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v1/recruitment-set-status"
 # Same base URL again: this one EMAILS the induction invite (via Resend) and, on
@@ -1365,17 +1440,49 @@ _keepalive_thread    = None
 # exist. The crew cache is the only persistent cache and is refreshed
 # explicitly via the in-UI refresh button.
 
+# Why the last is_ss_session_valid() call said False, so get_ss_session() can
+# record WHY it re-logged in (DESIGN-system-health-v0_3 §3.5). A ContextVar, not
+# a global: Flask handles requests on separate threads, and a global would let
+# one request's reason be read by another. Each request starts with the default.
+_ss_check_reason = contextvars.ContextVar("goat_ss_check_reason", default="expired")
+
+
 def is_ss_session_valid(ss):
-    """Check if a SmartStaff session is still active by hitting a lightweight endpoint."""
+    """Check if a SmartStaff session is still active by hitting a lightweight endpoint.
+
+    MEASURE ONLY. The return value is unchanged in every branch: still False on
+    a redirect to login, False on any exception, and `status_code == 200`
+    otherwise. The design's F1/F1a (this runs before every route, and a timed-out
+    check is reported as "expired") are deliberately NOT fixed here — this
+    release measures them so the fix can be shown to have helped (§6).
+
+    Two things are added, both side effects only:
+      * health.record_session_check(...) — these GET /dash calls are the
+        hypothesis test in §2.2, so they are counted apart from ordinary rows.
+      * _ss_check_reason — 'expired' when the check answered and said invalid,
+        'check_failed:<ExceptionClass>' when it raised. Per the brief, any
+        non-raising False counts as 'expired'; see the handoff for the one
+        nuance (a 5xx answer is an answer, so it lands in 'expired' too).
+    """
+    _t0 = time.perf_counter()
     try:
         resp = ss.get(f"{BASE_URL}/dash", allow_redirects=False)
         # If redirected to login, session has expired
         if resp.status_code in (301, 302):
             location = resp.headers.get("Location", "")
             if "login" in location.lower():
+                _ss_check_reason.set("expired")
+                _health.record_session_check(
+                    (time.perf_counter() - _t0) * 1000.0, True, None)
                 return False
+        _ss_check_reason.set("expired")
+        _health.record_session_check(
+            (time.perf_counter() - _t0) * 1000.0, True, None)
         return resp.status_code == 200
-    except Exception:
+    except Exception as e:
+        _ss_check_reason.set("check_failed:%s" % type(e).__name__)
+        _health.record_session_check(
+            (time.perf_counter() - _t0) * 1000.0, False, type(e).__name__)
         return False
 
 def reauth_ss_session(sid):
@@ -1442,12 +1549,20 @@ _cache_autorefresh_thread = None
 
 def _do_cache_refresh(ss):
     """Full parallel crew-cache rebuild. Safe to call from any thread; no-ops
-    if a refresh is already in progress (shared guard with the manual route)."""
+    if a refresh is already in progress (shared guard with the manual route).
+
+    MEASURE ONLY: the rebuild itself is unchanged — same 10 workers, same
+    merge, same incremental saves. Design §6 F2/F3 are measured here, not
+    fixed. The only additions are the origin tag on the pool's workers and a
+    health.record_background_run() at the end when this run came from the
+    15-minute worker rather than someone pressing Refresh.
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
 
     if _refresh_progress.get("running"):
         return
+    _health_bg_started = time.time()
     _refresh_progress["running"]   = True
     _refresh_progress["done"]      = 0
     _refresh_progress["total"]     = 0
@@ -1491,7 +1606,13 @@ def _do_cache_refresh(ss):
         # When _bulk_lookup is populated, fetch_one is in-memory only and finishes
         # near-instantly; the worker pool is then just iterating a list.
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(fetch_one, c): c for c in all_crew}
+            # Submit through a FRESH copy of the calling thread's context per
+            # task (§3.4): pool workers do not inherit a ContextVar, so without
+            # this every request a background rebuild makes would be tagged
+            # 'user'. A fresh Context per submit matters — one Context object
+            # cannot be entered by two threads at once.
+            futures = {executor.submit(contextvars.copy_context().run, fetch_one, c): c
+                       for c in all_crew}
             for future in as_completed(futures):
                 cid, data, err = future.result()
                 with lock:
@@ -1531,12 +1652,33 @@ def _do_cache_refresh(ss):
         _refresh_progress["error"] = str(e)
     finally:
         _refresh_progress["running"] = False
+        # Only record runs that the 15-minute worker started. A rebuild someone
+        # triggered from the Refresh button is their own click, not background
+        # work, and the System tab's Background panel is about the former.
+        try:
+            if _health.ORIGIN.get() == "background":
+                _health.record_background_run(
+                    "crew_cache_refresh",
+                    _health_bg_started,
+                    (time.time() - _health_bg_started) * 1000.0,
+                    _health.background_request_count(_health_bg_started),
+                )
+        except Exception:
+            pass
 
 def trigger_cache_refresh(ss):
-    """Spawn a background cache refresh. Returns False if one is already running."""
+    """Spawn a background cache refresh. Returns False if one is already running.
+
+    The thread is started through contextvars.copy_context().run so the caller's
+    origin tag survives the hand-off (§3.4). Without this the tagging would be
+    silently useless for the one case it exists for: a brand-new thread starts
+    with a fresh context, so a rebuild launched by cache_autorefresh_worker
+    would have recorded all ~10 workers' requests as 'user'.
+    """
     if _refresh_progress.get("running"):
         return False
-    threading.Thread(target=_do_cache_refresh, args=(ss,), daemon=True).start()
+    threading.Thread(target=contextvars.copy_context().run,
+                     args=(_do_cache_refresh, ss), daemon=True).start()
     return True
 
 def cache_autorefresh_worker():
@@ -1548,11 +1690,17 @@ def cache_autorefresh_worker():
         ss = next(iter(_ss_sessions.values()), None)
         if not ss:
             continue  # nobody logged in — nothing to refresh against
+        # Tag this cycle as background so every request the rebuild makes is
+        # attributed to it rather than to whoever happens to be clicking
+        # (§3.4). trigger_cache_refresh copies this context into its thread.
+        _token = _health.ORIGIN.set("background")
         try:
             if trigger_cache_refresh(ss):
                 app.logger.info("Crew cache auto-refresh started")
         except Exception as e:
             app.logger.warning(f"Cache auto-refresh error: {e}")
+        finally:
+            _health.ORIGIN.reset(_token)
 
 def start_cache_autorefresh():
     """Start the cache auto-refresh thread once."""
@@ -1563,7 +1711,14 @@ def start_cache_autorefresh():
         app.logger.info(f"Crew cache auto-refresh started (every {CACHE_AUTOREFRESH_SECONDS}s)")
 
 def get_ss_session():
-    """Get SmartStaff session for current user. Auto re-auths if session expired."""
+    """Get SmartStaff session for current user. Auto re-auths if session expired.
+
+    MEASURE ONLY: the silent re-login behaviour is unchanged (§3.5). The one
+    addition is health.record_relogin(reason), which is what lets the System
+    tab split re-logins into "Session expired" and "Check failed (SmartStaff
+    slow or unreachable)". If the second kind appears when people say the app
+    feels slow, the §2 hypothesis is confirmed.
+    """
     sid = session.get("sid")
     if not sid:
         return None
@@ -1572,6 +1727,7 @@ def get_ss_session():
         return None
     # Quick validity check — if session has expired, try to re-auth silently
     if not is_ss_session_valid(ss):
+        _health.record_relogin(_ss_check_reason.get())
         app.logger.info(f"Session {sid} detected as expired in get_ss_session — re-authing")
         if not reauth_ss_session(sid):
             return None
@@ -1695,7 +1851,21 @@ def require_cohort(*allowed):
 
 
 def create_ss_session(username, password):
-    """Login to SmartStaff and return a session object."""
+    """Login to SmartStaff and return a session object.
+
+    The get/post patch below is also the SmartStaff measurement seam
+    (DESIGN-system-health-v0_3 §3.1). Because every SmartStaff call in the app
+    goes through a session built here, routing the patch through health.timed()
+    measures all 158 call sites — and the two helpers that wrap some of them,
+    _ss_post_json and _accounting_call — without touching any of them.
+
+    MEASURE ONLY. The timeout behaviour is untouched: still `kw.pop("timeout",
+    10)`, so the default stays 10 s, and `_default_timeout = 30` stays set and
+    unread exactly as before. Both are design §6 F4, fixed in a later release
+    once this one has measured them. ss.get/ss.post are the only session verbs
+    used anywhere in this file (verified: no ss.put, ss.request, ss.delete,
+    ss.patch or ss.head), so the patch has no gap.
+    """
     ss = http.Session()
     # The "(TheGOAT)" marker lets the SmartStaff direct-login guard recognise and
     # exempt the app: it follows the post-login redirect to a non-/ajax/ page, so
@@ -1711,8 +1881,17 @@ def create_ss_session(username, password):
     # Monkey-patch get/post to always use timeout
     _orig_get  = ss.get
     _orig_post = ss.post
-    ss.get  = lambda url, **kw: _orig_get(url,  timeout=kw.pop("timeout", 10), **kw)
-    ss.post = lambda url, **kw: _orig_post(url, timeout=kw.pop("timeout", 10), **kw)
+
+    def _measured_get(url, **kw):
+        kw["timeout"] = kw.pop("timeout", 10)
+        return _health.timed(_orig_get, "GET", url, **kw)
+
+    def _measured_post(url, **kw):
+        kw["timeout"] = kw.pop("timeout", 10)
+        return _health.timed(_orig_post, "POST", url, **kw)
+
+    ss.get  = _measured_get
+    ss.post = _measured_post
     resp = ss.post(f"{BASE_URL}/login", data={
         "action": "login",
         "username": username,
@@ -27611,6 +27790,123 @@ def api_accounting_generate():
         body.get("hourly_sum"), body.get("flat_sum_pdf"), body.get("flat_sum_qty"))
 
     return _no_store(body)
+
+
+# ─── SYSTEM HEALTH (Today → System) ───────────────────────────────────────────
+# DESIGN-system-health-v0_3.md. Admin only (§1 D2) — Mike, Rich, Monty and Joe
+# all come through as Admin. Everything here READS the in-memory ring buffer;
+# nothing leaves the Mac (§1 D1).
+
+HEALTH_PING_ENDPOINT = "/ajax/crew/health-ping.php"
+
+
+@app.route("/api/health/summary", methods=["GET"])
+@require_cohort("admin")
+def api_health_summary():
+    """Everything the System sub-tab draws, from memory only.
+
+    Deliberately does NOT call get_ss_session(): that would fire a GET /dash of
+    its own on every 30-second poll, which would both pollute the numbers this
+    tab exists to report and add load to the thing being measured. The cohort
+    decorator already proves the caller is a logged-in Admin.
+    """
+    # ?demo=1 injects synthetic rows so the gauges, the trace and the busy lamps
+    # can be checked against a bad spell without waiting for one (graphics
+    # addendum, Verification 2). SOURCE RUNS ONLY: a frozen build refuses, so
+    # the flag is inert in the DMG and cannot be reached by anyone on a release.
+    if request.args.get("demo") == "1":
+        if getattr(_sys, "frozen", False):
+            return jsonify({"error": "demo mode is not available in a build"}), 403
+        try:
+            _health.inject_demo_rows()
+        except Exception as e:
+            return jsonify({"error": f"demo injection failed: {type(e).__name__}"}), 500
+
+    try:
+        out = _health.summary()
+    except Exception as e:
+        return jsonify({"error": f"health summary failed: {type(e).__name__}"}), 500
+    out["log_path"] = _health.log_dir()
+    out["log_file"] = os.path.join(_health.log_dir(), "health.log")
+    return _no_store(out)
+
+
+@app.route("/api/health/ping", methods=["POST"])
+@require_cohort("admin")
+def api_health_ping():
+    """Three health-ping.php calls, ONE AT A TIME (§2.3).
+
+    Sequential on purpose: the point is to see SmartStaff's floor and whether
+    each call queues behind the one before it, which firing them together would
+    hide. They go through the ordinary session, so the seam records them like
+    any other request and the Busy count is the real one.
+
+    Returns per call: total_ms, server_ms (PHP's own timing, which includes the
+    session-lock wait), db_ms, inflight_at_send, ok, error.
+    """
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    url = f"{BASE_URL}{HEALTH_PING_ENDPOINT}"
+    results = []
+    for _ in range(3):
+        entry = {"total_ms": None, "server_ms": None, "db_ms": None,
+                 "inflight_at_send": None, "ok": False, "error": None}
+        try:
+            resp = ss.get(url, timeout=30)
+            if resp.status_code == 404:
+                # Not deployed yet. Not a failure of the tab (brief D).
+                entry["error"] = "not_deployed"
+            elif resp.status_code != 200:
+                entry["error"] = f"HTTP {resp.status_code}"
+            else:
+                try:
+                    body = resp.json()
+                except Exception:
+                    body = None
+                if isinstance(body, dict) and body.get("ok"):
+                    entry["ok"] = True
+                    for k in ("timing_ms", "db_ms"):
+                        v = body.get(k)
+                        if isinstance(v, (int, float)) and not isinstance(v, bool):
+                            entry["server_ms" if k == "timing_ms" else "db_ms"] = round(float(v), 1)
+                else:
+                    entry["error"] = "unexpected response"
+        except Exception as e:
+            entry["error"] = type(e).__name__
+
+        # Take total_ms and Busy from the row the seam just recorded, so these
+        # are the same numbers the Slowest list would show for this call.
+        row = _health.last_row_for(HEALTH_PING_ENDPOINT)
+        if row:
+            entry["total_ms"] = row.get("total_ms")
+            entry["inflight_at_send"] = row.get("inflight_at_send")
+            if entry["server_ms"] is None:
+                entry["server_ms"] = row.get("server_ms")
+        results.append(entry)
+
+    return _no_store({"results": results,
+                      "endpoint": HEALTH_PING_ENDPOINT,
+                      "deployed": not all(r.get("error") == "not_deployed" for r in results)})
+
+
+@app.route("/api/health/reveal-log", methods=["POST"])
+@require_cohort("admin")
+def api_health_reveal_log():
+    """Open the log folder in Finder so Rich or Monty can send the file.
+
+    Fixed path from HEALTH_LOG_DIR, never anything the browser sent, and a list
+    argv (no shell), so there is nothing here to inject into."""
+    import subprocess
+    folder = _health.log_dir() or HEALTH_LOG_DIR
+    try:
+        if not os.path.isdir(folder):
+            return jsonify({"error": "Log folder does not exist yet"}), 404
+        subprocess.run(["open", folder], check=False)
+        return _no_store({"ok": True, "folder": folder})
+    except Exception as e:
+        return jsonify({"error": f"Could not open the folder: {type(e).__name__}"}), 500
 
 
 if __name__ == "__main__":
