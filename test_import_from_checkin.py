@@ -382,6 +382,36 @@ class Route(unittest.TestCase):
         self.assertEqual(kw["params"], [("booking_id", 90001), ("call_id", 90011), ("call_id", 90012)])
         self.assertNotIn(KEY, json.dumps(body))
 
+    def test_route_applies_the_minimum_by_booked_length(self):
+        # Mango Mia, 10:00-13:00. Booked 5 h -> written to 14:00 (start + 4), info.
+        booked = json.loads(json.dumps(BOOKING))
+        for c in booked["calls"]:
+            c["est_length"] = "5"
+        with mock.patch.object(A, "fetch_booking_bulk", lambda ss, b: (booked, None)):
+            r, body = self.call("/api/booking/90001/import-times/preview-checkin")
+        self.assertEqual(r.status_code, 200, body)
+        card = [c for c in body["calls"] if c["call_id"] == 90011][0]
+        m = [x for x in card["matched"] if x["ein"] == 90013][0]
+        self.assertEqual((m["on"], m["off"], m["checkin_worked_off"]), ("10:00", "14:00", "13:00"))
+        self.assertIn(("info", "min_applied"), [(f["level"], f["code"]) for f in m["checkin_flags"]])
+        self.assertNotIn("under_4h", json.dumps(body))
+
+    def test_route_holds_a_short_row_on_a_call_with_no_booked_length(self):
+        # The fixture booking has no est_length at all.
+        r, body = self.call("/api/booking/90001/import-times/preview-checkin")
+        card = [c for c in body["calls"] if c["call_id"] == 90011][0]
+        m = [x for x in card["matched"] if x["ein"] == 90013][0]
+        self.assertEqual(m["off"], "13:00")
+        self.assertNotIn("checkin_worked_off", m)
+        self.assertIn(("warn", "no_booked_length"), [(f["level"], f["code"]) for f in m["checkin_flags"]])
+        self.assertTrue(m["checkin_hold"])
+
+    def test_booking_load_failure_is_a_502(self):
+        with mock.patch.object(A, "fetch_booking_bulk", lambda ss, b: (None, "HTTP 500")):
+            r, body = self.call("/api/booking/90001/import-times/preview-checkin")
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("Couldn't load booking", body["error"])
+
     def test_bad_call_id_is_refused_before_crew_hub(self):
         r, body = self.call("/api/booking/90001/import-times/preview-checkin?call_id=x")
         self.assertEqual(r.status_code, 400)
@@ -444,6 +474,21 @@ class Recorder(unittest.TestCase):
         self.assertEqual(list(rec.answers), [90012])
         self.assertEqual(len(ss.gets), 2)       # one request each, never repeated
 
+    def test_booking_is_asked_for_once_and_served_again_from_the_recorder(self):
+        class BookingSS(FakeSS):
+            def get(self, url, params=None, **kw):
+                self.gets.append((url, dict(params or {})))
+                return FakeResp(200, BOOKING)
+        ss = BookingSS()
+        rec = A._CallTimesRecorder(ss)
+        url = A.BASE_URL + "/ajax/crew/get-booking.php"
+        first = rec.get(url, params={"id": "90001"})
+        again = rec.get(url, params={"id": "90001"})
+        self.assertIs(first, again)
+        self.assertEqual(len(ss.gets), 1)
+        rec.get(url, params={"id": "90002"})    # another booking is its own request
+        self.assertEqual(len(ss.gets), 2)
+
     def test_route_puts_status_on_roster_only_without_extra_requests(self):
         ss = FakeSS()
         with A.app.test_client() as c:
@@ -465,7 +510,8 @@ class Recorder(unittest.TestCase):
 class ReviewScreen(unittest.TestCase):
 
     JS = H.extract("_tiIsConfirmed", "_tiPromoPending", "_tiRowOn", "_tiCallRows",
-                   "_tiCheckinCardNotes", "_tiFlagChips", "_tiOffFeed", "_tiMissingConfirmedLines")
+                   "_tiCheckinCardNotes", "_tiFlagChips", "_tiOffFeed", "_tiMissingConfirmedLines",
+                   "_tiRowTimes")
 
     def run_js(self, body):
         return H.run("""
@@ -535,6 +581,18 @@ console.log(JSON.stringify(_tiCheckinCardNotes(card)));
         self.assertIn("color:#f59e0b", out)
         self.assertIn("Confirmed in SmartStaff but missing from check-in (2)", out)
 
+    def test_topped_up_row_shows_both_finishes(self):
+        out = self.run_js("""
+console.log(JSON.stringify([
+  _tiRowTimes({on:'22:00', off:'02:00', checkin_worked_off:'00:30'}, ''),
+  _tiRowTimes({on:'22:00', off:'00:30'}, ' brk 00:30/00:00'),
+  _tiRowTimes({on:'10:00', off:null}, ''),
+  _tiRowTimes({on:'22:00', off:'02:00', checkin_worked_off:'02:00'}, '')]));
+""")
+        self.assertEqual(out, ["22:00\u201300:30 \u2192 02:00",
+                               "22:00\u201300:30 brk 00:30/00:00",
+                               "10:00\u2013\u2014", "22:00\u201302:00"])
+
     def test_sheet_card_gets_no_check_in_notes(self):
         # A sheet card: no checkin_notes, roster_only without status.
         out = self.run_js("""
@@ -601,6 +659,300 @@ console.log(JSON.stringify(_tiCheckinCardNotes(c)));
         self.assertIn("India, &lt;Ivy>", out)
         self.assertNotIn("Delta", out)
         self.assertEqual(self.run_js("console.log(JSON.stringify(_tiCheckinCardNotes({matched:[]})));"), "")
+
+
+# ── the 4-hour minimum (BRIEF-import-apply-4h-minimum rev 5; decisions 24, 23) ─
+# Made-up booking 90002, calls 9002x, EINs 9010x. Sat 6 Jun 2026 (no DST).
+
+M = "2026-06-06T"
+N = "2026-06-07T"
+MZ = ":00+10:00"
+
+
+def _w(name, ein, on, off, **kw):
+    """A worked row: signed off, paid on -> off (full ISO stems)."""
+    return _p(name, ein, "off", tapped_on=on + MZ, paid_on=on + MZ, paid_off=off + MZ, **kw)
+
+
+def _mcall(cid, name, start, rows):
+    return {"call_id": cid, "call_name": name, "scheduled_start": start + MZ, "rows": rows}
+
+
+def _bcall(cid, start, length, **kw):
+    c = {"call_id": cid, "call_name": "x", "start_date": _ts(2026, 6, 6),
+         "start_time": start + ":00", "est_length": length,
+         "feeds": [], "feeds_recommended": [], "cancelled": 0}
+    c.update(kw)
+    return c
+
+
+def _mfeed(*calls):
+    return {"booking_id": 90002, "mode": "live", "generated_at": N + "09:00" + MZ,
+            "unknown_call_ids": [], "calls": list(calls)}
+
+
+def _min(feed, cid, ein):
+    for c in feed["calls"]:
+        if c["call_id"] == cid:
+            for r in c["rows"]:
+                if r["ein"] == ein:
+                    return r.get(C.MIN_KEY)
+    raise KeyError((cid, ein))
+
+
+def _flags(feed, cid, ein):
+    return [(f["level"], f["code"], f["text"]) for f in (_min(feed, cid, ein) or {}).get("flags", [])]
+
+
+def _off(feed, cid, ein):
+    tab = [t for t in C.convert_feed(feed)["tabs"] if t["call_id"] == cid][0]
+    return [r for r in tab["rows"] if r["ein"] == ein][0]["off"]
+
+
+# The 12312 shape: a show booked 3 h, then two 22:00 calls booked 4 h.
+SHOW, OUT, BOSS = 90021, 90022, 90023
+B_12312 = [_bcall(SHOW, "19:00", "3"), _bcall(OUT, "22:00", "4"), _bcall(BOSS, "22:00", "4")]
+
+
+def _shape():
+    return _mfeed(
+        _mcall(SHOW, "Show Call", M + "19:00", [
+            _w("Alpha Ada", 90101, M + "19:00", M + "22:00", under_4h=True),
+            _w("Bravo Ben", 90102, M + "19:00", M + "21:00", under_4h=True)]),
+        _mcall(OUT, "Load Out", M + "22:00", [
+            _w("Alpha Ada", 90101, M + "22:00", N + "00:30", under_4h=True),
+            _w("Delta Dee", 90104, M + "22:00", N + "00:30", under_4h=True)]),
+        _mcall(BOSS, "Crew Boss", M + "22:00", [
+            _w("Bravo Ben", 90102, M + "22:00", N + "00:30", under_4h=True)]))
+
+
+def _one(on, off, booked="4", **kw):
+    """One row on the 22:00 Load Out, booked `booked`."""
+    feed = _mfeed(_mcall(OUT, "Load Out", M + "22:00", [_w("Alpha Ada", 90101, on, off, **kw)]))
+    return C.apply_minimum(feed, [_bcall(OUT, "22:00", booked)])
+
+
+class Minimum(unittest.TestCase):
+
+    def test_booked_four_paid_two_and_a_half_is_written_to_0200(self):
+        feed = _one(M + "22:00", N + "00:30", under_4h=True)
+        mn = _min(feed, OUT, 90101)
+        self.assertEqual((mn["applied"], mn["worked_off"], mn["off"]), (True, "00:30", "02:00"))
+        self.assertEqual(_off(feed, OUT, 90101), "02:00")
+        self.assertEqual(_flags(feed, OUT, 90101),
+                         [("info", "min_applied", "4-hour minimum applied: finish 00:30 → 02:00")])
+        # the top-up hours are night: 22:00-02:00 is four night hours, no day
+        self.assertEqual(C._split_totals(datetime(2026, 6, 6, 22), datetime(2026, 6, 7, 2),
+                                         C.SPLIT_CFG), (0.0, 4.0))
+
+    def test_booked_three_paid_three_is_untouched_with_a_note(self):
+        feed = C.apply_minimum(_shape(), B_12312)
+        self.assertEqual(_off(feed, SHOW, 90101), "22:00")
+        self.assertEqual(_flags(feed, SHOW, 90101),
+                         [("info", "booked_short",
+                           "booked for 3 h — paid as worked, no 4-hour minimum")])
+
+    def test_booked_three_worked_two_stays_two(self):
+        # The deliberate effect of decision 24.
+        feed = C.apply_minimum(_shape(), B_12312)
+        self.assertFalse(_min(feed, SHOW, 90102)["applied"])
+        self.assertEqual(_off(feed, SHOW, 90102), "21:00")
+
+    def test_booked_four_worked_four_and_a_quarter_is_untouched(self):
+        feed = _one(M + "22:00", N + "02:15")
+        mn = _min(feed, OUT, 90101)
+        self.assertEqual((mn["applied"], mn["off"], mn["flags"]), (False, "02:15", []))
+
+    def test_late_paid_from_2300_is_written_to_0200(self):
+        feed = _one(M + "23:00", N + "00:30", late=True, late_source="mark")
+        row = C.convert_feed(feed)["tabs"][0]["rows"][0]
+        self.assertEqual((row["on"], row["off"], row["status"]), ("23:00", "02:00", "Late"))
+        self.assertEqual(_flags(feed, OUT, 90101),
+                         [("info", "late_min",
+                           "late start — topped to the call's finish (02:00), no 4-hour minimum")])
+
+    def test_late_paid_2215_to_0230_keeps_its_own_finish(self):
+        feed = _one(M + "22:15", N + "02:30", late=True, late_source="typed_start")
+        mn = _min(feed, OUT, 90101)
+        self.assertEqual((mn["applied"], mn["off"], mn["flags"]), (False, "02:30", []))
+
+    def test_late_under_four_with_a_finish_past_the_calls_finish_is_as_worked(self):
+        feed = _one(M + "23:30", N + "02:30", late=True, late_source="mark")
+        mn = _min(feed, OUT, 90101)
+        self.assertEqual((mn["applied"], mn["off"]), (False, "02:30"))
+        self.assertEqual([(f["level"], f["code"]) for f in mn["flags"]], [("info", "late_min")])
+        self.assertIn("paid as worked", mn["flags"][0]["text"])
+
+    def test_no_booked_length_is_amber_unticked_and_nothing_is_added(self):
+        for booked in ("0", 0, None, ""):
+            feed = _one(M + "22:00", N + "00:30", booked=booked, under_4h=True)
+            mn = _min(feed, OUT, 90101)
+            self.assertEqual((mn["applied"], mn["off"]), (False, "00:30"), booked)
+            self.assertEqual(_flags(feed, OUT, 90101),
+                             [("warn", "no_booked_length",
+                               "no booked length — 4-hour minimum not worked out")])
+        # a call SmartStaff doesn't list at all is the same
+        feed = _mfeed(_mcall(OUT, "Load Out", M + "22:00", [_w("Alpha Ada", 90101, M + "22:00", N + "00:30")]))
+        C.apply_minimum(feed, [])
+        self.assertEqual([f[1] for f in _flags(feed, OUT, 90101)], ["no_booked_length"])
+
+    def test_no_booked_length_but_four_hours_worked_says_nothing(self):
+        feed = _one(M + "22:00", N + "02:00", booked=None)
+        self.assertEqual(_min(feed, OUT, 90101)["flags"], [])
+
+    def test_three_hour_call_then_four_hour_call_no_continuity(self):
+        # The 12312 shape: 3 h as worked, plus the 4 h call topped.
+        feed = C.apply_minimum(_shape(), B_12312)
+        self.assertEqual((_off(feed, SHOW, 90101), _off(feed, OUT, 90101)), ("22:00", "02:00"))
+        # someone on the 4 h call only is written exactly the same
+        self.assertEqual(_off(feed, OUT, 90104), "02:00")
+        self.assertEqual(_off(feed, BOSS, 90102), "02:00")
+
+    def test_feed_edges_make_no_difference(self):
+        plain = C.apply_minimum(_shape(), B_12312)
+        bc = [dict(B_12312[0], feeds=[OUT, BOSS]), B_12312[1], B_12312[2]]
+        edged = C.apply_minimum(_shape(), bc)
+        self.assertEqual(C.convert_feed(plain), C.convert_feed(edged))
+
+    def test_no_sign_off_gets_no_minimum_and_the_warning_as_before(self):
+        feed = _mfeed(_mcall(OUT, "Load Out", M + "22:00", [
+            _p("Alpha Ada", 90101, "on", tapped_on=M + "22:00" + MZ, paid_on=M + "22:00" + MZ),
+            _p("Bravo Ben", 90102, "no_show"), _p("Charlie Cat", 90103, "not_on")]))
+        C.apply_minimum(feed, B_12312)
+        for ein in (90101, 90102, 90103):
+            self.assertIsNone(_min(feed, OUT, ein))
+            self.assertIsNone(_off(feed, OUT, ein))
+        sched = C.parse_iso(M + "22:00" + MZ)
+        self.assertEqual([f["code"] for f in C.row_flags(feed["calls"][0]["rows"][0], sched, NOW)],
+                         ["no_off"])
+
+    def test_measured_gross_of_breaks(self):
+        # Q1: 22:00-02:00 with a 30-minute break is four hours gross: no top-up,
+        # and the feed's under_4h (net of breaks) is not used to decide.
+        feed = _one(M + "22:00", N + "02:00", under_4h=True,
+                    breaks=[{"start": N + "00:00" + MZ, "mins": 30}])
+        self.assertFalse(_min(feed, OUT, 90101)["applied"])
+        sched = C.parse_iso(M + "22:00" + MZ)
+        self.assertEqual(C.row_flags(feed["calls"][0]["rows"][0], sched, NOW), [])
+
+    def test_feed_times_are_not_rounded_again(self):
+        feed = _one(M + "22:00", N + "00:37")
+        row = C.convert_feed(feed)["tabs"][0]["rows"][0]
+        self.assertEqual((row["on"], row["off"]), ("22:00", "02:00"))
+        feed = _one(M + "22:07", N + "02:37")                 # 4.5 h: left exactly as sent
+        row = C.convert_feed(feed)["tabs"][0]["rows"][0]
+        self.assertEqual((row["on"], row["off"]), ("22:07", "02:37"))
+
+    def test_october_changeover_finish_is_four_real_hours(self):
+        # Sun 4 Oct 2026: 02:00 jumps to 03:00. Booked 4 h from 00:00, worked
+        # 00:00-01:00: four real hours after 00:00 is 05:00 on the clock.
+        o = "2026-10-04T"
+        row = _p("Alpha Ada", 90101, "off", tapped_on=o + "00:00:00+10:00",
+                 paid_on=o + "00:00:00+10:00", paid_off=o + "01:00:00+10:00")
+        feed = _mfeed({"call_id": OUT, "call_name": "Load Out",
+                       "scheduled_start": o + "00:00:00+10:00", "rows": [row]})
+        C.apply_minimum(feed, [dict(_bcall(OUT, "00:00", "4"), start_date=_ts(2026, 10, 4))])
+        mn = _min(feed, OUT, 90101)
+        self.assertEqual((mn["worked_off"], mn["off"]), ("01:00", "05:00"))
+
+    def test_scheduled_start_falls_back_to_smartstaff(self):
+        feed = _mfeed({"call_id": OUT, "call_name": "Load Out", "scheduled_start": None,
+                       "rows": [_w("Alpha Ada", 90101, M + "22:00", N + "00:30")]})
+        C.apply_minimum(feed, B_12312)
+        self.assertEqual(_off(feed, OUT, 90101), "02:00")
+
+    def test_row_with_no_scheduled_start_is_held_and_the_rest_still_load(self):
+        # Neither Crew Hub nor SmartStaff gives the call a start: derivation
+        # raises, the row is warned and left as worked; the other call is fine.
+        feed = _mfeed(
+            {"call_id": OUT, "call_name": "Load Out", "scheduled_start": None, "rows": [
+                _w("Alpha Ada", 90101, M + "22:15", N + "00:30", late=True, late_source="mark")]},
+            _mcall(BOSS, "Crew Boss", M + "22:00", [_w("Bravo Ben", 90102, M + "22:00", N + "00:30")]))
+        bc = [dict(_bcall(OUT, "22:00", "4"), start_date=None, start_time=None), _bcall(BOSS, "22:00", "4")]
+        C.apply_minimum(feed, bc)
+        mn = _min(feed, OUT, 90101)
+        self.assertFalse(mn["applied"])
+        self.assertEqual([(f["level"], f["code"]) for f in mn["flags"]], [("warn", "min_unknown")])
+        self.assertIn("scheduled start", mn["flags"][0]["text"])
+        self.assertEqual(_off(feed, OUT, 90101), "00:30")
+        self.assertEqual(_off(feed, BOSS, 90102), "02:00")
+
+    def test_without_apply_minimum_the_old_warning_stays(self):
+        row = _w("Alpha Ada", 90101, M + "22:00", N + "00:30", under_4h=True)
+        sched = C.parse_iso(M + "22:00" + MZ)
+        self.assertEqual([f["code"] for f in C.row_flags(row, sched, NOW)], ["under_4h"])
+
+
+M_BOOKING = {"name": "Made-up booking", "calls": B_12312}
+M_ROSTER = {SHOW: [90101, 90102], OUT: [90101, 90104], BOSS: [90102]}
+
+
+class MinimumThroughPreview(unittest.TestCase):
+    """The topped-up finish is what the preview row carries, and so what the
+    unchanged write path sends to update-call-times.php."""
+
+    def _preview(self, feed):
+        prev, err = A._build_import_preview(object(), "90002", C.convert_feed(feed))
+        self.assertIsNone(err)
+        C.attach_flags(prev, feed, now=C.parse_iso(N + "09:00" + MZ))
+        return prev, {c["call_id"]: {m["ein"]: m for m in c["matched"]} for c in prev["calls"]}
+
+    def setUp(self):
+        ct = lambda ss, cid: ({"crew": [{"ein": e, "user_id": 80000 + e, "lastname": "L%d" % e,
+                                         "firstname": "F", "status": 5}
+                                        for e in M_ROSTER[int(cid)]]}, None)
+        p = mock.patch.multiple(A, fetch_booking_bulk=lambda ss, b: (M_BOOKING, None),
+                                ss_get_call_times=ct)
+        p.start()
+        self.addCleanup(p.stop)
+        self.prev, self.by = self._preview(C.apply_minimum(_shape(), B_12312))
+
+    def test_topped_row_carries_both_finishes_and_stays_ticked(self):
+        m = self.by[OUT][90101]
+        self.assertEqual((m["on"], m["off"], m["checkin_worked_off"]), ("22:00", "02:00", "00:30"))
+        self.assertEqual([(f["level"], f["code"]) for f in m["checkin_flags"]], [("info", "min_applied")])
+        self.assertFalse(m["checkin_hold"])
+
+    def test_booked_short_row_is_as_worked_info_and_ticked(self):
+        m = self.by[SHOW][90101]
+        self.assertEqual(m["off"], "22:00")
+        self.assertNotIn("checkin_worked_off", m)
+        self.assertEqual([f["code"] for f in m["checkin_flags"]], ["booked_short"])
+        self.assertFalse(m["checkin_hold"])
+
+    def test_no_under_4h_warning_survives(self):
+        self.assertNotIn("under_4h", json.dumps(self.prev))
+
+    def test_no_booked_length_row_is_unticked_and_the_preview_still_loads(self):
+        bc = [B_12312[0], dict(B_12312[1], est_length="0"), B_12312[2]]
+        prev, by = self._preview(C.apply_minimum(_shape(), bc))
+        held = by[OUT][90104]
+        self.assertTrue(held["checkin_hold"])                               # starts unticked
+        self.assertEqual((held["on"], held["off"]), ("22:00", "00:30"))     # nothing added
+        self.assertEqual([f["code"] for f in held["checkin_flags"]], ["no_booked_length"])
+        self.assertEqual(by[BOSS][90102]["off"], "02:00")                   # everyone else loads
+        self.assertFalse(by[BOSS][90102]["checkin_hold"])
+
+    def test_a_raise_from_the_rule_holds_that_row_only(self):
+        real = C.minimum_top_up
+
+        def top(on, off, booked, sched, late, cfg):
+            return real(on, off, booked, None if late else sched, late, cfg)
+
+        feed = _shape()
+        feed["calls"][1]["rows"][1].update(late=True, late_source="mark",
+                                           paid_on=M + "22:15" + MZ)       # Delta Dee
+        with mock.patch.object(C, "minimum_top_up", top):
+            C.apply_minimum(feed, B_12312)
+        prev, by = self._preview(feed)
+        held = by[OUT][90104]
+        self.assertTrue(held["checkin_hold"])
+        self.assertEqual((held["on"], held["off"]), ("22:15", "00:30"))
+        self.assertEqual([f["code"] for f in held["checkin_flags"]], ["min_unknown"])
+        self.assertFalse(by[OUT][90101]["checkin_hold"])
+        self.assertEqual(by[OUT][90101]["off"], "02:00")
+        self.assertEqual(sorted(by), [SHOW, OUT, BOSS])
+
 
 
 if __name__ == "__main__":

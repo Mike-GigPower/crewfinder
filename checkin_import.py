@@ -16,11 +16,23 @@ Pure: no Flask, no SmartStaff, no network. Wiring is in app.py.
 The one splitter: breaks are split into day and night by their REAL time with
 derivation._split_totals — the same function and the same 08:00 / 20:00 bands
 as worked hours — never by a second copy of the boundary logic.
+
+THE 4-HOUR MINIMUM (BRIEF-import-apply-4h-minimum rev 5; decisions 24 and 23,
+Mike, 22 Nov 2026). The Google Sheet applied the minimum by hand: whoever keyed
+the times typed the topped-up finish. The import has to do the same, so
+apply_minimum() decides each worked row and convert_row() writes the topped-up
+finish. The RULE is not here: it is derivation.minimum_top_up(), and this
+module only hands it the feed's paid times and the call's BOOKED length and
+scheduled start. A call booked under 4 hours is paid as worked; a call booked
+for 4 or more is written to its scheduled start + 4 hours (or the person's own
+later finish); a call with no booked length is held for a person to decide.
+There is no continuity: other calls the person worked do not matter. The
+feed's own `under_4h` is not used to decide anything.
 """
 
 from datetime import datetime, timedelta
 
-from derivation import _split_totals
+from derivation import DerivationError, _split_totals, minimum_top_up
 
 try:
     from zoneinfo import ZoneInfo
@@ -106,17 +118,23 @@ def status_and_late(row):
 # ── feed -> {tabs, skipped_tabs} ────────────────────────────────────────────
 
 def convert_row(row):
-    """One feed row -> the parse_crew_row dict shape."""
+    """One feed row -> the parse_crew_row dict shape. When apply_minimum() has
+    topped the row up, `off` is the topped-up finish: that is what gets written,
+    as it was when the times were keyed, and what the invoice bills."""
     status, late = status_and_late(row)
     no_show = row.get("state") == "no_show"
     brk, brk_n = split_breaks(row.get("breaks"))
+    off = None if no_show else melb_hhmm(row.get("paid_off"))
+    mn = row.get(MIN_KEY) or {}
+    if mn.get("applied") and off is not None:
+        off = mn["off"]
     return {
         "ein":         row.get("ein"),
         "lastname":    row.get("lastname") or "",
         "firstname":   row.get("firstname") or "",
         "status":      status,
         "on":          None if no_show else melb_hhmm(row.get("paid_on")),
-        "off":         None if no_show else melb_hhmm(row.get("paid_off")),
+        "off":         off,
         "break":       brk,
         "break_night": brk_n,
         "late":        late,
@@ -139,6 +157,139 @@ def convert_feed(feed):
             "rows":      [convert_row(r) for r in (c.get("rows") or [])],
         })
     return {"tabs": tabs, "skipped_tabs": []}
+
+
+# ── the 4-hour minimum ──────────────────────────────────────────────────────
+
+# apply_minimum() leaves its answer on each feed row under this key. The feed is
+# never sent to the browser; attach_flags() copies what the review needs.
+MIN_KEY = "_minimum"
+
+
+def _int_or_none(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _booked_calls(booking_calls):
+    """{call_id: (booked length as SmartStaff sent it, naive Melbourne start or
+    None)} from get-booking.php's `calls`. A cancelled call is left out, so its
+    rows are treated as having no booked length."""
+    out = {}
+    for c in booking_calls or []:
+        cid = _int_or_none(c.get("call_id"))
+        if cid is None or c.get("cancelled") or c.get("cancelled_at"):
+            continue
+        try:
+            day = datetime.fromtimestamp(int(c.get("start_date")), MELB).date()
+            hh, mm = [int(x) for x in str(c.get("start_time") or "").split(":")[:2]]
+            start = datetime(day.year, day.month, day.day, hh, mm)
+        except (TypeError, ValueError, OverflowError, OSError):
+            start = None
+        out[cid] = (c.get("est_length"), start)
+    return out
+
+
+def _worked_span(row):
+    """(on, off) naive Melbourne datetimes when the row is WORKED — signed off,
+    with both paid times, off after on — else None. A sign-on with no sign-off,
+    a no-show and a not-on are not worked and get no minimum."""
+    if row.get("state") != "off":
+        return None
+    on, off = parse_iso(row.get("paid_on")), parse_iso(row.get("paid_off"))
+    if on is None or off is None or off <= on:
+        return None
+    return melb_wall(on), melb_wall(off)
+
+
+def _hours_text(v):
+    """Booked length for a note: '3 h', '3.5 h'."""
+    f = float(v)
+    return ("%d h" % f) if f == int(f) else ("%s h" % (("%.2f" % f).rstrip("0").rstrip(".")))
+
+
+def apply_minimum(feed, booking_calls):
+    """Decide the 4-hour minimum for every worked row of the feed and leave the
+    answer on the row under MIN_KEY. Returns the feed.
+
+    `booking_calls` is get-booking.php's `calls` list; only call_id, est_length
+    (the BOOKED length), start_date, start_time and cancelled are read. The
+    scheduled start is the feed's own scheduled_start where it has one — the
+    same instant its paid times were worked out against — else SmartStaff's.
+
+    Per worked row:
+      applied      True when the finish was extended
+      off          'HH:MM' finish to write (the topped-up one when applied)
+      worked_off   'HH:MM' paid finish, before any top-up
+      reason       derivation.minimum_top_up's reason, or 'error'
+      flags        review flags, in attach_flags' {level, code, text} shape;
+                   only on rows paid under 4 hours
+    The feed's paid times are used as they are: Q51 and CORRECTION-2 are already
+    in them, and rounding them again would be a second copy of that rule."""
+    booked = _booked_calls(booking_calls)
+
+    for c in feed.get("calls") or []:
+        cid = _int_or_none(c.get("call_id"))
+        length, start = booked.get(cid, (None, None))
+        sched = parse_iso(c.get("scheduled_start"))
+        if sched is not None:
+            start = melb_wall(sched)
+
+        for r in c.get("rows") or []:
+            span = _worked_span(r)
+            if span is None:
+                continue
+            on, off = span
+            worked_off = off.strftime("%H:%M")
+            entry = {"applied": False, "off": worked_off, "worked_off": worked_off,
+                     "reason": None, "flags": []}
+            r[MIN_KEY] = entry
+
+            # derivation RAISES rather than guess (a top-up with no scheduled
+            # start, for one). One row it cannot decide must not take the whole
+            # preview down: that row is held with a warning, nothing is applied
+            # to it, and everyone else's rows load as normal.
+            try:
+                top = minimum_top_up(on, off, length, start, bool(r.get("late")), SPLIT_CFG)
+            except (DerivationError, TypeError, ValueError) as e:
+                entry["reason"] = "error"
+                entry["flags"].append(_warn(
+                    "min_unknown",
+                    "under 4 hours, and the 4-hour minimum couldn't be worked "
+                    "out (%s) \u2014 not applied" % e))
+                continue
+
+            reason = entry["reason"] = top["reason"]
+
+            if reason == "topped":
+                entry["applied"] = True
+                entry["off"] = top["billable_end"].strftime("%H:%M")
+                if top["late_start"]:
+                    entry["flags"].append(_info(
+                        "late_min",
+                        "late start \u2014 topped to the call's finish (%s), "
+                        "no 4-hour minimum" % entry["off"]))
+                else:
+                    entry["flags"].append(_info(
+                        "min_applied",
+                        "4-hour minimum applied: finish %s \u2192 %s"
+                        % (worked_off, entry["off"])))
+            elif reason == "own_finish_later":
+                entry["flags"].append(_info(
+                    "late_min", "late start \u2014 paid as worked, no 4-hour minimum"))
+            elif reason == "booked_short":
+                entry["flags"].append(_info(
+                    "booked_short",
+                    "booked for %s \u2014 paid as worked, no 4-hour minimum"
+                    % _hours_text(length)))
+            elif reason == "no_booked_length":
+                entry["flags"].append(_warn(
+                    "no_booked_length",
+                    "no booked length \u2014 4-hour minimum not worked out"))
+            # four_hours_or_more: nothing to say.
+    return feed
 
 
 # ── review flags ────────────────────────────────────────────────────────────
@@ -185,7 +336,14 @@ def row_flags(row, scheduled_start, now):
                              % (melb_wall(bs).strftime("%H:%M"), int(b.get("mins") or 0))))
             break
 
-    if row.get("under_4h"):
+    mn = row.get(MIN_KEY)
+    if mn is not None:
+        # apply_minimum() has decided (decision 24). The feed's under_4h is per
+        # call and net of breaks, and is not used.
+        out.extend(mn.get("flags") or [])
+    elif row.get("under_4h"):
+        # Minimum not worked out for this row (no apply_minimum, or the row
+        # isn't a worked one): say so rather than stay silent.
         out.append(_warn("under_4h", "under the 4-hour minimum (not applied)"))
 
     if row.get("late_source") == "typed_start" and paid_on is not None:
@@ -218,6 +376,10 @@ def attach_flags(preview, feed, now=None, roster_status=None):
       card.checkin_future  the call's scheduled start is after `now`
       matched.checkin_flags / matched.checkin_hold
                            hold = a warn flag: the row starts unticked
+      matched.checkin_worked_off
+                           the paid finish BEFORE the 4-hour minimum, only on a
+                           row apply_minimum() topped up; matched.off is then
+                           the topped-up finish, so the review can show both
       roster_only.status   the person's SmartStaff status on that call, from
                            roster_status {call_id: {ein: status}} (the same
                            get-call-times.php answers the preview matched on);
@@ -252,8 +414,11 @@ def attach_flags(preview, feed, now=None, roster_status=None):
             continue
         sched = parse_iso(fc.get("scheduled_start"))
         card["checkin_future"] = bool(sched is not None and sched > now)
-        notes, flags_by_ein = [], {}
+        notes, flags_by_ein, topped = [], {}, {}
         for r in fc.get("rows") or []:
+            mn = r.get(MIN_KEY) or {}
+            if mn.get("applied") and r.get("ein") is not None:
+                topped[r.get("ein")] = mn.get("worked_off")
             fl = row_flags(r, sched, now)
             if not fl:
                 continue
@@ -263,6 +428,8 @@ def attach_flags(preview, feed, now=None, roster_status=None):
                 notes.append({"name": _name(r), "ein": r.get("ein"),
                               "level": f["level"], "code": f["code"], "text": f["text"]})
         for m in card.get("matched") or []:
+            if m.get("ein") in topped:
+                m["checkin_worked_off"] = topped[m.get("ein")]
             fl = flags_by_ein.get(m.get("ein")) or []
             if fl:
                 m["checkin_flags"] = fl
