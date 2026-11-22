@@ -1,6 +1,6 @@
 {
-  "version": "5.117.0",
-  "release_date": "2026-11-20",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.117.0/TheGOAT.dmg",
-  "release_notes": "Open a booking's Crew Hub check-in sheet straight from THE GOAT, and see today's check-in bookings on Today › Bookings & Calls."
+  "version": "5.118.0",
+  "release_date": "2026-11-22",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.118.0/TheGOAT.dmg",
+  "release_notes": "Import from check-in now applies the 4-hour minimum by the call's booked length: calls booked for 4 hours or more are topped up to the call's start plus 4 hours, and shorter calls are paid as worked."
 }
