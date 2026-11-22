@@ -28,6 +28,7 @@ from derivation import (
     continuous_block,
     derive_times,
     is_continuous,
+    minimum_top_up,
     round_to_quarter,
 )
 
@@ -180,17 +181,32 @@ class TestContinuity(unittest.TestCase):
 
 
 class TestMinimum(unittest.TestCase):
-    """CORRECTION-3. One minimum per engagement, carried by the last call."""
+    """Decision 24 (Mike, 22 Nov 2026): the minimum follows the call's BOOKED
+    length, with no continuity of any kind. Replaces CORRECTION-3's one minimum
+    per engagement. Tests that were about the top-up itself now book the call
+    for four hours; tests that were about short calls keep their inputs and
+    show the new answer."""
 
     def test_single_two_hour_call_tops_up_to_four(self):
-        r = derive_times(sub("11:00", "13:00"), [], call(1, "11:00", 2.0), [], [], CFG)
+        # Was booked 2.0. Booked 4.0 now, so the call still gets the minimum.
+        r = derive_times(sub("11:00", "13:00"), [], call(1, "11:00", 4.0), [], [], CFG)
         self.assertAlmostEqual(r["billable_total"], 4.0)
         self.assertAlmostEqual(r["actual_total"], 2.0)
         self.assertTrue(r["minimum_applied"])
+        self.assertEqual(r["minimum_reason"], "topped")
+
+    def test_call_booked_under_four_hours_is_paid_as_worked(self):
+        """The deliberate effect of decision 24: booked 3, worked 2, paid 2."""
+        r = derive_times(sub("11:00", "13:00"), [], call(1, "11:00", 3.0), [], [], CFG)
+        self.assertFalse(r["minimum_applied"])
+        self.assertEqual(r["minimum_reason"], "booked_short")
+        self.assertAlmostEqual(r["billable_total"], 2.0)
+        self.assertEqual(r["billable_end"], datetime(2026, 6, 10, 13, 0))
 
     def test_two_unconnected_two_hour_calls_each_top_up(self):
-        a = call(1, "08:00", 2.0)
-        b = call(2, "14:00", 2.0)
+        # Were booked 2.0 each. Booked 4.0 now.
+        a = call(1, "08:00", 4.0)
+        b = call(2, "14:00", 4.0)
         ra = derive_times(sub("08:00", "10:00"), [], a, [b], [], CFG)
         rb = derive_times(sub("14:00", "16:00"), [], b, [a], [], CFG)
         self.assertAlmostEqual(ra["billable_total"], 4.0)
@@ -199,10 +215,10 @@ class TestMinimum(unittest.TestCase):
 
     def test_continuous_block_bills_sum_of_actuals_with_no_gap_deduction(self):
         """
-        THE ONE THAT IS EASIEST TO GET WRONG. A 2-hour show and a 4-hour load
-        out an hour apart bills SIX: no top-up (the block already exceeds four)
-        and NO deduction for the gap. Deducting the gap would double-count the
-        very reasoning that stops the minimum being applied twice.
+        A 2-hour show and a 4-hour load out an hour apart bills SIX, with NO
+        deduction for the gap. Values unchanged by decision 24, reached
+        differently: the show is booked under four and paid as worked, and the
+        load out is already at four. The edge no longer bears on it.
         """
         show = call(1, "18:00", 2.0)          # 18:00 - 20:00
         load = call(2, "21:00", 4.0)          # 21:00 - 01:00, a 60-minute gap
@@ -221,30 +237,47 @@ class TestMinimum(unittest.TestCase):
         self.assertAlmostEqual(
             r_show["billable_total"] + r_load["billable_total"], 6.0)
 
-    def test_short_continuous_block_tops_up_on_the_last_call_only(self):
-        """Q32: within a block, the LAST call carries the top-up."""
+    def test_short_calls_in_a_block_are_each_paid_as_worked(self):
+        """
+        Was test_short_continuous_block_tops_up_on_the_last_call_only (Q32,
+        CORRECTION-3): the load out carried the block's top-up, billable 2.0,
+        pair total 4.0. Under decision 24 both calls are booked under four, so
+        both are paid as worked: load out billable 1.0, pair total 3.0.
+        """
         show = call(1, "18:00", 2.0)          # 18:00 - 20:00
         load = call(2, "20:00", 1.0)          # 20:00 - 21:00
         edges = locked(1, 2)
 
-        r_show = derive_times(sub("18:00", "20:00"), [],
-                              show, [dict(load, actual_hours=1.0)], edges, CFG)
-        r_load = derive_times(sub("20:00", "21:00"), [],
-                              load, [dict(show, actual_hours=2.0)], edges, CFG)
+        r_show = derive_times(sub("18:00", "20:00"), [], show, [load], edges, CFG)
+        r_load = derive_times(sub("20:00", "21:00"), [], load, [show], edges, CFG)
 
+        self.assertEqual(r_load["block_call_ids"], [1, 2])     # still reported
         self.assertFalse(r_show["minimum_applied"])
-        self.assertTrue(r_load["minimum_applied"])
+        self.assertFalse(r_load["minimum_applied"])
         self.assertAlmostEqual(r_show["billable_total"], 2.0)
-        self.assertAlmostEqual(r_load["billable_total"], 2.0)
+        self.assertAlmostEqual(r_load["billable_total"], 1.0)
         self.assertAlmostEqual(
-            r_show["billable_total"] + r_load["billable_total"], 4.0)
+            r_show["billable_total"] + r_load["billable_total"], 3.0)
+
+    def test_three_hour_call_then_a_four_hour_call_no_continuity(self):
+        """The 12312 shape: 3 h as worked, plus the 4 h call topped. Seven."""
+        show = call(1, "19:00", 3.0)
+        load = call(2, "22:00", 4.0)
+        for edges in ([], locked(1, 2)):       # an edge makes no difference
+            r_show = derive_times(sub("19:00", "22:00"), [], show, [load], edges, CFG)
+            r_load = derive_times(sub("22:00", "00:30", next_day=True), [],
+                                  load, [show], edges, CFG)
+            self.assertAlmostEqual(r_show["billable_total"], 3.0)
+            self.assertEqual(r_load["billable_end"], datetime(2026, 6, 11, 2, 0))
+            self.assertAlmostEqual(
+                r_show["billable_total"] + r_load["billable_total"], 7.0)
 
     def test_top_up_extends_the_finish_and_the_clock_sets_the_rate(self):
         """
         Q31. A 22:00-00:00 call topped to four notionally runs to 02:00, and
         those two extra hours are NIGHT because split_day_night() says so.
         """
-        c = call(1, "22:00", 2.0)
+        c = call(1, "22:00", 4.0)             # was booked 2.0
         r = derive_times(sub("22:00", "00:00", next_day=True), [], c, [], [], CFG)
 
         self.assertTrue(r["minimum_applied"])
@@ -257,18 +290,114 @@ class TestMinimum(unittest.TestCase):
         self.assertFalse(r["minimum_applied"])
         self.assertAlmostEqual(r["billable_total"], 9.0)
 
-    def test_sibling_without_actual_hours_is_flagged_as_estimated(self):
+    def test_sibling_hours_are_no_longer_an_input_or_an_output(self):
+        """
+        Replaces test_sibling_without_actual_hours_is_flagged_as_estimated
+        (flag was True) and test_sibling_with_actual_hours_is_not_flagged (flag
+        was False). The minimum is decided by the call's own booked length, so
+        there is no block total to estimate and the flag is gone.
+        """
         show = call(1, "18:00", 2.0)
         load = call(2, "20:00", 1.0)
-        r = derive_times(sub("20:00", "21:00"), [], load, [show], locked(1, 2), CFG)
-        self.assertTrue(r["sibling_hours_estimated"])
+        plain = derive_times(sub("20:00", "21:00"), [], load, [show], locked(1, 2), CFG)
+        given = derive_times(sub("20:00", "21:00"), [], load,
+                             [dict(show, actual_hours=9.0)], locked(1, 2), CFG)
+        self.assertNotIn("sibling_hours_estimated", plain)
+        self.assertEqual(plain, given)
 
-    def test_sibling_with_actual_hours_is_not_flagged(self):
-        show = call(1, "18:00", 2.0)
-        load = call(2, "20:00", 1.0)
-        r = derive_times(sub("20:00", "21:00"), [], load,
-                         [dict(show, actual_hours=2.0)], locked(1, 2), CFG)
-        self.assertFalse(r["sibling_hours_estimated"])
+
+class TestMinimumRule(unittest.TestCase):
+    """minimum_top_up(): the one copy of decisions 24 and 23."""
+
+    SCHED = datetime(2026, 6, 10, 22, 0)
+
+    def _top(self, on, off, booked=4.0, late=False, sched=None):
+        return minimum_top_up(on, off, booked, sched or self.SCHED, late, CFG)
+
+    def test_booked_four_paid_two_and_a_half_is_written_to_start_plus_four(self):
+        r = self._top(self.SCHED, datetime(2026, 6, 11, 0, 30))
+        self.assertEqual((r["reason"], r["minimum_applies"], r["minimum_applied"]),
+                         ("topped", True, True))
+        self.assertAlmostEqual(r["span_hours"], 2.5)
+        self.assertEqual(r["billable_end"], datetime(2026, 6, 11, 2, 0))
+
+    def test_booked_three_paid_three_is_untouched(self):
+        on, off = datetime(2026, 6, 10, 19, 0), datetime(2026, 6, 10, 22, 0)
+        r = minimum_top_up(on, off, 3.0, on, False, CFG)
+        self.assertEqual((r["reason"], r["minimum_applies"], r["minimum_applied"]),
+                         ("booked_short", False, False))
+        self.assertEqual(r["billable_end"], off)
+
+    def test_booked_three_worked_two_stays_two(self):
+        on, off = datetime(2026, 6, 10, 19, 0), datetime(2026, 6, 10, 21, 0)
+        r = minimum_top_up(on, off, 3.0, on, False, CFG)
+        self.assertEqual(r["reason"], "booked_short")
+        self.assertEqual(r["billable_end"], off)
+
+    def test_booked_just_under_four_is_short_and_exactly_four_is_not(self):
+        on, off = self.SCHED, datetime(2026, 6, 11, 0, 30)
+        self.assertEqual(self._top(on, off, booked=3.75)["reason"], "booked_short")
+        self.assertEqual(self._top(on, off, booked=4.0)["reason"], "topped")
+        self.assertEqual(self._top(on, off, booked="4")["reason"], "topped")   # as SmartStaff sends it
+
+    def test_booked_four_worked_four_and_a_quarter_is_untouched(self):
+        off = datetime(2026, 6, 11, 2, 15)
+        r = self._top(self.SCHED, off)
+        self.assertEqual((r["reason"], r["minimum_applied"]), ("four_hours_or_more", False))
+        self.assertEqual(r["billable_end"], off)
+
+    def test_no_booked_length_is_never_topped(self):
+        off = datetime(2026, 6, 11, 0, 30)
+        for booked in (0, "0", None, "", "abc", -1):
+            r = self._top(self.SCHED, off, booked=booked)
+            self.assertEqual((r["reason"], r["minimum_applies"], r["minimum_applied"]),
+                             ("no_booked_length", False, False), booked)
+            self.assertEqual(r["billable_end"], off)
+
+    # ---- decision 23: a late start gets the call's finish, not four hours ----
+
+    def test_late_paid_from_2300_is_written_to_0200(self):
+        r = self._top(datetime(2026, 6, 10, 23, 0), datetime(2026, 6, 11, 0, 30), late=True)
+        self.assertEqual((r["reason"], r["late_start"]), ("topped", True))
+        self.assertEqual(r["billable_end"], datetime(2026, 6, 11, 2, 0))       # 3 h
+
+    def test_late_paid_from_2215_is_written_to_0200_not_0215(self):
+        r = self._top(datetime(2026, 6, 10, 22, 15), datetime(2026, 6, 11, 0, 30), late=True)
+        self.assertEqual(r["billable_end"], datetime(2026, 6, 11, 2, 0))       # 3.75 h
+
+    def test_late_with_a_finish_past_start_plus_four_keeps_its_own_finish(self):
+        # 22:15 - 02:30 is 4.25 h: nothing to decide.
+        off = datetime(2026, 6, 11, 2, 30)
+        r = self._top(datetime(2026, 6, 10, 22, 15), off, late=True)
+        self.assertEqual((r["reason"], r["billable_end"]), ("four_hours_or_more", off))
+        # 23:30 - 02:30 is 3 h, but already past 02:00: own finish stands.
+        r = self._top(datetime(2026, 6, 10, 23, 30), off, late=True)
+        self.assertEqual((r["reason"], r["minimum_applied"], r["billable_end"]),
+                         ("own_finish_later", False, off))
+
+    def test_on_time_is_exactly_four_hours(self):
+        r = self._top(self.SCHED, datetime(2026, 6, 11, 0, 30), late=False)
+        self.assertFalse(r["late_start"])
+        self.assertEqual(r["billable_end"], datetime(2026, 6, 11, 2, 0))
+
+    def test_a_top_up_with_no_scheduled_start_raises(self):
+        with self.assertRaises(DerivationError):
+            minimum_top_up(self.SCHED, datetime(2026, 6, 11, 0, 30), 4.0, None, False, CFG)
+
+    def test_october_changeover_finish_is_four_real_hours_after_the_start(self):
+        # Booked 4 h from 00:00 on Sun 4 Oct 2026; 02:00 - 03:00 never happens,
+        # so four real hours after 00:00 is 05:00 by the clock.
+        sched = datetime(2026, 10, 4, 0, 0)
+        r = minimum_top_up(sched, datetime(2026, 10, 4, 1, 0), 4.0, sched, False, CFG)
+        self.assertEqual(r["billable_end"], datetime(2026, 10, 4, 5, 0))
+
+    def test_derive_times_applies_decision_23_to_a_late_arrival(self):
+        # 22:00 call booked 4 h, arrived 22:20 (rounds to 22:15), finished 00:30.
+        c = call(1, "22:00", 4.0)
+        r = derive_times(sub("22:20", "00:30", next_day=True), [], c, [], [], CFG)
+        self.assertTrue(r["late"])
+        self.assertEqual(r["billable_end"], datetime(2026, 6, 11, 2, 0))
+        self.assertAlmostEqual(r["billable_total"], 3.75)
 
 
 class TestBreaks(unittest.TestCase):
@@ -324,7 +453,7 @@ class TestBreaks(unittest.TestCase):
     def test_break_deducted_from_billable_as_well_as_actual(self):
         """A top-up must not quietly hand back the break."""
         r = derive_times(sub("11:00", "13:00"), [brk("12:00", 30)],
-                         call(1, "11:00", 2.0), [], [], CFG)
+                         call(1, "11:00", 4.0), [], [], CFG)    # was booked 2.0
         self.assertTrue(r["minimum_applied"])
         self.assertAlmostEqual(r["actual_total"], 1.5)
         self.assertAlmostEqual(r["billable_total"], 3.5)
@@ -374,7 +503,7 @@ class TestDaylightSaving(unittest.TestCase):
         arithmetic and produced 04:00 — two real hours, billing three instead
         of four. The bug was invisible on every non-transition day.
         """
-        c = call(1, "00:00", 1.0, day=OCT_DST)
+        c = call(1, "00:00", 4.0, day=OCT_DST)    # was booked 1.0
         r = derive_times(sub("00:00", "01:00"), [], c, [], [], CFG)
 
         self.assertTrue(r["minimum_applied"])
@@ -386,7 +515,7 @@ class TestDaylightSaving(unittest.TestCase):
         The mirror: 02:00-03:00 happens twice, so three real hours from 01:00
         reach only 03:00 on the clock.
         """
-        c = call(1, "00:00", 1.0, day=APR_DST)
+        c = call(1, "00:00", 4.0, day=APR_DST)    # was booked 1.0
         r = derive_times(sub("00:00", "01:00"), [], c, [], [], CFG)
 
         self.assertTrue(r["minimum_applied"])

@@ -81,8 +81,29 @@ GRACE_MINS = 5
 # when the scheduled gap between them is at most this. 60 is inclusive.
 MAX_ROLL_GAP_MINS = 60
 
-# CORRECTION-3. The minimum engagement. Applied per call, except across a
-# continuous block, which is one engagement and gets one minimum.
+# The minimum, in hours.
+#
+# DECISION 24 (Mike, 22 Nov 2026): THE MINIMUM FOLLOWS THE CALL'S BOOKED LENGTH
+# (SmartStaff est_length, set by Ops when the booking is built). It replaces
+# CORRECTION-3's "one minimum per engagement, measured on the block total", and
+# decisions 21 and 22 that briefly followed it. Mike: "in cases where the
+# expected duration is set as less than 4 hours, the 4 hour minimum for salary
+# and invoicing does not apply ... Booked Length only is the best approach and
+# effectively reflects the intent of the Ops team when constructing the calls."
+#
+#   - booked under this many hours  -> no minimum; paid, and invoiced, as worked
+#   - booked this many or more, and the paid span is shorter -> topped up. The
+#     finish becomes the call's SCHEDULED START plus the minimum, or the
+#     person's own finish when that is later
+#   - no booked length (0 or missing) -> no top-up; the caller holds the row
+#   - NO CONTINUITY OF ANY KIND. What the person worked before or after does
+#     not matter: no call_feeds, no worked-both test, no gap.
+#
+# DECISION 23 (Mike, 22 Nov 2026): a late start is topped only to the finish
+# on-time crew get. Under decision 24 that is the same formula for everyone.
+#
+# The rule is minimum_top_up(), below. It is the only copy: derive_times() and
+# the check-in import (checkin_import.apply_minimum) both call it.
 MIN_ENGAGEMENT_HOURS = 4.0
 
 
@@ -347,6 +368,113 @@ def continuous_block(call, sibling_calls, feed_edges):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# The minimum
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _booked_hours(value):
+    """est_length -> hours, or None when it is missing, unparseable or not
+    positive. None means Ops did not say how long the call was booked for."""
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        return None
+    return hours if hours > 0 else None
+
+
+def minimum_top_up(on, off, booked_hours, scheduled_start, late, cfg):
+    """
+    DECISIONS 24 AND 23 (Mike, 22 Nov 2026). THE ONE COPY OF THE MINIMUM RULE.
+
+        on, off          the call's paid span, naive local datetimes, GROSS of
+                         breaks (Q1: the minimum is measured gross and the
+                         breaks come off afterwards)
+        booked_hours     the call's BOOKED length (SmartStaff est_length);
+                         0, None or unparseable means "no booked length"
+        scheduled_start  the call's scheduled start, naive local
+        late             the person is late FOR PAY on this call (a Late mark,
+                         or a typed start after the call time)
+
+    Returns {span_hours, minimum_applies, reason, minimum_applied, late_start,
+    billable_end}. `reason` is one of:
+
+        four_hours_or_more  the paid span already meets the minimum. Nothing to
+                            decide, whatever the call was booked for.
+        booked_short        booked under the minimum: paid as worked.
+        no_booked_length    no booked length: nothing is topped up, and the
+                            caller should hold the row for a person to decide.
+        topped              booked for the minimum or more and paid under it:
+                            the finish is extended to the scheduled start plus
+                            the minimum.
+        own_finish_later    as `topped`, but the person's own finish is already
+                            past that point, so it stands. Only a late start
+                            gets here.
+
+    `minimum_applies` is True when the CALL is one that gets the minimum
+    (booked for it or more); `minimum_applied` is True when this row's finish
+    was actually extended. `billable_end` is `off` when it was not.
+
+    DECISION 23. The finish is max(own finish, scheduled start + minimum) for
+    everyone. On-time crew are paid from the scheduled start, so that is
+    exactly the minimum; a late starter gets the same FINISH, not the minimum
+    from their own start. On a 22:00 call that ran to 00:30: on time is written
+    22:00 to 02:00 (4 h), paid from 22:15 is 22:15 to 02:00 (3.75 h), paid
+    from 23:00 is 23:00 to 02:00 (3 h). `late` does not change the sum; it is
+    reported back as `late_start` so the caller can say why.
+
+    Q31: the top-up EXTENDS THE FINISH and the clock sets the rate. Those
+    hours are night or day because split_day_night() says so, not because
+    anything here decides it.
+
+    REAL hours throughout, not clock subtraction: 00:00 to 04:00 across the
+    October jump subtracts to four hours but is three, and scheduled start
+    plus four real hours on that day is 05:00 by the clock.
+
+    Raises DerivationError when a top-up is due and there is no scheduled
+    start to measure it from, rather than guess.
+    """
+    day, night = _split_totals(on, off, cfg)
+    span_hours = day + night
+    booked = _booked_hours(booked_hours)
+
+    result = {
+        "span_hours": span_hours,
+        "minimum_applies": booked is not None and booked >= MIN_ENGAGEMENT_HOURS - 1e-9,
+        "reason": None,
+        "minimum_applied": False,
+        "late_start": False,
+        "billable_end": off,
+    }
+
+    if span_hours >= MIN_ENGAGEMENT_HOURS - 1e-9:
+        result["reason"] = "four_hours_or_more"
+        return result
+
+    if booked is None:
+        result["reason"] = "no_booked_length"
+        return result
+
+    if not result["minimum_applies"]:
+        result["reason"] = "booked_short"
+        return result
+
+    if scheduled_start is None:
+        raise DerivationError("the minimum needs the call's scheduled start")
+
+    call_finish = _advance_real_hours(scheduled_start, MIN_ENGAGEMENT_HOURS, cfg)
+
+    result["late_start"] = bool(late)
+
+    if call_finish > off:
+        result["reason"] = "topped"
+        result["minimum_applied"] = True
+        result["billable_end"] = call_finish
+    else:
+        result["reason"] = "own_finish_later"
+
+    return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # The derivation
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -425,8 +553,7 @@ def derive_times(submission, breaks, call, sibling_calls, feed_edges, cfg):
         submission     dict: on_time, off_time, off_next_day
         breaks         list of dicts: start_time, start_next_day, duration_mins
         call           dict: id, start_date, start_time, est_length
-        sibling_calls  the same person's OTHER calls that day, same shape, each
-                       optionally carrying `actual_hours` (see below)
+        sibling_calls  the same person's OTHER calls that day, same shape
         feed_edges     call_feeds edges among {call} + sibling_calls, each
                        {source_call, target_call, mode}; non-locked are ignored
         cfg            dayStart / nightStart, as estimator_calc expects
@@ -434,13 +561,11 @@ def derive_times(submission, breaks, call, sibling_calls, feed_edges, cfg):
     There is no `mode` parameter. Payroll is always "duration" — see the module
     docstring.
 
-    SIBLING HOURS. The minimum is applied across a continuous block, so the
-    block's total has to be known. This function holds submitted times for ONE
-    call only, so each sibling may carry `actual_hours` (its own derived span).
-    When a sibling does not, its SCHEDULED est_length is used instead and
-    `sibling_hours_estimated` comes back True. That flag matters: a top-up
-    computed from scheduled hours can be wrong once the real times arrive, and
-    a caller that ignores it will not notice.
+    THE MINIMUM FOLLOWS THE CALL'S BOOKED LENGTH (decision 24, Mike, 22 Nov
+    2026): `call["est_length"]`. Siblings and feed edges no longer bear on it,
+    so the old `actual_hours` input and `sibling_hours_estimated` output are
+    gone. `sibling_calls` and `feed_edges` are still taken, and still give
+    `block_call_ids` (decisions 17 to 20), which other work may want.
 
     Returns a dict:
         actual_day / actual_night          worked, after breaks
@@ -450,9 +575,9 @@ def derive_times(submission, breaks, call, sibling_calls, feed_edges, cfg):
         clocked_on / clocked_off           rounded, as datetimes
         late                               arrived after the scheduled start
         minimum_applied                    a top-up extended the finish
+        minimum_reason                     why, or why not: see minimum_top_up
         billable_end                       the notional finish after top-up
         block_call_ids                     the engagement this call belongs to
-        sibling_hours_estimated            see above
     """
     on, off, late = _worked_span(call, submission)
 
@@ -463,56 +588,26 @@ def derive_times(submission, breaks, call, sibling_calls, feed_edges, cfg):
     actual_night = worked_night - break_night
 
     # ---- the engagement ----
+    #
+    # Informational only since decision 24: it no longer decides the minimum.
 
     block = continuous_block(call, sibling_calls, feed_edges)
     block_ids = [int(c["id"]) for c in block]
 
-    # REAL hours, not (off - on). A naive subtraction is a wall-clock reading:
-    # 00:00 to 04:00 across the October jump subtracts to four hours but is
-    # three, and the minimum would not fire on a shift that is an hour short.
-    # Gross of breaks, because the minimum is measured on the engagement span
-    # and the breaks come off afterwards.
-    this_span_hours = worked_day + worked_night
-
-    estimated = False
-    block_hours = 0.0
-
-    for member in block:
-        if int(member["id"]) == int(call["id"]):
-            block_hours += this_span_hours
-            continue
-
-        if "actual_hours" in member and member["actual_hours"] is not None:
-            block_hours += float(member["actual_hours"])
-        else:
-            block_hours += float(member.get("est_length") or 0.0)
-            estimated = True
-
     # ---- the minimum ----
     #
-    # CORRECTION-3. One minimum per engagement, and Q32 puts it on the LAST call
-    # in the block — so a call that is not last never tops up, however short.
-    #
-    # Q31: the top-up EXTENDS THE FINISH and the clock sets the rate. A 22:00 to
-    # 00:00 call topped to four notionally runs to 02:00, and those hours are
-    # night because split_day_night() says so, not because anything here decides
-    # it.
-    #
-    # THE GAP BETWEEN CONTINUOUS CALLS IS NEITHER PAID NOR DEDUCTED (§6.5). It
-    # is the reason the minimum is not applied twice; it is not a break. A
-    # 2-hour show and a 4-hour load out an hour apart bills SIX — the sum of
-    # actuals, no top-up and no deduction. Deducting the gap would double-count
-    # the same reasoning, and it is the single easiest mistake to make here.
+    # Decision 24: by the call's BOOKED length, and nothing else about the
+    # person's day. See minimum_top_up(), which is the only copy of the rule.
+    # A 3-hour show then a 4-hour load out that ran 2.5 bills SEVEN: the show
+    # is booked short and paid as worked (3); the load out is booked for four
+    # and topped to four. No continuity is involved.
 
-    is_last = block_ids and int(call["id"]) == int(block[-1]["id"])
-    deficit = MIN_ENGAGEMENT_HOURS - block_hours
+    sched_start = _dt(_as_date(call["start_date"]), call["start_time"])
 
-    minimum_applied = False
-    billable_end = off
+    top = minimum_top_up(on, off, call.get("est_length"), sched_start, late, cfg)
 
-    if is_last and deficit > 1e-9:
-        billable_end = _advance_real_hours(off, deficit, cfg)
-        minimum_applied = True
+    minimum_applied = top["minimum_applied"]
+    billable_end = top["billable_end"]
 
     billable_day_gross, billable_night_gross = _split_totals(on, billable_end, cfg)
 
@@ -534,6 +629,6 @@ def derive_times(submission, breaks, call, sibling_calls, feed_edges, cfg):
         "billable_total": billable_day + billable_night,
         "billable_end": billable_end,
         "minimum_applied": minimum_applied,
+        "minimum_reason": top["reason"],
         "block_call_ids": block_ids,
-        "sibling_hours_estimated": estimated,
     }
