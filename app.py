@@ -241,7 +241,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.117.0"
+APP_VERSION    = "5.118.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -21927,7 +21927,14 @@ def api_import_times_preview_checkin(booking_id):
     -- one tab per call, Call ID set, so every tab maps exactly), and runs it through
     _build_import_preview UNCHANGED. The review flags are then ADDED to the result
     (checkin_import.attach_flags); no existing key is altered, and the write is the
-    same /api/call/<b>/<c>/times -> update-call-times.php as every other import."""
+    same /api/call/<b>/<c>/times -> update-call-times.php as every other import.
+
+    THE 4-HOUR MINIMUM (BRIEF-import-apply-4h-minimum rev 5; decisions 24 and
+    23, Mike, 22 Nov 2026). checkin_import.apply_minimum decides each row from
+    the feed's paid times and the call's BOOKED length and scheduled start, read
+    from get-booking.php (the rule itself is derivation.minimum_top_up). A
+    topped-up row's `off` is the topped-up finish, so that is what the unchanged
+    write path sends."""
     ss = get_ss_session()
     if not ss:
         return jsonify({"error": "Not logged in"}), 401
@@ -21945,8 +21952,16 @@ def api_import_times_preview_checkin(booking_id):
     if err:
         return jsonify({"error": err}), 502
 
-    parsed = checkin_import.convert_feed(feed)
     rec = _CallTimesRecorder(ss)
+    # Booked lengths, from the same get-booking.php answer _build_import_preview
+    # is about to use (the recorder keeps it, so SmartStaff is asked once).
+    booking, err = fetch_booking_bulk(rec, booking_id)
+    if err:
+        return jsonify({"error": "Couldn't load booking: %s" % err}), 502
+    bcalls = booking.get("calls", []) if isinstance(booking, dict) else []
+    checkin_import.apply_minimum(feed, bcalls)
+
+    parsed = checkin_import.convert_feed(feed)
     preview, err = _build_import_preview(rec, booking_id, parsed)
     if err:
         return jsonify({"error": err}), 502
@@ -21960,15 +21975,25 @@ class _CallTimesRecorder(object):
     """Wraps the SmartStaff session for ONE check-in preview and keeps each
     get-call-times.php answer _build_import_preview fetches, so the review can
     show the status of rostered people who aren't on check-in without a second
-    request per call (and without changing _build_import_preview). Everything
+    request per call (and without changing _build_import_preview). It also keeps
+    the get-booking.php answer, which the route reads for the 4-hour minimum
+    before _build_import_preview reads it again: the second read is served from
+    here, so the two can't disagree and SmartStaff is asked once. Everything
     else is passed straight through; nothing is retried or altered."""
 
     def __init__(self, ss):
         self._ss = ss
         self.answers = {}
+        self._booking = {}
 
     def get(self, url, *a, **kw):
+        is_booking = str(url).endswith("/get-booking.php")
+        bkey = str((kw.get("params") or {}).get("id")) if is_booking else None
+        if is_booking and bkey in self._booking:
+            return self._booking[bkey]
         resp = self._ss.get(url, *a, **kw)
+        if is_booking and getattr(resp, "status_code", None) == 200:
+            self._booking[bkey] = resp
         if "get-call-times.php" in str(url):
             try:
                 cid = int((kw.get("params") or {}).get("id"))
