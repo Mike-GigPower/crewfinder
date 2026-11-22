@@ -28936,6 +28936,16 @@ function _tiFlagChips(m){
   }).join('');
 }
 
+// A matched row's times. A check-in row the 4-hour minimum topped up
+// (checkin_worked_off — only the check-in import sets it) shows the paid finish
+// AND the finish that will be written: 22:00–00:30 → 02:00. m.off is already
+// the topped-up finish, so the write is untouched; this is display only.
+function _tiRowTimes(m, brk){
+  const on = m.on || '—', off = m.off || '—';
+  const w = m.checkin_worked_off;
+  return (w && w !== m.off) ? (on + '–' + w + ' → ' + off + (brk || '')) : (on + '–' + off + (brk || ''));
+}
+
 // Flagged people on a call who are NOT among the writable rows (never tapped,
 // no Crew Hub record, sign-off with no sign-on, off the roster), named so the
 // operator can see who is missing.
@@ -29166,7 +29176,7 @@ function renderTimesheetImportPreview(){
         + '<span>'+box+escapeHtml(m.name)+(m.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')
         +   (ok?'':(pp ? ' <span style="font-size:9px;letter-spacing:.5px;color:#f59e0b">PROMOTED · NOT ACCEPTED</span>' : ' '+_tiStatusChip(m.status)))
         +   _tiFlagChips(m)+'</span>'
-        + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml((m.on||'—')+'–'+(m.off||'—')+brk)+'</span>'
+        + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(_tiRowTimes(m, brk))+'</span>'
         + '</div>';
     }).join('');
 
