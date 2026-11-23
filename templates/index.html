@@ -3443,6 +3443,10 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
     </div>
   </div><!-- end tab-administration -->
 </div>
+<!-- QR encoder for the printed crew lists (_clQrSvg): qrcode-generator 2.0.4,
+     (c) Kazuhiko Arase, MIT licence, dist/qrcode.js vendored unchanged from npm.
+     A plain script: defines the global qrcode(). Local, so it works offline. -->
+<script src="/static/qrcode-generator.js"></script>
 <script>
 // ── STATE ──
 let selectedCalls=new Map(), // call_id → call object
@@ -27908,7 +27912,7 @@ function openCrewLists(bookingId, callIds){
   document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="padding:6px 0">'
-    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Break / Off write-in columns are always shown. The list opens in a new tab, ready to print or save as PDF.</div>'
+    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Brk start / Brk mins / Off / Notes write-in columns are always shown. The list opens in a new tab, ready to print or save as PDF.</div>'
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding-bottom:6px">Calls to include</div>'
     + '<div id="cl-calls" data-loaded="0" style="padding-bottom:6px"><div style="font-size:12px;color:var(--muted);padding:4px 0">Loading calls…</div></div>'
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 0 6px">Optional columns</div>'
@@ -28267,11 +28271,20 @@ async function crewListGenerate(bookingId){
     win.document.open();
     win.document.write(html);
     win.document.close();
+    // The QR is printed by _clQrSvg; if it couldn't be drawn the pages still
+    // print, with the Call # in text, and the operator is told here (§2.1).
+    const qrNote = opts.qrMissing
+      ? 'Printed without the QR code (it couldn\'t be drawn) — the call number is on each page.'
+      : '';
     // D1: ask, don't assume — lists made just to check something are not
     // recorded. Admin only (D9); everyone else gets the old auto-close.
     const snap = (window._cohort === 'admin') ? crewlistSnapshot(data, callIds) : [];
     if(snap.length){
       _clAskMarkSent(bookingId, snap);
+      if(qrNote){ const ms = document.getElementById('cl-mark-status'); if(ms){ ms.style.color='var(--conflict)'; ms.textContent=qrNote; } }
+    } else if(qrNote){
+      // Leave the dialog open so the note is seen.
+      if(status){ status.style.color='var(--conflict)'; status.textContent='Crew lists opened in a new tab. '+qrNote; }
     } else {
       if(status){ status.style.color='var(--muted)'; status.textContent='Crew lists opened in a new tab.'; }
       closeEntityModal();
@@ -28589,6 +28602,11 @@ function _clBuildHtml(data, opts){
     + '.crew thead{display:table-header-group}'
     + '.crew tr{page-break-inside:avoid}'
     + '.wr{height:22px}'
+    + '.crew thead tr.callrow th{background:#fff;padding:2px 5px;font-weight:normal}'
+    + '.callbar{display:flex;align-items:center;justify-content:space-between;gap:8px}'
+    + '.callbar .cid{font-size:13px;font-weight:bold}'
+    + '.qr{display:block;width:22mm;height:22mm;flex:none;shape-rendering:crispEdges}'
+    + '.hint{font-size:11px;margin:-6px 0 10px}'
     + '.toolbar{margin-bottom:16px}'
     + '.toolbar button{font-size:13px;padding:8px 14px;cursor:pointer}'
     + '@media print{body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}.toolbar{display:none}.call{page-break-after:always}.call:last-child{page-break-after:auto}}';
@@ -28606,8 +28624,13 @@ function _clBuildHtml(data, opts){
     parts.push('<p style="font-size:13px">This booking has no calls.</p>');
   }
 
+  // Name + On, Brk start, Brk mins, Off, Notes + the optional columns.
+  const ncols = 6 + optCols.length;
+
   calls.forEach(function(call){
     const crew = (call.crew || []).filter(function(c){ return _clKeepCrew(c, opts.who); });
+    const qr = _clQrSvg(call.call_id);
+    if(!qr) opts.qrMissing = (opts.qrMissing || 0) + 1;
 
     parts.push('<div class="call">');
     parts.push('<h1>' + escapeHtml([cust, bookingName, call.call_name].filter(Boolean).join(' / ')) + '</h1>');
@@ -28617,6 +28640,7 @@ function _clBuildHtml(data, opts){
 
     // header block
     parts.push('<table class="hdr">');
+    parts.push(_clHdrRow('Call #',     (call.call_id != null) ? String(call.call_id) : ''));
     parts.push(_clHdrRow('When',       _clWhen(call.start_date, call.start_time)));
     parts.push(_clHdrRow('Contact',    contact.name || ''));
     parts.push(_clHdrRow('Phone',      contactPhone));
@@ -28626,18 +28650,25 @@ function _clBuildHtml(data, opts){
     parts.push(_clHdrRow('Booked',     (typeof call.confirmed !== 'undefined') ? String(call.confirmed) : ''));
     parts.push(_clHdrRow('Notes',      call.notes || ''));
     parts.push('</table>');
+    parts.push('<p class="hint">Times in 24-hour, e.g. 2200 / 0615. Off next day: just write the time. '
+      + 'Break: start time and minutes (15, 30, 45, 60). A second break: write it in Notes.</p>');
 
     // crew table
     parts.push('<table class="crew">');
-    let head = '<thead><tr><th>Name</th>';
+    // The call row is IN the thead, so it repeats on every printed page of a
+    // long call (thead is display:table-header-group): a multi-page scan is
+    // joined by the Call# on each page (design T6).
+    let head = '<thead><tr class="callrow"><th colspan="'+ncols+'"><div class="callbar">'
+      + '<span class="cid">' + escapeHtml(_clCallLine(call)) + '</span>' + qr + '</div></th></tr>'
+      + '<tr><th>Name</th>';
     optCols.forEach(function(col){ head += '<th width="'+col.width+'">'+col.label+'</th>'; });
-    head += '<th width="45">On</th><th width="45">Break</th><th width="45">Off</th></tr></thead>';
+    head += '<th width="45">On</th><th width="50">Brk start</th><th width="40">Brk mins</th>'
+         + '<th width="45">Off</th><th width="110">Notes</th></tr></thead>';
     parts.push(head);
 
     parts.push('<tbody>');
     if(!crew.length){
-      const span = 4 + optCols.length;
-      parts.push('<tr><td colspan="'+span+'" style="color:#666">No crew to list for this call.</td></tr>');
+      parts.push('<tr><td colspan="'+ncols+'" style="color:#666">No crew to list for this call.</td></tr>');
     } else {
       crew.forEach(function(c){
         let row = '<tr><td>' + _clName(c) + '</td>';
@@ -28647,7 +28678,7 @@ function _clBuildHtml(data, opts){
                 : (c[col.key]!=null ? c[col.key] : '');
           row += '<td>' + escapeHtml(v+'') + '</td>';
         });
-        row += '<td class="wr"></td><td class="wr"></td><td class="wr"></td></tr>';
+        row += '<td class="wr"></td><td class="wr"></td><td class="wr"></td><td class="wr"></td><td class="wr"></td></tr>';
         parts.push(row);
       });
     }
@@ -28731,6 +28762,44 @@ function _clDietarySummary(flags, crew){
         +  ' crew have dietary info awaiting their confirmation — not shown.</p>';
   }
   return out;
+}
+
+// The printed crew list's QR (BRIEF-timesheet-scan-slice1 §2.1, design T1).
+// Payload exactly "GP1;c=<call_id>": GP1 is the format version; the call
+// only, no names or people — rows are matched to the roster by printed name.
+// Error correction Q. Returned as an inline <svg> string because the list is
+// document.write()n into a blank tab: nothing the page needs may be fetched.
+// '' when it can't be drawn (encoder missing, odd id): the caller prints the
+// page without it and says so. It never blocks the list.
+function _clQrSvg(callId){
+  const id = String(callId == null ? '' : callId);
+  if(!/^\d+$/.test(id) || typeof qrcode !== 'function') return '';
+  try{
+    const qr = qrcode(0, 'Q');
+    qr.addData('GP1;c=' + id);
+    qr.make();
+    // cellSize 1 + margin 4 = a 4-module quiet zone; .qr sizes it to 22 mm.
+    return qr.createSvgTag({cellSize: 1, margin: 4, scalable: true}).replace('<svg ', '<svg class="qr" ');
+  }catch(e){
+    return '';
+  }
+}
+
+// "Call 39911 · Load In · 20/11/2026 22:00" — the repeating thead line.
+function _clCallLine(call){
+  const bits = ['Call ' + (call.call_id != null ? call.call_id : '')];
+  if(call.call_name) bits.push(call.call_name);
+  let when = '';
+  if(call.start_date){
+    const d = new Date(Number(call.start_date)*1000);
+    if(!isNaN(d.getTime())){
+      when = String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear();
+    }
+  }
+  const t = _clTime(call.start_time);
+  if(t) when = (when ? when+' ' : '') + t;
+  if(when) bits.push(when);
+  return bits.join(' · ');
 }
 
 function _clHdrRow(label, value){
