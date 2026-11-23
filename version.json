@@ -1,6 +1,6 @@
 {
-  "version": "5.118.0",
-  "release_date": "2026-11-22",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.118.0/TheGOAT.dmg",
-  "release_notes": "Import from check-in now applies the 4-hour minimum by the call's booked length: calls booked for 4 hours or more are topped up to the call's start plus 4 hours, and shorter calls are paid as worked."
+  "version": "5.119.0",
+  "release_date": "2026-11-23",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.119.0/TheGOAT.dmg",
+  "release_notes": "Printed crew lists now show the call number and a QR code on every page, and ask for break start and minutes plus a Notes column."
 }
