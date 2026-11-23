@@ -19,7 +19,8 @@ STORED_TYPE = {"call_id": CALL, "booking_id": BOOKING, "role_name": "Show Crew",
 class UnchangedSaves(unittest.TestCase):
     def setUp(self):
         self._saved = {n: getattr(A, n) for n in (
-            "get_ss_session", "ss_get_call_times", "booking_set_code", "fetch_call_types", "_post_call_types")}
+            "get_ss_session", "ss_get_call_times", "booking_set_code", "fetch_call_types", "_post_call_types",
+            "ss_set_crew_boss")}
         self._saved_rules = pricing_rules.load_rules
         with open(os.path.join(HERE, "pricing_rules_cache.json")) as f:
             rules = json.load(f)
@@ -36,6 +37,12 @@ class UnchangedSaves(unittest.TestCase):
             {"call_types": {CALL: STORED_TYPE}, "overrides": list(self.overrides)}, None)
         self.posts = []
         A._post_call_types = lambda path, body, what: (self.posts.append((path, body)) or {"logged": True}, None)
+        # Since slice G the Crew Boss route writes SmartStaff's marker FIRST
+        # (set-crew-boss.php, D19) and re-asserts it even when the override is
+        # unchanged. Stubbed here so the route reaches the Supabase step these
+        # tests are about; the calls are recorded, not performed.
+        self.markers = []
+        A.ss_set_crew_boss = lambda ss, cid, uid, on: (self.markers.append((cid, uid, on)) or 200, {"ok": True})
         A._ss_identity["sid"] = {"cohort": "admin", "user_id": "10261"}
         self.client = A.app.test_client()
         with self.client.session_transaction() as s:
@@ -77,6 +84,8 @@ class UnchangedSaves(unittest.TestCase):
         r = self.client.post(f"/api/call/{BOOKING}/{CALL}/crew-boss/{CREW}")
         self.assertEqual(r.get_json(), {"ok": True, "unchanged": True})
         self.assertEqual(self.posts, [])
+        # Unchanged in Supabase, but SmartStaff's marker is still re-asserted.
+        self.assertEqual(self.markers, [(CALL, CREW, True)])
 
     def test_manual_override_with_crew_boss_values_becomes_crew_boss(self):
         # Same values, different kind: a real change (it gets the CREW BOSS chip).
