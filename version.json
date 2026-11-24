@@ -1,6 +1,6 @@
 {
-  "version": "5.120.0",
+  "version": "5.121.0",
   "release_date": "2026-11-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.120.0/TheGOAT.dmg",
-  "release_notes": "A booking's Calls tab now shows at a glance which calls still want times — green for locked, lavender for accepted, and a label for everything else. Every call row has a Times button, and the Times outstanding lane opens the booking, the call or the times directly."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.121.0/TheGOAT.dmg",
+  "release_notes": "Crew lists now download as a CSV as well as opening as a printable page, and every call's header names the on-site contact — or Gig Power and the office number when a booking has none. Select all and Clear sit above the calls to include, and booking documents can be filed under a new Schedule category."
 }
