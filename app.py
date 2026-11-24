@@ -241,7 +241,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.122.0"
+APP_VERSION    = "5.123.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1446,6 +1446,62 @@ _keepalive_thread    = None
 # one request's reason be read by another. Each request starts with the default.
 _ss_check_reason = contextvars.ContextVar("goat_ss_check_reason", default="expired")
 
+# Whether the last session check in THIS request couldn't reach SmartStaff at
+# all, as opposed to finding the session expired (DESIGN-system-health-v0_3 §6
+# F1a). Request-scoped for the same reason as _ss_check_reason: a global would
+# let one request's outage decide another request's gate. Set in exactly two
+# places — get_ss_session, which resets it on the way in, and reauth_ss_session
+# — and read only by _ss_missing_response.
+_ss_unreachable = contextvars.ContextVar("goat_ss_unreachable", default=False)
+
+# Check-failure classes that mean NO CONNECTION WAS MADE. These are the only
+# ones that justify a 503 "couldn't reach SmartStaff" (addendum A1). A
+# ReadTimeout is deliberately absent: the box accepted the connection and was
+# merely slow to answer, so the session is presumed good and the request carries
+# on with it — a slow SmartStaff is neither an expired session nor an
+# unreachable one, and saying "nothing was changed" when the box is up and
+# answering slowly would be its own lie.
+#
+# Matched on the exception CLASS NAME that is_ss_session_valid recorded, never on
+# message text: the text comes from urllib3 and changes between versions, so
+# "Failed to resolve" is not a contract we can test against.
+_SS_NO_CONNECTION_CLASSES = frozenset((
+    "ConnectionError",        # requests: DNS failure, refused, dropped on connect
+    "ConnectTimeout",         # requests: the connect itself timed out
+    "ProxyError",             # requests: never reached the target at all
+    "NewConnectionError",     # urllib3, should one ever escape unwrapped
+    "NameResolutionError",    # urllib3 DNS
+    "ConnectionRefusedError", # builtin OSError subclass
+    "gaierror",               # socket DNS
+))
+
+
+def _ss_check_no_connection(reason):
+    """True when a recorded check reason names a class that means the connection
+    was never made. `reason` is _ss_check_reason's 'check_failed:<Class>'."""
+    name = str(reason or "")
+    if not name.startswith("check_failed"):
+        return False
+    return name.split(":", 1)[-1].strip() in _SS_NO_CONNECTION_CLASSES
+
+# One line for every gate, so "SmartStaff is down" never reads as "you are
+# logged out". Same wording as the Finish setup preflight.
+SS_UNREACHABLE_TEXT = ("Couldn't reach SmartStaff — nothing was changed. "
+                       "Try again in a minute.")
+
+
+def _ss_missing_response():
+    """The reply for a route with no usable SmartStaff session.
+
+    503 + `unreachable` when the box couldn't be reached at all, the long-
+    standing 401 otherwise. The 503 is the point: a 401 sends the UI to the
+    login screen, and before 25 Nov 2026 this path didn't get that far at all —
+    it walked into create_ss_session's unguarded login POST and the route
+    answered HTTP 500."""
+    if _ss_unreachable.get():
+        return jsonify({"error": SS_UNREACHABLE_TEXT, "unreachable": True}), 503
+    return jsonify({"error": "Not logged in"}), 401
+
 
 def is_ss_session_valid(ss):
     """Check if a SmartStaff session is still active by hitting a lightweight endpoint.
@@ -1502,7 +1558,20 @@ def reauth_ss_session(sid):
         password = cfg.get("password", "")
     if not username or not password:
         return False
-    ss, err = create_ss_session(username, password)
+    try:
+        ss, err = create_ss_session(username, password)
+    except _requests.exceptions.RequestException as e:
+        # create_ss_session's login POST is in no try of its own and must stay
+        # that way (the interactive login wants the raw exception), so an
+        # unreachable SmartStaff raised straight through this helper and out of
+        # whatever route called it — HTTP 500. This is the remaining case: the
+        # check answered "expired", but the login then couldn't connect.
+        # Deliberately no broader than RequestException: a code bug must still
+        # surface as a 500 rather than hide behind "SmartStaff is down".
+        _ss_unreachable.set(True)
+        app.logger.warning(f"SmartStaff unreachable during re-login for sid {sid}: "
+                           f"{type(e).__name__}: {e}")
+        return False
     if err or not ss:
         return False
     _ss_sessions[sid] = ss
@@ -1713,12 +1782,35 @@ def start_cache_autorefresh():
 def get_ss_session():
     """Get SmartStaff session for current user. Auto re-auths if session expired.
 
-    MEASURE ONLY: the silent re-login behaviour is unchanged (§3.5). The one
-    addition is health.record_relogin(reason), which is what lets the System
-    tab split re-logins into "Session expired" and "Check failed (SmartStaff
-    slow or unreachable)". If the second kind appears when people say the app
-    feels slow, the §2 hypothesis is confirmed.
+    AN UNREACHABLE SMARTSTAFF IS NOT AN EXPIRED SESSION (design §6 F1a). When
+    is_ss_session_valid() answers False it has either been TOLD the session is
+    dead (a redirect to login) or it never got an answer at all, and
+    _ss_check_reason tells those apart. Only the first is grounds for a
+    re-login: a check that RAISED teaches us nothing about the session, which is
+    almost certainly still fine, so the stored session stays in _ss_sessions
+    untouched — it must be usable the moment SmartStaff answers again — and no
+    10-second login attempt is spent on a box that isn't answering.
+
+    The second case returns None with _ss_unreachable set, so the gates can say
+    503 "couldn't reach SmartStaff" instead of 401 "not logged in". Until 25 Nov
+    2026 it instead ran into create_ss_session's unguarded login POST and every
+    @require_cohort route answered HTTP 500, about 20 s in (a 10 s check plus a
+    10 s login) — which is also what defeated Finish setup's own unreachable
+    preflight, since the route never ran.
+
+    record_relogin() is deliberately NOT called on that path: no re-login
+    happens there, and counting one would have the System tab's "Check failed"
+    card report an event that never occurred. The failed check is still
+    recorded — is_ss_session_valid() calls record_session_check(ok=False) with
+    the exception class on its way out, which is what the Session checks panel
+    counts.
     """
+    # Request-scoped, and Flask reuses worker threads, so a stale True from an
+    # earlier request on this thread would turn the next genuine 401 into a 503.
+    # Reset here rather than in a before_request hook: this function is the only
+    # setter that matters, every reader calls it first, and the reset then sits
+    # beside the code it protects instead of in a hook nobody reads.
+    _ss_unreachable.set(False)
     sid = session.get("sid")
     if not sid:
         return None
@@ -1727,7 +1819,23 @@ def get_ss_session():
         return None
     # Quick validity check — if session has expired, try to re-auth silently
     if not is_ss_session_valid(ss):
-        _health.record_relogin(_ss_check_reason.get())
+        reason = str(_ss_check_reason.get() or "")
+        if reason.startswith("check_failed"):
+            if _ss_check_no_connection(reason):
+                _ss_unreachable.set(True)
+                app.logger.warning(f"SmartStaff unreachable for sid {sid} ({reason}) — "
+                                   f"session kept, no re-login attempted")
+                return None
+            # The connection WAS made; SmartStaff just didn't answer the check
+            # in time (A1). Carry on with the session we have: it is almost
+            # certainly still live, a re-login would cost another ten seconds of
+            # the same slowness, and a 503 would claim we couldn't reach a box
+            # that is plainly up. If the box really is broken, the call the
+            # operator asked for fails with its own plain-English line.
+            app.logger.warning(f"Session check for sid {sid} got no answer in time "
+                               f"({reason}) — carrying on with the existing session")
+            return ss
+        _health.record_relogin(reason)
         app.logger.info(f"Session {sid} detected as expired in get_ss_session — re-authing")
         if not reauth_ss_session(sid):
             return None
@@ -1841,8 +1949,13 @@ def require_cohort(*allowed):
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            if not session.get("sid") or not get_ss_session():
+            if not session.get("sid"):
                 return jsonify({"error": "Not logged in"}), 401
+            if not get_ss_session():
+                # 503 while SmartStaff is unreachable, 401 only when the session
+                # really has gone. Keeps every client-side "401 -> login screen"
+                # branch from firing during an outage.
+                return _ss_missing_response()
             if current_cohort() not in allowed:
                 return jsonify({"error": "Forbidden for your access level"}), 403
             return fn(*args, **kwargs)
@@ -6476,7 +6589,18 @@ def login():
         password = request.form.get("password", "").strip()
         remember = request.form.get("remember", "on") == "on"
 
-        ss, err = create_ss_session(username, password)
+        try:
+            ss, err = create_ss_session(username, password)
+        except _requests.exceptions.RequestException as e:
+            # The login POST inside create_ss_session is in no try of its own,
+            # so an unreachable SmartStaff used to raise straight out of this
+            # view: Flask's "Internal Server Error" page, with no form and
+            # nothing to read. Now it comes back as an ordinary form error, the
+            # same shape as "Invalid credentials". Not broader than
+            # RequestException: a code bug must still surface.
+            app.logger.warning(f"SmartStaff unreachable during login: "
+                               f"{type(e).__name__}: {e}")
+            ss, err = None, SS_UNREACHABLE_TEXT
         if err:
             error = err
         else:
@@ -6563,8 +6687,10 @@ def logout():
 @app.route("/api/elevate", methods=["POST"])
 def api_elevate():
     sid = session.get("sid")
-    if not sid or not get_ss_session():
+    if not sid:
         return jsonify({"error": "Not logged in"}), 401
+    if not get_ss_session():
+        return _ss_missing_response()
 
     # Defence in depth: only a listed crew user may even attempt this. The real
     # gate is the admin credential check below.
@@ -12993,12 +13119,29 @@ def api_session_ping():
     ss = _ss_sessions.get(session.get("sid"))
     if not ss:
         return jsonify({"valid": False, "reason": "no_session"}), 401
+    _ss_unreachable.set(False)
     valid = is_ss_session_valid(ss)
     if not valid:
+        # An unreachable SmartStaff must not come back as reason "expired": the
+        # toast then reads "session expired — reconnecting…", which is untrue
+        # and sends the operator hunting a login problem. 200 with the flag,
+        # not 503, because pingSession()'s existing else-branch already parses
+        # the body — no new status handling anywhere.
+        ping_reason = str(_ss_check_reason.get() or "")
+        if ping_reason.startswith("check_failed"):
+            if _ss_check_no_connection(ping_reason):
+                return jsonify({"valid": False, "unreachable": True})
+            # Slow, not unreachable (A1). No re-login, no toast, and no claim
+            # either way: the session is presumed good, exactly as
+            # get_ss_session now treats it.
+            return jsonify({"valid": True, "unverified": True})
         # Try silent re-auth
         sid = session.get("sid")
         if reauth_ss_session(sid):
             return jsonify({"valid": True, "reauthed": True})
+        # The check said expired but the login couldn't connect either.
+        if _ss_unreachable.get():
+            return jsonify({"valid": False, "unreachable": True})
         return jsonify({"valid": False, "reason": "expired"}), 401
     return jsonify({"valid": True})
 
@@ -18817,8 +18960,10 @@ def api_unavailability_delete():
 def api_whoami():
     """Identity + cohort for the current session — lets the frontend render the
     correct cohort-aware navigation. Safe fields only."""
-    if not session.get("sid") or not get_ss_session():
+    if not session.get("sid"):
         return jsonify({"error": "Not logged in"}), 401
+    if not get_ss_session():
+        return _ss_missing_response()
     ident = current_identity() or {}
     return jsonify({
         "name":        ident.get("name", ""),
@@ -18848,7 +18993,7 @@ def api_me_inductions():
     the admin Induction Checker uses."""
     ss = get_ss_session()
     if not ss:
-        return jsonify({"error": "Not logged in"}), 401
+        return _ss_missing_response()
     try:
         resp = ss.get(f"{BASE_URL}/ajax/crew/my-inductions.php",
                       allow_redirects=True, timeout=15)
@@ -18871,7 +19016,7 @@ def api_me_shifts():
     both My Schedule (the list) and My Utilization (summed confirmed hours)."""
     ss = get_ss_session()
     if not ss:
-        return jsonify({"error": "Not logged in"}), 401
+        return _ss_missing_response()
     start_str = request.args.get("start_date", datetime.now().strftime("%Y-%m-%d"))
     try:    days = min(120, max(1, int(request.args.get("days", 28))))
     except: days = 28
@@ -18919,7 +19064,7 @@ def api_me_unavailability_list():
     """List the logged-in user's OWN unavailability periods."""
     ss = get_ss_session()
     if not ss:
-        return jsonify({"error": "Not logged in"}), 401
+        return _ss_missing_response()
     periods, err = fetch_own_unavailabilities(ss)
     if err:
         return jsonify({"error": err}), 502
@@ -18931,7 +19076,7 @@ def api_me_unavailability_add():
     """Add an unavailability to the logged-in user's OWN calendar."""
     ss = get_ss_session()
     if not ss:
-        return jsonify({"error": "Not logged in"}), 401
+        return _ss_missing_response()
     b = request.get_json(force=True)
     required = ["start_date", "start_hour", "start_min",
                 "end_date", "end_hour", "end_min", "reason"]
@@ -18953,7 +19098,7 @@ def api_me_unavailability_delete():
     """Delete one of the logged-in user's OWN unavailabilities by id."""
     ss = get_ss_session()
     if not ss:
-        return jsonify({"error": "Not logged in"}), 401
+        return _ss_missing_response()
     b = request.get_json(force=True)
     event_id = b.get("event_id")
     if event_id in (None, ""):
@@ -20281,7 +20426,7 @@ _LINK_PASS_THROUGH = (200, 404, 409, 422)
 def _link_proxy(endpoint, body):
     ss = get_ss_session()
     if not ss:
-        return jsonify({"error": "Not logged in"}), 401
+        return _ss_missing_response()
     status, data = _ss_post_json(ss, endpoint, body)
     if status in _LINK_PASS_THROUGH:
         return jsonify(data), status
@@ -23763,7 +23908,7 @@ def _override_route_ctx(booking_id, call_id, user_id):
         return None, None, (jsonify({"error": "call_id and user_id must be integers"}), 400)
     ss = get_ss_session()
     if not ss:
-        return None, None, (jsonify({"error": "Not logged in"}), 401)
+        return None, None, _ss_missing_response()
     ctx, fail = _call_pricing_context(ss, booking_id, call_id)
     if fail:
         return None, None, (jsonify({"error": fail[0]}), fail[1])
@@ -28042,8 +28187,10 @@ _docs = docs_source.BundledDocs(DOCS_DIR, frozen=getattr(_sys, "frozen", False))
 
 def _docs_guard():
     """Shared login check. Returns a response to send, or None to continue."""
-    if not session.get("sid") or not get_ss_session():
+    if not session.get("sid"):
         return jsonify({"error": "Not logged in"}), 401
+    if not get_ss_session():
+        return _ss_missing_response()
     if not os.path.isdir(DOCS_DIR):
         # A build that dropped docs/ must say so. Returning an empty index here
         # would render as "no documents yet", which is indistinguishable from a
@@ -28195,7 +28342,7 @@ def _accounting_ss():
     """(ss, None) or (None, (response, status)) when there is no session."""
     ss = get_ss_session()
     if not ss:
-        return None, (jsonify({"error": "Not logged in"}), 401)
+        return None, _ss_missing_response()
     return ss, None
 
 
