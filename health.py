@@ -496,24 +496,36 @@ def _current(rows_all, backend, now):
 
 
 def _series_60m(rows, backend, now, minutes=60):
-    """One bucket per minute for the last hour, oldest first.
+    """One bucket per WALL-CLOCK minute for the last hour, oldest first.
 
     An empty minute keeps its slot with count 0 and null values, so the trace
     can BREAK there (never plot zero) while hover still has a time to report.
+
+    Buckets are aligned to HH:MM:00, NOT to "now minus N x 60 s". 5.123.0 did
+    the latter, which moved all 60 bucket edges on every 5-second poll: a
+    request at 15:44:30 was reported as minute '15:45' at 15:45:10 and as
+    '15:44' at 15:45:40, so minutes that had already finished kept changing
+    between refreshes and a request could be filed under a minute that had not
+    happened yet. Flooring the epoch to the minute makes a finished minute
+    final -- the only slot that still moves is the current one, which is
+    genuinely still filling.
     """
+    # Epoch minute of `now`, and of the oldest slot we keep.
+    now_min   = int(now // 60)
+    first_min = now_min - (minutes - 1)
+
     buckets = [[] for _ in range(minutes)]
     for r in rows:
         if r.get('backend') != backend:
             continue
         if not isinstance(r.get('total_ms'), (int, float)):
             continue
-        age = now - r.get('_epoch', now)
-        idx = minutes - 1 - int(age // 60)
+        idx = int(r.get('_epoch', now) // 60) - first_min
         if 0 <= idx < minutes:
             buckets[idx].append(r['total_ms'])
     out = []
     for i, b in enumerate(buckets):
-        stamp = now - (minutes - 1 - i) * 60
+        stamp = (first_min + i) * 60
         out.append({
             't':         datetime.fromtimestamp(stamp).strftime('%H:%M'),
             'median_ms': _pct(b, 0.5) if b else None,

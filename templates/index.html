@@ -2206,6 +2206,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
 .sys-g2-now{position:absolute;top:0;transform:translateX(-50%);font-family:'Share Tech Mono',monospace;font-size:9.5px;color:var(--text);white-space:nowrap}
 .sys-g3-svg{width:100%;height:auto;display:block}
 .sys-g3-lbl{font-family:'Share Tech Mono',monospace;font-size:8.5px;fill:var(--muted)}
+.sys-g3-clip{font-family:'Share Tech Mono',monospace;font-size:8.5px;fill:var(--text);opacity:0.85}
 /* G4 — busy lamps */
 .sys-lamps-wrap{border:1px solid var(--border);border-radius:4px;background:var(--surface2);padding:9px 12px;min-width:210px}
 .sys-lamps{display:flex;align-items:center;gap:5px;margin-bottom:6px}
@@ -44872,14 +44873,19 @@ var SYS_TIPS = {
   + 'The red mark is the slowest. The ring is <b>now</b>.</p>'
   + '<p>If the ring sits to the right of the bar, things are slower than usual right now.</p>',
 
-  trace:
-    '<p>Each point is the typical time for that minute. The red dot is the slowest '
-  + 'minute. The dashed line is the average for the hour. The faint amber and red '
-  + 'lines are where "slower than usual" and "slow" begin.</p>'
-  + '<p><b>Grey bands</b> are when THE GOAT\'s automatic crew-list refresh ran in the '
-  + 'background. If spikes line up with grey bands, the refresh is what slowed things '
-  + 'down.</p>'
-  + '<p><b>Gaps</b> are minutes when nothing was sent.</p>',
+  // A function, not a string: the cut-off number in the text has to come from
+  // health.THRESHOLDS, so it stays right if the cut-off ever moves.
+  trace: function(d){
+    var th = sysTh(d, 'smartstaff');
+    return '<p>Each bar is one minute: its height is the typical (median) request '
+    + 'time that minute, coloured green, amber or red. The thin tick above it is '
+    + 'that minute\'s slowest request. Empty minutes had no requests.</p>'
+    + '<p>Anything above ' + escapeHtml(sysMs(1.6 * th.amber_p95)) + ' is cut off at '
+    + 'the top and labelled with its real value.</p>'
+    + '<p><b>Grey bands</b> are the background crew-cache refresh; the dashed line '
+    + 'is the 60-minute average. If tall bars line up with grey bands, the refresh '
+    + 'is what slowed things down.</p>';
+  },
 
   busy:
     '<p>How many requests are waiting at SmartStaff at this moment. SmartStaff answers '
@@ -44964,6 +44970,7 @@ function sysTipPlace(el, anchor){
 function sysTipShow(anchor, pin){
   var key = anchor.getAttribute('data-tip');
   var body = SYS_TIPS[key];
+  if(typeof body === 'function') body = body(_healthData || {});
   if(!body) return;
   var el = sysTipEl();
   el.innerHTML = body + (pin ? '<span class="tip-close">Click anywhere, or press Esc, to close.</span>' : '');
@@ -45205,99 +45212,173 @@ function sysRangeStripSvg(d, b){
        + '<div class="sys-g2-labels">' + lbl + '</div></div>';
 }
 
-// ── G3: 60-minute trace (SmartStaff) ────────────────────────────────────────
+// ── G3: 60-minute trace (SmartStaff), one bar per minute ─────────────
 /** `W` is the container's real pixel width. The viewBox is drawn at that width
  *  with a FIXED height, so the SVG maps 1:1 to its box: no scaling, so no
  *  stretched text, and the trace keeps a sensible height on a wide column
- *  instead of growing proportionally into a huge band (brief §2). */
+ *  instead of growing proportionally into a huge band (brief §2).
+ *
+ *  5.123.1 replaced the polyline with bars. With one person on the GOAT the
+ *  traffic is sparse, and a line through that data drew itself as disconnected
+ *  fragments, skipped any busy minute with empty minutes either side (nothing
+ *  to join to, so nothing drawn at all), and scaled to the 60-minute peak, so
+ *  one 12 s spike squashed every normal minute into the bottom tenth of the
+ *  box. A bar needs no neighbour and the scale is now fixed.
+ */
 function sysTraceSvg(d, b, W){
   var e = (d.backends || {})[b] || {};
   var ser = e.series_60m || [];
   var th = sysTh(d, b);
   W = (W && W > 80) ? Math.round(W) : 560;
-  var H = 220, padL = 8, padR = 8, padT = 10, padB = 18;
+  // padL carries the y-axis labels: '5.0 s' is five mono glyphs at 8.5px,
+  // about 26px, and they are drawn right-anchored at padL - 5.
+  var H = 220, padL = 36, padR = 10, padT = 16, padB = 20;
   var plotW = W - padL - padR, plotH = H - padT - padB;
-  var vals = ser.map(function(p){ return p.median_ms; }).filter(function(x){ return x != null && isFinite(x); });
-  var maxes = ser.map(function(p){ return p.max_ms; }).filter(function(x){ return x != null && isFinite(x); });
-  var hi = Math.max.apply(null, [th.amber_p95].concat(maxes.length ? maxes : [th.amber_p95]));
-  if(!(hi > 0)) hi = th.amber_p95;
-  var X = function(i){ return padL + (ser.length > 1 ? plotW * i / (ser.length - 1) : 0); };
-  var Y = function(v){ return padT + plotH - plotH * Math.max(0, Math.min(1, v / hi)); };
+  var n = Math.max(1, ser.length);
+
+  // FIXED scale: 1.6x the red cut-off, read from health.THRESHOLDS, never the
+  // observed peak. Anything taller is clipped at the top and labelled.
+  var topV = 1.6 * th.amber_p95;
+  var base = padT + plotH;
+  var Y = function(v){
+    return padT + plotH - plotH * (Math.max(0, Math.min(topV, v)) / topV);
+  };
+  var slotW = plotW / n;
+  var gap   = Math.min(3, Math.max(0.6, slotW * 0.22));
+  var barW  = Math.max(1.6, slotW - gap);
+  var slotX = function(i){ return padL + slotW * i; };
+  var ctr   = function(i){ return slotX(i) + slotW / 2; };
 
   var s = '<svg class="sys-g3-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
-        + ' aria-label="SmartStaff response time, last 60 minutes">';
+        + ' aria-label="SmartStaff response time by minute, last 60 minutes">';
 
-  // Background shading where a background refresh ran (at least one minute wide
-  // so a 40-second run is still visible).
+  // Grey bands where a background refresh ran, at least one minute wide so a
+  // 40-second run is still visible.
   (d.background_runs_60m || []).forEach(function(r){
     var idx = -1;
-    for(var i = 0; i < ser.length; i++){ if(ser[i].t === String(r.start).slice(0, 5)) { idx = i; break; } }
+    for(var i = 0; i < ser.length; i++){ if(ser[i].t === String(r.start).slice(0, 5)){ idx = i; break; } }
     if(idx < 0) return;
     var mins = Math.max(1, Math.round((r.duration_ms || 0) / 60000));
-    var bx = X(idx), bw = Math.max(plotW / Math.max(1, ser.length - 1), (plotW / Math.max(1, ser.length - 1)) * mins);
-    s += '<rect x="' + bx.toFixed(1) + '" y="' + padT + '" width="' + bw.toFixed(1)
+    s += '<rect x="' + slotX(idx).toFixed(1) + '" y="' + padT + '" width="' + (slotW * mins).toFixed(1)
       +  '" height="' + plotH + '" fill="rgba(255,255,255,0.055)"/>';
   });
 
-  // Faint threshold lines, then the dashed 60-minute mean.
+  // Baseline, then the faint threshold lines — each now named by a label on
+  // the left, so the green and red lines are no longer unexplained.
+  s += '<line x1="' + padL + '" y1="' + base + '" x2="' + (W - padR) + '" y2="' + base
+    +  '" stroke="var(--muted)" stroke-width="1" opacity="0.35"/>'
+    +  '<text class="sys-g3-lbl" x="' + (padL - 5) + '" y="' + (base + 3) + '" text-anchor="end">0</text>';
   [[th.green_p95, SYS_GREEN], [th.amber_p95, SYS_RED]].forEach(function(t){
-    if(t[0] > hi) return;
-    s += '<line x1="' + padL + '" y1="' + Y(t[0]).toFixed(1) + '" x2="' + (W - padR)
-      +  '" y2="' + Y(t[0]).toFixed(1) + '" stroke="' + perfRgba(t[1], 0.35)
-      +  '" stroke-width="1"/>';
+    if(!(t[0] > 0) || t[0] > topV) return;
+    var ty = Y(t[0]);
+    s += '<line x1="' + padL + '" y1="' + ty.toFixed(1) + '" x2="' + (W - padR)
+      +  '" y2="' + ty.toFixed(1) + '" stroke="' + perfRgba(t[1], 0.35) + '" stroke-width="1"/>'
+      +  '<text class="sys-g3-lbl" x="' + (padL - 5) + '" y="' + (ty + 3).toFixed(1)
+      +  '" text-anchor="end">' + escapeHtml(sysMs(t[0])) + '</text>';
   });
+
+  // Dashed 60-minute mean. Above the top of the scale it pins to the top and
+  // says so, rather than vanishing.
   var mean60 = (e['60m'] || {}).mean_ms;
   if(mean60 != null && isFinite(mean60)){
-    s += '<line x1="' + padL + '" y1="' + Y(mean60).toFixed(1) + '" x2="' + (W - padR)
-      +  '" y2="' + Y(mean60).toFixed(1) + '" stroke="var(--muted)" stroke-width="1"'
-      +  ' stroke-dasharray="4 3"/>';
+    var my = Y(mean60);
+    s += '<line x1="' + padL + '" y1="' + my.toFixed(1) + '" x2="' + (W - padR)
+      +  '" y2="' + my.toFixed(1) + '" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3"/>';
+    if(mean60 > topV){
+      s += '<text class="sys-g3-lbl" x="' + (W - padR) + '" y="' + (padT + 10)
+        +  '" text-anchor="end">mean &#9650;</text>';
+    }
   }
 
-  // The line, broken at empty minutes — never joined across a gap and never
-  // plotted as zero.
-  var segs = [], cur = [];
+  // One bar per minute that had requests, in its own slot. An empty minute
+  // draws nothing at all — no zero bar, no line.
+  var clipped = [];
   ser.forEach(function(p, i){
-    if(p.median_ms == null || !isFinite(p.median_ms)){
-      if(cur.length > 1) segs.push(cur);
-      cur = [];
-      return;
+    var md = p.median_ms, mxv = p.max_ms;
+    if(md == null || !isFinite(md)) return;
+    var col = md < th.green_p95 ? SYS_GREEN : (md < th.amber_p95 ? SYS_AMBER : SYS_RED);
+    var bx = slotX(i) + (slotW - barW) / 2, by = Y(md);
+    s += '<rect x="' + bx.toFixed(1) + '" y="' + by.toFixed(1) + '" width="' + barW.toFixed(1)
+      +  '" height="' + Math.max(0.8, base - by).toFixed(1) + '" fill="' + col + '" rx="0.6"/>';
+    // That minute's slowest request: a thin tick above the bar, joined to it.
+    // Left out when it equals the median (a one-request minute), where it
+    // would just thicken the top of the bar.
+    if(mxv != null && isFinite(mxv) && mxv > md){
+      var ty2 = Y(mxv), cx = bx + barW / 2, tw = Math.max(2.4, barW * 0.72);
+      s += '<line x1="' + cx.toFixed(1) + '" y1="' + ty2.toFixed(1) + '" x2="' + cx.toFixed(1)
+        +  '" y2="' + by.toFixed(1) + '" stroke="var(--text)" stroke-width="1" opacity="0.38"/>'
+        +  '<line x1="' + (cx - tw / 2).toFixed(1) + '" y1="' + ty2.toFixed(1) + '" x2="' + (cx + tw / 2).toFixed(1)
+        +  '" y2="' + ty2.toFixed(1) + '" stroke="var(--text)" stroke-width="1.2" opacity="0.5"/>';
     }
-    cur.push(X(i).toFixed(1) + ',' + Y(p.median_ms).toFixed(1));
-  });
-  if(cur.length > 1) segs.push(cur);
-  segs.forEach(function(pts){
-    s += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="var(--accent)"'
-      +  ' stroke-width="1.6" vector-effect="non-scaling-stroke"/>';
+    var realTop = (mxv != null && isFinite(mxv)) ? Math.max(md, mxv) : md;
+    if(realTop > topV) clipped.push({ i: i, v: realTop });
   });
 
-  // Peak minute, by max_ms.
+  // Every clipped minute keeps its triangle. The VALUE goes only to the
+  // tallest minute in each cluster whose labels would otherwise overprint.
+  var labW = 46, showVal = {};
+  for(var ci = 0; ci < clipped.length; ){
+    var cj = ci + 1;
+    while(cj < clipped.length && (ctr(clipped[cj].i) - ctr(clipped[cj - 1].i)) < labW) cj++;
+    var best = ci;
+    for(var k = ci; k < cj; k++){ if(clipped[k].v > clipped[best].v) best = k; }
+    showVal[clipped[best].i] = true;
+    ci = cj;
+  }
+  clipped.forEach(function(c){
+    var cx = ctr(c.i), anc = 'middle', tx = cx;
+    var txt = showVal[c.i] ? ('&#9650; ' + escapeHtml(sysMs(c.v))) : '&#9650;';
+    var half = showVal[c.i] ? labW / 2 : 5;
+    if(tx - half < padL){ anc = 'start'; tx = padL; }
+    else if(tx + half > W - padR){ anc = 'end'; tx = W - padR; }
+    s += '<text class="sys-g3-clip" x="' + tx.toFixed(1) + '" y="' + (padT - 5)
+      +  '" text-anchor="' + anc + '">' + txt + '</text>';
+  });
+
+  // Peak minute, by max_ms. The dot sits on that minute's tick — or at the
+  // top of the scale when the minute is clipped — so it always lands on
+  // something that was actually drawn.
   var peakI = -1, peakV = -1;
   ser.forEach(function(p, i){ if(p.max_ms != null && p.max_ms > peakV){ peakV = p.max_ms; peakI = i; } });
   if(peakI >= 0){
-    s += '<circle cx="' + X(peakI).toFixed(1) + '" cy="' + Y(peakV).toFixed(1)
+    s += '<circle cx="' + ctr(peakI).toFixed(1) + '" cy="' + Y(peakV).toFixed(1)
       +  '" r="3.2" fill="' + SYS_RED + '"/>';
   }
-  // Latest minute with data, in blue.
-  for(var j = ser.length - 1; j >= 0; j--){
-    if(ser[j].median_ms != null){
-      s += '<circle cx="' + X(j).toFixed(1) + '" cy="' + Y(ser[j].median_ms).toFixed(1)
-        +  '" r="3" fill="#60a5fa"/>';
-      break;
-    }
+  // The latest minute, in blue. An empty latest minute sits on the baseline.
+  if(ser.length){
+    var last = ser[ser.length - 1];
+    var ly = (last.median_ms != null && isFinite(last.median_ms)) ? Y(last.median_ms) : base;
+    s += '<circle cx="' + ctr(ser.length - 1).toFixed(1) + '" cy="' + ly.toFixed(1)
+      +  '" r="3" fill="#60a5fa"/>';
   }
 
   s += '<text class="sys-g3-lbl" x="' + padL + '" y="' + (H - 5) + '">&minus;60 min</text>'
     +  '<text class="sys-g3-lbl" x="' + (W - padR) + '" y="' + (H - 5) + '" text-anchor="end">now</text>';
 
-  // Hover readout per minute — the Performance pattern: an invisible hit rect
-  // with a <title> child.
-  var step = plotW / Math.max(1, ser.length - 1);
+  // Quarter-hour marks that fall inside the window, dropped where they would
+  // collide with the two fixed labels.
+  var lEnd = padL + 40, rStart = W - padR - 19;
   ser.forEach(function(p, i){
-    var tip = p.t + '\n' + (p.count
-      ? ('median ' + sysMs(p.median_ms) + '\nmax ' + sysMs(p.max_ms) + '\n' + p.count + ' request' + (p.count === 1 ? '' : 's'))
-      : 'no requests');
-    s += '<rect class="perf-hit" x="' + Math.max(padL, X(i) - step / 2).toFixed(1) + '" y="' + padT
-      +  '" width="' + step.toFixed(1) + '" height="' + plotH + '">'
+    var mm = String(p.t).slice(3, 5);
+    if(mm !== '00' && mm !== '15' && mm !== '30' && mm !== '45') return;
+    var cx = ctr(i);
+    if(cx - 14 < lEnd || cx + 14 > rStart) return;
+    s += '<line x1="' + cx.toFixed(1) + '" y1="' + base + '" x2="' + cx.toFixed(1)
+      +  '" y2="' + (base + 3) + '" stroke="var(--muted)" stroke-width="1" opacity="0.45"/>'
+      +  '<text class="sys-g3-lbl" x="' + cx.toFixed(1) + '" y="' + (H - 5)
+      +  '" text-anchor="middle">' + escapeHtml(p.t) + '</text>';
+  });
+
+  // Hover readout per minute — the Performance pattern: an invisible hit rect
+  // with a <title> child. The target is the WHOLE minute slot, not the bar, so
+  // a 120 ms minute is as easy to hit as a 7 s one.
+  ser.forEach(function(p, i){
+    var tip = p.count
+      ? (p.t + '\nmedian ' + sysMs(p.median_ms) + '\nmax ' + sysMs(p.max_ms)
+         + '\n' + p.count + ' request' + (p.count === 1 ? '' : 's'))
+      : (p.t + ' \u00b7 no requests');
+    s += '<rect class="perf-hit" x="' + slotX(i).toFixed(1) + '" y="' + padT + '" width="' + slotW.toFixed(1)
+      +  '" height="' + plotH + '">'
       +  '<title>' + escapeHtml(tip) + '</title></rect>';
   });
   return s + '</svg>';
@@ -45474,8 +45555,8 @@ function renderHealth(d){
     + '<span class="sys-sec-r">' + (pk == null ? 'no requests yet'
         : ('peak ' + escapeHtml(sysMs(pk)) + ' at ' + escapeHtml(pkT))) + '</span></div>'
     + sysTraceSvg(d, ssKey, gfxW)
-    + '<div class="sys-note">Grey bands are the background crew-cache refresh. '
-    + 'Dashed line is the 60-minute mean. Gaps are minutes with no requests.</div></div>';
+    + '<div class="sys-note">Bars are minutes. Grey bands are the background '
+    + 'crew-cache refresh. Dashed line is the 60-minute mean.</div></div>';
 
   gfx.innerHTML = html;
 

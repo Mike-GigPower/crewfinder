@@ -71,11 +71,13 @@ If the ring sits to the right of the bar, things are slower than usual right now
 
 ## SmartStaff, last 60 minutes
 
-Each point is the typical time for that minute. The red dot is the slowest minute. The dashed line is the average for the hour. The faint amber and red lines are where "slower than usual" and "slow" begin.
+Each bar is one minute: its height is the typical (median) request time that minute, coloured green, amber or red. The thin tick above it is that minute's slowest request. Empty minutes had no requests.
 
-**Grey bands** are when THE GOAT's automatic crew-list refresh ran in the background. If spikes line up with grey bands, the refresh is what slowed things down.
+Anything above 8.0 s is cut off at the top and labelled with its real value, so one very slow minute no longer flattens all the others.
 
-**Gaps** are minutes when nothing was sent.
+The red dot is the slowest minute of the hour; the blue dot is the latest minute. The figures down the left are where "slower than usual" and "slow" begin.
+
+**Grey bands** are when THE GOAT's automatic crew-list refresh ran in the background. If tall bars line up with grey bands, the refresh is what slowed things down.
 
 ## Right now
 
