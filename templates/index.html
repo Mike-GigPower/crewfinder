@@ -4230,6 +4230,15 @@ async function loadCalls(force=false){
     const resp=await fetch(url);
     if(resp.status===401){window.location='/login';return}
     const data=await resp.json();
+    // A 503 (SmartStaff unreachable) carries no `calls`, and the empty state
+    // below reads as an all-clear — "no unfilled calls on dashboard" when in
+    // fact nothing could be read at all. Say what happened instead.
+    if(!resp.ok || data.error){
+      list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-sub">'
+        + escapeHtml(data.error || ('Error loading calls (HTTP ' + resp.status + ')'))
+        + '</div></div>';
+      return;
+    }
     if(!data.calls?.length){list.innerHTML='<div class="empty-state" style="height:160px"><div class="empty-icon">&#128235;</div><div class="empty-sub">No unfilled calls on dashboard</div></div>';return}
     window._finderCalls = (data.calls||[]).filter(function(c){ return c.unfilled; });
     const bookingOrder=[];const bookingMap={};
@@ -43519,7 +43528,13 @@ async function pingSession(){
       }
     } else {
       const data = await resp.json();
-      if(data.reauthed){
+      // 200 {valid:false, unreachable:true} — SmartStaff couldn't be reached.
+      // It must NOT reuse the "expired" wording: nothing has logged the
+      // operator out, the stored session is kept, and there is nothing to
+      // reconnect to until the box answers.
+      if(data.unreachable){
+        showSessionToast("⚠ Can't reach SmartStaff — retrying");
+      } else if(data.reauthed){
         showSessionToast('✓ Reconnected to SmartStaff');
       }
     }
@@ -44875,9 +44890,11 @@ var SYS_TIPS = {
   relogins:
     '<p>Times THE GOAT quietly logged you back in to SmartStaff.</p>'
   + '<p><b>Expired</b> is normal, for example after the Mac has been asleep.</p>'
-  + '<p><b>Check failed</b> means SmartStaff was too slow to answer "am I still logged '
-  + 'in?", so THE GOAT logged in again anyway. That can add up to 10 seconds or more to '
-  + 'a click. <b>This is the number to watch when it feels slow.</b></p>',
+  + '<p><b>Check failed</b> used to mean SmartStaff was too slow to answer "am I still '
+  + 'logged in?" and THE GOAT logged in again anyway, which could add 10 seconds or more '
+  + 'to a click. It no longer does that — a check that gets no answer leaves your session '
+  + 'alone — so this should read zero. Failed checks are counted under Session checks '
+  + 'below.</p>',
 
   timeouts:
     '<p>Requests that gave up waiting for an answer. Usually it shows up as an error '
@@ -44889,8 +44906,10 @@ var SYS_TIPS = {
   + 'in?". These cards show how many of those checks ran and how long they took.</p>'
   + '<p>Because one runs before nearly every click, a slow check makes everything feel '
   + 'slow.</p>'
-  + '<p><b>Check timeouts</b> — checks that got no answer in time. Each one causes a '
-  + '"check failed" re-login.</p>',
+  + '<p><b>Check timeouts</b> — checks that got no answer in time. <b>Failed checks</b> '
+  + 'counts those plus the ones that couldn\'t reach SmartStaff at all. Either way THE '
+  + 'GOAT keeps your session and says SmartStaff can\'t be reached, rather than logging '
+  + 'you in again.</p>',
 
   background:
     '<p>THE GOAT rebuilds its crew list in the background every 15 minutes. This shows '
@@ -45507,6 +45526,9 @@ function renderHealth(d){
     + sysCard('Checks, 15 min', sysInt(c15.count), 'median ' + sysMs(c15.median_ms) + ' · p95 ' + sysMs(c15.p95_ms))
     + sysCard('Checks, 60 min', sysInt(c60.count), 'median ' + sysMs(c60.median_ms) + ' · p95 ' + sysMs(c60.p95_ms))
     + sysCard('Check timeouts, 60 min', sysInt(c60.timeouts), c60.timeouts ? 'slow or unreachable' : 'none', !!c60.timeouts)
+    + sysCard('Failed checks, 60 min', sysInt(c60.errors),
+              c60.errors ? 'no answer from SmartStaff (timeouts included)' : 'none',
+              !!c60.errors)
     + '</div></div>';
 
   // ── 3. Background ─────────────────────────────────────────────────────────
