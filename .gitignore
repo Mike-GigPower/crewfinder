@@ -52,6 +52,11 @@ fixtures/
 !tests/fixtures/
 tests/fixtures/*
 !tests/fixtures/plan_golden/
+# ...and the crew-list golden test's cases and recorded 5.120.0 output
+# (BRIEF-crewlist-export §5). Invented too: booking and call 90001, crew
+# 90001+, 04xx/03 9000 test numbers, example.com addresses. No real crew,
+# customer, venue or phone number is in there, and none may be added.
+!tests/fixtures/crewlist_golden/
 import_log.json
 
 # Booking figures test fixtures — a LITERAL get-booking-figures.php response

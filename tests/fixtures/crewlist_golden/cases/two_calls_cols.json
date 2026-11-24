@@ -1,0 +1,28 @@
+{
+  "note": "Two calls, every optional column except Dietary, on-site contact with a mobile. Call 90002 has no crew. Crew 90003's surname arrives HTML-escaped, as SmartStaff sends it.",
+  "opts": {"ein": true, "phone": true, "email": true, "dietary": false, "who": "confirmed",
+           "callIds": ["90001", "90002"]},
+  "data": {
+    "name": "Booking 90001",
+    "customer": {"name": "Test Customer"},
+    "venue": {"name": "Test Venue", "address": "1 Test Street", "suburb": "Testville", "state": "VIC"},
+    "contact": {"id": 70001, "name": "Test Contact", "phone": "03 9000 0001", "mobile": "0400 000 001"},
+    "onsite": {"id": 70002, "name": "On Site Person", "phone": "03 9000 0002", "mobile": "0400 000 002"},
+    "calls": [
+      {"call_id": 90001, "call_name": "Load In", "start_date": 1795093200,
+       "start_time": "22:00:00", "est_length": "8", "required": 3, "confirmed": 3,
+       "notes": "Dock 3. Steel-caps required.",
+       "crew": [
+         {"id": 90001, "firstname": "Alice", "lastname": "Anderson", "status": "confirmed",
+          "ein": "01234", "mobile": "0412 000 001", "email": "alice@example.com"},
+         {"id": 90002, "firstname": "Bob", "lastname": "Brown", "status": "confirmed",
+          "ein": "01235", "phone": "03 9000 1235", "email": "bob@example.com"},
+         {"id": 90003, "firstname": "Carol", "lastname": "Clark &amp; Sons", "status": "confirmed",
+          "ein": "01236", "mobile": "0412 000 003", "email": "carol@example.com"}
+       ]},
+      {"call_id": 90002, "call_name": "Show Call", "start_date": 1795145400,
+       "start_time": "14:30:00", "est_length": "6", "required": 2, "confirmed": 0,
+       "notes": "", "crew": []}
+    ]
+  }
+}

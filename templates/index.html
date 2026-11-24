@@ -12984,13 +12984,17 @@ function _goatLocalISODate(d){
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
 
-function goatExportCSV(filenameBase, headers, rows){
+// Every CSV this app writes goes out through here: one BOM, one quoting rule,
+// one dated file name. goatExportCSV (one header row + data rows) and
+// goatExportCSVRows (rows that are already laid out, §2 of the crew-list
+// export) are the two ways in — the escaping is NOT copied into either.
+function _goatCsvDownload(filenameBase, rows){
   function cell(v){
     if(v === null || v === undefined) v = '';
     return '"' + String(v).replace(/"/g, '""') + '"';
   }
   var csv = '﻿'
-    + [headers].concat(rows).map(function(r){ return r.map(cell).join(','); }).join('\r\n')
+    + rows.map(function(r){ return r.map(cell).join(','); }).join('\r\n')
     + '\r\n';
   var name = String(filenameBase || 'export')
     .replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase()
@@ -12999,6 +13003,16 @@ function goatExportCSV(filenameBase, headers, rows){
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
   a.download = name;
   a.click();
+}
+
+function goatExportCSV(filenameBase, headers, rows){
+  _goatCsvDownload(filenameBase, [headers].concat(rows));
+}
+
+// For a file whose shape isn't "one header row then data" — the crew list is
+// many sections, each with its own header block and column row.
+function goatExportCSVRows(filenameBase, rows){
+  _goatCsvDownload(filenameBase, rows);
 }
 
 function exportInductionCSV(){
@@ -28003,7 +28017,7 @@ function openCrewLists(bookingId, callIds){
   document.getElementById('entity-modal-sub').textContent   = 'Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="padding:6px 0">'
-    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Brk start / Brk mins / Off / Notes write-in columns are always shown. The list opens in a new tab, ready to print or save as PDF.</div>'
+    + '<div style="font-size:12px;color:var(--muted);padding-bottom:12px">Choose the optional columns to include. Name and the On / Brk start / Brk mins / Off / Notes write-in columns are always shown. PDF / Print opens the list in a new tab, ready to print or save as PDF. CSV downloads the same list as a spreadsheet you can edit.</div>'
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding-bottom:6px">Calls to include</div>'
     + '<div id="cl-calls" data-loaded="0" style="padding-bottom:6px"><div style="font-size:12px;color:var(--muted);padding:4px 0">Loading calls…</div></div>'
     + '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 0 6px">Optional columns</div>'
@@ -28018,7 +28032,8 @@ function openCrewLists(bookingId, callIds){
     + '<div id="cl-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
     + '</div>';
   document.getElementById('entity-modal-actions').innerHTML =
-      entityBtn('Create Crew Lists', "crewListGenerate('"+bookingId+"')", {primary:true})
+      entityBtn('📄 PDF / Print', "crewListGenerate('"+bookingId+"')", {primary:true})
+    + entityBtn('📊 CSV', "crewListGenerate('"+bookingId+"', 'csv')", {title:'The same list as a spreadsheet, ready to edit'})
     + (window._cohort === 'admin' ? entityBtn('🪪 Photos (zip)', "openAccredPhotos('"+bookingId+"', _clTickedCallIds())", {title:'Zip of crew photos for accreditation, for the ticked calls'}) : '')
     + entityBtn('Close','closeEntityModal()');
   _clLoadChecklist(bookingId);   // async, never awaited
@@ -28063,7 +28078,15 @@ async function _clLoadChecklist(bookingId){
   }
   const pick  = window._clPick.callIds;
   const clMap = (st && st.calls) || {};
-  box.innerHTML = calls.map(function(c){
+  // Select all · Clear (D4). Rendered ONLY here -- checklist loaded, calls to
+  // tick -- so they never appear while loading, after a failure, or on a
+  // booking with no calls.
+  const links = '<div style="padding:0 0 6px">'
+    + _clPickLink('Select all', 1)
+    + '<span style="font-size:11px;color:var(--muted);padding:0 6px">·</span>'
+    + _clPickLink('Clear', 0)
+    + '</div>';
+  box.innerHTML = links + calls.map(function(c){
     const id   = String(c.call_id);
     const cx   = _clIsCancelled(c);
     const on   = !cx && (!pick || pick.indexOf(id) !== -1);
@@ -28077,11 +28100,32 @@ async function _clLoadChecklist(bookingId){
       tag = '<span style="font-size:10px;color:var(--warn);margin-left:8px">Changed since sent</span>';
     }
     return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:'+(cx?'var(--muted)':'var(--text)')+';padding:3px 0;cursor:pointer">'
-      + '<input type="checkbox" class="cl-call-pick" value="'+escapeHtml(id)+'"'+(on?' checked':'')+'> '
+      + '<input type="checkbox" class="cl-call-pick" value="'+escapeHtml(id)+'"'+(cx?' data-cx="1"':'')+(on?' checked':'')+'> '
       + '<span>'+escapeHtml(decodeEntities(c.call_name||'Call'))+(when?' · '+escapeHtml(when):'')+'</span>'
       + tag + '</label>';
   }).join('');
   box.setAttribute('data-loaded', '1');
+}
+
+// A small muted text link, styled like the labels beside it (D4).
+function _clPickLink(label, on){
+  return '<button type="button" onclick="_clPickAll('+on+')" style="border:none;background:none;padding:0;'
+       + 'color:var(--muted);font-size:11px;cursor:pointer;text-decoration:underline">'+label+'</button>';
+}
+
+// Ticks every call that is NOT cancelled, or unticks the lot (D4). Whether a
+// call is cancelled is read from data-cx, written when the row was rendered, so
+// this never recomputes what _clIsCancelled already decided. Select all leaves
+// a ticked cancelled call alone rather than unticking something somebody ticked
+// on purpose. Neither link generates a list, saves a preference, or touches the
+// crew-list marks.
+function _clPickAll(on){
+  const box = document.getElementById('cl-calls');
+  if(!box) return;
+  Array.prototype.forEach.call(box.querySelectorAll('input.cl-call-pick'), function(el){
+    if(!on){ el.checked = false; return; }
+    if(el.getAttribute('data-cx') !== '1') el.checked = true;
+  });
 }
 
 // ── ACCREDITATION PHOTOS (zip of crew photos, named per event) ────────────────
@@ -28306,7 +28350,14 @@ function _clTickedCallIds(){
   return Array.prototype.map.call(box.querySelectorAll('input.cl-call-pick:checked'), function(el){ return String(el.value); });
 }
 
-async function crewListGenerate(bookingId){
+// fmt is 'print' -- the printable tab, the default, and what the PDF button
+// passes -- or 'csv', a downloaded spreadsheet (D1). EVERYTHING up to the
+// render is shared: the option reads, the "tick at least one call" guard, the
+// remembered preferences, the booking fetch and the dietary flags. Only the
+// last step differs, so the two formats cannot disagree about what was asked
+// for or about which calls were ticked.
+async function crewListGenerate(bookingId, fmt){
+  const csv = (fmt === 'csv');
   const opts = {
     ein:   !!(document.getElementById('cl-col-ein')   || {}).checked,
     phone: !!(document.getElementById('cl-col-phone') || {}).checked,
@@ -28338,50 +28389,65 @@ async function crewListGenerate(bookingId){
   goatPrefs.set('crewList', 'lastUsed', prefs);
   opts.callIds = callIds;
 
-  if(status){ status.style.color='var(--muted)'; status.textContent='Building crew lists…'; }
+  if(status){ status.style.color='var(--muted)'; status.textContent = csv ? 'Building the CSV…' : 'Building crew lists…'; }
 
   // Open the tab NOW, synchronously inside the click, so the browser doesn't
   // block it as an unsolicited pop-up. Fill it after the fetch resolves.
-  const win = window.open('', '_blank');
-  if(!win){
-    if(status){ status.style.color='var(--conflict)'; status.textContent='Your browser blocked the new tab. Allow pop-ups for 127.0.0.1 and try again.'; }
-    return;
+  // ONLY the printable list opens a tab. A CSV is a download: opening a tab
+  // for it would leave a blank one behind every single time (§2).
+  let win = null;
+  if(!csv){
+    win = window.open('', '_blank');
+    if(!win){
+      if(status){ status.style.color='var(--conflict)'; status.textContent='Your browser blocked the new tab. Allow pop-ups for 127.0.0.1 and try again.'; }
+      return;
+    }
+    win.document.write('<!doctype html><meta charset="utf-8"><title>Crew Lists…</title><body style="font-family:Arial,Helvetica,sans-serif;padding:24px;color:#333">Building crew lists…</body>');
   }
-  win.document.write('<!doctype html><meta charset="utf-8"><title>Crew Lists…</title><body style="font-family:Arial,Helvetica,sans-serif;padding:24px;color:#333">Building crew lists…</body>');
 
   try{
     const res  = await fetch('/api/booking/'+bookingId);
     const data = await res.json();
     if(data.error){
-      win.document.body.innerHTML = 'Couldn\'t load booking: '+escapeHtml(data.error);
+      if(win) win.document.body.innerHTML = 'Couldn\'t load booking: '+escapeHtml(data.error);
       if(status){ status.style.color='var(--conflict)'; status.textContent=data.error; }
       return;
     }
     if(opts.dietary) await _clLoadDietary(data, opts);
-    const html = _clBuildHtml(data, opts);
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
+    if(csv){
+      goatExportCSVRows((data.name || 'booking') + '-crew-list',
+                        _clBuildCsvRows(_clBuildModel(data, opts)));
+    } else {
+      const html = _clBuildHtml(data, opts);
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+    }
     // The QR is printed by _clQrSvg; if it couldn't be drawn the pages still
     // print, with the Call # in text, and the operator is told here (§2.1).
-    const qrNote = opts.qrMissing
+    // The CSV carries no QR -- its Call # row stands in for it -- so a CSV
+    // never reports one missing.
+    const qrNote = (!csv && opts.qrMissing)
       ? 'Printed without the QR code (it couldn\'t be drawn) — the call number is on each page.'
       : '';
     // D1: ask, don't assume — lists made just to check something are not
     // recorded. Admin only (D9); everyone else gets the old auto-close.
+    // D3: a CSV is offered the same mark-as-sent prompt as a print, built from
+    // the SAME `data` the file was just made from, under the same rules.
+    const done = csv ? 'Crew list CSV downloaded.' : 'Crew lists opened in a new tab.';
     const snap = (window._cohort === 'admin') ? crewlistSnapshot(data, callIds) : [];
     if(snap.length){
-      _clAskMarkSent(bookingId, snap);
+      _clAskMarkSent(bookingId, snap, done);
       if(qrNote){ const ms = document.getElementById('cl-mark-status'); if(ms){ ms.style.color='var(--conflict)'; ms.textContent=qrNote; } }
     } else if(qrNote){
       // Leave the dialog open so the note is seen.
-      if(status){ status.style.color='var(--conflict)'; status.textContent='Crew lists opened in a new tab. '+qrNote; }
+      if(status){ status.style.color='var(--conflict)'; status.textContent=done+' '+qrNote; }
     } else {
-      if(status){ status.style.color='var(--muted)'; status.textContent='Crew lists opened in a new tab.'; }
+      if(status){ status.style.color='var(--muted)'; status.textContent=done; }
       closeEntityModal();
     }
   }catch(e){
-    win.document.body.innerHTML = 'Couldn\'t build crew lists: '+escapeHtml(e.message);
+    if(win) win.document.body.innerHTML = 'Couldn\'t build crew lists: '+escapeHtml(e.message);
     if(status){ status.style.color='var(--conflict)'; status.textContent='Couldn\'t build crew lists: '+e.message; }
   }
 }
@@ -28408,10 +28474,13 @@ function crewlistSnapshot(data, callIds){
   });
 }
 
-function _clAskMarkSent(bookingId, snap){
+// `title` says what just happened, because the prompt follows a print OR a CSV
+// download (D3) and "opened in a new tab" would be untrue of a CSV. The
+// question, the rules and the buttons are the same either way.
+function _clAskMarkSent(bookingId, snap, title){
   window._clPendingMark = {bookingId: String(bookingId), calls: snap};
   const n = snap.length;
-  document.getElementById('entity-modal-title').textContent = 'Crew lists opened in a new tab.';
+  document.getElementById('entity-modal-title').textContent = title || 'Crew lists opened in a new tab.';
   document.getElementById('entity-modal-body').innerHTML =
       '<div style="padding:6px 0">'
     + '<div style="font-size:13px;color:var(--text);padding-bottom:8px">Did you send these to the client?</div>'
@@ -28835,13 +28904,61 @@ function _clName(c){
   return first || escapeHtml((c.name||'').trim());
 }
 
-function _clBuildHtml(data, opts){
+// The office's own number, printed as the on-site contact when a booking has
+// none (D5). Written with the spaces Mike gave it: it goes on a page a venue
+// reads, so it is never reformatted.
+const CL_GP_FALLBACK = {name: 'Gig Power', phone: '03 9376 9500'};
+
+// The write-in instructions printed under each call's header block. One copy,
+// read by both renderers.
+const CL_HINT = 'Times in 24-hour, e.g. 2200 / 0615. Off next day: just write the time. '
+              + 'Break: start time and minutes (15, 30, 45, 60). A second break: write it in Notes.';
+
+// _clName's plain-text twin: "Last, First", no markup. _clName bolds the
+// surname and escapes for HTML, and neither belongs in a spreadsheet cell, so
+// the raw values are DECODED here rather than escaped.
+function _clNameText(c){
+  const last  = decodeEntities((c.lastname||'').trim());
+  const first = decodeEntities((c.firstname||'').trim());
+  if(last && first) return last + ', ' + first;
+  if(last)  return last;
+  return first || decodeEntities((c.name||'').trim());
+}
+
+// ── Crew list: ONE model, TWO renderers (BRIEF-crewlist-export §1) ───────────
+// _clBuildModel is the content of the printed list, independent of format.
+// _clBuildHtml renders it as the printable page; _clBuildCsvRows renders the
+// SAME model as CSV rows. THE POINT OF THE SPLIT: a column or a header row
+// added here appears in both or in neither, so the PDF and the CSV cannot
+// drift apart.
+//
+// Two conventions in the model, because the formats genuinely need different
+// bytes:
+//   * header values and the titles are RAW. The HTML renderer escapes them —
+//     through _clHdrRow and escapeHtml, exactly as it always did — and the CSV
+//     decodes them instead.
+//   * crew cells are {html, text}: the name is bold markup in print and
+//     "Last, First" in a cell, so one string could not serve both. `wr: true`
+//     marks a write-in cell, empty in both formats.
+// `columns` carries each column's printed width alongside its label. Holding
+// the widths outside the model would be the very drift this split prevents.
+function _clBuildModel(data, opts){
   const bookingName = data.name || 'Booking';
   const cust  = (data.customer && data.customer.name) ? data.customer.name : '';
   const venue = data.venue || {};
   const venueLine = [venue.name, venue.address, venue.suburb, venue.state].filter(Boolean).join(', ');
   const contact = data.contact || {};
   const contactPhone = contact.mobile || contact.phone || '';
+
+  // ON-SITE CONTACT (D5). No on-site contact on the booking -> Gig Power and
+  // the office number, so the venue is never left without someone to ring.
+  // An on-site contact WITH no phone number keeps their own name and an EMPTY
+  // phone: printing their name beside the office number would send whoever
+  // reads it to the wrong person.
+  const onsite = data.onsite;
+  const hasOnsite = !!(onsite && onsite.id > 0 && String(onsite.name||'').trim());
+  const onsiteName  = hasOnsite ? onsite.name : CL_GP_FALLBACK.name;
+  const onsitePhone = hasOnsite ? (onsite.mobile || onsite.phone || '') : CL_GP_FALLBACK.phone;
 
   // optional column headers, in fixed order
   const optCols = [];
@@ -28853,6 +28970,112 @@ function _clBuildHtml(data, opts){
   const dietOn = !!(opts.dietary && !opts.dietaryUnavailable && opts.dietaryFlags);
   if(dietOn) optCols.push({key:'dietary', label:'Dietary', width:'180'});
 
+  // Name + the optional columns + the five write-ins, in print order.
+  const columns = [{label:'Name', width:''}]
+    .concat(optCols.map(function(col){ return {label:col.label, width:col.width}; }))
+    .concat([{label:'On',        width:'45'},
+             {label:'Brk start', width:'50'},
+             {label:'Brk mins',  width:'40'},
+             {label:'Off',       width:'45'},
+             {label:'Notes',     width:'110'}]);
+
+  // opts.callIds (D6): only the chosen calls. null/absent = every call, which is
+  // exactly the list as it printed before the checklist existed.
+  const pickIds = opts.callIds ? opts.callIds.map(String) : null;
+  const calls = (data.calls || []).filter(function(c){ return !pickIds || pickIds.indexOf(String(c.call_id)) !== -1; });
+
+  return {
+    title: bookingName,
+    columns: columns,
+    calls: calls.map(function(call){
+      const crew = (call.crew || []).filter(function(c){ return _clKeepCrew(c, opts.who); });
+      const qr = _clQrSvg(call.call_id);
+      if(!qr) opts.qrMissing = (opts.qrMissing || 0) + 1;
+      return {
+        title:    [cust, bookingName, call.call_name].filter(Boolean).join(' / '),
+        callId:   (call.call_id != null) ? String(call.call_id) : '',
+        callLine: _clCallLine(call),
+        qrSvg:    qr,
+        header: [
+          ['Call #',        (call.call_id != null) ? String(call.call_id) : ''],
+          ['When',          _clWhen(call.start_date, call.start_time)],
+          ['Contact',       contact.name || ''],
+          ['Phone',         contactPhone],
+          ['On-site',       onsiteName],
+          ['On-site phone', onsitePhone],
+          ['Venue',         venueLine],
+          ['Est. Length',   call.est_length || ''],
+          ['Required',      (typeof call.required !== 'undefined') ? String(call.required) : ''],
+          ['Booked',        (typeof call.confirmed !== 'undefined') ? String(call.confirmed) : ''],
+          ['Notes',         call.notes || '']
+        ],
+        hint: CL_HINT,
+        rows: crew.map(function(c){
+          const cells = [{html: _clName(c), text: _clNameText(c)}];
+          optCols.forEach(function(col){
+            var v = (col.key === 'phone')   ? (c.mobile || c.phone || '')
+                  : (col.key === 'dietary') ? _clDietaryCell(opts.dietaryFlags, c)
+                  : (c[col.key]!=null ? c[col.key] : '');
+            cells.push({html: escapeHtml(v+''), text: decodeEntities(v+'')});
+          });
+          for(var i = 0; i < 5; i++) cells.push({html:'', text:'', wr:true});
+          return cells;
+        }),
+        emptyNote:   crew.length ? '' : 'No crew to list for this call.',
+        dietaryNote: (opts.dietary && opts.dietaryUnavailable)
+                       ? 'Dietary information couldn\'t be loaded.' : '',
+        dietarySummaryHtml: dietOn ? _clDietarySummary(opts.dietaryFlags, crew) : '',
+        dietarySummary:     dietOn ? _clDietarySummaryText(opts.dietaryFlags, crew) : []
+      };
+    })
+  };
+}
+
+// Excel reads a cell of bare digits as a number, so "01234" would arrive as
+// 1234 and an EIN or a phone written without spaces would print WRONG. A
+// leading tab keeps the cell as text without showing in it. Anything with a
+// space or punctuation in it ("0412 000 001") is already text to Excel and is
+// left exactly as SmartStaff sent it, so the file stays clean to edit (D2).
+function _clCsvText(v){
+  const s = String(v == null ? '' : v);
+  return /^0\d+$/.test(s) ? '\t' + s : s;
+}
+
+// The model as CSV rows (§2): the same layout as the printed list, one file,
+// every ticked call in order. Rows are padded to the width of the widest crew
+// table in the file so a spreadsheet lines the columns up, and every cell is
+// plain text — decoded, never markup, and never a QR code (the Call # row
+// stands in for it).
+function _clBuildCsvRows(model){
+  const width = model.columns.length;
+  const rows = [];
+  function pad(r){ while(r.length < width) r.push(''); return r; }
+  function one(v){ return pad([v]); }
+
+  if(!model.calls.length) rows.push(one('This booking has no calls.'));
+
+  model.calls.forEach(function(call, i){
+    if(i){ rows.push(pad([])); rows.push(pad([])); }   // two blank rows between calls
+    rows.push(one(decodeEntities(call.title)));
+    rows.push(pad([]));
+    call.header.forEach(function(h){ rows.push(pad([h[0], _clCsvText(decodeEntities(h[1]))])); });
+    rows.push(pad([]));
+    rows.push(one(call.hint));
+    rows.push(pad([]));
+    rows.push(pad(model.columns.map(function(col){ return col.label; })));
+    call.rows.forEach(function(cells){
+      rows.push(pad(cells.map(function(cell){ return _clCsvText(cell.text); })));
+    });
+    // The notes that sit with the table, one cell each, in the order they read.
+    if(call.dietaryNote) rows.push(one(call.dietaryNote));
+    if(call.emptyNote)   rows.push(one(call.emptyNote));
+    (call.dietarySummary || []).forEach(function(line){ rows.push(one(line)); });
+  });
+  return rows;
+}
+
+function _clBuildHtml(data, opts){
+  const model = _clBuildModel(data, opts);
   const css =
       '@page{size:A4;margin:12mm}'
     + 'body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#000}'
@@ -28877,45 +29100,31 @@ function _clBuildHtml(data, opts){
 
   const parts = [];
   parts.push('<!doctype html><html><head><meta charset="utf-8"><title>'
-    + escapeHtml(bookingName) + ' — Crew Lists</title><style>' + css + '</style></head><body>');
+    + escapeHtml(model.title) + ' — Crew Lists</title><style>' + css + '</style></head><body>');
   parts.push('<div class="toolbar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div>');
-
-  // opts.callIds (D6): only the chosen calls. null/absent = every call, which is
-  // exactly the list as it printed before the checklist existed.
-  const pickIds = opts.callIds ? opts.callIds.map(String) : null;
-  const calls = (data.calls || []).filter(function(c){ return !pickIds || pickIds.indexOf(String(c.call_id)) !== -1; });
-  if(!calls.length){
+  if(!model.calls.length){
     parts.push('<p style="font-size:13px">This booking has no calls.</p>');
   }
 
-  // Name + On, Brk start, Brk mins, Off, Notes + the optional columns.
-  const ncols = 6 + optCols.length;
+  const ncols = model.columns.length;
 
-  calls.forEach(function(call){
-    const crew = (call.crew || []).filter(function(c){ return _clKeepCrew(c, opts.who); });
-    const qr = _clQrSvg(call.call_id);
-    if(!qr) opts.qrMissing = (opts.qrMissing || 0) + 1;
-
+  model.calls.forEach(function(call){
     parts.push('<div class="call">');
-    parts.push('<h1>' + escapeHtml([cust, bookingName, call.call_name].filter(Boolean).join(' / ')) + '</h1>');
-    if(opts.dietary && opts.dietaryUnavailable){
-      parts.push('<p style="font-size:12px;color:#666;margin:0 0 8px">Dietary information couldn\'t be loaded.</p>');
+    parts.push('<h1>' + escapeHtml(call.title) + '</h1>');
+    // The model's own fixed sentences -- this note, the hint, the empty-crew
+    // line -- are pushed AS WRITTEN, not escaped. Escaping them would turn the
+    // apostrophe in "couldn't" into an entity and change a page that has
+    // printed the same way since 5.100.0. Anything from SmartStaff still goes
+    // through escapeHtml or _clHdrRow.
+    if(call.dietaryNote){
+      parts.push('<p style="font-size:12px;color:#666;margin:0 0 8px">' + call.dietaryNote + '</p>');
     }
 
     // header block
     parts.push('<table class="hdr">');
-    parts.push(_clHdrRow('Call #',     (call.call_id != null) ? String(call.call_id) : ''));
-    parts.push(_clHdrRow('When',       _clWhen(call.start_date, call.start_time)));
-    parts.push(_clHdrRow('Contact',    contact.name || ''));
-    parts.push(_clHdrRow('Phone',      contactPhone));
-    parts.push(_clHdrRow('Venue',      venueLine));
-    parts.push(_clHdrRow('Est. Length',call.est_length || ''));
-    parts.push(_clHdrRow('Required',   (typeof call.required !== 'undefined') ? String(call.required) : ''));
-    parts.push(_clHdrRow('Booked',     (typeof call.confirmed !== 'undefined') ? String(call.confirmed) : ''));
-    parts.push(_clHdrRow('Notes',      call.notes || ''));
+    call.header.forEach(function(row){ parts.push(_clHdrRow(row[0], row[1])); });
     parts.push('</table>');
-    parts.push('<p class="hint">Times in 24-hour, e.g. 2200 / 0615. Off next day: just write the time. '
-      + 'Break: start time and minutes (15, 30, 45, 60). A second break: write it in Notes.</p>');
+    parts.push('<p class="hint">' + call.hint + '</p>');
 
     // crew table
     parts.push('<table class="crew">');
@@ -28923,32 +29132,27 @@ function _clBuildHtml(data, opts){
     // long call (thead is display:table-header-group): a multi-page scan is
     // joined by the Call# on each page (design T6).
     let head = '<thead><tr class="callrow"><th colspan="'+ncols+'"><div class="callbar">'
-      + '<span class="cid">' + escapeHtml(_clCallLine(call)) + '</span>' + qr + '</div></th></tr>'
-      + '<tr><th>Name</th>';
-    optCols.forEach(function(col){ head += '<th width="'+col.width+'">'+col.label+'</th>'; });
-    head += '<th width="45">On</th><th width="50">Brk start</th><th width="40">Brk mins</th>'
-         + '<th width="45">Off</th><th width="110">Notes</th></tr></thead>';
+      + '<span class="cid">' + escapeHtml(call.callLine) + '</span>' + call.qrSvg + '</div></th></tr>'
+      + '<tr>';
+    model.columns.forEach(function(col){
+      head += '<th' + (col.width ? ' width="'+col.width+'"' : '') + '>' + col.label + '</th>';
+    });
+    head += '</tr></thead>';
     parts.push(head);
 
     parts.push('<tbody>');
-    if(!crew.length){
-      parts.push('<tr><td colspan="'+ncols+'" style="color:#666">No crew to list for this call.</td></tr>');
+    if(!call.rows.length){
+      parts.push('<tr><td colspan="'+ncols+'" style="color:#666">' + call.emptyNote + '</td></tr>');
     } else {
-      crew.forEach(function(c){
-        let row = '<tr><td>' + _clName(c) + '</td>';
-        optCols.forEach(function(col){
-          var v = (col.key === 'phone')   ? (c.mobile || c.phone || '')
-                : (col.key === 'dietary') ? _clDietaryCell(opts.dietaryFlags, c)
-                : (c[col.key]!=null ? c[col.key] : '');
-          row += '<td>' + escapeHtml(v+'') + '</td>';
-        });
-        row += '<td class="wr"></td><td class="wr"></td><td class="wr"></td><td class="wr"></td><td class="wr"></td></tr>';
-        parts.push(row);
+      call.rows.forEach(function(cells){
+        parts.push('<tr>' + cells.map(function(cell){
+          return cell.wr ? '<td class="wr"></td>' : '<td>' + cell.html + '</td>';
+        }).join('') + '</tr>');
       });
     }
     parts.push('</tbody>');
     parts.push('</table>');
-    if(dietOn) parts.push(_clDietarySummary(opts.dietaryFlags, crew));
+    if(call.dietarySummaryHtml) parts.push(call.dietarySummaryHtml);
     parts.push('</div>');
   });
 
@@ -29002,7 +29206,10 @@ function _clDietaryCell(flags, c){
 // Under each call's table: counts of consented declared options for the crew
 // actually listed on THAT call, in vocabulary order, then a muted line for any
 // awaiting confirmation. Nothing at all when there is nothing to say.
-function _clDietarySummary(flags, crew){
+// The counts behind BOTH renderings of that summary — the printed paragraph and
+// the CSV's text lines. Shared so the two can't drift: the printed list and the
+// CSV must say the same words about the same people.
+function _clDietaryCounts(flags, crew){
   const counts = {};
   let awaiting = 0;
   const seen = {};
@@ -29015,16 +29222,33 @@ function _clDietarySummary(flags, crew){
     if(!f.consented){ awaiting++; return; }
     dietarySortedCodes(f.options).forEach(function(code){ counts[code] = (counts[code] || 0) + 1; });
   });
+  return {
+    line: DIETARY_CODES.filter(function(code){ return counts[code]; })
+                       .map(function(code){ return counts[code] + ' ' + ceDietaryLabel(code); }),
+    awaiting: awaiting
+  };
+}
+
+function _clDietarySummary(flags, crew){
+  const d = _clDietaryCounts(flags, crew);
   let out = '';
-  const line = DIETARY_CODES.filter(function(code){ return counts[code]; })
-                            .map(function(code){ return counts[code] + ' ' + ceDietaryLabel(code); });
-  if(line.length){
-    out += '<p style="font-size:12px;margin:8px 0 0"><b>Dietary:</b> ' + escapeHtml(line.join(' · ')) + '</p>';
+  if(d.line.length){
+    out += '<p style="font-size:12px;margin:8px 0 0"><b>Dietary:</b> ' + escapeHtml(d.line.join(' · ')) + '</p>';
   }
-  if(awaiting){
-    out += '<p style="font-size:11px;color:#666;margin:4px 0 0">' + awaiting
+  if(d.awaiting){
+    out += '<p style="font-size:11px;color:#666;margin:4px 0 0">' + d.awaiting
         +  ' crew have dietary info awaiting their confirmation — not shown.</p>';
   }
+  return out;
+}
+
+// The same summary as plain-text lines, one CSV cell each (§2). Same words as
+// the printed paragraph, without the markup.
+function _clDietarySummaryText(flags, crew){
+  const d = _clDietaryCounts(flags, crew);
+  const out = [];
+  if(d.line.length) out.push('Dietary: ' + d.line.join(' · '));
+  if(d.awaiting) out.push(d.awaiting + ' crew have dietary info awaiting their confirmation — not shown.');
   return out;
 }
 
@@ -42276,6 +42500,7 @@ var BK_DOC_CATEGORIES = [
   ['quote',              'Quote'],
   ['invoice',            'Invoice'],
   ['requirements',       'Requirements'],
+  ['schedule',           'Schedule'],
   ['special_conditions', 'Special conditions'],
   ['site_info',          'Site / venue info'],
   ['other',              'Other']

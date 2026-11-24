@@ -22339,7 +22339,7 @@ GOAT_BOOKING_DOCS_KEY = (os.environ.get("GOAT_BOOKING_DOCS_KEY", "")
                          or load_config().get("goat_booking_docs_key", ""))
 
 BOOKING_DOC_MAX_BYTES = 20 * 1024 * 1024          # Q4, and the bucket's own limit
-BOOKING_DOC_CATEGORIES = ("quote", "invoice", "requirements",
+BOOKING_DOC_CATEGORIES = ("quote", "invoice", "requirements", "schedule",
                           "special_conditions", "site_info", "other")
 
 # extension -> (mime, magic prefixes). The magic bytes are checked as well as

@@ -48,13 +48,15 @@ const MAX_TITLE = 200;
 const MAX_NOTE = 500;
 const MAX_NAME = 80; // safe_name is cut to this
 
-// Q3. Kept in step with the category CHECK in 20261112_booking_documents.sql —
-// if one changes, change both, or an insert that passes here fails in the
-// database with a constraint error nobody can read.
+// Q3. Kept in step with the category CHECK in 20261111025724_booking_documents.sql,
+// as widened by 20261124231500_booking_documents_schedule.sql — if one changes,
+// change both, or an insert that passes here fails in the database with a
+// constraint error nobody can read.
 const CATEGORIES = new Set([
   "quote",
   "invoice",
   "requirements",
+  "schedule",
   "special_conditions",
   "site_info",
   "other",

@@ -28,8 +28,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QR_LIB = os.path.join(HERE, "static", "qrcode-generator.js")
 
 FUNCS = H.extract(
-    "_clBuildHtml", "_clKeepCrew", "_clWhen", "_clTime", "_clName", "_clHdrRow",
-    "_clQrSvg", "_clCallLine", "crewStatusIsWithdrawn",
+    "_clBuildHtml", "_clBuildModel", "_clKeepCrew", "_clWhen", "_clTime",
+    "_clName", "_clNameText", "_clHdrRow", "_clQrSvg", "_clCallLine",
+    "crewStatusIsWithdrawn", "_clDietaryCell", "_clDietaryCounts",
+    "_clDietarySummary", "_clDietarySummaryText", "dietarySortedCodes",
+    "ceDietaryLabel",
 ) if H.NODE else ""
 
 
@@ -41,7 +44,23 @@ def _decl(name, open_c, close_c):
     return src[i:j + 2]
 
 
-CONSTS = _decl("CREW_WITHDRAWN_WORDS", "{", "}") if H.NODE else ""
+def _const(name):
+    """`const NAME = …;` lifted from index.html. Neither value holds a
+    semicolon, so the first one ends the statement."""
+    m = re.search(r"^const %s = .*?;$" % re.escape(name), H.page(), re.M | re.S)
+    if not m:
+        raise LookupError("const %s not found in index.html" % name)
+    return m.group(0)
+
+
+# 5.121.0 split _clBuildHtml into _clBuildModel plus this renderer, so the
+# model's own declarations have to come along too.
+CONSTS = "\n".join([
+    _decl("CREW_WITHDRAWN_WORDS", "{", "}"),
+    _decl("DIETARY_CODES", "[", "]"),
+    _const("CL_GP_FALLBACK"),
+    _const("CL_HINT"),
+]) if H.NODE else ""
 
 # Midnight 20 Nov 2026 in Melbourne (AEDT, UTC+11) — SmartStaff's start_date is
 # the day; start_time carries the clock. The script pins TZ so the printed

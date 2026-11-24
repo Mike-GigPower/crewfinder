@@ -1,0 +1,20 @@
+{
+  "note": "One call, no optional columns, and NO on-site contact — the Gig Power / office-number fallback (D5).",
+  "opts": {"ein": false, "phone": false, "email": false, "dietary": false, "who": "confirmed",
+           "callIds": ["90001"]},
+  "data": {
+    "name": "Booking 90001",
+    "customer": {"name": "Test Customer"},
+    "venue": {"name": "Test Venue", "address": "1 Test Street", "suburb": "Testville", "state": "VIC"},
+    "contact": {"id": 70001, "name": "Test Contact", "phone": "03 9000 0001", "mobile": ""},
+    "onsite": {"id": 0, "name": "", "phone": "", "mobile": ""},
+    "calls": [
+      {"call_id": 90001, "call_name": "Bump Out", "start_date": 1795093200,
+       "start_time": "22:00:00", "est_length": "4", "required": 2, "confirmed": 2,
+       "notes": "", "crew": [
+         {"id": 90001, "firstname": "Alice", "lastname": "Anderson", "status": "confirmed"},
+         {"id": 90002, "firstname": "Bob", "lastname": "Brown", "status": "confirmed"}
+       ]}
+    ]
+  }
+}

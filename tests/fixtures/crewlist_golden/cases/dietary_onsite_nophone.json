@@ -1,0 +1,27 @@
+{
+  "note": "Dietary column and summary on; on-site contact present but with NO phone number of either kind, so the phone row prints empty rather than the office number (D5).",
+  "opts": {"ein": false, "phone": true, "email": false, "dietary": true, "who": "confirmed",
+           "callIds": ["90001"],
+           "dietaryFlags": {
+             "90001": {"state": "declared", "consented": true, "options": ["vegetarian"], "note": ""},
+             "90002": {"state": "declared", "consented": true, "options": ["allergy", "gluten_free"],
+                       "note": "severe peanut allergy"},
+             "90003": {"state": "declared", "consented": false, "options": ["vegan"], "note": ""}
+           }},
+  "data": {
+    "name": "Booking 90001",
+    "customer": {"name": "Test Customer"},
+    "venue": {"name": "Test Venue", "address": "1 Test Street", "suburb": "Testville", "state": "VIC"},
+    "contact": {"id": 70001, "name": "Test Contact", "phone": "", "mobile": "0400 000 001"},
+    "onsite": {"id": 70003, "name": "Phoneless Person", "phone": "", "mobile": ""},
+    "calls": [
+      {"call_id": 90001, "call_name": "Load In", "start_date": 1795093200,
+       "start_time": "22:00:00", "est_length": "8", "required": 3, "confirmed": 3,
+       "notes": "", "crew": [
+         {"id": 90001, "firstname": "Alice", "lastname": "Anderson", "status": "confirmed", "mobile": "0412 000 001"},
+         {"id": 90002, "firstname": "Bob", "lastname": "Brown", "status": "confirmed", "mobile": "0412 000 002"},
+         {"id": 90003, "firstname": "Carol", "lastname": "Clark", "status": "confirmed", "mobile": "0412 000 003"}
+       ]}
+    ]
+  }
+}
