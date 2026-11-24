@@ -195,6 +195,79 @@ class TimesState(unittest.TestCase):
         self.assertIn("ts-lbl-bad", state(call(confirmed=2, with_times=0))["html"])
 
 
+@unittest.skipUnless(H.NODE, "node not installed")
+class TheGridOpensItsOwnHost(unittest.TestCase):
+    """openCallTimes must make #entity-modal visible itself.
+
+    It never did: it relied on its caller having opened the dialog, which held
+    while the only door was the call dialog. The Times outstanding card opens
+    the grid from the Ops page, where nothing is on screen, so the grid
+    rendered into a display:none element and the click did nothing at all —
+    silently, with no error anywhere (24 Nov 2026).
+    """
+
+    def run_open(self, from_arg):
+        js = H.DOM_PRELUDE + H.extract(
+            "openCallTimes", "openEntityModal", "entityModalWidth") + """
+var CT_TITLE = 'View / Enter Times';
+var ENTITY_MODAL_W = 560, ENTITY_MODAL_W_CALL = 680;
+// The harness creates elements on first _el(); prime the ones the grid touches
+// so getElementById finds them, as it would in the page.
+['entity-modal','entity-modal-panel','entity-modal-title','entity-modal-sub',
+ 'entity-modal-body','entity-modal-actions'].forEach(_el);
+_el('entity-modal').style.display = 'none';   // as the markup ships it
+var pushed = [];
+function entityStackPush(key){ pushed.push(key); }
+function openCallDialog(){}
+function openBookingDialog(){}
+function callNavRender(){}
+function entityBtn(){ return ''; }
+function escapeHtml(s){ return String(s); }
+async function fetch(){ throw new Error('no network in this test'); }
+(async function(){
+  await openCallTimes('11763', '37689', %s);
+  console.log(JSON.stringify({
+    display: _el('entity-modal').style.display,
+    width:   _el('entity-modal-panel').style.width,
+    title:   _el('entity-modal-title').textContent,
+    pushed:  pushed
+  }));
+})();
+""" % from_arg
+        return H.run(js)
+
+    def test_opens_the_modal_from_the_ops_page(self):
+        # from:'call' is what the Times outstanding card uses. Nothing is on
+        # screen there, so this is the case that was dead.
+        v = self.run_open("'call'")
+        self.assertEqual(v["display"], "flex")
+
+    def test_opens_the_modal_from_all_bookings(self):
+        # 'none' pushes nothing, so it cannot lean on a parent at all.
+        v = self.run_open("'none'")
+        self.assertEqual(v["display"], "flex")
+
+    def test_opens_the_modal_from_the_booking_calls_tab(self):
+        v = self.run_open("'booking'")
+        self.assertEqual(v["display"], "flex")
+
+    def test_one_width_whatever_the_door(self):
+        # It used to inherit the opener's width: 680 from the call dialog, 760
+        # from the booking dialog, 560 from openEntityModal().
+        for arg in ("'call'", "'booking'", "'none'", "undefined"):
+            self.assertEqual(self.run_open(arg)["width"], "680px", arg)
+
+    def test_back_goes_where_it_came_from(self):
+        self.assertEqual(self.run_open("'booking'")["pushed"], ["booking:11763"])
+        self.assertEqual(self.run_open("'call'")["pushed"], ["call:11763:37689"])
+        self.assertEqual(self.run_open("'none'")["pushed"], [])
+        # No argument must behave exactly as before this release.
+        self.assertEqual(self.run_open("undefined")["pushed"], ["call:11763:37689"])
+
+    def test_the_title_is_set_even_when_the_fetch_fails(self):
+        self.assertEqual(self.run_open("'call'")["title"], "View / Enter Times")
+
+
 class TheRename(unittest.TestCase):
     """D2: the title is one constant, and no literal of it is compared."""
 

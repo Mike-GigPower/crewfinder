@@ -26601,6 +26601,23 @@ function _ctNewState(bookingId, callId, data){
 async function openCallTimes(bookingId, callId, from){
   if(from === 'booking')    entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
   else if(from !== 'none')  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
+  // THE GRID OPENS ITS OWN HOST (5.120.0). It never did: openCallDialog and
+  // openBookingDialog both call openEntityModal() as their first act, and this
+  // one relied on its caller having already done so. That held while the only
+  // door was the call dialog. It stopped holding the moment the Times
+  // outstanding card could reach the grid from the Ops page, where no dialog is
+  // on screen -- #entity-modal is display:none, so the grid rendered into a
+  // hidden element and the click did nothing whatsoever. Silently: no error,
+  // no console, just a dead link (Mike, 24 Nov 2026). The lane's own row click
+  // (opsTimesTarget) had the same fault and is fixed by the same line.
+  //
+  // THE WIDTH IS SET HERE FOR THE SAME REASON. The grid used to inherit
+  // whatever its opener had left on the panel -- 680 from the call dialog, 760
+  // from the booking dialog, 560 from openEntityModal() -- so one grid came in
+  // three widths depending on the door. 680 is what it has always been through
+  // the call dialog, which is the door it was designed for.
+  openEntityModal();
+  entityModalWidth(ENTITY_MODAL_W_CALL);
   document.getElementById('entity-modal-title').textContent = CT_TITLE;
   document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading times…</div>';
@@ -27474,9 +27491,10 @@ async function abToggle(bookingId){
             // underneath it opened the CALL DIALOG. Now it is the button it
             // always looked like (5.120.0, D3), and the row still opens the
             // call. openEntityModal() first, as the buttons above do -- this is
-            // a page, not a dialog, so nothing is on screen yet. 'none': there
-            // is no parent view to go back to, so the grid offers Close.
-            : '<span onclick="event.stopPropagation();openEntityModal();openCallTimes(\''+bookingId+'\',\''+c.call_id+'\',\'none\')" '
+            // a page, not a dialog, so nothing is on screen yet -- openCallTimes
+            // opens the modal itself. 'none': there is no parent view to go
+            // back to, so the grid offers Close.
+            : '<span onclick="event.stopPropagation();openCallTimes(\''+bookingId+'\',\''+c.call_id+'\',\'none\')" '
               + 'title="View or enter this call\'s times" '
               + 'style="font-size:10px;color:var(--accent);white-space:nowrap;border:1px solid var(--accent);border-radius:3px;padding:1px 5px;cursor:pointer">⏱ Times</span>')
         + '</div>';
