@@ -10191,9 +10191,17 @@ async function recruitConvertSubmit(id, ackRequired){
            + 'Temp password: <b>' + escapeHtml(String(d.temp_password || '')) + '</b> &mdash; they should change it on first login.';
     }
     document.getElementById('entity-modal-sub').textContent   = '';
+    // The step sections live in their own container so "Retry failed steps" can
+    // redraw them WITHOUT touching the header (EIN, temp password), which Finish
+    // setup's response doesn't carry and must never be rendered without.
+    window._rcResult = { id: String(id), d: d };
     document.getElementById('entity-modal-body').innerHTML =
-        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.7">' + head + '</div>' + blocks;
-    document.getElementById('entity-modal-actions').innerHTML = entityBtn('Done','closeEntityModal()',{primary:true});
+        '<div style="font-size:13px;color:var(--text);padding:6px 0;line-height:1.7">' + head + '</div>'
+      + '<div id="rc-result-error" class="rc-conv-warn" style="display:none"></div>'
+      + '<div id="rc-result-steps">' + blocks + '</div>';
+    // Done, plus Retry failed steps when a retryable push failed (admin only —
+    // it always is on this path, but the gate is stated rather than assumed).
+    recruitResultActions();
     await loadRecruitment();   // candidate moves to the Active crew pile
   }catch(e){
     if(err) err.textContent = e.message;
@@ -10201,33 +10209,63 @@ async function recruitConvertSubmit(id, ackRequired){
   }
 }
 
+// The raw exception text for a failed step, behind a small "details" toggle.
+// The operator gets plain English; the detail is one click away for whoever has
+// to know which host timed out. Returns '' when the server sent no detail (the
+// induction push and the PDF fetches carry their own messages instead).
+var _rcDetailSeq = 0;
+function recruitDetailToggle(det){
+  if(det == null || det === '') return '';
+  var did = 'rc-det-' + (++_rcDetailSeq);
+  return ' <a href="#" onclick="return recruitDetailFlip(\'' + did + '\')" '
+       + 'style="color:var(--muted);font-size:10px;text-decoration:underline">details</a>'
+       + '<div id="' + did + '" style="display:none;color:var(--muted);font-size:10px;'
+       + 'line-height:1.45;word-break:break-word;padding:3px 0 0 14px">'
+       + escapeHtml(det) + '</div>';
+}
+function recruitDetailFlip(did){
+  var el = document.getElementById(did);
+  if(el) el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+  return false;
+}
+
 // The per-step outcome blocks under the convert result — shared by the create
-// and update paths, so both report licences/inductions/contract/visa/welcome the
-// same way. Update adds a Photo block and says "replaced" for the contract.
+// and update paths and by Finish setup, so all three report licences /
+// inductions / contract / visa / dietary / welcome the same way. Update adds a
+// Photo block and says "replaced" for the contract.
 function recruitConvertResultBlocks(d){
   const section = function(title, inner){
     return '<div class="rc-conv-send" style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">'
       + '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;padding-bottom:4px">' + title + '</div>'
       + inner + '</div>';
   };
-  const failed = function(t, e){ return '<div>✗ ' + t + ' — <span style="color:var(--conflict)">failed: ' + escapeHtml(e || 'error') + '</span></div>'; };
+  // `det` is the raw exception text from the server (step result `detail`). The
+  // operator reads the plain-English line; the detail sits behind a toggle so Mike
+  // can still see WHICH host timed out without reading the Flask log.
+  const failed = function(t, e, det){
+    return '<div>✗ ' + t + ' — <span style="color:var(--conflict)">failed: '
+         + escapeHtml(e || 'error') + '</span>' + recruitDetailToggle(det) + '</div>';
+  };
 
   // A `warning` means the crew record was written but the Supabase status stamp
   // didn't land (fix by hand — don't re-convert).
   let html = d.warning
     ? '<div class="rc-conv-warn" style="margin-top:10px">' + escapeHtml(d.warning) + '</div>' : '';
-  // Dietary carry-across (BRIEF-dietary-requirements §1.4). Best-effort: the
-  // crew record stands; the operator adds it on the Dietary tab instead.
-  if(d.dietary_warning)
+  // Dietary carry-across: FALLBACK ONLY. The server now reports dietary as a step
+  // result (d.dietary) with its own section below, and sends the old
+  // dietary_warning string for one release as well. Shown here only when a server
+  // that predates the step result answered this window.
+  if(!d.dietary && d.dietary_warning)
     html += '<div class="rc-conv-warn" style="margin-top:10px">' + escapeHtml(d.dietary_warning) + '</div>';
-  // Licence-push (convert-B) summary. Each item is {type, ok, skipped, error}.
-  // A failed licence is not fatal — the endpoint is idempotent, so re-running the
-  // convert retries only the missing ones. Nothing shown if there were none.
+  // Licence-push (convert-B) summary. Each item is {type, ok, skipped, error,
+  // detail}. A failed licence is not fatal — the endpoint skips an existing
+  // (user, type), so Finish setup retries only the missing ones. Nothing shown if
+  // there were none.
   if(Array.isArray(d.licences) && d.licences.length){
     html += section('Licences', d.licences.map(function(l){
       l = l || {};
       const t = escapeHtml(l.type || 'Licence');
-      if(!l.ok)     return failed(t, l.error);
+      if(!l.ok)     return failed(t, l.error, l.detail);
       if(l.skipped) return '<div>• ' + t + ' — already on file</div>';
       return '<div>✓ ' + t + ' — added</div>';
     }).join(''));
@@ -10239,7 +10277,7 @@ function recruitConvertResultBlocks(d){
     html += section('Inductions', d.inductions.map(function(x){
       x = x || {};
       const t = escapeHtml(x.label || x.venue_code || 'Induction');
-      if(!x.ok)     return failed(t, x.error);
+      if(!x.ok)     return failed(t, x.error, x.detail);
       if(x.skipped) return '<div>• ' + t + ' — already on file</div>';
       return '<div>✓ ' + t + ' — added</div>';
     }).join(''));
@@ -10249,19 +10287,36 @@ function recruitConvertResultBlocks(d){
   if(d.contract){
     const c = d.contract;
     html += section('Contract',
-        (!c.ok)      ? failed('Contract', c.error)
+        (!c.ok)      ? failed('Contract', c.error, c.detail)
       : (c.skipped)  ? '<div>• Contract — already on file</div>'
       : (c.replaced) ? '<div>✓ Contract — replaced</div>'
       :                '<div>✓ Contract — added</div>');
   }
   // Visa-push (convert-B) summary. d.visa is {ok, updated, error} for a working-visa
   // candidate, or null for citizen/PR crew (no visa write) — nothing shown then.
+  // A failed visa push says so plainly: Finish setup does NOT cover visas (D2),
+  // and an operator who assumes "Retry failed steps" fixed it would leave a
+  // working-visa crew member with no visa record at all.
   if(d.visa){
     const v = d.visa;
     html += section('Visa',
-        (!v.ok)      ? failed('Visa', v.error)
+        (!v.ok)      ? failed('Visa', v.error, v.detail)
+                       + '<div style="color:var(--warn)">Fix this on the crew record — '
+                       + 'Retry doesn’t cover visas.</div>'
       : (v.updated)  ? '<div>✓ Visa — updated</div>'
       :                '<div>✓ Visa — added</div>');
+  }
+  // Dietary (DESIGN-convert-retry-steps §3.2). d.dietary is a step result like the
+  // others — {ok, skipped, error, detail} — or null when the application carried
+  // no answer (nothing shown then). "already on file" is the GUARD speaking: a
+  // record the crew member entered in Crew Hub, or ops entered on the Dietary tab,
+  // is never overwritten by a retry.
+  if(d.dietary){
+    const dy = d.dietary;
+    html += section('Dietary',
+        (!dy.ok)     ? failed('Dietary', dy.error, dy.detail)
+      : (dy.skipped) ? '<div>• Dietary — already on file</div>'
+      :                '<div>✓ Dietary — added</div>');
   }
   // Photo (update path only): {ok, backup?} or {ok:false, skipped, error}.
   if(d.photo){
@@ -10301,6 +10356,157 @@ function recruitConvertResultBlocks(d){
           + ' Use “Grant EH portal access” on their row.</div>');
   }
   return html;
+}
+
+// ── FINISH SETUP (retry the failed SmartStaff convert steps) ─────────────────
+// DESIGN-convert-retry-steps v0.2. Convert's licence / induction / contract /
+// dietary pushes are best-effort: the crew record stands whether or not they
+// land. Re-running convert does NOT retry them — it refuses with 409 once the
+// candidate is active_crew — so this calls /finish-setup, which runs those four
+// steps again and skips anything already on file.
+//
+// Two entry points, one renderer: "Retry failed steps" in the convert result
+// dialog, and "Finish setup" on the Active crew row (for the failure an operator
+// only hears about days later). Both are admin-only here as presentation; the
+// route's @require_cohort("admin") is the real gate.
+
+// POST /finish-setup. Throws with a message fit to show the operator; returns the
+// body, which is either {unreachable:true, message} or the four step keys.
+async function recruitFinishSetupPost(id){
+  const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/finish-setup', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})
+  });
+  const body = await r.json().catch(() => ({}));
+  if(r.status === 403) throw new Error('You do not have access to finish setup.');
+  if(!r.ok || body.error) throw new Error(body.error || ('HTTP ' + r.status));
+  return body;
+}
+
+// Is any RETRYABLE step still failing? Licence and induction entries, the
+// contract and dietary only — never the visa (D2), the welcome email or the EH
+// portal grant, each of which has its own button and its own rules. Offering to
+// retry something this route doesn't touch would be a lie the operator acts on.
+function recruitRetryableFailed(d){
+  d = d || {};
+  var bad = function(x){ return !!(x && x.ok === false); };
+  var anyBad = function(list){
+    return Array.isArray(list) && list.some(function(x){ return bad(x); });
+  };
+  return anyBad(d.licences) || anyBad(d.inductions) || bad(d.contract) || bad(d.dietary);
+}
+
+// The action row for both dialogs: Retry failed steps (only while something
+// retryable is failing) + Done. Re-rendered after every retry, so the button
+// disappears of its own accord once everything reads ✓ or "already on file".
+function recruitResultActions(){
+  var host = document.getElementById('entity-modal-actions');
+  if(!host) return;
+  var res = window._rcResult || {};
+  // `unreachable` keeps the button on screen when SmartStaff couldn't be reached
+  // at all: nothing ran, so there is no failed step to point at, and without this
+  // the operator would have to close the dialog to try again.
+  var retry = (window._cohort === 'admin'
+               && (recruitRetryableFailed(res.d) || res.unreachable))
+    ? entityBtn('Retry failed steps', 'recruitFinishSetupRetry()', {id:'rc-retry-btn',
+        title:'Run the licence, induction, contract and dietary pushes again — '
+            + 'anything already on file is skipped'})
+    : '';
+  host.innerHTML = retry + entityBtn('Done', 'closeEntityModal()', {primary:true});
+}
+
+// One line in the dialog for a message that isn't about a single step (so far:
+// "couldn't reach SmartStaff"). Hidden again on the next attempt.
+function recruitResultError(msg){
+  var el = document.getElementById('rc-result-error');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.style.display = msg ? '' : 'none';
+}
+
+// Retry, from either dialog. REDRAWS ONLY THE STEP SECTIONS: the header (EIN,
+// temp password) and the welcome-email / EH-portal sections describe the
+// conversion itself, which is not re-run, so the new step keys are merged over
+// the result we already have rather than replacing it.
+async function recruitFinishSetupRetry(){
+  var res = window._rcResult;
+  if(!res || !res.id) return;
+  var btn = document.getElementById('rc-retry-btn');
+  recruitResultError('');
+  if(btn){ btn.disabled = true; btn.textContent = 'Retrying…'; }
+  try{
+    const body = await recruitFinishSetupPost(res.id);
+    if(body.unreachable){
+      res.unreachable = true;
+      recruitResultError(body.message || 'Couldn’t reach SmartStaff — nothing was changed.');
+      if(btn){ btn.disabled = false; btn.textContent = 'Retry failed steps'; }
+      return;
+    }
+    res.unreachable = false;
+    ['licences','inductions','contract','dietary'].forEach(function(k){
+      if(k in body) res.d[k] = body[k];
+    });
+    // The old one-release-only warning string: cleared, or a dietary push that has
+    // just succeeded would still be carrying its banner.
+    res.d.dietary_warning = null;
+    var steps = document.getElementById('rc-result-steps');
+    if(steps) steps.innerHTML = recruitConvertResultBlocks(res.d);
+    recruitResultActions();
+  }catch(e){
+    recruitResultError(e.message || 'Retry failed.');
+    if(btn){ btn.disabled = false; btn.textContent = 'Retry failed steps'; }
+  }
+}
+
+// "Finish setup" on an Active crew row. No confirm prompt: repeating it is
+// harmless by construction — anything already there comes back "already on file".
+async function recruitFinishSetupOpen(id){
+  var cand = (_recruitRows || []).find(function(c){ return String(c.id) === String(id); }) || {};
+  var who  = cand.name ? decodeEntities(cand.name) : 'this crew member';
+  window._rcResult = { id: String(id), d: {} };
+  openEntityModal();
+  document.getElementById('entity-modal-title').textContent = 'Finish setup — ' + who;
+  document.getElementById('entity-modal-sub').textContent   = '';
+  document.getElementById('entity-modal-body').innerHTML =
+      '<div id="rc-result-error" class="rc-conv-warn" style="display:none"></div>'
+    + '<div id="rc-result-steps" style="font-size:13px;color:var(--text);padding:6px 0;'
+    + 'line-height:1.7">Working…</div>';
+  document.getElementById('entity-modal-actions').innerHTML = '';
+  try{
+    const body = await recruitFinishSetupPost(id);
+    var steps = document.getElementById('rc-result-steps');
+    if(body.unreachable){
+      window._rcResult.unreachable = true;
+      if(steps) steps.innerHTML = '';
+      recruitResultError(body.message || 'Couldn’t reach SmartStaff — nothing was changed.');
+    } else {
+      window._rcResult.d = body;
+      var blocks = recruitConvertResultBlocks(body);
+      if(steps) steps.innerHTML = blocks
+        || '<div style="color:var(--muted)">Nothing to push — this candidate’s '
+         + 'application carried no licences, inductions, contract or dietary answer.</div>';
+    }
+  }catch(e){
+    var s2 = document.getElementById('rc-result-steps');
+    if(s2) s2.innerHTML = '';
+    recruitResultError(e.message || 'Could not finish setup.');
+  }
+  recruitResultActions();
+}
+
+// The "Finish setup" button for a converted candidate's detail panel. Shown on
+// EVERY active_crew row that has a SmartStaff id, not just the ones whose push
+// failed: "the contract never arrived" reaches ops days later, long after the
+// convert modal was closed — the same reasoning as "Resend welcome email".
+// Admin cohort only, matching the route (D5) and portalButton.
+function finishSetupButton(c){
+  if(!c || c.status !== 'active_crew') return '';
+  if(window._cohort !== 'admin') return '';
+  var ssId = (c.smartstaff_user_id == null) ? '' : String(c.smartstaff_user_id).trim();
+  if(!ssId) return '';
+  var id = recruitEsc(String(c.id));
+  return '<button class="recruit-action" onclick="recruitFinishSetupOpen(\'' + id + '\')" '
+    + 'title="Re-run licence, induction, contract and dietary pushes — anything '
+    + 'already on file is skipped">Finish setup</button>';
 }
 
 // ── COMPLETE KEYPAY SETUP ─────────────────────────────────────────────────────
@@ -11552,7 +11758,8 @@ function renderRecruitRow(c, i){
   // moves, before the read-only notes: secondary to the pipeline actions, not
   // competing with them.
   const resendBtns = recruitResendButtons(c);
-  const allActions = convertBtn + keypayBtn + portalButton(c) + actions + resendBtns + activeCrewNote + waitingNote;
+  const allActions = convertBtn + keypayBtn + portalButton(c) + finishSetupButton(c)
+                   + actions + resendBtns + activeCrewNote + waitingNote;
 
   // Checkbox cell. stopPropagation so ticking a row doesn't also expand it.
   const checked = _recruitSelected.has(String(c.id)) ? ' checked' : '';
