@@ -1,6 +1,6 @@
 {
-  "version": "5.121.0",
-  "release_date": "2026-11-24",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.121.0/TheGOAT.dmg",
-  "release_notes": "Crew lists now download as a CSV as well as opening as a printable page, and every call's header names the on-site contact — or Gig Power and the office number when a booking has none. Select all and Clear sit above the calls to include, and booking documents can be filed under a new Schedule category."
+  "version": "5.122.0",
+  "release_date": "2026-11-25",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.122.0/TheGOAT.dmg",
+  "release_notes": "If a crew conversion is interrupted, admins can now finish it with one click: Finish setup on the person's Active crew row re-sends their licences, inductions, contract and dietary requirements, skipping anything already on file. Conversion errors are now in plain English, and failed steps can be retried straight from the result screen."
 }
