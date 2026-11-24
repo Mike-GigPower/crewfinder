@@ -1,6 +1,6 @@
 {
-  "version": "5.119.0",
-  "release_date": "2026-11-23",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.119.0/TheGOAT.dmg",
-  "release_notes": "Printed crew lists now show the call number and a QR code on every page, and ask for break start and minutes plus a Notes column."
+  "version": "5.120.0",
+  "release_date": "2026-11-24",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.120.0/TheGOAT.dmg",
+  "release_notes": "A booking's Calls tab now shows at a glance which calls still want times — green for locked, lavender for accepted, and a label for everything else. Every call row has a Times button, and the Times outstanding lane opens the booking, the call or the times directly."
 }
