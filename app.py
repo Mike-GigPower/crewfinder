@@ -241,7 +241,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.121.0"
+APP_VERSION    = "5.122.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -1954,13 +1954,36 @@ _unavail_write_lock = threading.Lock()
 
 def _make_admin_ss():
     """Create a fresh throwaway SmartStaff session logged in with the saved
-    admin credentials. Returns (ss, error)."""
+    admin credentials. Returns (ss, error).
+
+    THE LOGIN CAN RAISE, AND THAT IS WHY THIS try IS HERE. create_ss_session's
+    `ss.post(f"{BASE_URL}/login", ...)` (~L1927) sits in no try of its own, and
+    it must stay that way — the interactive login and the other callers want the
+    raw exception. But every impersonated helper reaches it through
+    _in_impersonated_session, which only ever handles the `(None, error)`
+    contract, so with SmartStaff unreachable a ConnectTimeout used to travel all
+    the way out of fetch_crew_inductions / add_unavailability / the workslip
+    reads and into whatever blanket `except` happened to be above them.
+
+    Found 24 Nov 2026 on Deklan Loguancio (crew 10514): convert's `except` turned
+    his whole induction push into `[]`, an empty list draws no section in the
+    result dialog, and so Rich was never told that both inductions had failed.
+    Catching it here restores the contract every caller already expects and fixes
+    unavailability, workslips and inductions in one place.
+
+    kind="read": a failed login stored nothing, and the callers that write add
+    their own "Couldn't push" framing on top of this text."""
     cfg = load_config()
     username = cfg.get("username", "")
     password = cfg.get("password", "")
     if not username or not password:
         return None, "No saved SmartStaff credentials"
-    return create_ss_session(username, password)
+    try:
+        return create_ss_session(username, password)
+    except Exception as e:
+        # _ss_failed_net is defined further down the file; it resolves at call
+        # time, exactly as it does for fetch_venues_bulk.
+        return None, _ss_failed_net(e, "login (impersonated)", kind="read")
 
 def _impersonate(ss, crew_id):
     """Acquire a crew member's identity on the given session. Returns error str
@@ -2087,7 +2110,9 @@ def fetch_crew_inductions(crew_id):
                 return None, data["error"]
             return data.get("venues", []), None
         except Exception as e:
-            return None, str(e)
+            # _net: this try also covers the JSON parse, whose own message is the
+            # only description of that failure there is.
+            return None, _ss_failed_net(e, "my-induction-venues.php", kind="read")
         finally:
             _release(ss)
 
@@ -2118,7 +2143,8 @@ def add_crew_induction(crew_id, venue_ids, complete_date, cert):
                 return None, out["error"]
             return out, None
         except Exception as e:
-            return None, str(e)
+            # _net: this try also covers cert.read() and the JSON parse.
+            return None, _ss_failed_net(e, "add-my-induction.php")
         finally:
             _release(ss)
 
@@ -2845,7 +2871,10 @@ def fetch_venues_bulk(ss):
     try:
         resp = ss.get(url, allow_redirects=True, timeout=30)
     except Exception as e:
-        return None, f"request failed: {e}"
+        # Plain English, because convert's induction step shows this text to the
+        # operator verbatim ("venue list unavailable: ..."). _ss_failed is defined
+        # further down beside ss_push_licence; the name resolves at call time.
+        return None, _ss_failed(e, "list-venues-bulk.php", kind="read")
     if resp.status_code != 200:
         return None, f"HTTP {resp.status_code}"
     try:
@@ -7965,7 +7994,78 @@ def _licence_date_ymd(v):
     return m.group(1) if m else ""
 
 
-def ss_push_licence(ss, user_id, licence_type, date_certified, date_expiry, pdf_bytes):
+# ─── PLAIN-ENGLISH SMARTSTAFF ERRORS ─────────────────────────────────────────
+# What the operator reads when a SmartStaff call doesn't come back. The raw
+# `requests` text ("HTTPSConnectionPool(host='smartstaffsolutions.com', port=443):
+# Max retries exceeded with url: ...") told Rich nothing on 24 Nov 2026 except that
+# something Python-shaped had failed, so the convert step paths translate it here
+# and keep the raw text as `detail` — printed server-side, and shown behind the
+# result dialog's "details" toggle.
+#
+# ORDER MATTERS. requests.exceptions.ConnectTimeout subclasses BOTH ConnectionError
+# and Timeout, while ReadTimeout subclasses Timeout only. So ReadTimeout is tested
+# FIRST, and everything else connection-shaped (ConnectTimeout, DNS failure,
+# connection refused, a connection dropped mid-handshake) falls into the
+# ConnectionError branch. Verified against the installed requests 2.32.5.
+#
+# READS GET THEIR OWN WORDING. "nothing was saved for this step" is true but absurd
+# on a GET, and the same tail serves the venue list and the induction read, so
+# kind="read" drops the saved/not-saved clause. Nothing else differs.
+_SS_ERR_OTHER = "Request to SmartStaff failed."
+_SS_ERR_UNREACHABLE = {
+    "write": "Couldn't reach SmartStaff (connection timed out) — nothing was saved "
+             "for this step.",
+    "read":  "Couldn't reach SmartStaff (connection timed out).",
+}
+_SS_ERR_SLOW = {
+    "write": "SmartStaff didn't answer in time — this step may or may not have "
+             "saved. Retrying is safe; it skips anything already on file.",
+    "read":  "SmartStaff didn't answer in time.",
+}
+
+
+def _ss_error_text(exc, kind="write"):
+    """(operator_text, detail) for a requests exception on a SmartStaff call."""
+    detail = str(exc)[:500]
+    exceptions = _requests.exceptions
+    if isinstance(exc, exceptions.ReadTimeout):
+        return _SS_ERR_SLOW.get(kind) or _SS_ERR_SLOW["write"], detail
+    if isinstance(exc, exceptions.ConnectionError):
+        return _SS_ERR_UNREACHABLE.get(kind) or _SS_ERR_UNREACHABLE["write"], detail
+    return _SS_ERR_OTHER, detail
+
+
+def _ss_failed(exc, where, detail_out=None, kind="write"):
+    """The shared exception tail for a SmartStaff call: log the raw detail, hand it
+    (plus a reachability flag) to the caller's optional detail channel, and return
+    the operator text for the (result, error) tuple.
+
+    THE TUPLE SHAPE NEVER CHANGES — `detail_out` is an opt-in dict the caller
+    passes in, so every existing caller of these helpers is untouched and the
+    ~130 other `request failed: {e}` sites are left alone (out of scope)."""
+    text, detail = _ss_error_text(exc, kind)
+    print(f"[smartstaff] {where}: {detail}")
+    if isinstance(detail_out, dict):
+        detail_out["detail"] = detail
+        detail_out["unreachable"] = isinstance(exc, _requests.exceptions.ConnectionError)
+    return text
+
+
+def _ss_failed_net(exc, where, detail_out=None, kind="write"):
+    """_ss_failed for a helper whose except block also catches NON-network errors
+    (a JSON parse, an impersonation failure, a file read): a requests exception is
+    translated, anything else keeps its own text — which is the only description of
+    it there is, and must not be flattened to "Request to SmartStaff failed."."""
+    if isinstance(exc, _requests.exceptions.RequestException):
+        return _ss_failed(exc, where, detail_out, kind)
+    print(f"[smartstaff] {where}: {exc}")
+    if isinstance(detail_out, dict):
+        detail_out["detail"] = str(exc)[:500]
+    return str(exc)
+
+
+def ss_push_licence(ss, user_id, licence_type, date_certified, date_expiry, pdf_bytes,
+                    detail_out=None):
     """POST ONE licence to admin-add-license.php on the shared admin session `ss`
     (admin-gated, explicit target user). Multipart when a PDF is supplied, plain
     form otherwise. Returns (result_dict, error_str). A result with
@@ -7984,7 +8084,7 @@ def ss_push_licence(ss, user_id, licence_type, date_certified, date_expiry, pdf_
         resp = ss.post(f"{BASE_URL}/ajax/crew/admin-add-license.php",
                        data=data, files=files, allow_redirects=True)
     except Exception as e:
-        return None, f"request failed: {e}"
+        return None, _ss_failed(e, "admin-add-license.php", detail_out)
     try:
         out = json.loads(resp.text or "{}")
     except Exception:
@@ -7994,7 +8094,8 @@ def ss_push_licence(ss, user_id, licence_type, date_certified, date_expiry, pdf_
     return out, None
 
 
-def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version, replace=False):
+def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version, replace=False,
+                     detail_out=None):
     """POST the signed employment contract to admin-add-contract.php on the shared
     admin session `ss` (admin-gated, explicit target user). The PDF is required.
     Mirrors ss_push_licence. Returns (result_dict, error_str); a result with
@@ -8018,7 +8119,7 @@ def ss_push_contract(ss, user_id, pdf_bytes, signed_at, version, replace=False):
         resp = ss.post(f"{BASE_URL}/ajax/crew/admin-add-contract.php",
                        data=data, files=files, allow_redirects=True)
     except Exception as e:
-        return None, f"request failed: {e}"
+        return None, _ss_failed(e, "admin-add-contract.php", detail_out)
     try:
         out = json.loads(resp.text or "{}")
     except Exception:
@@ -8106,6 +8207,81 @@ def ss_push_visa(ss, user_id, fields, pdf_bytes, mode=None, send_empty=False,
     return out, None
 
 
+# ─── A PUSH THAT CRASHES MUST STILL BE REPORTED ───────────────────────────────
+# Found 24 Nov 2026 (addendum 1) on Deklan Loguancio, crew 10514: his convert
+# result had no Inductions section at all, so Rich was never told that both of
+# his inductions had failed. The chain was: the impersonated login inside
+# fetch_crew_inductions raised a ConnectTimeout (now caught in _make_admin_ss),
+# it travelled up through _push_candidate_inductions, convert's blanket `except`
+# set induction_results = [], and recruitConvertResultBlocks draws a section only
+# for a NON-EMPTY list.
+#
+# An empty list means "there was nothing to push". A crash means "the push blew
+# up". The dialog has no way to tell those apart, so a crash must never arrive as
+# an empty list. It becomes one failed entry per input item instead, in the same
+# shape as an ordinary per-item failure — which also means recruitRetryableFailed
+# sees it and offers Retry failed steps / Finish setup.
+def _push_crash_text(exc):
+    """(operator_line, detail) for a push helper that crashed outright.
+
+    A requests exception gets the plain-English SmartStaff wording. Anything else
+    is a bug in our own code, and calling a TypeError "Request to SmartStaff
+    failed." would send whoever reads it looking in the wrong place, so its own
+    text is kept."""
+    if isinstance(exc, _requests.exceptions.RequestException):
+        text, detail = _ss_error_text(exc, "write")
+    else:
+        text, detail = "Something went wrong before it finished.", str(exc)[:500]
+    # No "Couldn't push" prefix: recruitConvertResultBlocks already draws the row
+    # as "✗ <step> — failed: <error>", so a prefix reads as "failed: Couldn't
+    # push — ..." and puts a third em-dash in one line. Don't re-add it.
+    return f"{text} Use Finish setup.", detail
+
+
+def _licence_crash_entries(licences, exc):
+    """One failed entry per licence a crashed _push_candidate_licences would have
+    pushed. Untracked types are left out exactly as the real push leaves them out
+    (it never attempts them), so the dialog doesn't invent failures for licences
+    nobody was going to send."""
+    text, detail = _push_crash_text(exc)
+    out = []
+    try:
+        items = ([l for l in licences if isinstance(l, dict)]
+                 if isinstance(licences, list) else [])
+        for lic in items:
+            canon = _canonical_licence_type(str(lic.get("type") or "").strip())
+            if not canon:
+                continue
+            out.append({"type": canon, "ok": False, "error": text, "detail": detail})
+    except Exception:
+        out = []
+    if not out:
+        # Nothing usable in the input. Still report the step — never silence.
+        out = [{"type": "Licences", "ok": False, "error": text, "detail": detail}]
+    return out
+
+
+def _induction_crash_entries(inductions, exc):
+    """One failed entry per induction a crashed _push_candidate_inductions would
+    have pushed. A MELB_PARK entry stays a single line, as it does normally."""
+    text, detail = _push_crash_text(exc)
+    out = []
+    try:
+        items = ([i for i in inductions if isinstance(i, dict)]
+                 if isinstance(inductions, list) else [])
+        for ind in items:
+            code = str(ind.get("venue_code") or "").strip()
+            out.append({"venue_code": code,
+                        "label": INDUCTION_CODE_LABELS.get(code, code) or "Induction",
+                        "ok": False, "error": text, "detail": detail})
+    except Exception:
+        out = []
+    if not out:
+        out = [{"venue_code": "", "label": "Inductions", "ok": False,
+                "error": text, "detail": detail}]
+    return out
+
+
 def _push_candidate_licences(ss, user_id, licences):
     """Convert-B: push a converted candidate's onboarding licences into SmartStaff
     user_licenses, ONE admin-add-license.php call at a time (sequential — the box
@@ -8117,7 +8293,10 @@ def _push_candidate_licences(ss, user_id, licences):
 
     Best-effort: every outcome is recorded and returned; nothing here raises, so a
     licence problem never aborts the conversion. Returns a list of per-licence
-    dicts: {type, ok, skipped?, id?, pdf_file?, error?}."""
+    dicts: {type, ok, skipped?, id?, pdf_file?, error?, detail?}. `error` is the
+    operator-facing line; `detail` is the raw exception text behind the dialog's
+    details toggle. Safe to run again (the endpoint skips an existing
+    (user, type)), which is what Finish setup relies on."""
     results = []
     if not isinstance(licences, list):
         return results
@@ -8160,9 +8339,12 @@ def _push_candidate_licences(ss, user_id, licences):
                                 "error": f"PDF fetch failed: {e}"})
                 continue
 
-        out, err = ss_push_licence(ss, user_id, canon, date_cert, "", pdf_bytes)
+        det = {}
+        out, err = ss_push_licence(ss, user_id, canon, date_cert, "", pdf_bytes,
+                                   detail_out=det)
         if err:
-            results.append({"type": canon, "ok": False, "error": err})
+            results.append({"type": canon, "ok": False, "error": err,
+                            "detail": det.get("detail")})
         elif out.get("skipped"):
             results.append({"type": canon, "ok": True, "skipped": True})
         else:
@@ -8252,9 +8434,10 @@ def _push_candidate_inductions(ss, user_id, inductions):
 
     Idempotency mirrors the licence (user, type) skip: we read the crew member's
     current inductions once and skip venues already on file — add-my-induction
-    .php INSERTs a user_licenses row per call, so a re-convert without this skip
+    .php INSERTs a user_licenses row per call, so a repeat run without this skip
     would duplicate it (crew_venue_induction itself self-cleans via
-    delete-then-insert).
+    delete-then-insert). That skip is what makes this safe to run again from
+    Finish setup.
 
     Best-effort: every outcome is recorded and returned; nothing here raises, so
     an induction problem never aborts the conversion. Returns a list of per-entry
@@ -8281,8 +8464,8 @@ def _push_candidate_inductions(ss, user_id, inductions):
     # has NO server-side (user, type) skip — it INSERTs a user_licenses row every
     # call — so this read is the ONLY duplicate guard. If it can't be read we
     # can't tell "nothing on file" from "unknown", so we fail safe: flag every
-    # entry for retry rather than push blind and risk duplicate rows on a
-    # re-convert. Conversion and licences are unaffected.
+    # entry for retry rather than push blind and risk duplicate rows on a repeat
+    # run. Conversion and licences are unaffected.
     current, cerr = fetch_crew_inductions(user_id)
     if cerr or not isinstance(current, list):
         for ind in entries:
@@ -8371,14 +8554,17 @@ def _push_candidate_inductions(ss, user_id, inductions):
 # the visa PDF + visa fields across to SmartStaff, the system of record for active
 # crew. Same best-effort, idempotent, sequential contract as the licence/induction
 # pushes: nothing here raises, so a contract/visa problem never aborts the
-# conversion; both SmartStaff endpoints are idempotent per user, so a partial/
-# failed push is simply retried by re-running convert.
+# conversion; both SmartStaff endpoints are idempotent per user, so a partial or
+# failed push is retried with Finish setup (/finish-setup) — NOT by re-running
+# convert, which refuses once the candidate is stamped active_crew.
 def _push_candidate_contract(ss, user_id, contract, replace=False):
     """Push the candidate's signed contract PDF into SmartStaff user_documents
     (admin-add-contract.php). `contract` is the candidate-detail 'contract' block
     {url(signed PDF), signed_at, version}. Returns a single {ok, skipped?,
-    replaced?, error?} dict; never raises. replace=True is the returning-crew
-    update path — see ss_push_contract."""
+    replaced?, error?, detail?} dict; never raises. replace=True is the
+    returning-crew update path — see ss_push_contract. Finish setup always calls
+    it with replace=False (D3): an existing contract row is skipped, never
+    overwritten."""
     if not isinstance(contract, dict) or not contract.get("url"):
         return {"ok": False, "error": "no signed contract on file"}
     try:
@@ -8389,11 +8575,12 @@ def _push_candidate_contract(ss, user_id, contract, replace=False):
     except Exception as e:
         return {"ok": False, "error": f"PDF fetch failed: {e}"}
 
+    det = {}
     out, err = ss_push_contract(ss, user_id, pdf_bytes,
                                 contract.get("signed_at"), contract.get("version"),
-                                replace=replace)
+                                replace=replace, detail_out=det)
     if err:
-        return {"ok": False, "error": err}
+        return {"ok": False, "error": err, "detail": det.get("detail")}
     if out.get("skipped"):
         return {"ok": True, "skipped": True}
     return {"ok": True, "skipped": False, "replaced": bool(out.get("replaced")),
@@ -9216,12 +9403,12 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         licence_results = _push_candidate_licences(ss, target_id, detail.get("licences"))
     except Exception as e:
         print(f"[recruitment] convert-update licence push crashed: {e}")
-        licence_results = []
+        licence_results = _licence_crash_entries(detail.get("licences"), e)
     try:
         induction_results = _push_candidate_inductions(ss, target_id, detail.get("inductions"))
     except Exception as e:
         print(f"[recruitment] convert-update induction push crashed: {e}")
-        induction_results = []
+        induction_results = _induction_crash_entries(detail.get("inductions"), e)
     visa_result = None
     if (detail.get("work_eligibility") or {}).get("status") == "working_visa":
         try:
@@ -9231,9 +9418,16 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
             visa_result = {"ok": False, "error": "visa push crashed"}
 
     # 7b. Dietary requirements from the application form, best-effort (§1.4 of
-    #     BRIEF-dietary-requirements). A failure is a warning, never a failed
-    #     conversion. Inert until the apply side sends detail["dietary"].
-    dietary_warning = _push_candidate_dietary(ss, target_id, detail.get("dietary"))
+    #     BRIEF-dietary-requirements). A failure is a step result, never a failed
+    #     conversion, and it is retried with Finish setup. Inert until the apply
+    #     side sends detail["dietary"].
+    #     UNGUARDED, exactly as before. The update path deliberately refreshes a
+    #     returning crew member's record from the NEW application (D5 replaces the
+    #     contract, D6 replaces the photo), so their just-submitted dietary answer
+    #     is the one to keep. The guard belongs to Finish setup, whose job is to
+    #     fill in what a failure missed without touching anything that landed.
+    dietary_result  = _push_candidate_dietary(ss, target_id, detail.get("dietary"))
+    dietary_warning = _dietary_legacy_warning(dietary_result)
 
     # 8. Contract — REPLACE the stored one (D5).
     try:
@@ -9290,11 +9484,14 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         "warning":  stamp_warning,
         "updated_fields": updated_fields,
         "reactivated": was_inactive,
+        # dietary_warning: the old string, kept for ONE release (see
+        # _dietary_legacy_warning).
         "dietary_warning": dietary_warning,
         "licences": licence_results,
         "inductions": induction_results,
         "contract": contract_result,
         "visa":     visa_result,
+        "dietary":  dietary_result,
         "photo":    photo_result,
         "welcome":  welcome_result,
         "portal":   portal_result,
@@ -9446,6 +9643,172 @@ def api_recruitment_eh_portal_access(cand_id):
     _write_audit("recruit_eh_portal_access", "candidate", cand_id,
                  {"outcome": res.get("outcome")})
     return jsonify(res)
+
+
+# ─── FINISH SETUP (retry the SmartStaff steps convert couldn't land) ──────────
+# DESIGN-convert-retry-steps v0.2. Convert's SmartStaff pushes are best-effort by
+# design: the crew record stands whether or not the licence, induction, contract
+# and dietary writes land. The code comments and the result dialog used to say a
+# failed push "can simply be retried by re-running convert" — IT CANNOT. Convert
+# re-checks the status first and refuses with 409 once the candidate is stamped
+# active_crew, so until this route existed the only repair was by hand, and for
+# the contract that meant re-uploading a PDF the operator doesn't have. (Rich hit
+# exactly this converting Deklan Loguancio, EIN 6431, on 24 Nov 2026: the dietary
+# and contract pushes timed out connecting to SmartStaff.)
+#
+# This route runs those four steps again, and ONLY those four. It is safe to run
+# at any time, as often as you like:
+#   licences   admin-add-license.php skips an existing (user, type)
+#   inductions reads the crew member's inductions first and skips venues on file;
+#              fails safe (pushes nothing) if that read fails
+#   contract   admin-add-contract.php skips when a contract row exists; ALWAYS
+#              replace=False here (D3), so a stored contract is never overwritten
+#   dietary    dietary-set.php WRITES, so this one is guarded — see
+#              _push_candidate_dietary(guard_existing=True)
+#
+# NOT INCLUDED, deliberately: the visa push (D2 — fixed by hand on the crew
+# record), the welcome email and the EH portal grant (D1/§3.1 — both already have
+# their own retry buttons on the Active crew row, with their own dedupe rules).
+def _finish_setup_outcome(step):
+    """"ok" / "skipped" / "failed" / "none" for one step result. The ONLY thing
+    the audit row records about a step: an outcome, never a value or a name."""
+    if not isinstance(step, dict):
+        return "none"
+    if not step.get("ok"):
+        return "failed"
+    return "skipped" if step.get("skipped") else "ok"
+
+
+def _finish_setup_counts(results):
+    """{ok, skipped, failed} across a list of step results (licences, inductions),
+    for the audit row. Counts only — no types, no venue names."""
+    counts = {"ok": 0, "skipped": 0, "failed": 0}
+    for r in (results or []):
+        key = _finish_setup_outcome(r)
+        if key in counts:
+            counts[key] += 1
+    return counts
+
+
+@app.route("/api/recruitment/candidate/<cand_id>/finish-setup", methods=["POST"])
+@require_cohort("admin")
+def api_recruitment_finish_setup(cand_id):
+    """Re-run the four SmartStaff pushes for an ALREADY CONVERTED candidate.
+
+    Admin only (D5): only admins convert crew, so only admins finish the job.
+
+    THE BROWSER SENDS NO IDS AND NO DATA. The crew id comes from the candidate
+    row convert stamped, and every value pushed is rebuilt from the candidate
+    detail exactly as convert builds it — the same rule as convert's update path.
+    A tampered request can at most ask for a different candidate, which the
+    active_crew + smartstaff_user_id preconditions then gate.
+
+    Responds with convert's own step keys (licences / inductions / contract /
+    dietary), so the result dialog renders it with recruitConvertResultBlocks
+    unchanged."""
+    cand_id = str(cand_id or "").strip()
+    if not cand_id:
+        return jsonify({"error": "Missing applicant id"}), 400
+
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # 1. Authoritative re-read of the candidate (feed row + detail), as convert does.
+    feed_row, detail, err = _recruit_convert_context(cand_id)
+    if err == "not_found":
+        return jsonify({"error": "Applicant not found"}), 404
+    if err:
+        return jsonify({"error": err}), 502
+    detail = detail or {}
+
+    # 2. Preconditions: they must already BE crew, with the SmartStaff id convert
+    #    stamped. The two failures have completely different remedies, so they get
+    #    different messages rather than one vague refusal.
+    status = str(feed_row.get("status") or "").strip()
+    if status != "active_crew":
+        return jsonify({"error": "This candidate hasn't been converted yet "
+                                 f"(status '{status or 'unknown'}'). Use Convert "
+                                 "to crew first."}), 409
+    uid = str(feed_row.get("smartstaff_user_id") or "").strip()
+    if not uid.isdigit():
+        return jsonify({"error": "No SmartStaff id on this candidate — the convert "
+                                 "status stamp didn't land. Fix the status first."}), 409
+
+    # 3. PREFLIGHT, and the dietary guard's read in the same call. If SmartStaff
+    #    can't be reached we stop HERE: four steps would otherwise each wait out
+    #    its own timeout (10 s, 30 s for dietary) and the operator would sit
+    #    through about a minute of nothing to be told nothing happened. One wait,
+    #    one honest answer. 200, not 5xx — nothing is broken and nothing was
+    #    changed; this is a "try again in a minute".
+    #
+    #    ONLY a connection failure stops us, read from the exception CLASS via
+    #    ss_dietary_get's detail channel — never by sniffing the message text. Any
+    #    other dietary read error (a 403, a 502, bad JSON) is a dietary-step
+    #    problem, not an outage, so the other three steps still run and the
+    #    dietary guard reports it.
+    probe = {}
+    existing = ss_dietary_get(ss, uid, detail_out=probe)
+    if existing[1] and probe.get("unreachable"):
+        return jsonify({
+            "ok": False,
+            "unreachable": True,
+            "message": "Couldn't reach SmartStaff — nothing was changed. "
+                       "Try again in a minute.",
+            "detail": probe.get("detail"),
+        })
+
+    # 4. The four pushes, in convert's order and one at a time — the SmartStaff box
+    #    has per-session file-lock contention under concurrent writes. Each is
+    #    wrapped exactly as convert wraps it: a crash is a failed step, never a
+    #    failed request.
+    try:
+        licence_results = _push_candidate_licences(ss, uid, detail.get("licences"))
+    except Exception as e:
+        print(f"[recruitment] finish-setup licence push crashed: {e}")
+        licence_results = _licence_crash_entries(detail.get("licences"), e)
+    try:
+        induction_results = _push_candidate_inductions(ss, uid, detail.get("inductions"))
+    except Exception as e:
+        print(f"[recruitment] finish-setup induction push crashed: {e}")
+        induction_results = _induction_crash_entries(detail.get("inductions"), e)
+    try:
+        # replace=False ALWAYS (D3). If a returning crew member's contract REPLACE
+        # failed at convert time, the old contract stays and the operator replaces
+        # it on Documents — Finish setup will never silently overwrite one.
+        contract_result = _push_candidate_contract(ss, uid, detail.get("contract"),
+                                                   replace=False)
+    except Exception as e:
+        print(f"[recruitment] finish-setup contract push crashed: {e}")
+        contract_result = {"ok": False, "error": "Contract push crashed."}
+    try:
+        # Guarded, and handed step 3's read so the record isn't fetched twice.
+        dietary_result = _push_candidate_dietary(ss, uid, detail.get("dietary"),
+                                                 guard_existing=True,
+                                                 existing=existing)
+    except Exception as e:
+        print(f"[recruitment] finish-setup dietary push crashed: {e}")
+        dietary_result = {"ok": False, "error": "Dietary push crashed."}
+
+    # 5. Audit — outcomes and counts ONLY. No licence types, no venue names, no
+    #    dietary content: the row says what happened, never what was in it.
+    _write_audit("recruit_finish_setup", "candidate", cand_id,
+                 {"crew_id": uid,
+                  "ein": feed_row.get("ein"),
+                  "licences":   _finish_setup_counts(licence_results),
+                  "inductions": _finish_setup_counts(induction_results),
+                  "contract":   _finish_setup_outcome(contract_result),
+                  "dietary":    _finish_setup_outcome(dietary_result)})
+
+    return jsonify({
+        "ok":         True,
+        "id":         uid,
+        "ein":        feed_row.get("ein"),
+        "licences":   licence_results,
+        "inductions": induction_results,
+        "contract":   contract_result,
+        "dietary":    dietary_result,
+    })
 
 
 @app.route("/api/recruitment/candidate/<cand_id>/convert", methods=["POST"])
@@ -9609,31 +9972,31 @@ def api_recruitment_convert(cand_id):
     # 8. Convert-B — push the candidate's onboarding licences into SmartStaff
     #    user_licenses (one admin-add-license.php POST each, sequential). Purely
     #    best-effort: the endpoint is idempotent per (user, type), so a partial or
-    #    failed push can simply be retried, and a licence problem never fails the
-    #    conversion (the crew record + status already stand).
+    #    failed push is retried with Finish setup, and a licence problem never
+    #    fails the conversion (the crew record + status already stand).
     try:
         licence_results = _push_candidate_licences(ss, uid, detail.get("licences"))
     except Exception as e:
         print(f"[recruitment] convert licence push crashed: {e}")
-        licence_results = []
+        licence_results = _licence_crash_entries(detail.get("licences"), e)
 
     # 9. Convert-B — push the candidate's onboarding inductions into SmartStaff
     #    (one add-my-induction.php POST per entry, sequential; a MELB_PARK entry
     #    fans one PDF across its five arenas). Same best-effort contract as the
     #    licence push: idempotent per venue, so a partial/failed push is retried
-    #    by re-running convert, and an induction problem never fails the
-    #    conversion (the crew record + status already stand).
+    #    with Finish setup, and an induction problem never fails the conversion
+    #    (the crew record + status already stand).
     try:
         induction_results = _push_candidate_inductions(ss, uid, detail.get("inductions"))
     except Exception as e:
         print(f"[recruitment] convert induction push crashed: {e}")
-        induction_results = []
+        induction_results = _induction_crash_entries(detail.get("inductions"), e)
 
     # 10. Convert-B — push the signed employment contract into SmartStaff
     #     user_documents (admin-add-contract.php). Every convertible candidate is
     #     all_docs_received, so a signed contract always exists. Best-effort +
-    #     idempotent per user: a failure never fails the conversion, and a re-convert
-    #     skips an already-stored contract.
+    #     idempotent per user: a failure never fails the conversion, and a Finish
+    #     setup retry skips an already-stored contract.
     try:
         contract_result = _push_candidate_contract(ss, uid, detail.get("contract"))
     except Exception as e:
@@ -9655,10 +10018,13 @@ def api_recruitment_convert(cand_id):
 
     # 11b. Dietary requirements from the application form (BRIEF-dietary-
     #      requirements §1.4): stored with source "apply" and the candidate's own
-    #      consent_at. Best-effort -- a failure is a warning in the response,
-    #      never a failed conversion. Inert until the apply side sends
-    #      detail["dietary"] (Session 3).
-    dietary_warning = _push_candidate_dietary(ss, uid, detail.get("dietary"))
+    #      consent_at. Best-effort -- a failure is a step result in the response,
+    #      never a failed conversion, and it is retried with Finish setup. Inert
+    #      until the apply side sends detail["dietary"] (Session 3).
+    #      No guard here: this is a brand-new crew record, so there is nothing on
+    #      file to protect and no reason to spend a read. Finish setup guards.
+    dietary_result  = _push_candidate_dietary(ss, uid, detail.get("dietary"))
+    dietary_warning = _dietary_legacy_warning(dietary_result)
 
     # 12. The welcome email: the crew member's EIN (their Crew Hub username) and
     #     the temp password we just set, sent to the address on their application.
@@ -9669,8 +10035,9 @@ def api_recruitment_convert(cand_id):
     #     member is real and their login works whether or not the email left the
     #     building. A blocked or failed send is reported in the modal and resent
     #     with one click from the active_crew panel — it never costs the operator
-    #     the conversion. The once-ever dedupe lives in the edge function, so
-    #     re-running convert to retry a licence push cannot double-send this.
+    #     the conversion. Finish setup never touches the welcome email, and the
+    #     once-ever dedupe lives in the edge function anyway, so retrying a
+    #     licence push cannot double-send this.
     #
     #     The EIN is passed rather than read back from Supabase because step 7's
     #     stamp is itself allowed to fail (stamp_warning): SmartStaff has the EIN
@@ -9701,11 +10068,14 @@ def api_recruitment_convert(cand_id):
         "status":   RECRUITMENT_CONVERTED_STATUS,
         "temp_password": NEW_CREW_TEMP_PASSWORD,
         "warning":  stamp_warning,
+        # dietary_warning: the old string, kept for ONE release so an older open
+        # window still shows a failed push (see _dietary_legacy_warning).
         "dietary_warning": dietary_warning,
         "licences": licence_results,
         "inductions": induction_results,
         "contract": contract_result,
         "visa":     visa_result,
+        "dietary":  dietary_result,
         "welcome":  welcome_result,
         "portal":   portal_result,
     })
@@ -26095,19 +26465,23 @@ def _ss_dietary_response(resp):
     return data, None, 200
 
 
-def ss_dietary_get(ss, subject_id):
+def ss_dietary_get(ss, subject_id, detail_out=None):
     """One crew member's dietary record via dietary-get.php. Returns
-    (dict, error). No row comes back as state "not_answered"."""
+    (dict, error). No row comes back as state "not_answered".
+
+    `detail_out`, when a dict, receives the raw exception text as "detail" and a
+    "unreachable" flag read from the exception CLASS (not its text) — that flag is
+    what Finish setup's preflight uses to stop before it pushes anything."""
     url = f"{BASE_URL}/ajax/crew/dietary-get.php"
     try:
         resp = ss.get(url, params={"subject": int(subject_id)}, timeout=30)
     except Exception as e:
-        return None, f"request failed: {e}"
+        return None, _ss_failed(e, "dietary-get.php", detail_out, kind="read")
     data, err, _status = _ss_dietary_response(resp)
     return data, err
 
 
-def ss_dietary_set(ss, payload, with_status=False):
+def ss_dietary_set(ss, payload, with_status=False, detail_out=None):
     """Write one crew member's dietary record via dietary-set.php on the
     operator's session (the OPS path). Returns (dict, error); error is the PHP
     message for a validation refusal. with_status=True adds PHP's HTTP status
@@ -26120,7 +26494,7 @@ def ss_dietary_set(ss, payload, with_status=False):
     try:
         resp = ss.post(url, json=payload, timeout=30)
     except Exception as e:
-        out = (None, f"request failed: {e}", 502)
+        out = (None, _ss_failed(e, "dietary-set.php", detail_out), 502)
     else:
         out = _ss_dietary_response(resp)
     return out if with_status else out[:2]
@@ -26212,11 +26586,28 @@ def api_admin_dietary_flags():
     return jsonify({"flags": flags})
 
 
-def _push_candidate_dietary(ss, crew_id, dietary):
-    """Convert: carry the candidate's application-form dietary answer onto the
-    crew record (BRIEF-dietary-requirements §1.4). Returns a warning string or
-    None. NEVER RAISES and never fails the conversion -- it runs after the
-    SmartStaff crew write, and nothing after that write may fail the request.
+def _push_candidate_dietary(ss, crew_id, dietary, guard_existing=False, existing=None):
+    """Convert and Finish setup: carry the candidate's application-form dietary
+    answer onto the crew record (BRIEF-dietary-requirements §1.4). NEVER RAISES
+    and never fails the conversion -- it runs after the SmartStaff crew write, and
+    nothing after that write may fail the request.
+
+    Returns a step result, like the licence/contract pushes:
+        None                              nothing to push (no answer, not_answered)
+        {"ok": True}                      pushed
+        {"ok": True, "skipped": True}     a record was already on file (guard)
+        {"ok": False, "error": ..}        failed; `detail` carries the raw text
+
+    THE GUARD IS WHY THIS STEP IS SAFE TO REPEAT. dietary-set.php WRITES — unlike
+    admin-add-license.php / admin-add-contract.php it has no server-side skip — so
+    a retry with no guard would overwrite whatever the crew member typed in Crew
+    Hub, or ops typed on the Dietary tab, with the application answer. With
+    guard_existing=True we read the record first and skip anything that isn't
+    `not_answered`. If that READ fails we report the failure and push NOTHING:
+    "unknown" must never be treated as "empty" (the same fail-safe rule as the
+    induction read). `existing` is an already-done (data, error) pair from
+    ss_dietary_get — Finish setup's preflight read — so the record is not fetched
+    twice; None means "not read yet, read it here".
 
     Inert until the apply side supplies detail["dietary"] (Session 3): with no
     key, or state not_answered, it does nothing."""
@@ -26226,6 +26617,20 @@ def _push_candidate_dietary(ss, crew_id, dietary):
         state = str(dietary.get("state") or "").strip()
         if not state or state == "not_answered":
             return None
+
+        if guard_existing:
+            if existing is None:
+                existing = ss_dietary_get(ss, crew_id)
+            cur, gerr = existing
+            if gerr:
+                print(f"[recruitment] dietary guard read failed: {gerr}")
+                return {"ok": False,
+                        "error": f"Couldn't check the dietary record first, so "
+                                 f"nothing was written: {gerr}"}
+            cur_state = str((cur or {}).get("state") or "").strip()
+            if cur_state and cur_state != "not_answered":
+                return {"ok": True, "skipped": True}
+
         payload = {
             "subject": int(crew_id),
             "state":   state,
@@ -26235,16 +26640,31 @@ def _push_candidate_dietary(ss, crew_id, dietary):
         }
         if dietary.get("consent_at"):
             payload["consent_at"] = str(dietary.get("consent_at"))
-        _data, err = ss_dietary_set(ss, payload)
+        det = {}
+        _data, err = ss_dietary_set(ss, payload, detail_out=det)
         if err:
             print(f"[recruitment] convert dietary push failed: {err}")
-            return (f"Dietary requirements from the application weren't saved "
-                    f"({err}). Add them on the crew record's Dietary tab.")
-        return None
+            return {"ok": False, "error": err, "detail": det.get("detail")}
+        return {"ok": True, "skipped": False}
     except Exception as e:
         print(f"[recruitment] convert dietary push crashed: {e}")
-        return ("Dietary requirements from the application weren't saved. "
-                "Add them on the crew record's Dietary tab.")
+        return {"ok": False, "error": "Dietary requirements from the application "
+                                      "weren't saved.", "detail": str(e)[:500]}
+
+
+def _dietary_legacy_warning(result):
+    """The old `dietary_warning` string for a dietary step result.
+
+    KEPT FOR ONE RELEASE ONLY. An operator with the convert modal already open in
+    a pre-Finish-setup window still renders `dietary_warning` and knows nothing
+    about the Dietary section, so dropping the key the same day would silently hide
+    a failed push from exactly the person watching for it. REMOVE in the release
+    AFTER the one that ships Finish setup, together with the `d.dietary_warning`
+    fallback in index.html."""
+    if not isinstance(result, dict) or result.get("ok") or not result.get("error"):
+        return None
+    return (f"Dietary requirements from the application weren't saved "
+            f"({result.get('error')}). Add them on the crew record's Dietary tab.")
 
 
 # Admin licence CRUD for the Manage Crew -> Licences tab. Each route proxies to
