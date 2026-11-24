@@ -1,6 +1,6 @@
 {
-  "version": "5.122.0",
+  "version": "5.123.0",
   "release_date": "2026-11-25",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.122.0/TheGOAT.dmg",
-  "release_notes": "If a crew conversion is interrupted, admins can now finish it with one click: Finish setup on the person's Active crew row re-sends their licences, inductions, contract and dietary requirements, skipping anything already on file. Conversion errors are now in plain English, and failed steps can be retried straight from the result screen."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.123.0/TheGOAT.dmg",
+  "release_notes": "When SmartStaff can't be reached, THE GOAT now says so plainly instead of showing an error page: you stay logged in and everything works again as soon as SmartStaff answers. A merely slow SmartStaff no longer causes errors, and the System tab now counts failed connection checks."
 }
