@@ -29,6 +29,15 @@
   --shift-bar:#d4af37;
   --target-green:#d4af37;
   --crewlist:#38bdf8;      /* crew list sent marker (DESIGN-crewlist-sent D7) */
+  /* Call time state (BRIEF-times-navigation D4) — the two shades SmartStaff's
+     own booking page uses: GREEN = locked, LAVENDER = times filled. The -bg
+     pair is the soft tint behind the row; the full colour is its 3px left edge
+     and its chip. Lavender is #a78bfa rather than --suggest (#9d8cd4), which
+     already means "suggested" on the Schedule — a row must not read as both. */
+  --ts-locked:#22c55e;
+  --ts-locked-bg:rgba(34,197,94,0.14);
+  --ts-filled:#a78bfa;
+  --ts-filled-bg:rgba(167,139,250,0.14);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:13px;height:100vh;overflow:hidden;display:flex;flex-direction:column}
@@ -1778,6 +1787,23 @@ a.recruit-action{text-decoration:none;display:inline-block}
 .ops-deliv-warn{font-size:12px;color:var(--accent2);padding:0 2px 8px}
 .ops-subhead{font-size:12px;color:var(--muted);padding:2px 2px 10px}
 .ops-row-fill{grid-column:1 / -1;display:flex;align-items:center;gap:8px;margin-top:2px}
+/* Time-state labels on a call row (D4). Styled like the TIMES TO CHECK chip
+   beside them: small, uppercase, outlined, colour on the chip only. THE ROW'S
+   TEXT STAYS var(--text) -- the shade and the chip carry the whole signal, so a
+   call name is never harder to read because its times are in. */
+.ts-lbl{font-size:9px;letter-spacing:.5px;text-transform:uppercase;border:1px solid;border-radius:3px;padding:0 5px;white-space:nowrap;margin-left:6px}
+.ts-lbl-locked{color:var(--ts-locked);border-color:var(--ts-locked)}
+.ts-lbl-filled{color:var(--ts-filled);border-color:var(--ts-filled)}
+.ts-lbl-warn{color:#f59e0b;border-color:#f59e0b}
+.ts-lbl-bad{color:var(--conflict);border-color:var(--conflict)}
+/* Times outstanding card doorways (5.120.0, D1): the booking name and the
+   venue · call line each open their own dialog, and ⏱ Times → opens the grid.
+   Colour is INHERITED so the card still reads as one row -- the underline on
+   hover is the whole affordance. The chip at the end is the accent one. */
+.ops-link{color:inherit;cursor:pointer;text-decoration:none}
+.ops-link:hover{text-decoration:underline}
+.ops-times-go{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:1px 8px;cursor:pointer;white-space:nowrap;margin-left:auto}
+.ops-times-go:hover{background:var(--accent-bg)}
 .ops-offered{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
 .ops-ack-action{grid-column:1 / -1;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:2px}
 .ops-was{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--muted)}
@@ -22552,7 +22578,7 @@ function callNavRender(bookingId, callId, view){
   el.style.display = 'flex';
 }
 
-// Enter Times only: every grid is titled "Enter Times", so the sub-line names
+// Enter Times only: every grid carries the same title (CT_TITLE), so the sub-line names
 // the call; and the Accept & Next slot fills when there is a next call.
 function _callNavTimesExtras(bookingId, callId, sib, idx){
   var me = (sib && idx >= 0) ? sib.calls[idx] : null;
@@ -25062,7 +25088,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
       ? chip('DETAIL UNAVAILABLE', false)
       : chip(cx.cancel_pay    ? 'CREW PAID'        : 'NOT PAID',     !!cx.cancel_pay)
         + chip(cx.cancel_charge ? 'CUSTOMER CHARGED' : 'NOT CHARGED', !!cx.cancel_charge)
-        + (timesToCheck ? '<span title="Pre-filled times are waiting to be checked in ⏱ Enter Times" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 6px">TIMES TO CHECK</span>' : '');
+        + (timesToCheck ? '<span title="Pre-filled times are waiting to be checked in ⏱ View / Enter Times" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:1px 6px">TIMES TO CHECK</span>' : '');
     cancelBanner =
         '<div style="margin:0 0 12px;border:1px solid #64748b;border-left:3px solid #64748b;background:rgba(100,116,139,0.10);border-radius:4px;padding:9px 11px">'
       +   '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
@@ -25247,7 +25273,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
     // says why every other stood-down row is read-only ("Stood down — not
     // paid.") instead of telling ops to change their status. Still hidden on
     // the name-prefix fallback, which cannot see the roster.
-    + ((isCancelled && cancelUnknown) ? '' : entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')"))
+    + ((isCancelled && cancelUnknown) ? '' : entityBtn('⏱ View / Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')"))
     + ((isCancelled || window._cohort !== 'admin')
         ? ''
         : entityBtn('⏹ Stand down', "openCallStandDown('"+bookingId+"','"+callId+"')", {title:'Cancel this call — crew are stood down, not removed'}))
@@ -25380,7 +25406,7 @@ function sdSync(){
   if(pay || charge){
     const n = window._standDownConfirmed || 0;
     note.innerHTML = n
-      ? '<div style="font-size:12px;color:var(--text);background:rgba(100,116,139,0.10);border:1px solid #64748b;border-radius:4px;padding:7px 9px">Times will be pre-filled for '+n+' confirmed crew (4-hour minimum). Check them in ⏱ Enter Times.</div>'
+      ? '<div style="font-size:12px;color:var(--text);background:rgba(100,116,139,0.10);border:1px solid #64748b;border-radius:4px;padding:7px 9px">Times will be pre-filled for '+n+' confirmed crew (4-hour minimum). Check them in ⏱ View / Enter Times.</div>'
       : '<div style="font-size:12px;color:var(--muted)">Nobody on this call is confirmed, so there are no times to pre-fill.</div>';
   }else{
     note.innerHTML = '';
@@ -25508,7 +25534,7 @@ function renderStandDownResult(bookingId, callId, j){
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('‹ Back to call', "openCallDialog('"+bookingId+"','"+callId+"')", {primary:true})
     + ((j.prefilled || []).length
-        ? entityBtn('⏱ Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')")
+        ? entityBtn('⏱ View / Enter Times', "openCallTimes('"+bookingId+"','"+callId+"')")
         : '')
     + entityBtn('Close', 'closeEntityModal()');
 }
@@ -25536,7 +25562,7 @@ function _sdPrefillPanel(j, byId){
       : '';
   };
   return '<div style="margin:0 0 14px;border:1px solid var(--border);border-radius:4px;padding:9px 11px">'
-    +   '<div style="font-size:10px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">Times to check in ⏱ Enter Times</div>'
+    +   '<div style="font-size:10px;letter-spacing:.5px;color:var(--muted);text-transform:uppercase">Times to check in ⏱ View / Enter Times</div>'
     +   line('Pre-filled'+win+':', pre)
     +   line('Kept their existing times:', kept)
     +   line('No start time to pre-fill from — key by hand:', none)
@@ -26114,6 +26140,14 @@ function renderReinstateResult(bookingId, callId, j){
 // crew status control. Reuses escapeHtml / decodeEntities / hms2hm / entityBtn /
 // closeEntityModal / openCallDialog already defined in index.html.
 
+// The grid's title, IN ONE PLACE (5.120.0, D2). It is set at the top of
+// openCallTimes and COMPARED in the Prev/Next late-arrival check below, which is
+// why it cannot be two literals: renaming one and not the other silently loses
+// the nav on a grid opened from the Times outstanding lane, and nothing fails
+// loudly. test_times_status_js.py asserts no bare 'Enter Times' comparison is
+// left in this file.
+const CT_TITLE = 'View / Enter Times';
+
 let _ctState = null;  // {bookingId, callId, crew:[...], paygrades:[...], locked}
 
 function _ctTimeOk(s){
@@ -26354,7 +26388,7 @@ async function _ctReload(changedUid){
     await _ctLoadPhotos();
     renderCallTimesGrid();
   }catch(e){
-    goatTell('Times', 'The change was saved, but the times could not be reloaded: ' + (e.message || e) + '\n\nClose and reopen Enter Times.');
+    goatTell('Times', 'The change was saved, but the times could not be reloaded: ' + (e.message || e) + '\n\nClose and reopen View / Enter Times.');
     return;
   }
   Object.keys(kept).forEach(function(id){
@@ -26549,9 +26583,25 @@ function _ctNewState(bookingId, callId, data){
           noShows:null, restoredFor:{}};
 }
 
-async function openCallTimes(bookingId, callId){
-  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
-  document.getElementById('entity-modal-title').textContent = 'Enter Times';
+// `from` IS WHERE BACK GOES, and it has to be told (5.120.0). The push
+// convention is that a parent records how to get back to ITSELF before opening a
+// child, so this function used to push the CALL DIALOG unconditionally -- it
+// assumed its only parent. The ⏱ Times buttons on the booking's Calls tab and in
+// All Bookings open the grid without the call dialog ever being on screen, and
+// Back would have landed on a view the user never visited (with a breadcrumb
+// naming the booking, because the frame takes its name off the screen).
+//
+//   'call'    the call dialog, which is on screen. Today's behaviour, and the
+//             default, so every existing caller is unchanged -- including the
+//             Times outstanding card, where Back deliberately opens the call
+//             dialog for the call being chased.
+//   'booking' the booking dialog is on screen (its Calls tab).
+//   'none'    neither is -- All Bookings is a page. Push nothing: the grid
+//             offers Close, not a Back to somewhere it was not opened from.
+async function openCallTimes(bookingId, callId, from){
+  if(from === 'booking')    entityStackPush('booking:'+bookingId, 'booking', function(){ openBookingDialog(bookingId); });
+  else if(from !== 'none')  entityStackPush('call:'+bookingId+':'+callId, 'call', function(){ openCallDialog(bookingId, callId); });
+  document.getElementById('entity-modal-title').textContent = CT_TITLE;
   document.getElementById('entity-modal-sub').textContent   = 'Call #'+callId+' · Booking #'+bookingId;
   document.getElementById('entity-modal-body').innerHTML     = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Loading times…</div>';
   document.getElementById('entity-modal-actions').innerHTML  = '';
@@ -26851,7 +26901,7 @@ function renderCallTimesGrid(){
     callNavEnsure(b).then(function(sib){
       const t = document.getElementById('entity-modal-title');
       if(sib && _ctState && _ctState.bookingId === b && _ctState.callId === c
-         && t && t.textContent === 'Enter Times' && document.getElementById('ct-result')) callNavRender(b, c, 'times');
+         && t && t.textContent === CT_TITLE && document.getElementById('ct-result')) callNavRender(b, c, 'times');
     });
   }
 }
@@ -27077,6 +27127,13 @@ async function _ctSave(accept){
                          + escapeHtml(fails.map(function(r){ return r.user_id+': '+r.error; }).join('; '));
       return false;
     }
+    // THE SHADING IS NOW OUT OF DATE, on every path from here (D4). A plain
+    // Save changes who has times keyed, an Accept sets the tick, and a cancelled
+    // call's Save may set the done-tick -- so the cached answer is dropped
+    // before any of them returns. The booking re-reads when it next renders,
+    // which is what makes a row lavender the moment the user presses Back
+    // instead of the next time they reopen the dialog.
+    goatTimesInvalidate(s.bookingId);
     if(!accept && s.cancelled){
       // cancel_times_confirmed is update-call-times.php saying it set the
       // done-tick on this save: Times to check clears and the call leaves the
@@ -27356,6 +27413,7 @@ async function abToggle(bookingId){
     // each just reads fresh when it opens.
     bkLoadCheckinMode(bookingId, 'ab-checkin-'+bookingId);
     gsheetLoadStatus(bookingId);
+    abLoadTimesStatus(bookingId);   // async, never awaited — re-read on every expand
     return;
   }
 
@@ -27390,8 +27448,10 @@ async function abToggle(bookingId){
     const checkinWrap = '<div id="ab-checkin-'+bookingId+'"></div>';
     body.innerHTML = '<div style="display:flex;gap:6px;margin:5px 0 2px">'+openBtn+genBtn+gsheetBtn+importBtn+'</div>' + checkinWrap + calls.map(function(c){
       const when = _abCallWhen(c.start_date, c.start_time);
-      // Greyed, struck through, and NO Enter Times doorway -- see the call
-      // dialog for why that link is a trap on a cancelled call.
+      // Greyed, struck through, and NO ⏱ Times doorway. The call dialog DOES
+      // offer the grid on a cancelled call (5.77.0, for stood-down crew who are
+      // being paid); a list of calls does not (Mike, 24 Nov 2026) -- the call is
+      // one click away and carries the pay state with it.
       //
       // Belt and braces on the test: the machine field IS the truth, but this
       // list's endpoint has not been read end to end, and a `cancelled` that
@@ -27401,17 +27461,30 @@ async function abToggle(bookingId){
       const cxCancelled = !!c.cancelled || /^\s*cancelled\s*-/i.test(c.call_name||'');
       // The counts go with it: "0/1" on a cancelled call reads as a gap to fill.
       const counts = cxCancelled ? '' : ((typeof c.booked !== 'undefined') ? (' · '+(c.confirmed||0)+'/'+(c.required||0)) : '');
-      return '<div onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-top:5px;cursor:pointer;background:var(--surface)'+(cxCancelled?';opacity:.6':'')+'">'
+      return '<div data-ts-call="'+escapeHtml(String(c.call_id))+'" onclick="openCallDialog(\''+bookingId+'\',\''+c.call_id+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;margin-top:5px;cursor:pointer;background:var(--surface)'+(cxCancelled?';opacity:.6':'')+'">'
         + '<span style="font-size:12px;color:'+(cxCancelled?'var(--muted)':'var(--text)')+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis'+(cxCancelled?';text-decoration:line-through':'')+'">'+escapeHtml(c.call_name||'Call')+'</span>'
-        + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">'+escapeHtml(when)+counts+'</span>'
+        // The time-state chips ride INSIDE the date span rather than as a flex
+        // item of their own: the row has gap:10px, so an empty sibling would
+        // widen every unshaded row by 10px for nothing.
+        + '<span style="font-size:10px;color:var(--muted);white-space:nowrap">'+escapeHtml(when)+counts
+        +   '<span data-ts-lbl="'+escapeHtml(String(c.call_id))+'"></span></span>'
         + (cxCancelled
             ? '<span style="font-size:9px;letter-spacing:.5px;color:#64748b;background:rgba(100,116,139,0.14);border-radius:3px;padding:2px 7px;white-space:nowrap">CANCELLED</span>'
-            : '<span style="font-size:10px;color:var(--accent);white-space:nowrap">⏱ Enter Times →</span>')
+            // Was a decoration: the text said ⏱ Enter Times and the click
+            // underneath it opened the CALL DIALOG. Now it is the button it
+            // always looked like (5.120.0, D3), and the row still opens the
+            // call. openEntityModal() first, as the buttons above do -- this is
+            // a page, not a dialog, so nothing is on screen yet. 'none': there
+            // is no parent view to go back to, so the grid offers Close.
+            : '<span onclick="event.stopPropagation();openEntityModal();openCallTimes(\''+bookingId+'\',\''+c.call_id+'\',\'none\')" '
+              + 'title="View or enter this call\'s times" '
+              + 'style="font-size:10px;color:var(--accent);white-space:nowrap;border:1px solid var(--accent);border-radius:3px;padding:1px 5px;cursor:pointer">⏱ Times</span>')
         + '</div>';
     }).join('');
     body.setAttribute('data-loaded','1');
     bkLoadCheckinMode(bookingId, 'ab-checkin-'+bookingId);   // async, never awaited
     gsheetLoadStatus(bookingId);                              // async, never awaited
+    abLoadTimesStatus(bookingId);                             // async, never awaited
   }catch(e){
     body.innerHTML = '<div style="color:var(--conflict);font-size:11px;padding:4px">Couldn\'t load calls: '+escapeHtml(e.message)+'</div>';
   }
@@ -28485,6 +28558,179 @@ function bkApplyCrewlistStatus(bookingId){
   });
 }
 
+// ── CALL TIME STATE — THE SHADING (5.120.0, BRIEF-times-navigation D4) ──────
+// SmartStaff's own booking page shades a call GREEN when it is locked and
+// LAVENDER when its Times filled box is ticked. THE GOAT now matches it, and
+// adds a small label for the states SmartStaff has no colour for, so a booking
+// says at a glance which calls still want work. /api/booking/<id>/times-status
+// -> get-booking-times-status.php, which asks the Times outstanding lane's
+// question through the lane's own helpers.
+//
+// TWO SURFACES, ONE SET OF RULES. The booking dialog shows one booking at a
+// time, so its answer is a single slot; All Bookings can have several bookings
+// expanded at once, so its answers are kept per booking. Both paint through
+// goatTimesState() — the order below exists in exactly one place, because two
+// copies of it would eventually disagree about which call is green.
+//
+// SILENT ON FAILURE, AND THAT IS THE WHOLE POSTURE. No shading, no label, no
+// message: the call list looks exactly as it did before this feature. The
+// alternative — an error line, or worse, treating a failed read as "nothing to
+// report" and painting every call all-clear — would make a broken endpoint
+// indistinguishable from a booking with nothing outstanding.
+window._bkTsStatus = null;   // booking dialog: {bookingId, calls}
+window._abTsStatus = {};     // All Bookings:   bookingId -> calls
+
+// What a call's time state LOOKS like. s is one entry of the endpoint's calls{}.
+// Returns {state, shade, label, tone, note}:
+//   state  a name for the test suite and for anyone reading the DOM
+//   shade  '' | 'locked' | 'filled'  -> the row tint and its left edge
+//   label  the chip text, '' for none
+//   tone   which chip colour: 'locked' | 'filled' | 'warn' | 'bad'
+//   note   an EXTRA amber chip, or '': unanswered promotions, which are worth
+//          saying alongside a count rather than instead of it
+//
+// THE ORDER IS THE DESIGN (§1.3), and each step is a reason:
+//   1 cancelled    keeps today's look; its own CANCELLED chip already says so
+//   2 not finished a call still running owes nothing yet, so it stays plain
+//   3 locked       accounting has it; nothing more will change
+//   4 times filled Ops have accepted it. BEFORE every count, which is also why
+//                  with_times may be null here — see the endpoint's header
+//   5 nobody confirmed  an unstaffed finished call is not outstanding work
+//   6 no-show open Accept is REFUSED until Ops resolve it, so it leads
+//   7 promo blocks ALL IN  an unanswered promotion can hold no times at all, so
+//                  a call that is otherwise complete is NOT ready to accept
+//   8 all in       every confirmed person has times by one route or the other
+//   9 some / none  the count, so a glance says how much is left
+function goatTimesState(s){
+  var none = {state:'unknown', shade:'', label:'', tone:'', note:''};
+  if(!s) return none;
+  if(s.cancelled)   return {state:'cancelled', shade:'', label:'', tone:'', note:''};
+  if(!s.ended)      return {state:'running',   shade:'', label:'', tone:'', note:''};
+  if(Number(s.call_locked)  === 1) return {state:'locked', shade:'locked', label:'🔒 LOCKED',      tone:'locked', note:''};
+  if(Number(s.times_filled) === 1) return {state:'filled', shade:'filled', label:'✓ TIMES FILLED', tone:'filled', note:''};
+
+  var confirmed = Number(s.confirmed) || 0;
+  var promo     = Number(s.promo_pending) || 0;
+  var promoNote = promo > 0 ? (promo + ' awaiting promo reply') : '';
+
+  if(confirmed === 0) return {state:'unstaffed', shade:'', label:'', tone:'', note:promoNote};
+  if((Number(s.no_show_open) || 0) > 0)
+    return {state:'no_show', shade:'', label:'No-show to confirm', tone:'warn', note:promoNote};
+
+  // with_times is null on a ticked call (step 4 already returned), so reaching
+  // here without a number means the endpoint changed under us. Say nothing
+  // rather than invent a count.
+  if(typeof s.with_times !== 'number') return {state:'unknown', shade:'', label:'', tone:'', note:promoNote};
+
+  var w = s.with_times;
+
+  if(w >= confirmed && promo > 0)
+    return {state:'promo', shade:'', label:promo + ' awaiting promo reply', tone:'warn', note:''};
+  if(w >= confirmed)
+    return {state:'all_in', shade:'', label:'All in — accept', tone:'warn', note:''};
+  if(w > 0)
+    return {state:'some', shade:'', label:'Times ' + w + '/' + confirmed, tone:'warn', note:promoNote};
+
+  return {state:'none', shade:'', label:'No times 0/' + confirmed, tone:'bad', note:promoNote};
+}
+
+// The chips for one call, as HTML. '' when there is nothing to say.
+function goatTimesLabelHtml(s){
+  var v = goatTimesState(s);
+  var out = '';
+  if(v.label) out += '<span class="ts-lbl ts-lbl-'+v.tone+'">'+escapeHtml(v.label)+'</span>';
+  if(v.note)  out += '<span class="ts-lbl ts-lbl-warn">'+escapeHtml(v.note)+'</span>';
+  return out;
+}
+
+// Paint one row. The tint and the edge are set as INLINE styles rather than a
+// class because both call lists build their rows with an inline `border` and
+// `background`, which a stylesheet rule would lose to; a row is re-rendered from
+// its HTML string every time, so nothing has to be unpainted.
+//
+// THE LEFT EDGE IS AN INSET box-shadow, NOT A BORDER, and that is the whole
+// reason it survives. The booking dialog's call rows repaint `borderColor` on
+// hover -- the shorthand, all four sides -- so a coloured border-left would
+// vanish the first time the mouse crossed the row. A shadow is in a property
+// nothing else touches, and it needs no !important to hold its ground.
+function goatTimesPaint(row, shade){
+  if(!row || !shade) return;
+  row.style.background = 'var(--ts-'+shade+'-bg)';
+  row.style.boxShadow  = 'inset 3px 0 0 0 var(--ts-'+shade+')';
+}
+
+// Paint every [data-ts-call] row inside `scope` from `calls`.
+function goatTimesApply(scope, calls){
+  if(!scope || !calls) return;
+  Array.prototype.forEach.call(scope.querySelectorAll('[data-ts-call]'), function(row){
+    var s = calls[String(row.getAttribute('data-ts-call'))];
+    goatTimesPaint(row, goatTimesState(s).shade);
+    var holder = row.querySelector('[data-ts-lbl]');
+    if(holder) holder.innerHTML = goatTimesLabelHtml(s);
+  });
+}
+
+// Shared fetch. Returns the calls{} map, or null — never throws, never awaited
+// by a render.
+async function goatTimesFetch(bookingId){
+  try{
+    var r = await fetch('/api/booking/'+encodeURIComponent(bookingId)+'/times-status',
+                        { headers: { 'Accept': 'application/json' } });
+    if(!r.ok) return null;
+    var j = await r.json();
+    if(!j || !j.ok || !j.calls) return null;
+    return j.calls;
+  }catch(e){ return null; }
+}
+
+// Booking dialog. Cached per booking like _bkClStatus, so a re-render of the
+// calls section (a mode tab, a save) repaints synchronously from the last good
+// answer instead of flashing unshaded.
+async function bkLoadTimesStatus(bookingId){
+  var calls = await goatTimesFetch(bookingId);
+  if(!calls) return null;
+  window._bkTsStatus = {bookingId: String(bookingId), calls: calls};
+  bkApplyTimesStatus(bookingId);
+  return window._bkTsStatus;
+}
+
+function _bkTsFor(bookingId){
+  var c = window._bkTsStatus;
+  return (c && c.bookingId === String(bookingId)) ? c : null;
+}
+
+function bkApplyTimesStatus(bookingId){
+  var cur = window._curBookingEdit;
+  if(!cur || String(cur.booking_id) !== String(bookingId)) return;   // dialog moved on
+  var c = _bkTsFor(bookingId);
+  if(!c) return;
+  goatTimesApply(document.getElementById('bk-calls-wrap'), c.calls);
+}
+
+// All Bookings. Per booking, because several rows can be expanded at once.
+async function abLoadTimesStatus(bookingId){
+  var calls = await goatTimesFetch(bookingId);
+  if(!calls) return null;
+  window._abTsStatus[String(bookingId)] = calls;
+  abApplyTimesStatus(bookingId);
+  return calls;
+}
+
+function abApplyTimesStatus(bookingId){
+  var calls = window._abTsStatus[String(bookingId)];
+  if(!calls) return;
+  goatTimesApply(document.getElementById('ab-calls-'+bookingId), calls);
+}
+
+// After an Accept (or a Save that ticks nothing), the booking must not be told
+// yesterday's answer: a user who accepts a call and presses Back expects that
+// row to be lavender. Dropping the cached entry is enough — the next render
+// calls the loader, and nothing paints from a stale map in between.
+function goatTimesInvalidate(bookingId){
+  if(_bkTsFor(bookingId)) window._bkTsStatus = null;
+  delete window._abTsStatus[String(bookingId)];
+}
+
 async function crewlistUndo(bookingId, callId){
   try{
     var r = await fetch('/api/crewlist/undo', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -29210,7 +29456,7 @@ function _tiCancelledBlock(d){
   const names = Object.keys(byCall).map(function(k){ return byCall[k]; });
   const n = names.length;
   return '<div style="font-size:11px;color:#f59e0b;padding-bottom:8px">'
-    + n+' cancelled call'+(n===1?'':'s')+' skipped — check their times in Enter Times: '
+    + n+' cancelled call'+(n===1?'':'s')+' skipped — check their times in View / Enter Times: '
     + escapeHtml(names.join(', '))
     + '</div>';
 }
@@ -29275,7 +29521,7 @@ function renderTimesheetImportPreview(){
     ? '<div style="font-size:11px;color:var(--accent);padding:0 0 8px">'+totalFlagged+' crew on this sheet '+(totalFlagged===1?'is':'are')+' not Confirmed in SmartStaff. They\'re ticked to write — untick anyone who shouldn\'t be, or fix their status on the call first.</div>'
     : '')
     + (totalPromo
-    ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">'+totalPromo+' crew on this sheet '+(totalPromo===1?'was':'were')+' promoted off backup and '+(totalPromo===1?'has':'have')+' not accepted. Their times will NOT be written. If they did work, confirm it from the call (the amber pill, or “they worked — unlock” in Enter Times), then import again.</div>'
+    ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">'+totalPromo+' crew on this sheet '+(totalPromo===1?'was':'were')+' promoted off backup and '+(totalPromo===1?'has':'have')+' not accepted. Their times will NOT be written. If they did work, confirm it from the call (the amber pill, or “they worked — unlock” in View / Enter Times), then import again.</div>'
     : '');
 
   document.getElementById('entity-modal-title').textContent = 'Import Times — review';
@@ -30764,25 +31010,44 @@ function bkCallRow(bookingId, c, maps, smaps){
     + 'title="Create a crew list for this call" '
     + 'style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px;margin-right:10px;cursor:pointer;white-space:nowrap" '
     + 'onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--muted)\'">📋 Crew list</span>';
+  // ⏱ Times (5.120.0, D3): the grid without the call dialog in between. Same
+  // markup and stopPropagation as 📋 Crew list beside it; the row itself still
+  // opens the call. 'booking' so Back comes back HERE rather than to a call
+  // dialog that was never on screen.
+  //
+  // NOT ON A CANCELLED CALL (Mike, 24 Nov). The call dialog's own rule is
+  // different -- it has offered the grid on a cancelled call since 5.77.0, for
+  // stood-down crew who are being paid -- and it keeps it. This list is a list:
+  // the TIMES TO CHECK chip below already says when a paid cancellation is
+  // waiting, and the call is one click away.
+  var tmBtn  = clCx ? '' : '<span onclick="event.stopPropagation();openCallTimes(\''+bookingId+'\',\''+c.call_id+'\',\'booking\')" '
+    + 'title="View or enter this call\'s times" '
+    + 'style="font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:3px;padding:1px 5px;margin-right:10px;cursor:pointer;white-space:nowrap" '
+    + 'onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--muted)\'">⏱ Times</span>';
   // Late cancellation: the call dialog's TIMES TO CHECK chip, repeated small
   // here so a paid cancellation waiting on Rich is visible without opening
   // every cancelled call. Same rule, same function.
   var ttcChip = goatCancelTimesToCheck(c)
-    ? ' <span title="Cancelled and paid — pre-filled times waiting to be checked in ⏱ Enter Times" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;white-space:nowrap">TIMES TO CHECK</span>'
+    ? ' <span title="Cancelled and paid — pre-filled times waiting to be checked in ⏱ View / Enter Times" style="font-size:9px;letter-spacing:.5px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 4px;white-space:nowrap">TIMES TO CHECK</span>'
     : '';
-  return '<div onclick="entityOpenCall(\''+bookingId+'\',\''+c.call_id+'\')" '
+  // data-ts-call / data-ts-lbl: where goatTimesApply() paints the time-state
+  // shade and hangs its chips (D4). Empty in the markup — the read is late and
+  // never awaited, so a row renders the moment the booking does. The hover below
+  // is UNCHANGED: the shade's left edge is an inset box-shadow, which this row's
+  // borderColor hover cannot touch.
+  return '<div data-ts-call="'+escapeHtml(String(c.call_id))+'" onclick="entityOpenCall(\''+bookingId+'\',\''+c.call_id+'\')" '
     + 'style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;'
     + 'border:1px solid var(--border);border-radius:4px;margin-bottom:5px;cursor:pointer;'
     + 'background:var(--surface2)" '
     + 'onmouseover="this.style.borderColor=\'var(--border-gold)\'" '
     + 'onmouseout="this.style.borderColor=\'var(--border)\'">'
     + '<div style="flex:1;min-width:0">'
-    +   '<div style="font-size:12px;color:var(--text)">'+name+chips+ttcChip+'</div>'
+    +   '<div style="font-size:12px;color:var(--text)">'+name+chips+ttcChip+'<span data-ts-lbl="'+escapeHtml(String(c.call_id))+'"></span></div>'
     +   whenLine
     +   clLine
     +   notesLine
     + '</div>'
-    + '<span style="display:flex;align-items:center;flex-shrink:0;margin-left:10px">'+clBtn+bkFeedCount(c)
+    + '<span style="display:flex;align-items:center;flex-shrink:0;margin-left:10px">'+clBtn+tmBtn+bkFeedCount(c)
     + '<span style="font-size:10px;color:var(--accent)">view \u2192</span></span></div>';
 }
 function bkCallsSection(bookingId, d){
@@ -30882,6 +31147,11 @@ function bkCallsSection(bookingId, d){
 function bkRerenderCalls(bookingId){
   var wrap = document.getElementById('bk-calls-wrap');
   if(wrap) wrap.innerHTML = bkCallsSection(bookingId, window._curBookingEdit);
+  // Repaint the time-state shading from the last good answer. Rows are built as
+  // HTML strings, so a re-render (a mode tab, a feed save) drops the tint; this
+  // puts it straight back without another round trip. Nothing to do when the
+  // read hasn't landed yet, or failed.
+  bkApplyTimesStatus(bookingId);
 }
 
 // The booking's three call tabs (Calls, Call feeds, Crew bosses) share ONE
@@ -31886,6 +32156,7 @@ function renderBookingDialog(bookingId, d, cached){
   bkLoadCheckinMode(bookingId, 'bk-checkin-wrap');   // async, never awaited
   gsheetLoadStatus(bookingId);                        // async, never awaited
   if(d) bkLoadCrewlistStatus(bookingId);              // async, never awaited
+  if(d) bkLoadTimesStatus(bookingId);                 // async, never awaited (D4)
   if(d) bkLoadCallTypes(bookingId, d);                // async, never awaited
   if(d) bkLoadPricingContext(bookingId, d);           // async, never awaited
   if(_notesOk) crewNotesInit({ key: _tabsKey, bookingId: bookingId,
@@ -36510,7 +36781,7 @@ function opsTimesChase(o){
   // The endpoint sends bosses:[] for a cancelled call on purpose. "No crew
   // boss assigned" would read as a staffing problem; it is a check to do.
   if(o.cancelled){
-    return '<span class="ops-offered">Check the pre-filled times in Enter Times</span>';
+    return '<span class="ops-offered">Check the pre-filled times in View / Enter Times</span>';
   }
   if(!bosses.length){
     if(o.tier === 'self') return '<span class="ops-offered">Crew member (own times) — nobody else enters these</span>';
@@ -36547,24 +36818,43 @@ function opsTimesCard(o, laneKey){
   const nsc    = Number(o.no_show_count) || 0;
   const nsChip = nsc > 0
     ? '<span class="ops-pill" title="The crew boss reported '+nsc+' No-show'+(nsc === 1 ? '' : 's')
-      + '. Open Enter Times to confirm or reject. Accept is held until then."'
+      + '. Open View / Enter Times to confirm or reject. Accept is held until then."'
       + ' style="color:#f59e0b;border-color:#f59e0b">'+nsc+' No-show to confirm</span>'
     : '';
   const needPill = (nsc > 0 && !(Number(o.needing) > 0))
     ? ''
     : '<span class="ops-pill" style="color:'+pcol+';border-color:'+pcol+'">'+escapeHtml(need)+'</span>';
+  // THREE DOORWAYS, AND THE CARD ITSELF IS STILL THE FOURTH (5.120.0, D1).
+  // Rich reads this lane to decide what to do next, and "what to do next" is
+  // not always the times: it can be the booking (who else is on it) or the call
+  // (who was confirmed). Each is one click now instead of a click, a Back and
+  // another click. stopPropagation on every one of them, because the card's own
+  // click still opens the grid -- that is what the row has always done and it
+  // is not being taken away.
+  const bid = o.booking_id || 0;
+  const cid = o.call_id || 0;
+  const nameLink = (bid && booking)
+    ? '<a class="ops-link" title="Open the booking (Calls)" onclick="event.stopPropagation();opsOpenBookingCalls(\''+bid+'\')">'+booking+'</a>'
+    : (booking || '—');
+  const metaLink = (bid && cid && meta)
+    ? '<a class="ops-link" title="Open the call" onclick="event.stopPropagation();openCallDialog(\''+bid+'\',\''+cid+'\')">'+meta+'</a>'
+    : meta;
+  const timesGo = (bid && cid)
+    ? '<span class="ops-times-go" title="View or enter this call\'s times" onclick="event.stopPropagation();openCallTimes(\''+bid+'\',\''+cid+'\')">⏱ Times →</span>'
+    : '';
   return '<div class="ops-row" onclick="opsRowClick(\''+laneKey+'\','+(o.call_id||0)+')">'
     +   '<div class="ops-row-main">'
     +     '<div class="ops-row-title">'
-    +       '<span class="ops-row-name">'+(booking || '—')+'</span>'
+    +       '<span class="ops-row-name">'+nameLink+'</span>'
     +       '<span class="ops-row-when">'+when+'</span>'
     +     '</div>'
-    +     '<span class="ops-row-meta">'+meta+'</span>'
+    +     '<span class="ops-row-meta">'+metaLink+'</span>'
     +   '</div>'
     +   '<div class="ops-row-fill">'
     +     needPill
     +     nsChip
     +     opsTimesChase(o)
+    +     timesGo
     +   '</div>'
     +   (labels ? '<div class="ops-row-labels">'+labels+'</div>' : '')
     + '</div>';
@@ -36587,6 +36877,18 @@ function opsTimesWhen(o){
 // what the boss submitted — not an inline grid in the lane. One place where
 // call times are edited; a second surface for the same data would drift from it.
 function opsTimesTarget(o){ openCallTimes(o.booking_id, o.call_id); }
+
+// The booking name on a Times outstanding card opens the booking ON ITS CALLS
+// TAB (D1), whatever tab that booking was last left on. A one-shot open intent
+// is how the travel link already does it (entityOpenBookingFromCall), and
+// bkIntentTab takes the intent's tab over the remembered one -- so this needs no
+// change to the tab memory and does not disturb the next ordinary open of the
+// same booking. Arriving from "times outstanding", Details is the wrong page:
+// the calls are what the row is about.
+function opsOpenBookingCalls(bookingId){
+  window._bkOpenIntent = { bookingId: String(bookingId), tab: 'calls' };
+  openBookingDialog(bookingId);
+}
 
 
 

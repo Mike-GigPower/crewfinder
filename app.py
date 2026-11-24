@@ -5749,6 +5749,46 @@ def fetch_crewlist_status(ss, params):
             "bookings": bookings if isinstance(bookings, dict) else {}}, None
 
 
+# ── CALL TIME STATE (brief BRIEF-times-navigation D4/D5) ───────────────────────
+# The shading on a booking's call rows: locked, times filled, or a count of who
+# still owes. SmartStaff owns the question and answers it through the SAME
+# helpers as the Times outstanding lane (get-booking-times-status.php says why);
+# THE GOAT only picks a colour.
+
+
+def fetch_booking_times_status(ss, booking_id):
+    """GET get-booking-times-status.php for one booking.
+
+    Returns (calls, error). calls is {callID: {ended, cancelled, confirmed,
+    promo_pending, with_times, times_filled, call_locked, no_show_open}} keyed
+    by STRING ids — every call of the booking, so absence means the booking has
+    no such call rather than "nothing to report".
+
+    with_times is None on a call whose times_filled is set: the shared helper
+    drops ticked calls, so there is no honest number. Callers must not read it
+    there — ✓ TIMES FILLED outranks every count anyway.
+
+    On ANY failure returns (None, err). The caller renders NO shading, never an
+    error: "couldn't check" must not read as an all-clear and must not stop a
+    booking opening. Same posture as fetch_crewlist_status.
+    """
+    url = f"{BASE_URL}/ajax/crew/get-booking-times-status.php"
+    try:
+        resp = ss.get(url, params={"booking": booking_id}, allow_redirects=True, timeout=30)
+    except Exception as e:
+        return None, f"request failed: {e}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
+    try:
+        data = json.loads(resp.text or "{}")
+    except Exception as e:
+        return None, f"bad JSON: {e}"
+    if not isinstance(data, dict) or "error" in data or not data.get("ok"):
+        return None, (data.get("error") if isinstance(data, dict) else None) or "bad response"
+    calls = data.get("calls")
+    return (calls if isinstance(calls, dict) else {}), None
+
+
 def ss_crewlist_post(ss, php, payload):
     """POST a JSON body to mark-crewlist-sent.php / undo-crewlist-sent.php.
     Returns (result, http_status, error). The PHP's own status is passed back
@@ -21171,6 +21211,31 @@ def api_booking_crewlist_status(booking_id):
     if err:
         return jsonify({"unavailable": True, "error": err}), 502
     return jsonify({"ok": True, "calls": data["calls"], "bookings": data["bookings"]})
+
+
+@app.route("/api/booking/<booking_id>/times-status", methods=["GET"])
+@require_cohort(*READ_ALL_COHORTS)
+def api_booking_times_status(booking_id):
+    """Time state for every call of one booking. {ok, calls} on success;
+    {"unavailable": true, error} with 502 when SmartStaff couldn't be asked —
+    the dialog then shades nothing rather than painting every call all-clear.
+
+    NO SERVER-SIDE CACHE, deliberately. Accepting a call in Enter Times changes
+    the answer, and the user is back on the booking seconds later; a cached
+    all-clear would be a lie exactly when it matters."""
+    try:
+        bid = int(str(booking_id).strip())
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad booking id"}), 400
+    if bid <= 0:
+        return jsonify({"error": "bad booking id"}), 400
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    calls, err = fetch_booking_times_status(ss, bid)
+    if err:
+        return jsonify({"unavailable": True, "error": err}), 502
+    return jsonify({"ok": True, "calls": calls})
 
 # ── Timesheet sheet links (booking -> the Google Sheet THE GOAT generated) ──────
 # Machine-local, gitignored — same idea as config.json / google_token.json. Lets the

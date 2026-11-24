@@ -17,6 +17,7 @@ SCRIPT = H.DOM_PRELUDE + r"""
 function _abCallWhen(){ return 'Thu 22 Oct 08:00'; }
 function bkLoadCheckinMode(){}
 function gsheetLoadStatus(){}
+function abLoadTimesStatus(){}   // the time-state shading (5.120.0): async, never awaited
 var opened = [];
 function openBookingDialog(id){ opened.push(String(id)); }
 function openCallDialog(){}
