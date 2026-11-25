@@ -1,6 +1,6 @@
 {
-  "version": "5.123.0",
+  "version": "5.123.1",
   "release_date": "2026-11-25",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.123.0/TheGOAT.dmg",
-  "release_notes": "When SmartStaff can't be reached, THE GOAT now says so plainly instead of showing an error page: you stay logged in and everything works again as soon as SmartStaff answers. A merely slow SmartStaff no longer causes errors, and the System tab now counts failed connection checks."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.123.1/TheGOAT.dmg",
+  "release_notes": "The SmartStaff graph on the System tab is now one bar per minute, with a fixed scale so a single slow minute no longer flattens the rest. Minutes that have already finished no longer change between refreshes."
 }
