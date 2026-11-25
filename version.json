@@ -1,6 +1,6 @@
 {
-  "version": "5.123.1",
+  "version": "5.124.0",
   "release_date": "2026-11-25",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.123.1/TheGOAT.dmg",
-  "release_notes": "The SmartStaff graph on the System tab is now one bar per minute, with a fixed scale so a single slow minute no longer flattens the rest. Minutes that have already finished no longer change between refreshes."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.124.0/TheGOAT.dmg",
+  "release_notes": "A crew member the Crew Boss marked Left early on the check-in sheet is now paid the hours they worked when you import times from check-in, with no 4-hour minimum. The row stays ticked, with a note giving the reason."
 }
