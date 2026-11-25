@@ -936,8 +936,8 @@ class MinimumThroughPreview(unittest.TestCase):
     def test_a_raise_from_the_rule_holds_that_row_only(self):
         real = C.minimum_top_up
 
-        def top(on, off, booked, sched, late, cfg):
-            return real(on, off, booked, None if late else sched, late, cfg)
+        def top(on, off, booked, sched, late, cfg, **kw):
+            return real(on, off, booked, None if late else sched, late, cfg, **kw)
 
         feed = _shape()
         feed["calls"][1]["rows"][1].update(late=True, late_source="mark",
@@ -953,6 +953,99 @@ class MinimumThroughPreview(unittest.TestCase):
         self.assertEqual(by[OUT][90101]["off"], "02:00")
         self.assertEqual(sorted(by), [SHOW, OUT, BOSS])
 
+
+
+# ── Left early, paid as worked (Mike, 25 Nov 2026) ─────────────────────────
+
+LE_SICK = {"reason": "sick", "reason_label": "Sick", "mitta_ref": None, "note": None}
+LE_HURT = {"reason": "injured", "reason_label": "Injured", "mitta_ref": "M-1234",
+           "note": "rolled ankle"}
+
+
+class LeftEarly(unittest.TestCase):
+
+    def test_booked_four_left_early_is_untouched_with_a_ticked_note(self):
+        feed = _one(M + "22:00", N + "00:30", under_4h=True, left_early=LE_SICK)
+        mn = _min(feed, OUT, 90101)
+        self.assertEqual((mn["applied"], mn["off"], mn["reason"]), (False, "00:30", "left_early"))
+        self.assertEqual(_off(feed, OUT, 90101), "00:30")
+        self.assertEqual(_flags(feed, OUT, 90101),
+                         [("info", "left_early",
+                           "left early (Sick) \u2014 paid as worked, no 4-hour minimum")])
+
+    def test_without_the_mark_the_same_row_is_topped_as_before(self):
+        feed = _one(M + "22:00", N + "00:30", under_4h=True, left_early=None)
+        self.assertEqual(_off(feed, OUT, 90101), "02:00")
+
+    def test_injured_note_carries_the_mitta_reference_and_the_note(self):
+        feed = _one(M + "22:00", N + "00:30", left_early=LE_HURT)
+        self.assertEqual(_flags(feed, OUT, 90101)[0][2],
+                         "left early (Injured, Mitta M-1234; rolled ankle) "
+                         "\u2014 paid as worked, no 4-hour minimum")
+
+    def test_four_hours_or_more_says_nothing(self):
+        feed = _one(M + "22:00", N + "02:15", left_early=LE_SICK)
+        mn = _min(feed, OUT, 90101)
+        self.assertEqual((mn["reason"], mn["flags"]), ("four_hours_or_more", []))
+
+    def test_booked_short_left_early_says_left_early(self):
+        feed = _one(M + "19:00", M + "21:00", booked="3", left_early=LE_SICK)
+        self.assertEqual([f[1] for f in _flags(feed, OUT, 90101)], ["left_early"])
+
+    def test_no_booked_length_left_early_is_not_held(self):
+        feed = _one(M + "22:00", N + "00:30", booked="0", left_early=LE_SICK)
+        self.assertEqual([(f[0], f[1]) for f in _flags(feed, OUT, 90101)], [("info", "left_early")])
+
+    def test_late_and_left_early_is_not_topped(self):
+        feed = _one(M + "23:00", N + "00:30", late=True, late_source="mark", left_early=LE_SICK)
+        row = C.convert_feed(feed)["tabs"][0]["rows"][0]
+        self.assertEqual((row["on"], row["off"], row["status"]), ("23:00", "00:30", "Late"))
+        self.assertEqual([f[1] for f in _flags(feed, OUT, 90101)], ["left_early"])
+
+    def test_text_without_a_label_or_anything(self):
+        self.assertEqual(C.left_early_text({"reason": "other"}),
+                         "left early (other) \u2014 paid as worked, no 4-hour minimum")
+        self.assertEqual(C.left_early_text({}),
+                         "left early \u2014 paid as worked, no 4-hour minimum")
+
+    def test_an_older_feed_without_the_key_behaves_as_before(self):
+        row = _w("Alpha Ada", 90101, M + "22:00", N + "00:30")
+        self.assertNotIn("left_early", row)
+        feed = C.apply_minimum(_mfeed(_mcall(OUT, "Load Out", M + "22:00", [row])),
+                               [_bcall(OUT, "22:00", "4")])
+        self.assertEqual(_off(feed, OUT, 90101), "02:00")
+
+
+class LeftEarlyThroughPreview(unittest.TestCase):
+    """Through _build_import_preview and attach_flags: ticked, as worked."""
+
+    _preview = MinimumThroughPreview._preview
+
+    def setUp(self):
+        ct = lambda ss, cid: ({"crew": [{"ein": e, "user_id": 80000 + e, "lastname": "L%d" % e,
+                                         "firstname": "F", "status": 5}
+                                        for e in M_ROSTER[int(cid)]]}, None)
+        p = mock.patch.multiple(A, fetch_booking_bulk=lambda ss, b: (M_BOOKING, None),
+                                ss_get_call_times=ct)
+        p.start()
+        self.addCleanup(p.stop)
+        feed = _shape()
+        for c in feed["calls"]:
+            for r in c["rows"]:
+                if c["call_id"] == OUT and r["ein"] == 90104:
+                    r["left_early"] = LE_HURT
+        self.prev, self.by = self._preview(C.apply_minimum(feed, B_12312))
+
+    def test_left_early_row_is_as_worked_ticked_with_the_note(self):
+        m = self.by[OUT][90104]
+        self.assertEqual((m["on"], m["off"]), ("22:00", "00:30"))
+        self.assertNotIn("checkin_worked_off", m)
+        self.assertEqual([(f["level"], f["code"]) for f in m["checkin_flags"]], [("info", "left_early")])
+        self.assertIn("Mitta M-1234", m["checkin_flags"][0]["text"])
+        self.assertFalse(m["checkin_hold"])
+
+    def test_team_mate_on_the_same_call_is_still_topped(self):
+        self.assertEqual(self.by[OUT][90101]["off"], "02:00")
 
 
 if __name__ == "__main__":

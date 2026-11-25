@@ -28,6 +28,12 @@ for 4 or more is written to its scheduled start + 4 hours (or the person's own
 later finish); a call with no booked length is held for a person to decide.
 There is no continuity: other calls the person worked do not matter. The
 feed's own `under_4h` is not used to decide anything.
+
+LEFT EARLY (Mike, 25 Nov 2026). A row whose feed `left_early` is set was
+marked by the Crew Boss as having left early (injured, always with a Mitta
+reference; sick; sent home; personal; other). It is paid as worked: no
+minimum, whatever the booked length. It stays TICKED, with an info note
+giving the reason. The rule is still minimum_top_up(paid_as_worked=True).
 """
 
 from datetime import datetime, timedelta
@@ -204,6 +210,20 @@ def _worked_span(row):
     return melb_wall(on), melb_wall(off)
 
 
+def left_early_text(le):
+    """The preview note for a Left early row, e.g.
+    'left early (Injured, Mitta M-1234; rolled ankle) \u2014 paid as worked,
+    no 4-hour minimum'. The reference and note are left out when absent."""
+    le = le or {}
+    reason = str(le.get("reason_label") or le.get("reason") or "").strip()
+    ref = str(le.get("mitta_ref") or "").strip()
+    note = str(le.get("note") or "").strip()
+    head = ", ".join([p for p in (reason, ("Mitta " + ref) if ref else "") if p])
+    inner = "; ".join([p for p in (head, note) if p])
+    return (("left early (%s)" % inner) if inner else "left early") + \
+        " \u2014 paid as worked, no 4-hour minimum"
+
+
 def _hours_text(v):
     """Booked length for a note: '3 h', '3.5 h'."""
     f = float(v)
@@ -252,7 +272,8 @@ def apply_minimum(feed, booking_calls):
             # preview down: that row is held with a warning, nothing is applied
             # to it, and everyone else's rows load as normal.
             try:
-                top = minimum_top_up(on, off, length, start, bool(r.get("late")), SPLIT_CFG)
+                top = minimum_top_up(on, off, length, start, bool(r.get("late")), SPLIT_CFG,
+                                     paid_as_worked=bool(r.get("left_early")))
             except (DerivationError, TypeError, ValueError) as e:
                 entry["reason"] = "error"
                 entry["flags"].append(_warn(
@@ -276,6 +297,8 @@ def apply_minimum(feed, booking_calls):
                         "min_applied",
                         "4-hour minimum applied: finish %s \u2192 %s"
                         % (worked_off, entry["off"])))
+            elif reason == "left_early":
+                entry["flags"].append(_info("left_early", left_early_text(r.get("left_early"))))
             elif reason == "own_finish_later":
                 entry["flags"].append(_info(
                     "late_min", "late start \u2014 paid as worked, no 4-hour minimum"))
