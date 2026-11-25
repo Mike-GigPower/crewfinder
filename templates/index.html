@@ -29843,14 +29843,30 @@ function _tiScanBlock(d){
   if(src.kind !== 'scan') return '';
   const pages = src.pages_read;
   const conv  = d.scan_converted || [];
-  let held = 0;
-  (d.calls || []).forEach(function(c){ (c.matched || []).forEach(function(m){ if(m.scan_hold) held++; }); });
+  // Two different things need a person, and counting only one of them made the
+  // header contradict itself: booking 12113 read "6 flagged" and then "1 row
+  // needs a look", with no account of the other five. Held rows can be ticked;
+  // refused rows cannot be written at all and have to be keyed by hand. Both
+  // are said, so the numbers add up and neither kind is quietly dropped.
+  // (The three rows carrying only no_break_written are the rest of the six:
+  // routine, ticked, and correctly not asking for anything.)
+  let held = 0, locked = 0;
+  (d.calls || []).forEach(function(c){
+    (c.matched || []).forEach(function(m){ if(m.scan_hold) held++; });
+    locked += (c.scan_skipped || []).length;
+  });
+  const lines = [];
+  if(held)   lines.push(held + ' row' + (held===1?' needs':'s need')
+                        + ' a look — flagged in amber and left unticked. Tick a row to write it.');
+  if(locked) lines.push(locked + ' row' + (locked===1?'':'s') + ' can\'t be written — the reader refused '
+                        + (locked===1?'a value':'values') + '. Enter '
+                        + (locked===1?'it':'them') + ' by hand in Enter Times.');
   return '<div style="font-size:11px;color:var(--muted);padding:0 0 8px">📷 Read from a scanned sheet'
     + (pages ? ' · ' + pages + ' page' + (pages===1?'':'s') : '') + '</div>'
     + (src.summary ? '<div style="font-size:12px;color:var(--text);padding:0 0 8px">' + escapeHtml(src.summary) + '</div>' : '')
     + (conv.length ? '<div style="font-size:11px;color:var(--muted);padding:0 0 8px">Converted to JPEG first: ' + escapeHtml(conv.join(', ')) + '</div>' : '')
-    + (held ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + held + ' row' + (held===1?' needs':'s need')
-              + ' a look — flagged in amber and left unticked. Tick a row to write it.</div>' : '');
+    + lines.map(function(t){
+        return '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + t + '</div>'; }).join('');
 }
 
 // Blocks that matched no call on this booking. Each one shows which table it is
@@ -30001,7 +30017,27 @@ function _tiScanExtras(c){
 // than counted a second time from the engine's roster_not_on_sheet: the preview's
 // list is the one matched against SmartStaff just now.
 function _tiScanNotOnSheet(c){
-  const ro = c.roster_only || [];
+  // _tiOffFeed, not c.roster_only. roster_only is "the roster minus the rows we
+  // MATCHED", and a row the reader refused is not matched -- convert_row blanks
+  // its `on` so the shared matcher puts it in `skipped`. Taking roster_only
+  // whole therefore listed a person under "not on the sheet" two lines below
+  // their own row, read off that very sheet (booking 12113, Ebdon). _tiOffFeed
+  // subtracts the skipped rows, which is the question actually being asked:
+  // who has no row on the paper at all?
+  //
+  // A handwritten walk-on counts as being on the sheet too. Booking 12113 had
+  // Nichols and Ghosh written in by hand at the bottom, named in "On the sheet,
+  // not on this call" with the person the reader guessed — and ALSO listed here
+  // as missing from the sheet. Both lists were describing the same two people
+  // in opposite terms. They are on the paper; what they are not is a printed
+  // row. Leaving them out keeps this list what Ops needs it to be: the people
+  // nobody wrote down anywhere.
+  const byHand = {};
+  (c.scan_extras || []).forEach(function(e){
+    const p = e.guessed_person;
+    if(p && p.ein != null) byHand[String(p.ein)] = true;
+  });
+  const ro = _tiOffFeed(c).filter(function(r){ return !byHand[String(r.ein)]; });
   if(!ro.length) return '';
   const names = ro.map(function(r){ return decodeEntities(String(r.name || ('EIN ' + r.ein))); });
   return '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5">'

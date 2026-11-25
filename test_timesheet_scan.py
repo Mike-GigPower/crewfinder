@@ -1090,12 +1090,55 @@ console.log(JSON.stringify([h.indexOf('L90009, F') > -1,
 
     def test_on_this_call_not_on_the_sheet_names_the_people(self):
         out = self.run_js("""
-const h = _tiScanNotOnSheet({roster_only:[{ein:90004, name:'L90004, F'}]});
+const h = _tiScanNotOnSheet({roster_only:[{ein:90004, name:'L90004, F'}], skipped:[], scan_extras:[]});
 console.log(JSON.stringify([h.indexOf('not on the sheet (1)') > -1,
                             h.indexOf('L90004, F') > -1,
-                            _tiScanNotOnSheet({roster_only:[]}) === '']));
+                            _tiScanNotOnSheet({roster_only:[], skipped:[], scan_extras:[]}) === '']));
 """)
         self.assertEqual(out, [True, True, True])
+
+    def test_a_refused_row_is_not_also_listed_as_missing_from_the_sheet(self):
+        """Booking 12113: Ebdon's row was read off the sheet and refused, and
+        he was then named under "on this call, not on the sheet" two lines
+        below his own row. roster_only is the roster minus the MATCHED rows,
+        so a refused row -- which leaves `matched` by design -- fell into it."""
+        out = self.run_js("""
+const c = {roster_only:[{ein:90004, name:'Refused, Row'}, {ein:90005, name:'Absent, Ann'}],
+           skipped:[{ein:90004, name:'Refused, Row', reason:'no times in sheet'}],
+           scan_extras:[]};
+const h = _tiScanNotOnSheet(c);
+console.log(JSON.stringify([h.indexOf('Refused, Row') > -1,
+                            h.indexOf('Absent, Ann') > -1,
+                            h.indexOf('not on the sheet (1)') > -1]));
+""")
+        self.assertEqual(out, [False, True, True])
+
+    def test_a_handwritten_walk_on_is_not_also_listed_as_missing(self):
+        """Same booking: Nichols and Ghosh wrote themselves in by hand. They
+        were named in "On the sheet, not on this call" WITH the person the
+        reader guessed, and also here as missing from the sheet -- the two
+        lists describing the same people in opposite terms."""
+        out = self.run_js("""
+const c = {roster_only:[{ein:90006, name:'Byhand, Bea'}, {ein:90005, name:'Absent, Ann'}],
+           skipped:[],
+           scan_extras:[{text:'Bea Byhand 2200 0200',
+                         guessed_person:{ein:90006, firstname:'Bea', lastname:'Byhand'}}]};
+const h = _tiScanNotOnSheet(c);
+console.log(JSON.stringify([h.indexOf('Byhand, Bea') > -1,
+                            h.indexOf('Absent, Ann') > -1,
+                            h.indexOf('not on the sheet (1)') > -1]));
+""")
+        self.assertEqual(out, [False, True, True])
+
+    def test_an_unguessed_walk_on_takes_nobody_off_the_missing_list(self):
+        """An extra the reader could not put a name to removes no one: there is
+        no person to subtract, and guessing one here would be inventing it."""
+        out = self.run_js("""
+const c = {roster_only:[{ein:90005, name:'Absent, Ann'}], skipped:[],
+           scan_extras:[{text:'2200 0200', guessed_person:null}]};
+console.log(JSON.stringify([_tiScanNotOnSheet(c).indexOf('Absent, Ann') > -1]));
+""")
+        self.assertEqual(out, [True])
 
     JS2 = H.extract("_tiScanUnassignedBlock", "_tiScanBlock", "_tiScanReadingLine")
 
@@ -1143,7 +1186,7 @@ console.log(JSON.stringify([_tiScanUnassignedBlock({source:{kind:'scan'}, unassi
     def test_the_top_line_counts_the_held_rows(self):
         out = self.run_js2("""
 const d = {source:{kind:'scan', pages_read:3, summary:'14 rows read \\u00b7 4 flagged'},
-  calls:[{matched:[{scan_hold:true},{scan_hold:true},{}]}]};
+  calls:[{matched:[{scan_hold:true},{scan_hold:true},{}], scan_skipped:[]}]};
 const h = _tiScanBlock(d);
 console.log(JSON.stringify([h.indexOf('3 pages') > -1,
                             h.indexOf('14 rows read') > -1,
@@ -1151,6 +1194,32 @@ console.log(JSON.stringify([h.indexOf('3 pages') > -1,
                             _tiScanBlock({source:{kind:'gsheet'}}) === '']));
 """)
         self.assertEqual(out, [True, True, True, True])
+
+    def test_refused_rows_are_counted_in_the_header_too(self):
+        """Booking 12113 read "6 flagged" and then "1 row needs a look", with
+        no account of the other five. A refused row cannot be ticked, so it was
+        in neither number -- and the header contradicted itself."""
+        out = self.run_js2("""
+const d = {source:{kind:'scan', pages_read:1, summary:'6 rows read \\u00b7 6 flagged'},
+  calls:[{matched:[{scan_hold:true}], scan_skipped:[{ein:1}]},
+         {matched:[{}], scan_skipped:[{ein:2}]}]};
+const h = _tiScanBlock(d);
+console.log(JSON.stringify([h.indexOf('1 row needs a look') > -1,
+                            h.indexOf("2 rows can't be written") > -1,
+                            h.indexOf('by hand in Enter Times') > -1]));
+""")
+        self.assertEqual(out, [True, True, True])
+
+    def test_a_clean_sheet_asks_for_nothing(self):
+        out = self.run_js2("""
+const d = {source:{kind:'scan', pages_read:1, summary:'4 rows read \\u00b7 0 flagged'},
+  calls:[{matched:[{}], scan_skipped:[]}]};
+const h = _tiScanBlock(d);
+console.log(JSON.stringify([h.indexOf('needs a look') > -1,
+                            h.indexOf("can't be written") > -1,
+                            h.indexOf('4 rows read') > -1]));
+""")
+        self.assertEqual(out, [False, False, True])
 
     def test_the_reading_line_counts_pages_for_images_and_files_for_a_pdf(self):
         out = self.run_js2("""
