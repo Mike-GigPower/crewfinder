@@ -572,16 +572,31 @@ def _status_for(backend, stats, check_failed_relogins):
 
 
 def _sparkline(rows, backend, now, minutes=15):
-    """One median per minute over the last `minutes`, oldest first. None for a
-    minute with no requests, so the UI can break the polyline rather than draw
-    a line through zero."""
+    """One median per WALL-CLOCK minute over the last `minutes`, oldest first.
+    None for a minute with no requests, so the UI can break the polyline rather
+    than draw a line through zero.
+
+    Aligned to HH:MM:00 for the same reason as `_series_60m` (5.123.1): age-from-
+    now bucketing slides all the bucket edges on every poll, so a request moves
+    between minutes and a finished minute keeps changing. Fixed here in 5.123.2.
+
+    NOTE: nothing consumes this field today. It is emitted in the summary
+    payload at backends.<backend>.sparkline and is read by no caller -- the
+    System tab draws the range strip and the 60-minute trace instead. Kept
+    correct rather than deleted so the payload does not carry a field that is
+    wrong by construction; delete it if a future pass confirms it is still dead.
+    """
+    now_min   = int(now // 60)
+    first_min = now_min - (minutes - 1)
+
     buckets = [[] for _ in range(minutes)]
     for r in rows:
         if r.get('backend') != backend:
             continue
-        age = now - r.get('_epoch', now)
-        idx = minutes - 1 - int(age // 60)
-        if 0 <= idx < minutes and isinstance(r.get('total_ms'), (int, float)):
+        if not isinstance(r.get('total_ms'), (int, float)):
+            continue
+        idx = int(r.get('_epoch', now) // 60) - first_min
+        if 0 <= idx < minutes:
             buckets[idx].append(r['total_ms'])
     return [_pct(b, 0.5) if b else None for b in buckets]
 
