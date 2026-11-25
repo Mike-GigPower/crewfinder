@@ -391,6 +391,37 @@ class TestMinimumRule(unittest.TestCase):
         r = minimum_top_up(sched, datetime(2026, 10, 4, 1, 0), 4.0, sched, False, CFG)
         self.assertEqual(r["billable_end"], datetime(2026, 10, 4, 5, 0))
 
+    # ---- left early (Mike, 25 Nov 2026): paid as worked ----
+
+    def test_left_early_booked_four_is_not_topped(self):
+        off = datetime(2026, 6, 11, 0, 30)
+        r = minimum_top_up(self.SCHED, off, 4.0, self.SCHED, False, CFG, paid_as_worked=True)
+        self.assertEqual((r["reason"], r["minimum_applies"], r["minimum_applied"]),
+                         ("left_early", True, False))
+        self.assertEqual(r["billable_end"], off)
+
+    def test_left_early_wins_over_no_booked_length_and_a_late_start(self):
+        off = datetime(2026, 6, 11, 0, 30)
+        for booked in (None, 0, 3.0, 8.0):
+            r = minimum_top_up(datetime(2026, 6, 10, 23, 0), off, booked, self.SCHED, True, CFG,
+                               paid_as_worked=True)
+            self.assertEqual((r["reason"], r["billable_end"]), ("left_early", off), booked)
+
+    def test_left_early_needs_no_scheduled_start(self):
+        r = minimum_top_up(self.SCHED, datetime(2026, 6, 11, 0, 30), 4.0, None, False, CFG,
+                           paid_as_worked=True)
+        self.assertEqual(r["reason"], "left_early")
+
+    def test_four_hours_or_more_is_still_four_hours_or_more_when_left_early(self):
+        off = datetime(2026, 6, 11, 2, 15)
+        r = minimum_top_up(self.SCHED, off, 4.0, self.SCHED, False, CFG, paid_as_worked=True)
+        self.assertEqual(r["reason"], "four_hours_or_more")
+
+    def test_derive_times_never_passes_left_early(self):
+        c = call(1, "22:00", 4.0)
+        r = derive_times(sub("22:00", "00:30", next_day=True), [], c, [], [], CFG)
+        self.assertEqual(r["minimum_reason"], "topped")
+
     def test_derive_times_applies_decision_23_to_a_late_arrival(self):
         # 22:00 call booked 4 h, arrived 22:20 (rounds to 22:15), finished 00:30.
         c = call(1, "22:00", 4.0)

@@ -102,6 +102,12 @@ MAX_ROLL_GAP_MINS = 60
 # DECISION 23 (Mike, 22 Nov 2026): a late start is topped only to the finish
 # on-time crew get. Under decision 24 that is the same formula for everyone.
 #
+# LEFT EARLY (Mike, 25 Nov 2026): someone the Crew Boss marked as having left
+# early on the check-in sheet (injured, sick, sent home, personal, other) is
+# paid as worked, whatever the call was booked for. "Sent home by Gig Power or
+# leaving by choice would both be paid worked hours only." minimum_top_up()
+# takes this as paid_as_worked=True; only the check-in import passes it.
+#
 # The rule is minimum_top_up(), below. It is the only copy: derive_times() and
 # the check-in import (checkin_import.apply_minimum) both call it.
 MIN_ENGAGEMENT_HOURS = 4.0
@@ -381,7 +387,7 @@ def _booked_hours(value):
     return hours if hours > 0 else None
 
 
-def minimum_top_up(on, off, booked_hours, scheduled_start, late, cfg):
+def minimum_top_up(on, off, booked_hours, scheduled_start, late, cfg, paid_as_worked=False):
     """
     DECISIONS 24 AND 23 (Mike, 22 Nov 2026). THE ONE COPY OF THE MINIMUM RULE.
 
@@ -393,12 +399,18 @@ def minimum_top_up(on, off, booked_hours, scheduled_start, late, cfg):
         scheduled_start  the call's scheduled start, naive local
         late             the person is late FOR PAY on this call (a Late mark,
                          or a typed start after the call time)
+        paid_as_worked   the Crew Boss marked them as having LEFT EARLY (Mike,
+                         25 Nov 2026): no minimum, whatever the booked length.
+                         Only the check-in import sets it; derive_times never
 
     Returns {span_hours, minimum_applies, reason, minimum_applied, late_start,
     billable_end}. `reason` is one of:
 
         four_hours_or_more  the paid span already meets the minimum. Nothing to
                             decide, whatever the call was booked for.
+        left_early          marked as having left early: paid as worked. Wins
+                            over every reason below, a missing booked length
+                            included: there is nothing left for Ops to decide.
         booked_short        booked under the minimum: paid as worked.
         no_booked_length    no booked length: nothing is topped up, and the
                             caller should hold the row for a person to decide.
@@ -447,6 +459,10 @@ def minimum_top_up(on, off, booked_hours, scheduled_start, late, cfg):
 
     if span_hours >= MIN_ENGAGEMENT_HOURS - 1e-9:
         result["reason"] = "four_hours_or_more"
+        return result
+
+    if paid_as_worked:
+        result["reason"] = "left_early"
         return result
 
     if booked is None:
