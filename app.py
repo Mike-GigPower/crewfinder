@@ -122,6 +122,7 @@ import name_match
 import drive_contracts
 import accred_names
 import checkin_import
+import timesheet_scan
 # When running inside a PyInstaller bundle, use the executable's directory
 # When running as a script, use the script's directory
 if getattr(_sys, 'frozen', False):
@@ -799,6 +800,25 @@ CHECKIN_BOOKING_MODE_URL = "https://ihyvwhquycsxhmhulzmu.supabase.co/functions/v
 # every call's crew rows with PAID times, computed by the check-in Times view's own
 # code. Same GOAT_CHECKIN_KEY, same X-Goat-Service-Key header, server-side only.
 CHECKIN_SETTLEMENT_URL = "https://crew.gigpower.com/api/goat/checkin-settlement"
+# Crew Hub's timesheet-scan routes (BRIEF-timesheet-scan-slice3b + addendum 1).
+# TWO steps, not one: Vercel caps a function request body at 4.5 MB and a
+# realistic 3-page phone sheet is about 4.3 MB, so the files never travel
+# through Crew Hub at all. THE GOAT asks for a signed URL per file, PUTs each
+# one straight to Supabase storage, then sends the PATHS to be read.
+# Same GOAT_CHECKIN_KEY and X-Goat-Service-Key header as the settlement feed,
+# plus X-Goat-User (the operator's SmartStaff id) for the T8 allow-list.
+TIMESHEET_SCAN_UPLOAD_URL = "https://crew.gigpower.com/api/goat/timesheet-scan/upload-url"
+TIMESHEET_SCAN_URL = "https://crew.gigpower.com/api/goat/timesheet-scan"
+# What the bucket accepts (Crew Hub lib/timesheet-scan-store.ts): JPEG, PNG,
+# PDF, 25 MB a file, 12 files at once. HEIC is refused at the upload-url step,
+# so timesheet_scan.convert_heic_files runs BEFORE it.
+SCAN_MAX_BYTES = 25 * 1024 * 1024
+SCAN_MAX_FILES = 12
+SCAN_ACCEPT_EXTS = (".jpg", ".jpeg", ".png", ".pdf", ".heic", ".heif")
+# The read is the slow part: about 11 s a page measured, pages read four at a
+# time, and Crew Hub pins the route at maxDuration 300. A little over that, so
+# a timeout here is always THE GOAT giving up after Crew Hub already has.
+SCAN_READ_TIMEOUT = 320
 # A NEW, DEDICATED secret — deliberately not GOAT_RECRUITMENT_KEY, so the pilot
 # switch can be revoked on its own without taking recruitment down with it. Same
 # discipline as every other key here: env first, then the gitignored config.json,
@@ -22548,6 +22568,290 @@ def api_import_times_preview_checkin(booking_id):
     checkin_import.attach_flags(
         preview, feed,
         roster_status=checkin_import.roster_status_from_call_times(rec.answers))
+    return jsonify(preview)
+
+
+# ─── IMPORT TIMES FROM A SCANNED SIGNED SHEET (slice 3b Part 2) ──────────────
+# BRIEF-timesheet-scan-slice3b.md Part 2, as amended by addendum 1. The FOURTH
+# Import Times source, built the way check-in was: Crew Hub reads the paper,
+# timesheet_scan reshapes the answer into the sheet-reader's {tabs,
+# skipped_tabs}, and _build_import_preview runs on it UNCHANGED. The write is
+# the same /api/call/<b>/<c>/times -> update-call-times.php as every other
+# import. No new write path, no PHP change (T5).
+#
+# Three steps upstream, because the files do not go through Vercel:
+#   1 POST .../timesheet-scan/upload-url  -> a signed URL per file
+#   2 PUT each file to its signed URL     -> straight into Supabase storage
+#   3 POST .../timesheet-scan             -> the paths, and the read
+# Step 2 is one PUT per URL: a second attempt on the same URL gets 409, so a
+# failed PUT is reported rather than retried.
+
+def _scan_headers():
+    """The two headers both scan routes want. The key stays server-side and is
+    never logged or returned; X-Goat-User is the operator's SmartStaff id for
+    the T8 allow-list, taken from the session, never from the browser."""
+    return {"X-Goat-Service-Key": GOAT_CHECKIN_KEY,
+            "X-Goat-User": str(current_user_id() or "")}
+
+
+def _scan_upstream_error(r):
+    """(message, status) from a Crew Hub refusal, using its own wording where
+    that wording is already meant for an operator (the T8 403, for one)."""
+    try:
+        upstream = str((r.json() or {}).get("error") or "")
+    except Exception:
+        upstream = ""
+    print(f"[scan] Crew Hub returned {r.status_code}")
+    return timesheet_scan.scan_error_message(r.status_code, upstream), r.status_code
+
+
+def _scan_request_upload_urls(booking_id, filenames):
+    """(uploads list, None) or (None, message). Positional: uploads[i] is for
+    filenames[i]. A HEIC is refused HERE by Crew Hub, before any bytes move —
+    which is why the caller converts first."""
+    try:
+        r = http.post(TIMESHEET_SCAN_UPLOAD_URL, headers=_scan_headers(),
+                      json={"booking_id": int(booking_id), "filenames": filenames},
+                      timeout=30)
+    except Exception as e:
+        print(f"[scan] upload-url request failed: {e}")
+        return None, "Couldn't reach Crew Hub to start the upload. Check the connection and try again."
+    if r.status_code != 200:
+        return None, _scan_upstream_error(r)[0]
+    try:
+        data = r.json()
+        ups = data.get("uploads")
+    except Exception:
+        return None, "Crew Hub sent back something that isn't JSON."
+    if not isinstance(ups, list) or len(ups) != len(filenames):
+        return None, "Crew Hub didn't return an upload slot for every file."
+    return ups, None
+
+
+def _scan_put_file(upload, name, data):
+    """PUT one file to its signed URL. (None) on success, else a message.
+
+    The content type must be EXACTLY the one Crew Hub returned: the bucket
+    enforces its own mime list and refuses anything else. Not retried — a
+    second PUT to the same signed URL answers 409 Duplicate."""
+    url = (upload or {}).get("signed_url")
+    ctype = (upload or {}).get("content_type")
+    if not url:
+        return "Crew Hub didn't return an upload URL for %s." % name
+    if not ctype:
+        # Only reachable if the contract changes under us. Derive rather than
+        # send nothing, since nothing is certain to be refused.
+        ext = os.path.splitext(name.lower())[1]
+        ctype = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".png": "image/png", ".pdf": "application/pdf"}.get(ext)
+        if not ctype:
+            return "Couldn't work out the file type for %s." % name
+    try:
+        r = http.put(url, data=data, headers={"Content-Type": ctype},
+                     timeout=180)
+    except Exception as e:
+        print(f"[scan] upload PUT failed: {e}")
+        return "Couldn't upload %s. Check the connection and try again." % name
+    if r.status_code not in (200, 201):
+        print(f"[scan] upload PUT returned {r.status_code}")
+        if r.status_code == 409:
+            return "%s was already uploaded — start the scan again." % name
+        return "Crew Hub's storage refused %s (HTTP %s)." % (name, r.status_code)
+    return None
+
+
+def _scan_read(booking_id, scan_paths, call_ids=None):
+    """(result dict, None) or (None, message). The slow one: about 11 s a page,
+    pages read four at a time, Crew Hub capped at 300 s."""
+    body = {"booking_id": int(booking_id), "scan_paths": list(scan_paths)}
+    if call_ids:
+        body["call_ids"] = [int(c) for c in call_ids]
+    try:
+        r = http.post(TIMESHEET_SCAN_URL, headers=_scan_headers(), json=body,
+                      timeout=SCAN_READ_TIMEOUT)
+    except http.exceptions.Timeout:
+        return None, "Reading the sheet took too long. Try one sheet at a time."
+    except Exception as e:
+        print(f"[scan] read request failed: {e}")
+        return None, "Couldn't reach Crew Hub to read the sheet. Check the connection and try again."
+    if r.status_code != 200:
+        return None, _scan_upstream_error(r)[0]
+    try:
+        data = r.json()
+    except Exception:
+        return None, "Crew Hub sent back something that isn't JSON."
+    if not isinstance(data, dict) or not isinstance(data.get("calls"), list):
+        return None, "Crew Hub's scan sent back an unexpected shape."
+    return data, None
+
+
+def _scan_length_text(v):
+    """Booked length for a pick button: '5h', '1.5h', or '' when unknown."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if f <= 0:
+        return ""
+    return ("%dh" % f) if f == int(f) else ("%sh" % ("%.2f" % f).rstrip("0").rstrip("."))
+
+
+def _scan_candidates(bcalls):
+    """({str(call_id): {call_name, start, length}}, [live call ids]) from
+    get-booking.php's `calls`, for labelling the pick buttons and for working
+    out a re-run's call_ids. Cancelled calls are left out of both: a block is
+    never picked onto a cancelled call, and a re-run must not resurrect one."""
+    out, live = {}, []
+    for c in bcalls or []:
+        try:
+            cid = int(c.get("call_id"))
+        except (TypeError, ValueError):
+            continue
+        if c.get("cancelled") or c.get("cancelled_at"):
+            continue
+        live.append(cid)
+        start = ""
+        m = re.match(r"(\d{1,2}):(\d{2})", str(c.get("start_time") or ""))
+        if m:
+            start = "%02d:%s" % (int(m.group(1)), m.group(2))
+        out[str(cid)] = {"call_name": c.get("call_name") or ("Call %s" % cid),
+                         "start": start,
+                         "length": _scan_length_text(c.get("est_length"))}
+    return out, live
+
+
+def _scan_files_from_request():
+    """([(filename, bytes)], None) or (None, message) for the upload form.
+
+    Size and extension are checked here as well as in Crew Hub, so a 40 MB
+    photo is turned away before it is read into memory twice and sent across
+    the country to be refused."""
+    ups = [f for f in request.files.getlist("file") if f and f.filename]
+    if not ups:
+        return None, "No file uploaded (expected one or more multipart 'file' parts)."
+    if len(ups) > SCAN_MAX_FILES:
+        return None, "At most %d files at once." % SCAN_MAX_FILES
+    out = []
+    for up in ups:
+        name = os.path.basename(up.filename or "scan")
+        ext = os.path.splitext(name.lower())[1]
+        if ext not in SCAN_ACCEPT_EXTS:
+            return None, ("Can't read %s. Send a JPEG, PNG or PDF."
+                          % (ext or "that file"))
+        data = up.read()
+        if not data:
+            return None, "%s is empty." % name
+        if len(data) > SCAN_MAX_BYTES:
+            return None, ("%s is %.1f MB — the limit is %d MB a file."
+                          % (name, len(data) / 1048576.0, SCAN_MAX_BYTES // 1048576))
+        out.append((name, data))
+    return out, None
+
+
+@app.route("/api/booking/<booking_id>/import-times/preview-scan", methods=["POST"])
+@require_cohort("admin")
+def api_import_times_preview_scan(booking_id):
+    """Import Times from a scanned or photographed signed crew list.
+
+    Read-only: nothing is written to SmartStaff here. Ops tick rows in the
+    review and press the existing write (T5).
+
+    Two ways in, one answer:
+
+      files        multipart 'file' parts (one or several). HEIC is converted
+                   to JPEG with sips first, because Crew Hub refuses the
+                   extension at the upload-url step on purpose — before
+                   megabytes travel. Then upload-url, a PUT each, then the read.
+
+      scan_paths   a re-run of files already in the bucket, with `call_ids`
+                   narrowed. This is the pick-a-call button (addendum E): the
+                   same paths are read again with the losing candidates
+                   dropped. Nothing marks a scan consumed, so a path can be
+                   re-read as often as Ops press a button — at the cost of a
+                   full model read each time (~12 s and ~$0.14 for 3 pages).
+
+    The engine's answer becomes {tabs, skipped_tabs} (timesheet_scan.convert_scan)
+    and goes through _build_import_preview UNCHANGED; the review fields are then
+    ADDED (timesheet_scan.attach_flags), so no existing key changes and the
+    other three sources are untouched."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    if not GOAT_CHECKIN_KEY:
+        return jsonify({"error": "THE GOAT's Crew Hub key (goat_checkin_key) isn't "
+                                 "configured on this machine."}), 503
+    if current_user_id() is None:
+        # Crew Hub's allow-list is keyed on the SmartStaff user id, so without
+        # one there is nothing to check and the request would 400 upstream.
+        return jsonify({"error": "THE GOAT couldn't read your SmartStaff user id — "
+                                 "sign out and in again."}), 403
+    try:
+        bid = int(booking_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "booking_id must be an integer"}), 400
+
+    # ── a re-run on paths already uploaded (the pick-a-call button) ──
+    scan_paths = [p for p in request.form.getlist("scan_path") if p]
+    call_ids = []
+    for v in request.form.getlist("call_id"):
+        try:
+            call_ids.append(int(v))
+        except (TypeError, ValueError):
+            return jsonify({"error": "call_id must be an integer"}), 400
+
+    converted = []
+    if not scan_paths:
+        files, err = _scan_files_from_request()
+        if err:
+            return jsonify({"error": err}), 400
+        # HEIC -> JPEG before step 1. sips is part of macOS and the bundle is
+        # not sandboxed, so this works in the shipped app; if it ever doesn't,
+        # the operator is told to save it as JPEG or PDF rather than left with
+        # a failure further down.
+        if any(timesheet_scan.is_heic(n) for n, _d in files):
+            if not timesheet_scan.sips_available():
+                return jsonify({"error": "This Mac can't convert an iPhone photo (HEIC). "
+                                         + timesheet_scan.HEIC_REFUSAL + "."}), 400
+            try:
+                files, converted = timesheet_scan.convert_heic_files(files)
+            except RuntimeError as e:
+                return jsonify({"error": str(e) + "."}), 400
+
+        uploads, err = _scan_request_upload_urls(bid, [n for n, _d in files])
+        if err:
+            return jsonify({"error": err}), 502
+        for up, (name, data) in zip(uploads, files):
+            err = _scan_put_file(up, name, data)
+            if err:
+                return jsonify({"error": err}), 502
+        scan_paths = [u.get("storage_path") for u in uploads]
+        if not all(scan_paths):
+            return jsonify({"error": "Crew Hub didn't return a storage path for every file."}), 502
+
+    result, err = _scan_read(bid, scan_paths, call_ids)
+    if err:
+        return jsonify({"error": err}), 502
+
+    rec = _CallTimesRecorder(ss)
+    # The booking is read once, through the recorder, and served from it again
+    # when _build_import_preview reads it — so the pick buttons and the cards
+    # cannot disagree about which calls exist.
+    booking, berr = fetch_booking_bulk(rec, booking_id)
+    if berr:
+        return jsonify({"error": "Couldn't load booking: %s" % berr}), 502
+    bcalls = booking.get("calls", []) if isinstance(booking, dict) else []
+    candidates, live_call_ids = _scan_candidates(bcalls)
+
+    parsed = timesheet_scan.convert_scan(result)
+    preview, err = _build_import_preview(rec, booking_id, parsed)
+    if err:
+        return jsonify({"error": err}), 502
+    timesheet_scan.attach_flags(preview, result, candidates=candidates)
+    # The client needs these to build a pick button's re-run without a second
+    # round trip: every live call on the booking, minus the losing candidates.
+    preview["scan_booking_call_ids"] = live_call_ids
+    if converted:
+        preview["scan_converted"] = converted
     return jsonify(preview)
 
 

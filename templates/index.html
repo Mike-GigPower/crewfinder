@@ -29542,15 +29542,19 @@ function _tiMapPairs(manual){
 // Carry the operator's include/untick choices across a reload, so mapping one tab
 // by hand doesn't silently re-tick rows they had already excluded.
 // A check-in card starts ticked only if it has a row to write: its held rows start
-// unticked, so a card of them alone is "0 to write" and starts unticked too. The
-// sheet and .xlsx imports keep their rule (any matched row ticks the card).
+// unticked, so a card of them alone is "0 to write" and starts unticked too. A
+// scanned card follows the same rule, for the same reason — on a sheet where
+// every row is flagged (39096, every break written as a time) nothing should
+// arrive pre-ticked. The sheet and .xlsx imports keep their rule (any matched
+// row ticks the card).
 function _tiSeedInclude(data, keep, source){
   const inc = {};
   const probe = {rowOff: {}, rowOnHeld: (keep && keep.rowOnHeld) || {}};
+  const held = (source === 'checkin' || source === 'scan');
   (data.calls||[]).forEach(function(c){
     inc[c.call_id] = (keep && keep.include && (c.call_id in keep.include))
       ? keep.include[c.call_id]
-      : (source === 'checkin' ? _tiCallRows(probe, c).length > 0 : c.matched.length > 0);
+      : (held ? _tiCallRows(probe, c).length > 0 : c.matched.length > 0);
   });
   return inc;
 }
@@ -29610,6 +29614,7 @@ function openTimesImport(bookingId){
     + '<div id="ti-intro" style="font-size:12px;color:var(--muted);padding-bottom:12px">' + TI_INTRO_SHEET + '</div>'
     + '<div id="ti-checkin-slot"></div>'
     + '<div onclick="tiLoadLive(\''+bookingId+'\')" style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2);margin-bottom:12px">📊 Import from the Google Sheet</div>'
+    + _tiScanOptionHtml(bookingId)
     + '<div style="font-size:11px;color:var(--muted);padding:0 0 6px">or upload a finished workbook (.xlsx)</div>'
     + '<input id="ti-file" type="file" accept=".xlsx" onchange="tiHandleFile(this,\''+bookingId+'\')" style="font-size:12px;color:var(--text)">'
     + '<div id="ti-status" style="font-size:12px;color:var(--muted);padding-top:10px"></div>'
@@ -29741,6 +29746,270 @@ function _tiCheckinCardNotes(c){
   return lines.length ? '<div style="font-size:10px;color:#f59e0b;border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5">'+lines.join('')+'</div>' : '';
 }
 
+// ── Import from a scanned signed sheet (BRIEF-timesheet-scan-slice3b, Part 2) ─
+// The fourth source. The paper is THE GOAT's own printed crew list with the times
+// written on by hand; Crew Hub reads it and THE GOAT reviews the result on this
+// same screen. Nothing is written until Ops tick rows and press the existing
+// write (T5) — and a flagged row cannot be ticked without being looked at (§5c).
+var TI_SCAN_HINT = 'iPhone: Notes or Files → Scan Documents, then AirDrop. PDFs from the team work too.';
+// Measured by Crew Hub, 25 Nov: ~11 s a page, four pages read at a time.
+var TI_SCAN_SECS_PER_PAGE = 11;
+
+function _tiScanOptionHtml(bookingId){
+  return '<div id="ti-scan-box" ondragover="tiScanDragOver(event)" ondragleave="tiScanDragLeave(event)"'
+    +    ' ondrop="tiScanDrop(event,\''+bookingId+'\')"'
+    +    ' onclick="tiScanPick()"'
+    +    ' style="display:flex;align-items:center;gap:8px;padding:11px 12px;border:1px dashed var(--accent);border-radius:6px;cursor:pointer;color:var(--accent);font-size:13px;background:var(--surface2)">'
+    +   '📷 Scan a signed sheet'
+    +   '<span style="color:var(--muted);font-size:11px">— choose files, or drop them here</span>'
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);padding:4px 0 12px">' + escapeHtml(TI_SCAN_HINT) + '</div>'
+    + '<input id="ti-scan-file" type="file" multiple accept=".jpg,.jpeg,.png,.heic,.heif,.pdf"'
+    +   ' onchange="tiScanFiles(this,\''+bookingId+'\')" style="display:none">';
+}
+
+function tiScanPick(){
+  const el = document.getElementById('ti-scan-file');
+  if(el) el.click();
+}
+
+function tiScanDragOver(ev){
+  ev.preventDefault();
+  const box = document.getElementById('ti-scan-box');
+  if(box) box.style.background = 'var(--surface3,var(--surface2))';
+}
+
+function tiScanDragLeave(ev){
+  ev.preventDefault();
+  const box = document.getElementById('ti-scan-box');
+  if(box) box.style.background = 'var(--surface2)';
+}
+
+function tiScanDrop(ev, bookingId){
+  ev.preventDefault();
+  ev.stopPropagation();
+  tiScanDragLeave(ev);
+  const files = (ev.dataTransfer && ev.dataTransfer.files) ? Array.prototype.slice.call(ev.dataTransfer.files) : [];
+  if(files.length) tiLoadScan(bookingId, files);
+}
+
+function tiScanFiles(input, bookingId){
+  if(!input.files || !input.files.length) return;
+  tiLoadScan(bookingId, Array.prototype.slice.call(input.files));
+}
+
+// "Reading 3 pages…" only when we actually know the page count — one page per
+// image. A PDF holds any number, so it is counted in files until Crew Hub says
+// how many pages it read.
+function _tiScanReadingLine(files){
+  const pdf = files.some(function(f){ return /\.pdf$/i.test(f.name || ''); });
+  const n = files.length;
+  const what = pdf ? (n + ' file' + (n===1?'':'s')) : (n + ' page' + (n===1?'':'s'));
+  return 'Reading ' + what + '… (about ' + TI_SCAN_SECS_PER_PAGE + ' seconds a page)';
+}
+
+// The scan is the slow source — a model reads every page — so this is awaited
+// the same way the other proxies are and never blocks the rest of THE GOAT.
+async function tiLoadScan(bookingId, files, rerun, keep){
+  _tiSay(rerun ? _tiScanReadingLine(new Array(rerun.pages || 1).fill({name:'x.jpg'}))
+               : _tiScanReadingLine(files || []));
+  const fd = new FormData();
+  if(rerun){
+    (rerun.scan_paths || []).forEach(function(p){ fd.append('scan_path', p); });
+    (rerun.call_ids || []).forEach(function(c){ fd.append('call_id', c); });
+  } else {
+    (files || []).forEach(function(f){ fd.append('file', f, f.name); });
+  }
+  try{
+    const res = await fetch('/api/booking/'+encodeURIComponent(bookingId)+'/import-times/preview-scan',
+                            {method: 'POST', body: fd});
+    let data = {};
+    try{ data = await res.json(); }
+    catch(_){ data = {error: 'THE GOAT sent back something unreadable (HTTP '+res.status+').'}; }
+    if(data.error){ _tiSay(data.error, 'var(--conflict)'); return; }
+    _tiState = {bookingId: bookingId, data: data, include: _tiSeedInclude(data, keep, 'scan'),
+                rowOff: (keep && keep.rowOff) || {}, rowOnHeld: (keep && keep.rowOnHeld) || {},
+                source: 'scan', manual: {}, file: null};
+    renderTimesheetImportPreview();
+  }catch(e){
+    _tiSay('Couldn\'t read the sheet: ' + e.message, 'var(--conflict)');
+  }
+}
+
+// Top-of-review lines for a scan: where it came from, what was converted, and
+// the engine's own summary.
+function _tiScanBlock(d){
+  const src = d.source || {};
+  if(src.kind !== 'scan') return '';
+  const pages = src.pages_read;
+  const conv  = d.scan_converted || [];
+  let held = 0;
+  (d.calls || []).forEach(function(c){ (c.matched || []).forEach(function(m){ if(m.scan_hold) held++; }); });
+  return '<div style="font-size:11px;color:var(--muted);padding:0 0 8px">📷 Read from a scanned sheet'
+    + (pages ? ' · ' + pages + ' page' + (pages===1?'':'s') : '') + '</div>'
+    + (src.summary ? '<div style="font-size:12px;color:var(--text);padding:0 0 8px">' + escapeHtml(src.summary) + '</div>' : '')
+    + (conv.length ? '<div style="font-size:11px;color:var(--muted);padding:0 0 8px">Converted to JPEG first: ' + escapeHtml(conv.join(', ')) + '</div>' : '')
+    + (held ? '<div style="font-size:11px;color:#f59e0b;padding:0 0 8px">' + held + ' row' + (held===1?' needs':'s need')
+              + ' a look — flagged in amber and left unticked. Tick a row to write it.</div>' : '');
+}
+
+// Blocks that matched no call on this booking. Each one shows which table it is
+// (the header printed on the paper), how many rows are behind the refusal, and
+// one button per candidate call. Pressing one re-runs the WHOLE scan with the
+// losing candidates dropped — not with only the picked call, which would orphan
+// the other blocks on the same page (Mike, 25 Nov; addendum E).
+function _tiScanUnassignedBlock(d){
+  const src = d.source || {};
+  if(src.kind !== 'scan') return '';
+  const blocks = d.unassigned_blocks || [];
+  if(!blocks.length) return '';
+  const cand = d.scan_candidates || {};
+  const rows = blocks.map(function(b, i){
+    const where = 'Page ' + b.page + (b.block ? ', block ' + b.block : '');
+    const n = b.rows_on_block || 0;
+    // A QR that names a call on ANOTHER booking: this block stops here. No
+    // button could be right, so none is offered.
+    if(b.reason === 'qr_not_a_candidate' && b.qr_call_id){
+      return '<div style="padding:6px 0;border-top:1px solid var(--border)">'
+        + '<div style="font-size:11px;color:var(--conflict)">' + escapeHtml(where)
+        + ': this page is for call #' + escapeHtml(String(b.qr_call_id)) + '.</div>'
+        + (b.printed_header ? '<div style="font-size:10px;color:var(--muted)">' + escapeHtml(b.printed_header) + '</div>' : '')
+        + '</div>';
+    }
+    const buttons = (b.candidate_call_ids || []).map(function(cid){
+      const c = cand[String(cid)] || {};
+      const label = (c.call_name || ('Call ' + cid))
+        + (c.start ? ' ' + c.start : '')
+        + (c.length ? ' · ' + c.length : '');
+      return '<button type="button" class="group-chip" onclick="tiScanPickBlock(' + i + ',' + cid + ')"'
+        + ' style="margin:4px 6px 0 0">' + escapeHtml(label) + '</button>';
+    }).join('');
+    return '<div style="padding:6px 0;border-top:1px solid var(--border)">'
+      + '<div style="font-size:11px;color:#f59e0b">' + escapeHtml(where) + ' matched no call on this booking'
+      +   (n ? ' — ' + n + ' row' + (n===1?'':'s') + ' on it' : '') + '.</div>'
+      + (b.printed_header ? '<div style="font-size:10px;color:var(--muted);font-family:\'Share Tech Mono\',monospace">'
+          + escapeHtml(b.printed_header) + '</div>' : '')
+      + (buttons ? '<div style="font-size:10px;color:var(--muted);padding-top:4px">Which call is it?</div><div>' + buttons + '</div>'
+                 : '<div style="font-size:10px;color:var(--muted);padding-top:4px">No candidate call to choose from — check the sheet.</div>')
+      + '</div>';
+  }).join('');
+  return '<div style="border:1px solid #f59e0b;border-radius:6px;padding:8px 12px;margin-bottom:10px;background:var(--surface2)">'
+    + '<div style="font-size:12px;color:#f59e0b">Part of the sheet matched no call</div>'
+    + rows
+    + '<div style="font-size:10px;color:var(--muted);padding-top:6px">Picking a call reads every page again (about '
+    +   TI_SCAN_SECS_PER_PAGE + ' seconds a page), and replaces this whole preview.</div>'
+    + '</div>';
+}
+
+// Ops picked a call for one unplaced block. Re-run with the SAME scan_paths and
+// call_ids = every call on the booking MINUS that block's non-picked candidates.
+function tiScanPickBlock(blockIndex, callId){
+  if(!_tiState || !_tiState.data) return;
+  const d = _tiState.data;
+  const b = (d.unassigned_blocks || [])[blockIndex];
+  if(!b) return;
+  const losers = {};
+  (b.candidate_call_ids || []).forEach(function(c){ if(Number(c) !== Number(callId)) losers[String(c)] = true; });
+  const keepIds = (d.scan_booking_call_ids || []).filter(function(c){ return !losers[String(c)]; });
+  const paths = ((d.source || {}).scan_ref) || [];
+  if(!paths.length){
+    _tiSay('The uploaded sheet is no longer on file — scan it again.', 'var(--conflict)');
+    return;
+  }
+  // The operator's ticks are kept, as they are when a tab is mapped by hand.
+  const keep = {include: _tiState.include, rowOff: _tiState.rowOff, rowOnHeld: _tiState.rowOnHeld};
+  tiLoadScan(_tiState.bookingId, null,
+             {scan_paths: paths, call_ids: keepIds, pages: (d.source || {}).pages_read || 1},
+             keep);
+}
+
+// A scan row's flags, inline after the name. Amber = held (unticked), grey = info.
+function _tiScanFlagChips(m){
+  return (m.scan_flags || []).map(function(f){
+    return ' <span style="font-size:9px;letter-spacing:.3px;color:'+(f.level==='warn'?'#f59e0b':'var(--muted)')+'">'+escapeHtml(f.text)+'</span>';
+  }).join('');
+}
+
+// The writing as it is on the paper, under the row. §5c: a flagged row must
+// show the raw writing, not only our reading of it, or the reviewer is being
+// asked to confirm a number with nothing to check it against.
+function _tiScanRawLine(m){
+  if(!m.scan_raw) return '';
+  return '<div style="font-size:9px;color:var(--muted);font-family:\'Share Tech Mono\',monospace;padding:0 0 2px 22px">'
+    + escapeHtml(m.scan_raw) + '</div>';
+}
+
+// Everything on a scanned call that is NOT a writable row: values the reader
+// refused, handwritten extras, loose times, and the booked crew with no row.
+function _tiScanCardNotes(c){
+  const lines = [];
+  (c.scan_skipped || []).forEach(function(s){
+    const flags = (s.flags || []).map(function(f){ return f.text; }).join(' · ');
+    lines.push('<div>⚠ ' + escapeHtml(decodeEntities(s.name || ('EIN ' + s.ein)))
+      + ' — ' + escapeHtml(s.why) + (flags ? ' (' + escapeHtml(flags) + ')' : '')
+      + '. Enter this one by hand.'
+      + (s.raw ? ' <span style="font-family:\'Share Tech Mono\',monospace">' + escapeHtml(s.raw) + '</span>' : '')
+      + '</div>');
+  });
+  (c.scan_loose_times || []).forEach(function(l){
+    lines.push('<div>⚠ Times written outside the table: <span style="font-family:\'Share Tech Mono\',monospace">'
+      + escapeHtml(l.text) + '</span> — check which row they belong to.</div>');
+  });
+  return lines.length
+    ? '<div style="font-size:10px;color:#f59e0b;border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5">'+lines.join('')+'</div>'
+    : '';
+}
+
+// "On the sheet, not on this call" — handwritten walk-ons, unmatched names and
+// entries written against another call, verbatim, with a way to open the call so
+// Ops can add them in SmartStaff by hand. NEVER added automatically (§2.3).
+// A PRINTED row whose person is not confirmed on this call. _build_import_preview
+// puts these in `unmatched` and the card line counts them; on a scan they are
+// named, because "3 on sheet, not booked on this call" does not tell Ops who to
+// go and look at, and these are rows read off the paper, not a reader's guess.
+function _tiScanUnmatchedRows(c){
+  return (c.unmatched || []).map(function(u){
+    return '<div style="padding:1px 0">• ' + escapeHtml(decodeEntities(String(u.name || ('EIN ' + u.ein))))
+      + ' <span style="color:var(--muted)">— printed on the sheet, not confirmed on this call</span></div>';
+  }).join('');
+}
+
+function _tiScanExtras(c){
+  const ex = c.scan_extras || [];
+  const un = _tiScanUnmatchedRows(c);
+  if(!ex.length && !un) return '';
+  const items = ex.map(function(e){
+    const flags = (e.flags || []).map(function(f){ return f.text; }).join(' · ');
+    return '<div style="padding:1px 0">• <span style="font-family:\'Share Tech Mono\',monospace">'
+      + escapeHtml(e.text) + '</span>'
+      + (e.guessed_name ? ' <span style="color:var(--muted)">— looks like ' + escapeHtml(decodeEntities(e.guessed_name)) + '</span>' : '')
+      + (flags ? ' <span style="color:#f59e0b;font-size:9px">' + escapeHtml(flags) + '</span>' : '')
+      + '</div>';
+  }).join('');
+  return '<div style="font-size:10px;color:var(--text);border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5">'
+    + '<div style="color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-size:9px">On the sheet, not on this call</div>'
+    + items
+    + un
+    + '<div style="padding-top:3px"><a href="#" onclick="event.preventDefault();openCallDialog(\''
+    +   escapeHtml(String(_tiState && _tiState.bookingId || '')) + '\',\'' + escapeHtml(String(c.call_id)) + '\')"'
+    +   ' style="color:var(--accent);text-decoration:none">Open the call to add them ↗</a></div>'
+    + '</div>';
+}
+
+// "On this call, not on the sheet" — confirmed crew with no row on the paper.
+// This is _build_import_preview's own roster_only, relabelled for a scan rather
+// than counted a second time from the engine's roster_not_on_sheet: the preview's
+// list is the one matched against SmartStaff just now.
+function _tiScanNotOnSheet(c){
+  const ro = c.roster_only || [];
+  if(!ro.length) return '';
+  const names = ro.map(function(r){ return decodeEntities(String(r.name || ('EIN ' + r.ein))); });
+  return '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5">'
+    + '<div style="text-transform:uppercase;letter-spacing:.5px;font-size:9px">On this call, not on the sheet ('+names.length+')</div>'
+    + '<div>' + escapeHtml(names.join('; ')) + '</div>'
+    + '</div>';
+}
+
 async function tiLoadLive(bookingId, manual, keep){
   _tiSay('Reading the Google Sheet…');
   try{
@@ -29813,9 +30082,13 @@ function _tiStatusChip(st){
 // Confirmed rows have no per-row control and are always in.
 // A check-in row held for review (checkin_hold — only the check-in import sets
 // it) starts unticked, confirmed or not, and is written only once ticked.
+// A scanned row held for review (scan_hold) behaves exactly the same way: §5c
+// says a flagged row must be impossible to accept without seeing it, and this
+// is the mechanism that already does that, so the scan reuses it rather than
+// adding a second one.
 function _tiRowOn(s, callId, m){
   if(_tiPromoPending(m)) return false;
-  if(m && m.checkin_hold) return !!(s.rowOnHeld && s.rowOnHeld[callId + ':' + m.user_id]);
+  if(m && (m.checkin_hold || m.scan_hold)) return !!(s.rowOnHeld && s.rowOnHeld[callId + ':' + m.user_id]);
   if(_tiIsConfirmed(m)) return true;
   return !s.rowOff[callId + ':' + m.user_id];
 }
@@ -29932,7 +30205,7 @@ function renderTimesheetImportPreview(){
       ? 'matched by Call ID'
       : ('EIN overlap '+c.overlap+'/'+c.tab_ein_count+(c.delta_min?(' · '+c.delta_min+'min off'):''));
 
-    const flagged = (c.matched||[]).filter(function(m){ return !_tiIsConfirmed(m) && !_tiPromoPending(m) && !m.checkin_hold; });
+    const flagged = (c.matched||[]).filter(function(m){ return !_tiIsConfirmed(m) && !_tiPromoPending(m) && !m.checkin_hold && !m.scan_hold; });
     totalFlagged += flagged.length;
     const promoLocked = (c.matched||[]).filter(_tiPromoPending);
     totalPromo += promoLocked.length;
@@ -29942,25 +30215,32 @@ function renderTimesheetImportPreview(){
       const ok  = _tiIsConfirmed(m);
       const on  = _tiRowOn(s, c.call_id, m);
       const pp  = _tiPromoPending(m);
-      const box = (ok && !m.checkin_hold) ? ''
+      const box = (ok && !m.checkin_hold && !m.scan_hold) ? ''
         : pp ? '<input type="checkbox" disabled title="Promoted off backup and has not accepted — cannot be written" style="margin:0 6px 0 0;vertical-align:middle">'
         : '<input type="checkbox" '+(on?'checked':'')+' onchange="tiToggleRow('+c.call_id+','+m.user_id+',this)" style="margin:0 6px 0 0;vertical-align:middle">';
       const dim = on ? '' : 'opacity:.45;';
       return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;color:var(--text);'+dim+'">'
         + '<span>'+box+escapeHtml(m.name)+(m.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')
         +   (ok?'':(pp ? ' <span style="font-size:9px;letter-spacing:.5px;color:#f59e0b">PROMOTED · NOT ACCEPTED</span>' : ' '+_tiStatusChip(m.status)))
-        +   _tiFlagChips(m)+'</span>'
+        +   _tiFlagChips(m)+_tiScanFlagChips(m)+'</span>'
         + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(_tiRowTimes(m, brk))+'</span>'
-        + '</div>';
+        + '</div>'
+        + _tiScanRawLine(m);
     }).join('');
 
     const src = (s.source === 'checkin') ? 'check-in' : 'sheet';
+    const isScan = (s.source === 'scan');
     const extras = [];
     if(flagged.length)       extras.push(flagged.length+' not confirmed in SmartStaff');
     if(promoLocked.length)   extras.push(promoLocked.length+' promoted, not accepted — locked');
     if(c.unmatched.length)   extras.push(c.unmatched.length+' on '+src+', not booked on this call');
-    if(c.skipped.length)     extras.push(c.skipped.length+' with no times (no-show / blank)');
-    const absent = _tiAbsentExtra(c, s.source);
+    // A scan's unwritable rows are named one by one, with the reason and the raw
+    // writing, in _tiScanCardNotes — so the generic "no-show / blank" count is
+    // left out rather than said twice and wrongly (a scan never sets no_show).
+    if(c.skipped.length && !isScan) extras.push(c.skipped.length+' with no times (no-show / blank)');
+    // "On this call, not on the sheet" gets its own named list for a scan (§2.3),
+    // so the count line would be a duplicate.
+    const absent = isScan ? '' : _tiAbsentExtra(c, s.source);
     if(absent)               extras.push(absent);
 
     return '<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:10px;background:var(--surface2);padding:10px 12px">'
@@ -29973,6 +30253,7 @@ function renderTimesheetImportPreview(){
       + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>')
       + (extras.length ? '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'+extras.map(escapeHtml).join(' · ')+'</div>' : '')
       + (s.source === 'checkin' ? _tiCheckinCardNotes(c) : '')
+      + (isScan ? _tiScanCardNotes(c) + _tiScanExtras(c) + _tiScanNotOnSheet(c) : '')
       + '</div>';
   }).join('');
 
@@ -29996,13 +30277,18 @@ function renderTimesheetImportPreview(){
         ? '<div style="font-size:11px;color:var(--conflict);padding-bottom:8px">Tabs with no matching call: '+escapeHtml(d.unmapped_tabs.map(function(t){return t.tab_name;}).join(', '))+'</div>'
         : '')
     + _tiCheckinBlock(d)
+    + _tiScanBlock(d)
+    + _tiScanUnassignedBlock(d)
     + _tiDuplicateBlock(d)
     + _tiNeedsCallBlock(d)
     + _tiCancelledBlock(d)
     + _tiRecoveredBlock(d)
     + flagNote
     + (cards || '<div style="color:var(--muted);font-size:12px">No call tabs found.</div>')
-    + '<div style="font-size:11px;color:var(--muted);padding-top:4px">'+(s.source === 'checkin' ? 'Calls with nobody on them: ' : 'Ignored support tabs: ')+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>';
+    // A scan has no support tabs at all — convert_scan returns skipped_tabs
+    // empty — so the line would be a permanently blank "Ignored support tabs:".
+    + ((s.source === 'scan' && !(d.skipped_tabs||[]).length) ? ''
+       : '<div style="font-size:11px;color:var(--muted);padding-top:4px">'+(s.source === 'checkin' ? 'Calls with nobody on them: ' : 'Ignored support tabs: ')+escapeHtml((d.skipped_tabs||[]).join(', '))+'</div>');
 
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Write '+totalWrite+' times', "writeTimesImport()", {primary:true, id:'ti-write-btn'})
@@ -30044,7 +30330,7 @@ function tiToggleRow(callId, userId, el){
   const key = callId + ':' + userId;
   const c = (_tiState.data.calls || []).find(function(x){ return String(x.call_id) === String(callId); });
   const m = c && (c.matched || []).find(function(x){ return String(x.user_id) === String(userId); });
-  if(m && m.checkin_hold){
+  if(m && (m.checkin_hold || m.scan_hold)){
     _tiState.rowOnHeld = _tiState.rowOnHeld || {};
     if(el.checked){
       _tiState.rowOnHeld[key] = true;

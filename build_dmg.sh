@@ -71,6 +71,7 @@ pyinstaller \
   --hidden-import drive_contracts \
   --hidden-import accred_names \
   --hidden-import checkin_import \
+  --hidden-import timesheet_scan \
   --hidden-import derivation \
   dock_launcher.py
 
