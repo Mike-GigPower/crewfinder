@@ -163,7 +163,8 @@
 	/* call_crew_map.status values that never represent delivered work.
 	/* 13 (Left standby) joins them for the same reason 6 does: the crew
 	/* member is not on the call, so there are no hours to attribute (S4). */
-	$GOAT_PERF_EXCLUDED_CREW_STATUS = array(6, 8, 10, 11, 12, 13);
+	/* 14 (Moved, 25 Nov 2026) likewise: they worked the call they were moved TO. */
+	$GOAT_PERF_EXCLUDED_CREW_STATUS = array(6, 8, 10, 11, 12, 13, 14);
 
 	/*
 	/* call_crew_map.status that counts as SECURED on a forward call — a crew

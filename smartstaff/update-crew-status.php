@@ -37,6 +37,15 @@
 	/*   status 8 (no-show)     : UPDATE status=8  (NO calendar change)
 	/*   status 1 (pending)     : UPDATE status=1  (NO calendar change; NO SMS sent)
 	/*   status 0 (unconfirmed) : UPDATE status=0  (NO calendar change)
+	/*   status 14 (moved)      : UPDATE status=14 (NO calendar change). ONLY
+	/*                            from 5. Mike, 25 Nov 2026: the Crew Boss moved
+	/*                            them to another call on the check-in sheet and
+	/*                            THE GOAT's Import from check-in confirmed them
+	/*                            there. Never counted against them, never billed
+	/*                            (generateCallData bills 5 only), never blocks
+	/*                            a booking (addToCall's clash check counts 5
+	/*                            only). Setting 5 again is the undo, and re-adds
+	/*                            the calendar entry like any confirm.
 	/*
 	/* Calendar parity with SmartStaff:
 	/*   - confirm ADDS a calendars row, via SmartStaff's own $sss->addToCalendar
@@ -113,10 +122,10 @@
 	if ($userID <= 0)
 		$errors[] = 'userID is required';
 
-	$allowedStatuses = array(0, 1, 5, 6, 7, 8);   /* 0 unconfirmed, 1 pending, 5 confirmed, 6 declined, 7 backup, 8 no-show */
+	$allowedStatuses = array(0, 1, 5, 6, 7, 8, 14);   /* 0 unconfirmed, 1 pending, 5 confirmed, 6 declined, 7 backup, 8 no-show, 14 moved */
 
 	if (!in_array($status, $allowedStatuses))
-		$errors[] = 'status must be one of 0, 1, 5, 6, 7, 8';
+		$errors[] = 'status must be one of 0, 1, 5, 6, 7, 8, 14';
 
 	if (count($errors))
 	{
@@ -141,6 +150,17 @@
 	}
 
 	$prevStatus = (int) $existingRow->status;   /* status BEFORE this update — lets us flag a 7->5 promotion */
+
+	/* 14 (Moved) is only ever a move OFF a call they were confirmed on. From
+	/* anything else it would hide a decline, a no-show or an unanswered offer
+	/* behind a status that is never counted against anyone. Re-saving 14 on a
+	/* row already at 14 is a no-op, not a refusal. */
+	if ($status === 14 && $prevStatus !== 5 && $prevStatus !== 14)
+	{
+		send_status(409, 'Conflict');
+		echo json_encode(array('ok' => false, 'error' => 'moved_needs_confirmed', 'current_status' => $prevStatus));
+		die();
+	}
 
 	$isPromotion = ($prevStatus === 7 && $status === 5);
 	$now         = time();   /* once — every row in a promotion shares one promoted_at, the group key */

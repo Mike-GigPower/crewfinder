@@ -92,7 +92,9 @@
 		12 => 'Withdrawn',
 		/* 13: without this the fallback at the bottom of this file renders a
 		/* literal "Status 13" in THE GOAT's crew record Calls tab. */
-		13 => 'Left standby'
+		13 => 'Left standby',
+		/* 14: moved to another call on the check-in sheet (Mike, 25 Nov 2026). */
+		14 => 'Moved'
 	);
 
 	$shifts = array();

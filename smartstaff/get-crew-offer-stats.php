@@ -241,17 +241,17 @@
 	   member in any figure on this page.
 
 	   COALESCE to -1 is load-bearing. prev_status can be NULL, and both
-	   `NULL IN (5,7,8,13)` and `NULL NOT IN (5,6,7,8,13)` evaluate to NULL — so
+	   `NULL IN (5,7,8,13,14)` and `NULL NOT IN (5,6,7,8,13,14)` evaluate to NULL — so
 	   without it a 9 carrying no prev_status would fall out of EVERY bucket
 	   below, including `unclassified`, which exists to catch precisely that.
 	   -1 matches nothing and lands there, loudly. */
 
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8,13))  AS accepted,
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8,13,14))  AS accepted,
 			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 6)            AS declined,
 			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 8)            AS no_show,
-			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) NOT IN (5,6,7,8,13)) AS unclassified,
+			SUM(ccm.offered_at IS NOT NULL AND ccm.responded_at IS NOT NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) NOT IN (5,6,7,8,13,14)) AS unclassified,
 
-			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8,13)) AS phone_accepted,
+			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) IN (5,7,8,13,14)) AS phone_accepted,
 			SUM(ccm.offered_at IS NULL AND IF(ccm.status = 9, COALESCE(ccm.prev_status, -1), ccm.status) = 6)        AS phone_declined,
 
 			/* How many times WE stood this person down. Outside both identities,
