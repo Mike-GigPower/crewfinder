@@ -29,6 +29,16 @@ later finish); a call with no booked length is held for a person to decide.
 There is no continuity: other calls the person worked do not matter. The
 feed's own `under_4h` is not used to decide anything.
 
+ADDED ON THE DAY (Mike, 25-26 Nov 2026; claude/PLAN-added-crew-on-the-day.md,
+slice 3). A Crew Boss can add someone to a call on the check-in sheet — MOVED
+from another call of the booking, or CALLED IN. The feed sends them with
+`unbooked: true` and an `added` object; a moved person also comes through on
+the call they left as `state: "moved"`. They are not on SmartStaff's roster, so
+_build_import_preview leaves them unmatched; attach_flags() lifts them out into
+`card.checkin_added` (UNTICKED by default — ticking books them on, an explicit
+act, never a side effect of reviewing) and `card.checkin_moved`. The booking is
+done by app.checkin_add_crew(), one person at a time.
+
 LEFT EARLY (Mike, 25 Nov 2026). A row whose feed `left_early` is set was
 marked by the Crew Boss as having left early (injured, always with a Mitta
 reference; sick; sent home; personal; other). It is paid as worked: no
@@ -343,7 +353,9 @@ def row_flags(row, scheduled_start, now):
         out.append(_warn("no_on", "sign-off with no sign-on"))
     if state == "not_on":
         out.append(_warn("not_on", "rostered, never tapped"))
-    if row.get("on_roster") is False:
+    if row.get("on_roster") is False and not row.get("unbooked"):
+        # An ADDED person is never on SmartStaff's roster — that is the point.
+        # They get their own group (checkin_added), not this warning.
         out.append(_warn("off_roster", "tapped, but no longer on the confirmed roster"))
     if row.get("ein") is None:
         out.append(_warn("no_ein", "no Crew Hub record — can't be matched"))
@@ -381,6 +393,50 @@ def row_flags(row, scheduled_start, now):
             when = tw.strftime("%H:%M") if not other_day else tw.strftime("%a %d %b %H:%M")
             out.append(_warn("late_tap", "tapped %s, paid from call start" % when))
     return out
+
+
+def added_and_moved(fc, call_names, sched, now):
+    """(added, moved) for one feed call — see ADDED ON THE DAY above.
+
+    added: one entry per `unbooked` row, with the times convert_row() writes
+    (the 4-hour minimum and Left early already applied), who added them and
+    why, its flags, and `writable` — a sign-on AND a sign-off, so there are
+    times to write. Never pre-ticked.
+    moved: one entry per row with state "moved": they were moved off THIS
+    call; their times are on to_call_id."""
+    added, moved = [], []
+    for r in fc.get("rows") or []:
+        if r.get("state") == "moved":
+            to = r.get("moved_to_call_id")
+            moved.append({"user_id": r.get("user_id"), "ein": r.get("ein"), "name": _name(r),
+                          "to_call_id": to,
+                          "to_call_name": call_names.get(_int_or_none(to), "") if to is not None else ""})
+            continue
+        if not r.get("unbooked"):
+            continue
+        a = r.get("added") or {}
+        conv = convert_row(r)
+        mn = r.get(MIN_KEY) or {}
+        from_id = a.get("moved_from_call_id") if a.get("reason") == "moved" else None
+        added.append({
+            "user_id": r.get("user_id"),
+            "ein": r.get("ein"),
+            "name": _name(r),
+            "reason": a.get("reason") or "called_in",
+            "moved_from_call_id": from_id,
+            "moved_from_call_name": call_names.get(_int_or_none(from_id), "") if from_id is not None else "",
+            "covering_for_name": a.get("covering_for_name") or "",
+            "by_name": a.get("by_name") or "",
+            "state": r.get("state"),
+            "on": conv["on"], "off": conv["off"],
+            "break": conv["break"], "break_night": conv["break_night"],
+            "late": conv["late"], "note": conv["note"],
+            "worked_off": mn.get("worked_off") if mn.get("applied") else None,
+            "flags": row_flags(r, sched, now),
+            "writable": bool(r.get("state") == "off" and conv["on"] and conv["off"]
+                             and r.get("ein") is not None),
+        })
+    return added, moved
 
 
 def _name(row):
@@ -424,6 +480,13 @@ def attach_flags(preview, feed, now=None, roster_status=None):
         except (TypeError, ValueError):
             continue
 
+    call_names = {}
+    for c in feed.get("calls") or []:
+        try:
+            call_names[int(c.get("call_id"))] = c.get("call_name") or ""
+        except (TypeError, ValueError):
+            continue
+
     for card in preview.get("calls") or []:
         try:
             cid = int(card.get("call_id"))
@@ -438,7 +501,18 @@ def attach_flags(preview, feed, now=None, roster_status=None):
         sched = parse_iso(fc.get("scheduled_start"))
         card["checkin_future"] = bool(sched is not None and sched > now)
         notes, flags_by_ein, topped = [], {}, {}
+        added, moved = added_and_moved(fc, call_names, sched, now)
+        lifted = set(a["ein"] for a in added if a["ein"] is not None)
+        moved_eins = set(m["ein"] for m in moved if m["ein"] is not None)
+        card["checkin_added"] = added
+        card["checkin_moved"] = moved
+        # They have their own groups now: not "on check-in, not booked on this
+        # call", and a moved person is not "no times".
+        card["unmatched"] = [u for u in (card.get("unmatched") or []) if u.get("ein") not in lifted]
+        card["skipped"] = [k for k in (card.get("skipped") or []) if k.get("ein") not in moved_eins]
         for r in fc.get("rows") or []:
+            if r.get("unbooked") or r.get("state") == "moved":
+                continue
             mn = r.get(MIN_KEY) or {}
             if mn.get("applied") and r.get("ein") is not None:
                 topped[r.get("ein")] = mn.get("worked_off")
