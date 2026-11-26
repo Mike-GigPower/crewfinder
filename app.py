@@ -241,7 +241,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.124.0"
+APP_VERSION    = "5.125.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -3576,7 +3576,8 @@ def _ss_booking_graph(ss, booking_ids):
 
     get-booking.php emits crew[].status as a LABEL, not an int:
       5 -> 'confirmed', 1 -> 'sent', 6 -> 'declined', 8 -> 'noshow',
-      7 -> 'backup', 13 -> 'leftstandby', anything else -> 'unconfirmed'
+      7 -> 'backup', 13 -> 'leftstandby', 14 -> 'moved',
+      anything else -> 'unconfirmed'
     (see $crewStatusMap in get-booking.php). Status 2 falls through to
     'unconfirmed', which is fine — callers only need "is there a row, and is it
     a declined one".
@@ -3663,7 +3664,9 @@ def _held_blocking(held, crew_id, call_id):
 # decision behind it, which is exactly what D6 makes an explicit ops action
 # (the dropdown's 13 -> 0 re-offer). That path writes status 0 first, so the
 # row stops being "answered" before the push goes and D6 still works.
-ANSWERED = ("confirmed", "backup", "noshow", "leftstandby")
+# 'moved' (14, 26 Nov 2026) likewise: moved to another call on the check-in
+# sheet and confirmed there at import. Not to be re-offered this one by a blast.
+ANSWERED = ("confirmed", "backup", "noshow", "leftstandby", "moved")
 
 
 def _already_answered(held, crew_id, call_id):
@@ -3969,7 +3972,7 @@ def _linked_rows(graph, held, call_id, user_id):
         # 'leftstandby' (13) belongs with these: settled, holding nothing. The
         # ✕ Remove prompt warns about linked calls the person would still be
         # holding, and a call they took themselves off standby for is not one.
-        if st is None or st in ("declined", "cancelled", "noshow", "leftstandby"):
+        if st is None or st in ("declined", "cancelled", "noshow", "leftstandby", "moved"):
             return None
         node = graph.get(cid) or {}
         if node.get("cancelled_at"):
@@ -22549,6 +22552,153 @@ def api_import_times_preview_checkin(booking_id):
         preview, feed,
         roster_status=checkin_import.roster_status_from_call_times(rec.answers))
     return jsonify(preview)
+
+
+def _call_times_status(ss, call_id, user_id):
+    """(status or None if not on the call, error) — one get-call-times.php read."""
+    ct, err = ss_get_call_times(ss, call_id)
+    if err or not isinstance(ct, dict):
+        return None, err or "unreadable"
+    for cm in ct.get("crew", []) or []:
+        try:
+            if int(cm.get("user_id")) == int(user_id):
+                return int(cm.get("status") or 0), None
+        except (TypeError, ValueError):
+            continue
+    return None, None
+
+
+def _confcrew_one_call(ss, call_id, user_id):
+    """Add & Confirm one person on ONE call via SmartStaff's native
+    add-call.php?action=confcrew — deliberately NOT api_goat_add_crew, which
+    widens an offer to every call the chosen one feeds. addToCall refuses on a
+    clash with a call they are CONFIRMED on (status 5 only), so a moved person's
+    old call must already be at 14. Returns error string or None. The caller
+    reads the row back: the body only lists ids that failed."""
+    url = (f"{BASE_URL}/add-call.php?action=confcrew&id={int(call_id)}"
+           f"&userID={int(user_id)}&addtocalls={int(call_id)}")
+    try:
+        resp = ss.get(url, allow_redirects=True, timeout=60)
+    except Exception as e:
+        return f"request failed: {e}"
+    if resp.status_code != 200:
+        return f"HTTP {resp.status_code}"
+    failed = set(t.strip() for t in (resp.text or "").strip().split(",") if t.strip())
+    if str(int(call_id)) in failed:
+        return "SmartStaff refused to book them — most likely a clash with another call they're confirmed on"
+    return None
+
+
+def checkin_add_crew(ss, call_id, user_id, moved_from_call_id, row):
+    """ADDED ON THE DAY (claude/PLAN-added-crew-on-the-day.md, slice 3): book one
+    person the Crew Boss added on the check-in sheet onto the call, and write
+    their times. Ops ticked them in Import from check-in.
+
+      1. MOVED: their row on the call they were moved off goes 5 -> 14 ("Moved",
+         update-crew-status.php; refused there unless they are still Confirmed).
+         First, because addToCall refuses a clash with a call they are
+         confirmed on, and two 10:00 calls always clash.
+      2. Add & Confirm on THIS call only (skipped if already Confirmed here).
+      3. Read the row back: status 5, or it did not happen.
+      4. If 2 or 3 failed: the old call goes back to 5 and nothing is left
+         half-done. Reported, never guessed at.
+      5. Write their times, the same update-call-times.php every import uses.
+         If THAT fails they are booked but have no times: said so plainly — a
+         re-import then finds them on the roster as an ordinary row.
+
+    Returns a dict: ok, booked, moved, times_written, error, and step (where it
+    stopped). Pure in the SmartStaff sense: every write goes through the ss_*
+    helpers above, which the tests replace."""
+    out = {"ok": False, "booked": False, "moved": False, "times_written": False,
+           "error": None, "step": None}
+    call_id, user_id = int(call_id), int(user_id)
+    from_id = int(moved_from_call_id) if moved_from_call_id not in (None, "", 0) else None
+
+    here, err = _call_times_status(ss, call_id, user_id)
+    if err:
+        out.update(step="read", error="Couldn't read the call from SmartStaff: %s" % err)
+        return out
+    already = (here == 5)
+
+    # The move happens even when Ops already booked them here by hand: the
+    # Crew Boss says they moved, and leaving them Confirmed on both calls is
+    # the one state this exists to prevent.
+    if from_id is not None:
+        old, err = _call_times_status(ss, from_id, user_id)
+        if err:
+            out.update(step="read", error="Couldn't read the call they were moved from: %s" % err)
+            return out
+        if old == 5:
+            res, err = ss_update_crew_status(ss, from_id, user_id, 14)
+            if err or not (isinstance(res, dict) and res.get("ok")):
+                out.update(step="move", error="Couldn't set them to Moved on the call they left: %s"
+                           % (err or (res or {}).get("error") or "refused"))
+                return out
+            out["moved"] = True
+        elif old != 14:
+            # Already 14 is a retry after a half-finished run: carry on.
+            out.update(step="move", error="They're no longer Confirmed on the call they were moved from "
+                                          "(status %s) — nothing changed. Check that call first." % old)
+            return out
+
+    if not already:
+        err = _confcrew_one_call(ss, call_id, user_id)
+        now, rerr = _call_times_status(ss, call_id, user_id)
+        if err or rerr or now != 5:
+            reason = err or ("couldn't read it back: %s" % rerr if rerr else
+                             "SmartStaff shows status %s, not Confirmed" % now)
+            if out["moved"]:
+                back, berr = ss_update_crew_status(ss, from_id, user_id, 5)
+                if berr or not (isinstance(back, dict) and back.get("ok")):
+                    reason += (" — AND putting them back on the call they left failed (%s): "
+                               "they are at Moved there; set them back to Confirmed by hand"
+                               % (berr or "refused"))
+                    out["moved"] = True
+                else:
+                    out["moved"] = False
+            out.update(step="book", error=reason)
+            return out
+    out["booked"] = True
+
+    data, err = ss_update_call_times(ss, call_id, [dict(row, user_id=user_id)])
+    rows = (data or {}).get("rows") or [] if isinstance(data, dict) else []
+    if err or not rows or not all(r.get("ok") for r in rows):
+        detail = err or "; ".join(str(r.get("error") or "refused") for r in rows if not r.get("ok")) or "no answer"
+        out.update(step="times", error="Booked on the call, but the times weren't written (%s) — "
+                                       "import again or use Enter Times." % detail)
+        return out
+    out.update(ok=True, times_written=True)
+    return out
+
+
+@app.route("/api/booking/<booking_id>/import-times/add-crew", methods=["POST"])
+@require_cohort("admin")
+def api_import_times_add_crew(booking_id):
+    """Import from check-in, ticked "Added on the day" row: book them and write
+    their times (checkin_add_crew). One person per request; the review calls it
+    once per ticked row, after that call's ordinary rows."""
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    body = request.get_json(force=True) or {}
+    try:
+        call_id = int(body.get("call_id"))
+        user_id = int(body.get("user_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "call_id and user_id must be integers"}), 400
+    row = body.get("row") or {}
+    if not isinstance(row, dict) or not row.get("on") or not row.get("off"):
+        return jsonify({"error": "row needs on and off times"}), 400
+    keep = ("on", "off", "break", "break_night", "late", "note")
+    row = {k: row.get(k) for k in keep if k in row}
+    try:
+        from_id = int(body["moved_from_call_id"]) if body.get("moved_from_call_id") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "moved_from_call_id must be an integer"}), 400
+    result = checkin_add_crew(ss, call_id, user_id, from_id, row)
+    if result.get("moved") or result.get("booked"):
+        _schedule_cache.clear()
+    return jsonify(result), (200 if result["ok"] else 409)
 
 
 class _CallTimesRecorder(object):
