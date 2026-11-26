@@ -1,6 +1,6 @@
 {
-  "version": "5.124.0",
-  "release_date": "2026-11-25",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.124.0/TheGOAT.dmg",
-  "release_notes": "A crew member the Crew Boss marked Left early on the check-in sheet is now paid the hours they worked when you import times from check-in, with no 4-hour minimum. The row stays ticked, with a note giving the reason."
+  "version": "5.125.0",
+  "release_date": "2026-11-26",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.125.0/TheGOAT.dmg",
+  "release_notes": "A crew member the Crew Boss added on the day on the check-in sheet now shows up in Import from check-in, ready to book onto the call with their times. Someone moved from another call is set to the new Moved status on that call, which isn't paid."
 }
