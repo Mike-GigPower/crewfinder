@@ -26,17 +26,32 @@
 	/* "an ack row exists for me on this call" — a CONFIRMED/BACKUP crew member
 	/* answering a change, which respond-to-call.php would reject.
 	/*
-	/* Contract: POST callID, action in {accept, decline}. Acts on the SINGLE call
-	/* only — no link-group cascade in v1 (the flag is written per changed call).
+	/* Contract: POST callID, action in {accept, decline, seen}. Acts on the SINGLE
+	/* call only — no link-group cascade in v1 (the flag is written per changed
+	/* call).
+	/*
+	/* DESIGN-time-change-no-decline (v0.2, 27 Nov 2026): confirmed crew no longer
+	/* answer a time change — they are told about it. The ack row now means "not
+	/* seen yet" for a confirmed row.
+	/*
+	/*   seen    (Crew Hub showed the changed card on screen, or Got it was tapped):
+	/*     - any status; never time-gated
+	/*     - DELETE the ack row; status UNTOUCHED; history answer 'seen'
+	/*     - does NOT answer a pending promotion (D9) — seeing is not agreeing
+	/*   decline on a CONFIRMED (5) row is REFUSED (D4): nothing is written, the
+	/*     ack row stays, and the response is ok:false, refused:true with the
+	/*     office number. Crew who can't make the new time phone the office and
+	/*     ops set them to Declined in THE GOAT. The old 5 -> 6 path and its
+	/*     removeFromCalendar are gone from this endpoint.
+	/*   accept is kept unchanged so older Crew Hub builds keep working.
 	/*
 	/*   accept  (confirmed re-confirms, OR a backup harmlessly clears the flag):
 	/*     - time-gated: refuse if the NEW start has already passed (Melbourne
 	/*       wall-clock, same computation as respond-to-call.php)
 	/*     - DELETE the ack row; call_crew_map.status is LEFT UNTOUCHED (5 stays 5,
 	/*       7 stays 7) — accepting a change is not a re-offer, just an ack.
-	/*   decline (confirmed drops out, OR a backup opts off standby):
+	/*   decline (a backup opts off standby; a confirmed row is refused, above):
 	/*     - never time-gated
-	/*     - status 5 -> 6 (Declined), and removeFromCalendar
 	/*     - status 7 -> 13 (Left standby), NOT 6 (S5). It is the same intent as
 	/*       the Take me off standby button, so it must land on the same status;
 	/*       sending it to 6 would count a withdrawal from standby against them
@@ -79,10 +94,10 @@
 		die('{"error":"callID required"}');
 	}
 
-	if ($action !== 'accept' && $action !== 'decline')
+	if ($action !== 'accept' && $action !== 'decline' && $action !== 'seen')
 	{
 		http_response_code(400);
-		die('{"error":"action must be accept or decline"}');
+		die('{"error":"action must be accept, decline or seen"}');
 	}
 
 	/*
@@ -102,9 +117,9 @@
 	}
 
 	/*
-	/* Read the crew member's current status on this call — decides whether a
-	/* decline needs removeFromCalendar (only a prior Confirmed 5 has a calendar
-	/* row) and what result_status we report.
+	/* Read the crew member's current status on this call — the prior_status
+	/* recorded in history, and the result_status reported for seen / accept.
+	/* The decline path re-reads it before refusing a Confirmed (5) row.
 	*/
 	$mapRow      = $db->selectFirst(
 		'status',
@@ -112,6 +127,35 @@
 		'callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
 	);
 	$priorStatus = $mapRow ? (int) $mapRow->status : 0;
+
+	if ($action === 'seen')
+	{
+		/*
+		/* The crew member has seen the change (D8: the card on screen counts).
+		/* Any status, no time gate, status untouched. Deliberately NO
+		/* call_promo_ack update (D9): seeing a time change is not agreeing to
+		/* be promoted off standby.
+		*/
+		mysql_query(
+			'DELETE FROM call_change_ack WHERE callID=' . intval($callID) .
+			' AND userID=' . intval($userID)
+		);
+
+		if (mysql_error())
+		{
+			http_response_code(500);
+			die('{"error":"ack clear failed: ' . addslashes(mysql_error()) . '"}');
+		}
+
+		goat_log_change_answer($callID, $userID, $ack, 'seen', 'crew', $priorStatus, $priorStatus);
+
+		echo json_encode(array(
+			'ok'            => true,
+			'action'        => 'seen',
+			'result_status' => $priorStatus   /* unchanged */
+		));
+		exit;
+	}
 
 	if ($action === 'accept')
 	{
@@ -276,29 +320,33 @@
 		}
 	}
 
-	$declined = false;
+	/*
+	/* Nothing came off standby, so this is not a backup withdrawal. Re-read the
+	/* row's status NOW (not $priorStatus, which may be stale): a Confirmed (5)
+	/* row can no longer decline a time change from Crew Hub (D4). Refuse
+	/* without writing anything — the ack row stays, so ops still see "hasn't
+	/* seen time change" and the stale card is corrected on the next load.
+	*/
+	$currentStatus = $priorStatus;
 
 	if (!count($leftStandby))
 	{
-		$db->update(
+		$curRow        = $db->selectFirst(
+			'status',
 			'call_crew_map',
-			array('status' => $db->sc(6)),
-			'status = 5 AND callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
+			'callID=' . $db->sc($callID) . ' AND userID=' . $db->sc($userID)
 		);
+		$currentStatus = $curRow ? (int) $curRow->status : 0;
 
-		if (mysql_error())
+		if ($currentStatus === 5)
 		{
-			http_response_code(500);
-			die('{"error":"decline update failed: ' . addslashes(mysql_error()) . '"}');
+			echo json_encode(array(
+				'ok'      => false,
+				'refused' => true,
+				'error'   => "You can't drop a confirmed shift here. If you can't make the new time, call the office on 03 9376 9500."
+			));
+			exit;
 		}
-
-		$declined = ($db->affected_rows > 0);
-	}
-
-	/* A prior Confirmed (5) had a calendar row — remove it. Backups (7) never do. */
-	if ($declined && $priorStatus === 5)
-	{
-		$sss->removeFromCalendar($callID, $userID);
 	}
 
 	/*
@@ -323,21 +371,22 @@
 
 	/*
 	/* History row — the status actually written: 13 for a standby withdrawal
-	/* (S5), 6 for a confirmed decline, otherwise the status it already had.
-	/* Crew Hub reads this to choose the toast tone, so 13 must be recorded
-	/* truthfully or a withdrawal is toasted as a decline (crew-data.ts:845).
+	/* (S5), otherwise the status it already had (a confirmed decline is refused
+	/* above and never reaches here). Crew Hub reads this to choose the toast
+	/* tone, so 13 must be recorded truthfully or a withdrawal is toasted as a
+	/* decline (crew-data.ts:845).
 	*/
-	$resultStatus = count($leftStandby) ? 13 : ($declined ? 6 : $priorStatus);
+	$resultStatus = count($leftStandby) ? 13 : $currentStatus;
 
 	goat_log_change_answer($callID, $userID, $ack, 'decline', 'crew', $priorStatus, $resultStatus);
 
 	/*
-	/* Subsume any pending promotion acknowledgement: answering the timing
-	/* change answers the promotion. Accepting the new time is agreement to
-	/* be on the call; declining flips 5 -> 6 and makes it moot either way.
-	/* Harmless no-op when there is no promo row. Placed AFTER the change
-	/* answer's own error gate and NOT gated itself: the change answer has
-	/* already succeeded and must never 500 over a subsumption.
+	/* Subsume any pending promotion acknowledgement. Only a backup withdrawal
+	/* (or a row at some other status) reaches here now, and either way the
+	/* promotion is moot. Harmless no-op when there is no promo row. Placed
+	/* AFTER the change answer's own error gate and NOT gated itself: the
+	/* change answer has already succeeded and must never 500 over a
+	/* subsumption.
 	*/
 	mysql_query(
 		'UPDATE call_promo_ack SET acked_at=' . time() . ", acked_src='crew'" .
