@@ -4297,11 +4297,25 @@ function _finderDownstreamCalls(call){
   // Displayed calls reachable from this one by following feeds FORWARD,
   // transitively. Excludes the call itself. Upstream calls are never
   // included — selecting the load out must not drag in the load-ins.
-  var all = window._finderCalls || [];
-  var byId = {};
-  all.forEach(function(c){ byId[String(c.call_id)] = c; });
+  return feedClosure(call.call_id, window._finderCalls || [], false);
+}
 
-  var start = String(call.call_id);
+// The walk behind _finderDownstreamCalls, shared with + Add Crew in the Call
+// dialog (BRIEF-call-add-crew §3.3). Pure: `calls` is the universe the walk may
+// pass through and return — the Finder passes only the calls on screen, Add
+// Crew passes every call in the booking. A call not in `calls` is neither
+// returned nor walked through, exactly as before the split.
+//
+// followRecommended=false skips recommended edges (the Finder's rule).
+// Add Crew passes true because that is what /api/goat/add-crew actually writes:
+// expand_downstream_calls follows every edge in get-booking.php's `feeds`, which
+// holds ALL modes (FINDINGS in DESIGN-call-add-crew v0.4). If the server is
+// changed to skip recommended edges, flip Add Crew's argument with it.
+function feedClosure(startId, calls, followRecommended){
+  var byId = {};
+  (calls || []).forEach(function(c){ byId[String(c.call_id)] = c; });
+
+  var start = String(startId);
   var seen  = {}; seen[start] = true;
   var stack = [start];
   var out   = [];
@@ -4310,14 +4324,15 @@ function _finderDownstreamCalls(call){
   while(stack.length && guard++ < 200){
     var cur = byId[stack.pop()];
     if(!cur) continue;
-    var rec = {}; (cur.feeds_recommended || []).forEach(function(t){ rec[String(t)] = true; });
+    var rec = {};
+    if(!followRecommended) (cur.feeds_recommended || []).forEach(function(t){ rec[String(t)] = true; });
     (cur.feeds || []).forEach(function(t){
       t = String(t);
       if(rec[t]) return;       // recommended edges do not carry
       if(seen[t]) return;      // visited set: cycles (migrated symmetric
       seen[t] = true;          // links are cycles) terminate here
       stack.push(t);
-      if(byId[t]) out.push(byId[t]);   // only calls actually on screen
+      if(byId[t]) out.push(byId[t]);   // only calls in the universe given
     });
   }
   return out;
@@ -7244,6 +7259,419 @@ function goatOverConfirm(warnings){
       {label:'Continue anyway', value:true, primary:true}
     ]
   }).then(function(v){ return v === true; });
+}
+
+// ── + ADD CREW FROM THE CALL DIALOG (BRIEF-call-add-crew) ──────────────────
+// One named person onto the open call, without leaving for Crew Finder. Reuses
+// the Finder's pieces unchanged: /api/crew-roster, the one-person
+// /api/availability check, crewDetailBody, /api/goat/add-crew, goatOverConfirm.
+// Never touches selectedCalls / consideredCalls — that is the Finder's state.
+//
+// Its own overlay ABOVE the call dialog (99991) and BELOW goatChoice (99995),
+// so the server's over-warning can still ask on top of it.
+var _cacState = null;   // {bookingId, callId, person, entry, targets, reasons, armed, busy}
+
+var CAC_STATUS_LABEL = { confirmed:'Confirmed', declined:'Declined', sent:'Unconfirmed',
+  unconfirmed:'Unconfirmed', backup:'Backup', cancelled:'Stood down', noshow:'No-show',
+  leftstandby:'Left standby', moved:'Moved' };
+
+function cacOverlay(){
+  var ov = document.getElementById('cac-overlay');
+  if(ov) return ov;
+  ov = document.createElement('div');
+  ov.id = 'cac-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:99993;'
+    + 'display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div id="cac-box" role="dialog" aria-label="Add crew to this call" style="background:var(--surface);'
+    + 'border:1px solid var(--border-gold, var(--border));border-radius:8px;width:100%;max-width:880px;max-height:88vh;'
+    + 'overflow:auto;padding:16px 18px;box-shadow:0 8px 30px rgba(0,0,0,.5)"></div>';
+  ov.addEventListener('click', function(e){ if(e.target === ov) closeCallAddCrew(); });
+  document.addEventListener('keydown', cacOnKey, true);
+  document.body.appendChild(ov);
+  return ov;
+}
+// Esc closes this overlay only. Captured and stopped so the global Esc handler
+// doesn't also close the call dialog underneath (same as goatChoice). Leaves Esc
+// alone while a goatChoice prompt is up — that one handles its own.
+function cacOnKey(e){
+  if(e.key !== 'Escape' || !document.getElementById('cac-overlay')) return;
+  if(_cacState && _cacState.asking) return;   // the over-warning's own Esc = Cancel
+  e.preventDefault(); e.stopImmediatePropagation();
+  closeCallAddCrew();
+}
+function closeCallAddCrew(){
+  var ov = document.getElementById('cac-overlay');
+  if(ov) ov.remove();
+  document.removeEventListener('keydown', cacOnKey, true);
+  _cacState = null;
+}
+function cacHeader(sub){
+  var ctx = window._callAddCtx || {};
+  return '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px">'
+    + '<div><div style="font-size:15px;font-weight:700;color:var(--accent)">Add crew</div>'
+    + '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(decodeEntities(ctx.callName||''))
+    + ' · Call #'+escapeHtml(String(ctx.callId||''))+(sub?' · '+sub:'')+'</div></div>'
+    + '<button type="button" class="cd-close" style="position:static" title="Close" onclick="closeCallAddCrew()">×</button></div>';
+}
+function cacBtn(label, onclick, opts){
+  opts = opts || {};
+  return '<button type="button"'+(opts.id?' id="'+opts.id+'"':'')+(opts.disabled?' disabled':'')
+    + (opts.title?' title="'+escapeHtml(opts.title)+'"':'')+' onclick="'+onclick+'" style="font-size:12px;padding:6px 12px;'
+    + 'border-radius:4px;cursor:'+(opts.disabled?'not-allowed':'pointer')+';opacity:'+(opts.disabled?'0.45':'1')+';'
+    + 'background:var(--surface2);border:1px solid '+(opts.primary?'var(--accent)':'var(--border)')+';'
+    + 'color:'+(opts.primary?'var(--accent)':'var(--text)')+'">'+escapeHtml(label)+'</button>';
+}
+
+// §3.1 — the name prompt.
+async function openCallAddCrew(bookingId, callId){
+  if(window._cohort !== 'admin') return;
+  var ctx = window._callAddCtx;
+  if(!ctx || ctx.callId !== String(callId)) return;   // dialog moved on
+  _cacState = { bookingId: String(bookingId), callId: String(callId) };
+  cacOverlay();
+  cacRenderPrompt('');
+  if(!(_cfRoster||[]).length) await loadCfRoster();
+  var dl = document.getElementById('cac-roster-list');
+  if(dl){
+    dl.innerHTML = (_cfRoster||[]).map(function(c){
+      return '<option value="'+escapeHtml(decodeEntities(c.name||''))+'">'; }).join('');
+  }
+  var msg = document.getElementById('cac-msg');
+  if(msg && !(_cfRoster||[]).length) msg.textContent = "Couldn't load the crew list. Close and try again.";
+}
+function cacRenderPrompt(value){
+  var box = document.getElementById('cac-box');
+  if(!box) return;
+  box.style.maxWidth = '480px';
+  box.innerHTML = cacHeader('')
+    + '<div style="display:flex;gap:8px;align-items:center">'
+    + '<input type="text" id="cac-name" list="cac-roster-list" placeholder="Type a name…" maxlength="60" autocomplete="off"'
+    + ' value="'+escapeHtml(value||'')+'" style="flex:1;min-width:0;font-size:13px;padding:6px 8px;background:var(--surface2);'
+    + 'border:1px solid var(--border);border-radius:4px;color:var(--text)"'
+    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();cacCheck();}">'
+    + cacBtn('Check', 'cacCheck()', {primary:true}) + '</div>'
+    + '<datalist id="cac-roster-list"></datalist>'
+    + '<div id="cac-msg" style="font-size:12px;color:var(--warn);margin-top:8px;min-height:16px"></div>';
+  // Re-fill the list from the loaded roster (Check another rebuilds the box).
+  if((_cfRoster||[]).length){
+    document.getElementById('cac-roster-list').innerHTML = _cfRoster.map(function(c){
+      return '<option value="'+escapeHtml(decodeEntities(c.name||''))+'">'; }).join('');
+  }
+  var inp = document.getElementById('cac-name');
+  if(inp) inp.focus();
+}
+function cacMatch(raw){
+  var want = String(raw||'').trim().toLowerCase();
+  if(!want) return null;
+  return (_cfRoster||[]).find(function(c){
+    return decodeEntities(c.name||'').toLowerCase() === want || String(c.name||'').toLowerCase() === want;
+  }) || null;
+}
+
+// §3.2 → §3.4. Already-on-call first (no network), then the one-person check.
+async function cacCheck(){
+  if(!_cacState) return;
+  var inp = document.getElementById('cac-name');
+  var raw = inp ? inp.value.trim() : '';
+  if(!raw) return;
+  var msg = document.getElementById('cac-msg');
+  var person = cacMatch(raw);
+  if(!person){ if(msg) msg.textContent = 'No crew member called "'+raw+'" — pick a name from the list.'; return; }
+  _cacState.person = person;
+
+  var ctx = window._callAddCtx || {};
+  var held = (ctx.crew||[]).find(function(c){ return String(c.id) === String(person.id); });
+  if(held){ cacRenderHeld(person, held); return; }
+
+  if(msg){ msg.style.color = 'var(--muted)'; msg.textContent = 'Checking '+decodeEntities(person.name)+' against this call…'; }
+  try{
+    var built = await cacBuildTargets(_cacState.bookingId, _cacState.callId);
+    if(!_cacState) return;
+    var resp = await fetch('/api/availability', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ calls: built.payload, soft_call_ids: [], only_crew_ids: [person.id] })});
+    var result = await resp.json();
+    if(!_cacState) return;
+    if(!resp.ok || result.error) throw new Error(result.error || ('HTTP '+resp.status));
+    var entry = cacFindEntry(result, person.id);
+    _cacState.entry = entry;
+    _cacState.targets = result.targets || built.payload;
+    _cacState.unchecked = built.unchecked;
+    cacRenderPanel(person, entry, result);
+  }catch(e){
+    if(!_cacState) return;
+    var m = document.getElementById('cac-msg');
+    if(m){ m.style.color = 'var(--conflict)'; m.textContent = "Couldn't check "+decodeEntities(person.name)+': '+(e.message||e); }
+  }
+}
+
+// §3.3 — this call plus every call it feeds (see feedClosure), each with the
+// start/end/venue /api/availability needs. A fed call that won't load is left
+// out of the check and named; this call failing stops the check.
+async function cacBuildTargets(bookingId, callId){
+  var calls = window._curCallBookingCalls || [];
+  var fed = feedClosure(callId, calls, true);
+  var list = [{ call_id: String(callId), call_name: (window._callAddCtx||{}).callName || '' }]
+    .concat(fed.map(function(c){ return { call_id: String(c.call_id), call_name: decodeEntities(String(c.call_name||'')) }; }));
+  var details = await Promise.all(list.map(function(c){
+    return fetch('/api/call/'+bookingId+'/'+c.call_id).then(function(r){ return r.json(); })
+      .catch(function(e){ return { error: String(e) }; });
+  }));
+  if(details[0].error) throw new Error(details[0].error);
+  var payload = [], unchecked = [];
+  list.forEach(function(c, i){
+    var d = details[i];
+    if(d.error || !d.start_dt || !d.end_dt){ unchecked.push(c); return; }
+    payload.push({ booking_id: String(bookingId), call_id: c.call_id, call_num: c.call_id,
+                   call_name: d.call_name || c.call_name, start_dt: d.start_dt, end_dt: d.end_dt, venue: d.venue || '' });
+  });
+  return { payload: payload, unchecked: unchecked };
+}
+
+function cacFindEntry(result, id){
+  var buckets = ['available','conflicts','skipped','location_unknown'];
+  for(var i=0;i<buckets.length;i++){
+    var hit = (result[buckets[i]]||[]).find(function(c){ return String(c.id) === String(id); });
+    if(hit) return Object.assign({ _bucket: buckets[i] }, hit);
+  }
+  return null;
+}
+
+// §3.4 verdict. Pure: returns {kind, red, notes[], reasons[]} where
+//   kind    'free' | 'red' | 'partial' | 'warned' | 'unknown'
+//   reasons what the single extra click (§3.5) has to acknowledge
+//   notes   information only (inductions), never changes the buttons
+function cacVerdict(entry, callId, ctx){
+  var out = { kind:'free', red:'', refused:[], warnings:[], notes:[], reasons:[] };
+  if(!entry || entry._bucket === 'skipped' || entry._bucket === 'location_unknown'){
+    out.kind = 'unknown';
+    return out;
+  }
+  var rows = entry.call_results || [];
+  var own = rows.find(function(r){ return String(r.call_id) === String(callId); });
+  if(entry._bucket === 'conflicts' || (own && own.available === false)){
+    out.kind = 'red';
+    out.red = (own && own.detail) || entry.detail || 'Clashes with another shift';
+    return out;
+  }
+  rows.forEach(function(r){
+    if(String(r.call_id) !== String(callId) && r.available === false){
+      out.refused.push({ call_id: r.call_id, call_name: decodeEntities(String(r.call_name||'')), why: r.detail || '' });
+    }
+  });
+  (entry.conflict_warnings||[]).forEach(function(w){ out.warnings.push(String(w)); });
+  (entry.offer_clashes||[]).forEach(function(w){ out.warnings.push(String(w)); });
+  (entry.induction_warnings||[]).forEach(function(w){ out.notes.push(String(w)); });
+
+  if(out.refused.length){
+    out.kind = 'partial';
+    out.refused.forEach(function(r){
+      out.reasons.push('Free for #'+callId+', but SmartStaff will refuse #'+r.call_id+' '+r.call_name
+        + (r.why ? ': '+r.why : '')+'.');
+    });
+  }
+  if(out.warnings.length){
+    if(out.kind === 'free') out.kind = 'warned';
+    out.warnings.forEach(function(w){ out.reasons.push(w); });
+  }
+  // D4: full on the same count the Crew line and the tab header show.
+  if(ctx && ctx.required > 0 && ctx.filled >= ctx.required){
+    out.reasons.push('#'+callId+' is full — '+ctx.filled+'/'+ctx.required+'. Adding takes it to '+(ctx.filled+1)+'.');
+  }
+  return out;
+}
+
+function cacRenderHeld(person, held){
+  var box = document.getElementById('cac-box');
+  if(!box) return;
+  var st = String(held.status||'').toLowerCase();
+  var label = CAC_STATUS_LABEL[st] || (st ? st.charAt(0).toUpperCase()+st.slice(1) : 'on the call');
+  box.innerHTML = cacHeader(escapeHtml(decodeEntities(person.name)))
+    + '<div style="font-size:13px;color:var(--text);padding:6px 0">'
+    + '<b>'+escapeHtml(decodeEntities(person.name))+'</b> is already on this call — '+escapeHtml(label)+'.</div>'
+    + (st === 'declined'
+        ? '<div style="font-size:12px;color:var(--muted)">To offer it again, change their status to Unconfirmed in Booked Crew.</div>' : '')
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
+    + cacBtn('Check another', 'cacRenderPrompt(\'\')') + cacBtn('Done', 'closeCallAddCrew()') + '</div>';
+}
+
+// The Finder's panel body. crewGanttHtml reads currentResult.targets — the
+// Finder's global — so it is swapped for this check's targets for the length of
+// one synchronous render and put straight back.
+function cacPanelBody(entry, targets){
+  var saved = currentResult;
+  try{
+    currentResult = { targets: targets };
+    return crewDetailBody(entry);
+  }finally{
+    currentResult = saved;
+  }
+}
+
+function cacRenderPanel(person, entry, result){
+  var box = document.getElementById('cac-box');
+  if(!box || !_cacState) return;
+  box.style.maxWidth = '880px';
+  var ctx = window._callAddCtx || {};
+  var callId = _cacState.callId;
+  var v = cacVerdict(entry, callId, ctx);
+  _cacState.verdict = v;
+  _cacState.armed = false;
+
+  var name = escapeHtml(decodeEntities(person.name));
+  var html = cacHeader(name);
+
+  if(v.kind === 'unknown'){
+    html += '<div style="font-size:13px;color:var(--warn);padding:6px 0">Couldn\'t assess '+name
+      + ' against this call'+(entry && entry.detail ? ': '+escapeHtml(entry.detail) : '')+'. Use Crew Finder for this one.</div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
+      + cacBtn('Check another', 'cacRenderPrompt(\'\')') + cacBtn('Close', 'closeCallAddCrew()') + '</div>';
+    box.innerHTML = html;
+    return;
+  }
+
+  html += '<div class="cd-panel" style="border:1px solid var(--border);border-radius:6px">'
+    + cacPanelBody(entry, _cacState.targets || []) + '</div>';
+
+  // Reaches line.
+  var fed = (_cacState.targets||[]).filter(function(t){ return String(t.call_id) !== String(callId); })
+    .concat(_cacState.unchecked||[]);
+  var reach = 'Adds to #'+escapeHtml(String(callId))+' '+escapeHtml(decodeEntities(ctx.callName||''));
+  if(fed.length){
+    reach += fed.length === 1 ? ', and the call it feeds: ' : ', and the '+fed.length+' calls it feeds: ';
+    reach += fed.map(function(t){ return '#'+escapeHtml(String(t.call_id))+' '+escapeHtml(decodeEntities(String(t.call_name||''))); }).join(', ');
+  }
+  html += '<div style="font-size:12px;color:var(--text);margin-top:10px">'+reach+'.</div>';
+  if((_cacState.unchecked||[]).length){
+    html += '<div style="font-size:11px;color:var(--warn);margin-top:4px">Couldn\'t check '
+      + _cacState.unchecked.map(function(t){ return '#'+escapeHtml(String(t.call_id)); }).join(', ')
+      + ' — it wasn\'t readable, so a clash there would only show in the results.</div>';
+  }
+
+  // Verdict line.
+  if(v.kind === 'red'){
+    html += '<div style="font-size:13px;color:var(--conflict);margin-top:10px;font-weight:600">Conflict: '+escapeHtml(v.red)+'</div>'
+      + '<div style="font-size:12px;color:var(--muted)">SmartStaff won\'t book a clashing shift. Move or remove the clash first.</div>';
+  }else if(v.kind === 'free' && !v.reasons.length){
+    html += '<div style="font-size:13px;color:var(--available);margin-top:10px;font-weight:600">Available</div>';
+  }else{
+    html += '<div id="cac-reasons" style="margin-top:10px;padding:8px 10px;border-left:3px solid var(--warn);background:var(--surface2);border-radius:4px">'
+      + '<div style="font-size:12px;color:var(--warn);font-weight:600;margin-bottom:4px">'
+      + (v.kind === 'free' ? 'Available, but check first' : 'Bookable, with a warning') + '</div>'
+      + v.reasons.map(function(r){ return '<div style="font-size:12px;color:var(--text);line-height:1.5">• '+escapeHtml(r)+'</div>'; }).join('')
+      + '</div>';
+  }
+  if(v.notes.length){
+    html += '<div style="font-size:11px;color:var(--muted);margin-top:6px">'
+      + v.notes.map(function(n){ return escapeHtml(n); }).join(' · ') + '</div>';
+  }
+
+  var red = v.kind === 'red';
+  var redTitle = red ? "SmartStaff won't book a clashing shift. Move or remove the clash first." : '';
+  html += '<div id="cac-err" style="font-size:12px;color:var(--conflict);margin-top:10px"></div>'
+    + '<div id="cac-actions" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px">'
+    + cacBtn('Check another', 'cacRenderPrompt(\'\')')
+    + cacBtn('Cancel', 'closeCallAddCrew()')
+    + cacBtn('+ Add', 'cacAdd(false)', {id:'cac-add', disabled:red, title:redTitle})
+    + cacBtn('✓ Add & Confirm', 'cacAdd(true)', {id:'cac-confirm', disabled:red, title:redTitle, primary:true})
+    + '</div>';
+  box.innerHTML = html;
+}
+
+// §3.5 — one extra click covers every reason at once; never a stacked prompt.
+// §3.6 — the write.
+async function cacAdd(confirm, ackOver){
+  var s = _cacState;
+  if(!s || s.busy || !s.verdict || s.verdict.kind === 'red' || s.verdict.kind === 'unknown') return;
+  if(s.verdict.reasons.length && !s.armed && !ackOver){
+    s.armed = true;
+    var a = document.getElementById('cac-add'), c = document.getElementById('cac-confirm');
+    if(a) a.textContent = 'Add anyway';
+    if(c) c.textContent = 'Confirm anyway';
+    var rs = document.getElementById('cac-reasons');
+    if(rs && !rs.querySelector('.cac-armed')){
+      rs.insertAdjacentHTML('beforeend', '<div class="cac-armed" style="font-size:11px;color:var(--muted);margin-top:6px">Click Add anyway or Confirm anyway to go ahead.</div>');
+    }
+    return;
+  }
+  var own = (s.targets||[]).find(function(t){ return String(t.call_id) === String(s.callId); }) || {};
+  var body = {
+    crew:  [{ name: s.person.name, crew_id: String(s.person.id) }],
+    calls: [{ call_id: s.callId, booking_id: s.bookingId, call_name: own.call_name || (window._callAddCtx||{}).callName || '',
+              venue: own.venue || '', start_dt: own.start_dt || '', end_dt: own.end_dt || '' }],
+    confirm: !!confirm,
+    ack_over: !!ackOver
+  };
+  s.busy = true;
+  var _er = document.getElementById('cac-err'); if(_er) _er.textContent = '';
+  cacSetBusy(confirm ? 'Confirming…' : 'Adding…', confirm);
+  var again = null;
+  try{
+    var r = await fetch('/api/goat/add-crew', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    var j = await r.json();
+    if(r.status === 409 && j && j.needs_confirm){
+      s.busy = false;
+      cacSetBusy(null);
+      s.asking = true;
+      try{ again = (await goatOverConfirm(j.warnings)) ? 'go' : 'stop'; }
+      finally{ s.asking = false; }
+      return;
+    }
+    if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+    cacRenderOutcome(confirm, j.results || []);
+  }catch(e){
+    if(_cacState){ _cacState.busy = false; cacSetBusy(null); }
+    var m = document.getElementById('cac-err');
+    if(m) m.textContent = (confirm?'Add & Confirm':'Add')+' failed: '+String(e.message||e);
+  }finally{
+    if(again === 'go' && _cacState) cacAdd(confirm, true);
+  }
+}
+function cacSetBusy(text, confirm){
+  var a = document.getElementById('cac-add'), c = document.getElementById('cac-confirm');
+  var red = _cacState && _cacState.verdict && _cacState.verdict.kind === 'red';
+  [a, c].forEach(function(b){ if(b){ b.disabled = !!text || red; b.style.opacity = b.disabled ? '0.45' : '1'; } });
+  if(text){ var t = confirm ? c : a; if(t) t.textContent = text; }
+  else if(_cacState){
+    var armed = _cacState.armed;
+    if(a) a.textContent = armed ? 'Add anyway' : '+ Add';
+    if(c) c.textContent = armed ? 'Confirm anyway' : '✓ Add & Confirm';
+  }
+}
+
+// Outcome in this overlay, not showOfferResults: that one takes over the
+// entity modal, and the call dialog underneath must survive (§3.6). Same tally
+// and the same three non-success kinds, so nothing is folded into a success.
+function cacRenderOutcome(confirm, results){
+  var s = _cacState;
+  var box = document.getElementById('cac-box');
+  if(!s || !box) return;
+  var t = offerResultTally(results);
+  var name = escapeHtml(decodeEntities(s.person.name));
+  var head = t.added
+    ? name+(confirm ? ' added and confirmed' : ' added')+' — '+t.added+' call'+(t.added===1?'':'s')+'.'
+    : 'Nothing was added for '+name+'.';
+  var rows = t.rows.map(function(x){
+    var colour = x.kind === 'failed' ? 'var(--conflict)' : x.kind === 'unverified' ? 'var(--warn)' : 'var(--muted)';
+    var tag = x.kind === 'failed' ? 'failed' : x.kind === 'unverified' ? "couldn't verify" : 'already on call';
+    var why = x.kind === 'failed' ? (x.r.error || 'Unknown reason')
+            : x.kind === 'unverified' ? (x.r.note || 'Could not confirm this row was written') : (x.r.skipped || '');
+    return '<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border)">'
+      + '<span style="font-size:11px;color:'+colour+';font-weight:600;min-width:100px">'+tag+'</span>'
+      + '<span style="flex:1;font-size:12px;color:var(--text)">'+escapeHtml(String(x.r.call||''))
+      + '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(String(why))+'</div></span></div>';
+  }).join('');
+  box.innerHTML = cacHeader(name)
+    + '<div style="font-size:13px;color:'+(t.added?'var(--available)':'var(--warn)')+';font-weight:600;padding:4px 0">'+head+'</div>'
+    + (rows ? '<div style="margin-top:6px">'+rows+'</div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5">"Couldn\'t verify" means the write most likely went through but wasn\'t read back — check that call before relying on it.</div>' : '')
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
+    + cacBtn('Add another', 'cacRenderPrompt(\'\')') + cacBtn('Done', 'closeCallAddCrew()', {primary:true}) + '</div>';
+  s.busy = false;
+  // Redraw the call underneath so the person appears, on the same tab and
+  // Booked Crew filter/order (openCallDialog carries both on a reload).
+  if(t.added || t.unverified){
+    try{ openCallDialog(s.bookingId, s.callId); }catch(e){}
+  }
 }
 
 // ── SMARTSTAFF ACTIONS ──
@@ -25193,9 +25621,11 @@ async function openCallDialog(bookingId, callId){
     let editSrc = null;
     window._curCallBookingName = '';
     window._curCallVenue = null;
+    window._curCallBookingCalls = null;   // + Add Crew's feed walk (BRIEF-call-add-crew §3.3)
     try{
       const bData = await bRes.json();
       if(bData){
+        if(Array.isArray(bData.calls)) window._curCallBookingCalls = bData.calls;
         if(bData.name) window._curCallBookingName = decodeEntities(String(bData.name));
         if(bData.venue && bData.venue.name) bookingVenue = bData.venue.name;
         if(bData.venue && Number(bData.venue.id) > 0) window._curCallVenue = { id: Number(bData.venue.id), name: decodeEntities(String(bData.venue.name || '')) };
@@ -25273,6 +25703,11 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   // for the boss-call check below, which is about who the crew will see.
   const promoPendingCount = crew.filter(function(c){ return !!c.promo_pending && (c.status||'').toLowerCase()==='confirmed'; }).length;
   const filledCount = confirmedCount - promoPendingCount;
+  // What + Add Crew reads: the roster this dialog drew (already-on-call check)
+  // and the same booked/required pair the Crew line and tab header show.
+  window._callAddCtx = { bookingId: String(bookingId), callId: String(callId),
+                         callName: d.call_name || '', crew: crew || [],
+                         required: Number(req) || 0, filled: filledCount };
   const promoPendingNote = ' <span id="call-promo-note-'+callId+'" style="color:#f59e0b">'
     + (promoPendingCount > 0 ? '· '+promoPendingCount+' promoted, awaiting reply' : '') + '</span>';
   // ── CANCELLATION STATE ────────────────────────────────────────────────────
@@ -25502,6 +25937,9 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
   document.getElementById('entity-modal-actions').innerHTML =
       (_backTo ? entityBtn('‹ Back to '+escapeHtml(_backTo.name || _backTo.label), 'entityBack()') : '')
     + (isCancelled ? '' : entityBtn('🔍 Find Crew', "closeEntityModal();schedJumpToCrewFinder('"+bookingId+"','"+callId+"')", {primary:true}))
+    // + Add Crew (BRIEF-call-add-crew §2): admin only, like every route it
+    // calls; not on a cancelled call, like Find Crew.
+    + ((isCancelled || window._cohort !== 'admin') ? '' : entityBtn('＋ Add Crew', "openCallAddCrew('"+bookingId+"','"+callId+"')"))
     + (window._curCallEdit
         ? entityBtn('✎ Edit', "openCallEditForm('"+bookingId+"','"+callId+"')")
         : entityBtn('✎ Edit', '', {disabled:true, title:'Open from the Schedule to edit'}))

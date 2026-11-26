@@ -1,9 +1,9 @@
 ---
 title: Crew Finder
 summary: Finding crew who can work a call — filters, the conflict rules, what blocks versus what warns, open offers, reading the timeline, and getting the most screen out of it.
-tags: cf, find crew, availability, conflicts, conflict rules, clash, radius, distance, licence, rating, timeline, schedule view, focus, select all, warnings, fatigue, spot check, book crew, add and confirm, hide from results, columns, hide columns, resize, name column, sidebar, collapse, calls, open offers, offer clash, envelope, inducted first, sort order, sticky, declined
+tags: cf, find crew, availability, conflicts, conflict rules, clash, radius, distance, licence, rating, timeline, schedule view, focus, select all, warnings, fatigue, spot check, book crew, add and confirm, hide from results, columns, hide columns, resize, name column, sidebar, collapse, calls, open offers, offer clash, envelope, inducted first, sort order, sticky, declined, add crew, add one person, named crew, call dialog
 order: 20
-updated: 2026-09-21
+updated: 2026-11-26
 ---
 
 # Crew Finder
@@ -221,12 +221,24 @@ A clean run just shows a summary on the button: `Done - 5 added, 2 already on ca
 
 Adding more than one person to a Crew Boss call asks you to confirm first. Boss calls should carry one resource, because everyone booked on the job sees them as their contact.
 
+## Adding one named person without Crew Finder
+
+If you already know who you want, you don't need this tab. Open the call and press **＋ Add Crew** at the bottom of the Call dialog (admins only, not on cancelled calls). Type their name, press **Check**, and you get the same panel as clicking a name here: photo, reliability and the ±48h timeline. Then press **+ Add** or **✓ Add & Confirm**.
+
+- It checks the call **and every call it feeds**, because the add reaches all of them.
+- **Red (overlap or unavailable):** the buttons are disabled. SmartStaff won't book a clashing shift, so move or remove the clash first.
+- **Amber warnings, a clash only on a fed call, or a call that's already full:** the reasons are listed, and you press **Add anyway** / **Confirm anyway** once to go ahead.
+- Someone already on the call is shown with their status instead. If they declined, change their status to Unconfirmed in Booked Crew to offer it again.
+
+It is also the only quick way to add someone to a **full** call. A full call never appears in Unfilled Calls, so Find Crew can't select it.
+
 ## Quick reference
 
 | I want to… | Do this |
 |---|---|
 | Find a call by its name, not the booking | Type the call name in the Unfilled Calls search |
 | Check one person, ignoring my filters | Spot-check, top left |
+| Put a named person on a call (even a full one) | ＋ Add Crew in the Call dialog |
 | See more schedule | ⋮ Columns to hide what you are not reading, then ❮ Calls |
 | Read long crew names | Drag the Name column handle, or double-click it to fit |
 | Know why someone is in CONFLICTS | Hover their red bar, or click the name for the ±48h panel |
