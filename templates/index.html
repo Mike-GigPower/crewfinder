@@ -5727,7 +5727,7 @@ function _normName(n){return String(n||'').toLowerCase().replace(/,/g,' ').split
 function relFromStatusWord(s){
   return s==='confirmed' ? 'booked'
        : s==='backup'    ? 'backup'
-       : s==='declined' || s==='leftstandby' || crewStatusIsWithdrawn(s) ? 'declined'
+       : s==='declined' || s==='leftstandby' || s==='moved' || crewStatusIsWithdrawn(s) ? 'declined'
        : 'waiting';   // unconfirmed / waiting / sent / noshow / cancelled
 }
 
@@ -23444,7 +23444,11 @@ function crewStatusBadge(status, title){
   // indistinguishable from "this UI does not know what that is". Grey, never
   // red: D1 says leaving standby is not a decline and must not read like one.
   else if(s==='leftstandby'){ color='var(--muted)'; bg='var(--surface2)'; }
+  // Moved (14, 26 Nov 2026): moved to another call on the check-in sheet and
+  // booked there at import. Grey for the same reason as Left standby.
+  else if(s==='moved'){ color='var(--muted)'; bg='var(--surface2)'; }
   const _lbl = s==='leftstandby' ? 'Left standby'
+             : s==='moved' ? 'Moved'
              : crewStatusIsWithdrawn(s) ? CREW_WITHDRAWN_LABEL[CREW_WITHDRAWN_WORDS[s]]
              : (status||'—');
   const _t = title ? ' title="'+escapeHtml(title)+'"' : '';
@@ -23492,6 +23496,7 @@ function crewStatusInt(status){
   // its own line, above the fall-through, because the default below is 0
   // (Unconfirmed), which would be a SILENT wrong answer rather than a loud one.
   if(s==='leftstandby')           return 13;
+  if(s==='moved')                 return 14;
   if(CREW_WITHDRAWN_WORDS.hasOwnProperty(s)) return CREW_WITHDRAWN_WORDS[s];
   return 0;   // unconfirmed / waiting / unknown
 }
@@ -23567,7 +23572,8 @@ function crewStatusControl(c, bookingId, callId){
   // "Confirmed" — the exact failure the two comments above exist to prevent.
   // Labels come from goatStatusLabel() rather than CREW_WITHDRAWN_LABEL so
   // there is ONE read-only label source covering all of 10-13.
-  var curOpt = (cur >= 10 && cur <= 13)
+  // 14 (Moved, 26 Nov 2026) joins the read-only range for the same reason.
+  var curOpt = (cur >= 10 && cur <= 14)
     ? '<option value="'+cur+'" selected disabled>'+goatStatusLabel(cur)+'</option>'
     : '';
   // data-promo-pending: refreshCallCrewSummary() must not count an unanswered
@@ -23867,7 +23873,7 @@ function refreshCallCrewSummary(callId){
 // jobs the brief asks for — "sorts with Declined" and a chip of its own. A
 // status missing from here ranks 99 and sorts after everything, and renders no
 // chip at all while still counting towards All, so the chips would not add up.
-var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[13,'Left standby'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show'],[10,'No response'],[11,'Not delivered'],[12,'Withdrawn']];
+var CALL_CREW_CHIPS = [[5,'Confirmed'],[1,'Pending'],[6,'Declined'],[13,'Left standby'],[14,'Moved'],[7,'Backup'],[9,'Cancelled'],[0,'Unconfirmed'],[8,'No-show'],[10,'No response'],[11,'Not delivered'],[12,'Withdrawn']];
 var CALL_CREW_ORDERS = [['status','Status'],['name','Name']];
 
 // Sort key for a Booked Crew row: surname first, then first name, lowercased
@@ -25549,13 +25555,13 @@ async function openCallStandDown(bookingId, callId){
   // ring about a shift they were never coming to.
   const live = crew.filter(function(c){
     const s = (c.status||'').toLowerCase();
-    return s !== 'declined' && s !== 'noshow' && s !== 'no-show' && s !== 'cancelled' && s !== 'leftstandby' && !crewStatusIsWithdrawn(s);
+    return s !== 'declined' && s !== 'noshow' && s !== 'no-show' && s !== 'cancelled' && s !== 'leftstandby' && s !== 'moved' && !crewStatusIsWithdrawn(s);
   });
 
   const roster = crew.length
     ? crew.map(function(c){
         const s    = (c.status||'').toLowerCase();
-        const dim  = (s==='declined'||s==='noshow'||s==='no-show'||s==='leftstandby'||crewStatusIsWithdrawn(s));
+        const dim  = (s==='declined'||s==='noshow'||s==='no-show'||s==='leftstandby'||s==='moved'||crewStatusIsWithdrawn(s));
         const mob  = c.mobile ? '<span style="color:var(--muted);margin-left:8px">'+escapeHtml(fmtPhone(c.mobile))+'</span>' : '';
         return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)'+(dim?';opacity:.45':'')+'">'
              +   '<span style="font-size:12px;color:var(--text)">'+escapeHtml(decodeEntities(c.name))+mob+'</span>'
@@ -26123,7 +26129,7 @@ function renderCallResponses(bookingId, callId){
 // Status int -> the label crewStatusBadge() understands. The reverse of
 // crewStatusInt(); this endpoint returns ints where get-booking.php returns
 // strings.
-var CREW_STATUS_LABEL_BY_INT = {0:'unconfirmed',1:'pending',5:'confirmed',6:'declined',7:'backup',8:'noshow',9:'cancelled',10:'noresponse',11:'notdelivered',12:'withdrawn',13:'leftstandby'};
+var CREW_STATUS_LABEL_BY_INT = {0:'unconfirmed',1:'pending',5:'confirmed',6:'declined',7:'backup',8:'noshow',9:'cancelled',10:'noresponse',11:'notdelivered',12:'withdrawn',13:'leftstandby',14:'moved'};
 
 // ── WHO WAS ACTUALLY TOLD ───────────────────────────────────────────────────
 // Shared by the Stand down and Reinstate result panels. Both ask the same
@@ -26213,7 +26219,7 @@ function goatDeliveryPanel(j, byId, missedNote, emptyNote){
 // same screen inconsistent. Also the read-only label source for
 // crewStatusControl's curOpt.
 var GOAT_STATUS_LABEL = {0:'Unconfirmed', 1:'Pending', 5:'Confirmed', 6:'Declined', 7:'Backup', 8:'No-show', 9:'Cancelled',
-                         10:'No response', 11:'Not delivered', 12:'Withdrawn', 13:'Left standby'};
+                         10:'No response', 11:'Not delivered', 12:'Withdrawn', 13:'Left standby', 14:'Moved'};
 
 function goatStatusLabel(i){
   return GOAT_STATUS_LABEL[i] || ('Status ' + i);
@@ -26392,7 +26398,7 @@ function _ctTimeOk(s){
 function _ctStatusBadge(st){
   const map = {5:['Confirmed','var(--ok,#10b981)'], 6:['Declined','var(--conflict,#ef4444)'],
                8:['No-show','var(--conflict,#ef4444)'], 1:['Sent','var(--muted)'], 0:['—','var(--muted)'],
-               9:['Cancelled','#64748b']};
+               9:['Cancelled','#64748b'], 13:['Left standby','var(--muted)'], 14:['Moved','var(--muted)']};
   const e = map[st] || ['—','var(--muted)'];
   return '<span style="font-size:9px;letter-spacing:.5px;color:'+e[1]+'">'+e[0]+'</span>';
 }
@@ -29089,7 +29095,7 @@ function _clKeepCrew(c, who){
   // offers withdrawn by the reminder cron (10-12), and crew who took themselves
   // off standby (13 — they were only ever a backup, and now not even that, so
   // they must not reach a crewlist the venue reads)
-  return st !== 'declined' && st !== 'noshow' && st !== 'backup' && st !== 'leftstandby' && !crewStatusIsWithdrawn(st);
+  return st !== 'declined' && st !== 'noshow' && st !== 'backup' && st !== 'leftstandby' && st !== 'moved' && !crewStatusIsWithdrawn(st);
 }
 
 // "Wednesday Jul 8, 2026 / 08:00" from unix start_date + HH:MM(:SS) start_time
@@ -29670,6 +29676,7 @@ async function tiLoadCheckin(bookingId, keep){
     if(data.error){ _tiSay(data.error, 'var(--conflict)'); return; }
     _tiState = {bookingId: bookingId, data: data, include: _tiSeedInclude(data, keep, 'checkin'),
                 rowOff: (keep && keep.rowOff) || {}, rowOnHeld: (keep && keep.rowOnHeld) || {},
+                rowOnAdded: (keep && keep.rowOnAdded) || {},
                 source: 'checkin', manual: {}, file: null};
     renderTimesheetImportPreview();
   }catch(e){
@@ -29804,7 +29811,7 @@ function _tiPromoPending(m){ return Number(m && m.status) === 5 && !!(m && m.pro
 function _tiStatusChip(st){
   const map = {0:['—','var(--muted)'], 1:['SMS Sent','var(--muted)'], 5:['Confirmed','var(--ok,#10b981)'],
                6:['Declined','var(--conflict)'], 7:['Backup','var(--muted)'], 8:['No-show','var(--conflict)'],
-               9:['Cancelled','#64748b']};
+               9:['Cancelled','#64748b'], 13:['Left standby','var(--muted)'], 14:['Moved','var(--muted)']};
   const e = map[Number(st)] || ['Status '+st,'var(--muted)'];
   return '<span style="font-size:9px;letter-spacing:.5px;color:'+e[1]+'">'+escapeHtml(e[0])+'</span>';
 }
@@ -29920,10 +29927,68 @@ function _tiCancelledBlock(d){
     + '</div>';
 }
 
+// ── ADDED ON THE DAY (claude/PLAN-added-crew-on-the-day.md, slice 3) ──────────
+// A Crew Boss added these people on the check-in sheet: MOVED from another call
+// of the booking, or CALLED IN. They are not on SmartStaff's roster, so ticking
+// one BOOKS THEM ON (Add & Confirm on this call; a moved person's old call goes
+// to Moved, 14) and then writes their times. Never pre-ticked — booking someone
+// must be something Ops chose, not a side effect of reviewing hours.
+function _tiAddedOn(s, callId, a){
+  return !!(a && a.writable && s.rowOnAdded && s.rowOnAdded[callId + ':' + a.user_id]);
+}
+function _tiAddedRows(s, c){
+  return (c.checkin_added || []).filter(function(a){ return _tiAddedOn(s, c.call_id, a); });
+}
+function _tiAddedWhy(a){
+  const head = a.reason === 'moved'
+    ? 'moved from ' + (a.moved_from_call_name || 'another call')
+    : 'called in';
+  return head + (a.covering_for_name ? ' · covering ' + decodeEntities(a.covering_for_name) : '')
+       + (a.by_name ? ' · added by ' + decodeEntities(a.by_name) : '');
+}
+function _tiAddedBlock(s, c){
+  const list = c.checkin_added || [];
+  if(!list.length) return '';
+  const rows = list.map(function(a){
+    const on = _tiAddedOn(s, c.call_id, a);
+    const brk = (a.break && a.break !== '00:00') || (a.break_night && a.break_night !== '00:00')
+      ? (' brk '+a.break+'/'+a.break_night) : '';
+    const times = a.writable ? _tiRowTimes({on:a.on, off:a.off, checkin_worked_off:a.worked_off}, brk)
+      : (a.state === 'on' ? 'signed on, no sign-off' : 'no times');
+    const box = a.writable
+      ? '<input type="checkbox" '+(on?'checked':'')+' onchange="tiToggleAdded('+c.call_id+','+a.user_id+',this)" style="margin:0 6px 0 0;vertical-align:middle">'
+      : '<input type="checkbox" disabled title="Nothing to write — no sign-on and sign-off" style="margin:0 6px 0 0;vertical-align:middle">';
+    return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;color:var(--text);'+(on?'':'opacity:.7;')+'">'
+      + '<span>'+box+escapeHtml(decodeEntities(a.name))+(a.late?' <span style="color:var(--conflict);font-size:9px">LATE</span>':'')
+      +   ' <span style="font-size:9px;letter-spacing:.3px;color:#f59e0b">'+escapeHtml(_tiAddedWhy(a))+'</span>'
+      +   _tiFlagChips({checkin_flags: a.flags})+'</span>'
+      + '<span style="color:var(--muted);font-family:\'Share Tech Mono\',monospace">'+escapeHtml(times)+'</span>'
+      + '</div>';
+  }).join('');
+  return '<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px">'
+    + '<div style="font-size:10px;letter-spacing:.5px;color:#f59e0b;padding-bottom:2px">ADDED ON THE DAY — not booked in SmartStaff. Tick to book them on this call and write their times.</div>'
+    + rows + '</div>';
+}
+function _tiMovedBlock(c){
+  const list = c.checkin_moved || [];
+  if(!list.length) return '';
+  return '<div style="font-size:10px;color:var(--muted);padding-top:4px">Moved to another call on the check-in sheet: '
+    + escapeHtml(list.map(function(m){ return decodeEntities(m.name) + ' → ' + (m.to_call_name || 'another call'); }).join('; '))
+    + ' — set to Moved here when their new call is written.</div>';
+}
+function tiToggleAdded(callId, userId, el){
+  if(!_tiState) return;
+  _tiState.rowOnAdded = _tiState.rowOnAdded || {};
+  const key = callId + ':' + userId;
+  if(el.checked){ _tiState.rowOnAdded[key] = true; _tiState.include[callId] = true; }
+  else delete _tiState.rowOnAdded[key];
+  renderTimesheetImportPreview();
+}
+
 function renderTimesheetImportPreview(){
   const s = _tiState, d = s.data;
   const calls = d.calls || [];
-  const totalWrite = calls.reduce(function(n,c){ return n + (s.include[c.call_id] ? _tiCallRows(s,c).length : 0); }, 0);
+  const totalWrite = calls.reduce(function(n,c){ return n + (s.include[c.call_id] ? _tiCallRows(s,c).length + _tiAddedRows(s,c).length : 0); }, 0);
   let totalFlagged = 0, totalPromo = 0;
 
   const cards = calls.map(function(c){
@@ -29965,12 +30030,13 @@ function renderTimesheetImportPreview(){
 
     return '<div style="border:1px solid var(--border);border-radius:6px;margin-bottom:10px;background:var(--surface2);padding:10px 12px">'
       + '<div style="display:flex;align-items:center;gap:10px">'
-      + '<input type="checkbox" '+(inc?'checked':'')+(c.matched.length?'':' disabled')+' onchange="tiToggleCall('+c.call_id+',this)">'
+      + '<input type="checkbox" '+(inc?'checked':'')+((c.matched.length || (c.checkin_added||[]).length)?'':' disabled')+' onchange="tiToggleCall('+c.call_id+',this)">'
       + '<div style="flex:1;min-width:0">'
       + '<div style="font-size:13px;color:var(--text)">'+escapeHtml(c.tab_name)+' <span style="color:var(--muted)">→</span> '+escapeHtml(tiCallLabel(c.call_name, c.call_time, c.call_id))+'</div>'
-      + '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(mappedBy)+' · '+_tiCallRows(s,c).length+' to write</div>'
+      + '<div style="font-size:10px;color:var(--muted)">'+escapeHtml(mappedBy)+' · '+(_tiCallRows(s,c).length + _tiAddedRows(s,c).length)+' to write</div>'
       + '</div></div>'
-      + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>')
+      + (c.matched.length ? '<div style="padding:8px 0 2px">'+matchedList+'</div>' : ((c.checkin_added||[]).length ? '' : '<div style="font-size:11px;color:var(--muted);padding:6px 0">Nothing to write for this call.</div>'))
+      + (s.source === 'checkin' ? _tiAddedBlock(s, c) + _tiMovedBlock(c) : '')
       + (extras.length ? '<div style="font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px;margin-top:4px">'+extras.map(escapeHtml).join(' · ')+'</div>' : '')
       + (s.source === 'checkin' ? _tiCheckinCardNotes(c) : '')
       + '</div>';
@@ -30025,7 +30091,7 @@ function tiPickCall(sel){
   if(!tabName || !callId) return;
   const manual = Object.assign({}, _tiState.manual || {});
   manual[tabName] = callId;
-  const keep = {include: _tiState.include, rowOff: _tiState.rowOff, rowOnHeld: _tiState.rowOnHeld};
+  const keep = {include: _tiState.include, rowOff: _tiState.rowOff, rowOnHeld: _tiState.rowOnHeld, rowOnAdded: _tiState.rowOnAdded};
   if(_tiState.source === 'checkin'){
     tiLoadCheckin(_tiState.bookingId, keep);   // every check-in tab carries its Call ID
   } else if(_tiState.source === 'file'){
@@ -30063,7 +30129,7 @@ async function writeTimesImport(){
   const result = document.getElementById('ti-result');
   const btn = document.getElementById('ti-write-btn');
 
-  const targets = (d.calls||[]).filter(function(c){ return s.include[c.call_id] && _tiCallRows(s,c).length; });
+  const targets = (d.calls||[]).filter(function(c){ return s.include[c.call_id] && (_tiCallRows(s,c).length || _tiAddedRows(s,c).length); });
   if(!targets.length){
     result.style.color = 'var(--conflict)';
     result.innerHTML = 'Nothing selected to write.';
@@ -30081,7 +30147,7 @@ async function writeTimesImport(){
       if(m.callpaygradeID) row.callpaygradeID = m.callpaygradeID;
       return row;
     });
-    try{
+    if(rows.length) try{
       const res = await fetch('/api/call/'+s.bookingId+'/'+c.call_id+'/times', {
         method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({rows:rows})
       });
@@ -30097,6 +30163,21 @@ async function writeTimesImport(){
         });
       }
     }catch(e){ failed++; }
+    // Added on the day: book each ticked person, then their times — one at a
+    // time, after this call's ordinary rows (checkin_add_crew in app.py).
+    for(const a of _tiAddedRows(s, c)){
+      result.textContent = 'Booking '+decodeEntities(a.name)+' onto '+tiCallLabel(c.call_name, c.call_time, c.call_id)+'…';
+      try{
+        const res = await fetch('/api/booking/'+s.bookingId+'/import-times/add-crew', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({call_id:c.call_id, user_id:a.user_id, moved_from_call_id:a.moved_from_call_id,
+                                row:{on:a.on, off:a.off, break:a.break, break_night:a.break_night, late:a.late, note:a.note}})
+        });
+        const j = await res.json();
+        if(j.ok){ wrote++; delete s.rowOnAdded[c.call_id + ':' + a.user_id]; }
+        else refused.push(decodeEntities(a.name) + ': ' + (j.error || 'not booked'));
+      }catch(e){ refused.push(decodeEntities(a.name) + ': ' + e.message); }
+    }
     done++;
   }
 
