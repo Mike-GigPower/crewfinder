@@ -5297,12 +5297,15 @@ def ss_create_contact(ss, customer_id, data):
     # credential-less portal users created by lean customer quick-adds).
     return None, "Couldn't create contact — the username may already be in use. Try a different username."
 
-# Temporary Crew Hub password — ONE PER PERSON, random, never stored by THE GOAT.
-# Generated at the moment it is written to SmartStaff (convert create/update,
-# Administration > Add Crew Member, Resend welcome email); SmartStaff keeps only a
-# salted hash, the welcome email carries it to the crew member, and the operator
-# is shown it once in the result so it can be read out over the phone if the
-# email goes astray.
+# Account password for a new or re-onboarded crew member — ONE PER PERSON, random,
+# and since 5.129.0 NEVER SHOWN TO ANYONE. An account needs some password, so
+# convert create/update and Administration > Add Crew Member write one; SmartStaff
+# keeps only its salted hash and THE GOAT forgets it immediately. The crew member
+# sets their own through Crew Hub: the welcome email carries a one-time "Set your
+# password" link (recruitment-welcome, link mode), and Add Crew Member / the admin
+# "Text reset link" button use Crew Hub's Forgot password. See
+# DESIGN-welcome-set-password-link.md (Crew Hub Project). 5.128.0 showed this
+# password to the operator and emailed it; that put a working password in inboxes.
 #
 # Replaced the shared NEW_CREW_TEMP_PASSWORD = "12345" (Nov 2026). Usernames are
 # EINs and EINs are sequential (crew-lookups.php: MAX(ein)+1), so one shared
@@ -9601,7 +9604,7 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
 
     # 10. Welcome email with the EXISTING EIN — last, as on the create path.
     try:
-        welcome_result = _send_welcome_email(cand_id, ein, temp_pw)
+        welcome_result = _send_welcome_email(cand_id, ein)
     except Exception as e:
         print(f"[recruitment] convert-update welcome email crashed: {e}")
         welcome_result = {"ok": False, "outcome": "failed",
@@ -9632,7 +9635,6 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         "username": str(ein),
         "name":     name or f"{first} {last}".strip(),
         "status":   RECRUITMENT_CONVERTED_STATUS,
-        "temp_password": temp_pw,
         "warning":  stamp_warning,
         "updated_fields": updated_fields,
         "reactivated": was_inactive,
@@ -9654,15 +9656,22 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
 # Sent at the end of convert, and again on demand from the active_crew panel.
 # Everything about the send itself — the branded template, the EMAIL_LIVE guard,
 # the audit row in induction_emails_sent and the dedupe — lives in the
-# recruitment-welcome edge function. This is the caller: it supplies the two
-# values only THE GOAT knows (the EIN SmartStaff just assigned, and the temp
-# password we set with it) and hands back the outcome verbatim.
+# recruitment-welcome edge function. This is the caller: it supplies what only
+# THE GOAT knows (the EIN SmartStaff just assigned, and WHICH SmartStaff it lives
+# in) and hands back the outcome verbatim. Since 5.129.0 no password is sent: the
+# function emails a one-time "Set your password" link instead (link mode, chosen
+# because smartstaff_base is present and temp_password is absent).
+#
+# smartstaff_base is safety-critical. Test SmartStaff is a clone of production, so
+# a test record's id/EIN can belong to a real crew member; Crew Hub refuses a link
+# whose base isn't its own, so a link minted while THE GOAT points at test can
+# never set a production password.
 #
 # NEVER RAISES. Both call sites treat a welcome-email problem the same way they
 # treat a licence or induction push that fails: the crew member exists, their
 # login works, and an email that did not send is fixed with the Resend button.
 # Losing the conversion over it would be the far worse outcome.
-def _send_welcome_email(cand_id, ein, temp_password, resend=False):
+def _send_welcome_email(cand_id, ein, resend=False):
     """POST the welcome email to the recruitment-welcome edge function.
 
     Returns a dict the UI renders directly:
@@ -9673,18 +9682,13 @@ def _send_welcome_email(cand_id, ein, temp_password, resend=False):
     if not GOAT_RECRUITMENT_KEY:
         return {"ok": False, "outcome": "failed",
                 "error": "Recruitment key not configured"}
-    if not temp_password:
-        # The caller must pass the password it actually set — there is no shared
-        # default any more, and an email with a wrong password is worse than none.
-        return {"ok": False, "outcome": "failed",
-                "error": "No temporary password supplied"}
     try:
         r = http.post(
             RECRUITMENT_WELCOME_URL,
             headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
             json={"id": str(cand_id),
                   "ein": str(ein or ""),
-                  "temp_password": temp_password,
+                  "smartstaff_base": BASE_URL,
                   "resend": bool(resend)},
             timeout=20,
         )
@@ -9723,54 +9727,17 @@ def api_recruitment_welcome_email(cand_id):
     if not cand_id:
         return jsonify({"error": "Missing applicant id"}), 400
 
-    # Temporary passwords are per person and only their hash exists, so a resend
-    # can't repeat the old one: it SETS A NEW ONE, then emails it. The old one
-    # stops working. The browser confirms this with the operator first.
-    #
-    # TODO(first-login flag): once SmartStaff users.must_change_password exists,
-    # refuse here when it is 0 — the crew member has already chosen their own
-    # password, and Forgot password is the right route (Mike, 27 Nov 2026).
-    # Until then the confirm dialog carries that instruction.
-    feed_row, ferr = _recruit_fetch_feed_row(cand_id)
-    if ferr == "not_found":
-        return jsonify({"error": "Applicant not found"}), 404
-    if ferr:
-        return jsonify({"error": ferr}), 502
-    status = str((feed_row or {}).get("status") or "").strip()
-    if status != RECRUITMENT_CONVERTED_STATUS:
-        return jsonify({"error": "This candidate hasn't been converted yet "
-                                 f"(status '{status or 'unknown'}')."}), 409
-    uid = str((feed_row or {}).get("smartstaff_user_id") or "").strip()
-    if not uid.isdigit():
-        return jsonify({"error": "No SmartStaff id on this candidate — the convert "
-                                 "status stamp didn't land. Fix the status first."}), 409
-
-    ss = get_ss_session()
-    if not ss:
-        return jsonify({"error": "Not logged in"}), 401
-
-    temp_pw = _new_temp_password()
-    _res, uerr = ss_update_crew(ss, uid, {"password": temp_pw})
-    if uerr:
-        return jsonify({"error": f"Couldn't set a new temporary password, so nothing "
-                                 f"was sent and their current password still works: "
-                                 f"{uerr}"}), 502
-    # Audit the reset, never the value.
+    # Since 5.129.0 a resend changes NO password: it asks for a fresh one-time
+    # "Set your password" link. The edge function retires the earlier link only
+    # once the new email is actually sent, so a deduped / blocked / failed resend
+    # leaves the earlier link working. A link does nothing until it is used, so
+    # there's no harm in resending to someone who already set their own password.
+    res = _send_welcome_email(cand_id, "", resend=True)
     _write_audit("recruit_welcome_resend", "candidate", cand_id,
-                 {"crew_id": uid, "password_reset": True})
-
-    # From here the password HAS changed, so every outcome hands the operator the
-    # new one: if the email didn't go (deduped / blocked / failed) they can read
-    # it out over the phone instead of leaving the crew member locked out.
-    res = _send_welcome_email(cand_id, "", temp_pw, resend=True)
-    res["temp_password"] = temp_pw
-    # Only a real send counts here. The edge function reports "deduped" as ok
-    # (fine on the automatic send), but after a reset it means the crew member did
-    # NOT get the new password, so it is a failure the operator must act on.
-    if res.get("outcome") != "sent":
+                 {"outcome": res.get("outcome")})
+    if not res.get("ok"):
         return jsonify({"error": res.get("error") or "Could not send the welcome email",
-                        "outcome": res.get("outcome"),
-                        "temp_password": temp_pw}), 502
+                        "outcome": res.get("outcome")}), 502
     return jsonify(res)
 
 
@@ -10246,7 +10213,7 @@ def api_recruitment_convert(cand_id):
     #     stamp is itself allowed to fail (stamp_warning): SmartStaff has the EIN
     #     either way, and this is the value it just gave us.
     try:
-        welcome_result = _send_welcome_email(cand_id, ein, temp_pw)
+        welcome_result = _send_welcome_email(cand_id, ein)
     except Exception as e:
         print(f"[recruitment] convert welcome email crashed: {e}")
         welcome_result = {"ok": False, "outcome": "failed",
@@ -10269,7 +10236,6 @@ def api_recruitment_convert(cand_id):
         "username": str(ein),
         "name":     f"{first} {last}".strip(),
         "status":   RECRUITMENT_CONVERTED_STATUS,
-        "temp_password": temp_pw,
         "warning":  stamp_warning,
         # dietary_warning: the old string, kept for ONE release so an older open
         # window still shows a failed push (see _dietary_legacy_warning).
@@ -19913,8 +19879,8 @@ def api_admin_crew_lookups():
     data, err = ss_crew_lookups(ss)
     if err:
         return jsonify({"error": err}), 502
-    # No temp_password here any more: it is generated per person at save time
-    # and returned by /api/admin/add-user, not known in advance.
+    # No temp_password here any more: the account password is random, set at save
+    # time and never shown (5.129.0). The person uses Forgot password in Crew Hub.
     return jsonify(data)
 
 @app.route("/api/admin/crew-list")
@@ -20193,8 +20159,9 @@ def api_admin_add_user():
     uid, err = ss_create_crew(ss, data, ein, temp_pw, photo=photo)
     if err:
         return jsonify({"error": err}), 502
-    return jsonify({"id": uid, "ein": ein, "username": str(ein),
-                    "temp_password": temp_pw})
+    # No password in the response (5.129.0): the operator never sees one. The
+    # person sets their own with Forgot password in Crew Hub.
+    return jsonify({"id": uid, "ein": ein, "username": str(ein)})
 
 
 @app.route("/api/booking/<booking_id>", methods=["POST"])
@@ -25100,6 +25067,61 @@ def ss_update_crew(ss, crew_id, fields):
     if isinstance(data, dict) and "error" in data:
         return None, data["error"]
     return data, None
+
+
+# Crew Hub's Forgot-password endpoint. Public by design and always answers
+# {ok:true} (enumeration guard), so a call proves only that the request was taken.
+GP_RECOVER_URL = "https://crew.gigpower.com/api/crew/recover"
+
+
+@app.route("/api/admin/crew/<crew_id>/send-reset-link", methods=["POST"])
+@require_cohort("admin")
+def api_admin_send_reset_link(crew_id):
+    """Text a crew member a 30-minute "Set your password" link — the admin password
+    reset since 5.129.0 (Mike, 27 Nov 2026: SMS). No password is set, shown, or
+    put in a text: this asks Crew Hub's own Forgot password to send its link to
+    the mobile SmartStaff holds for them, logged by SmartStaff's SMS gateway.
+
+    The identifier is the EIN, which is the login name unless the person changed
+    it. That matches exactly one account; a mobile number could be shared by two.
+    If they did change it, nothing is sent (the response can't say so) — they can
+    use Forgot login in Crew Hub, which resets it to their EIN.
+
+    PRODUCTION ONLY. Crew Hub always works against production SmartStaff, while a
+    test record's id, EIN and mobile can belong to a real crew member, so from a
+    GOAT pointed at test this would text a real person."""
+    if BASE_URL.rstrip("/") != PROD_BASE_URL.rstrip("/"):
+        return jsonify({"error": "Only available when THE GOAT is connected to "
+                                 "production SmartStaff — test records can match "
+                                 "real crew."}), 409
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+    data, err = ss_get_crew(ss, crew_id)
+    if err:
+        return jsonify({"error": f"Couldn't read the crew record: {err}"}), 502
+    ein = str((data or {}).get("ein") or "").strip()
+    mobile = str((data or {}).get("mobile") or "").strip()
+    if not ein or ein == "0":
+        return jsonify({"error": "This record has no EIN, so it has no Crew Hub login."}), 409
+    if not mobile:
+        return jsonify({"error": "No mobile on file. Add one, save, then try again — "
+                                 "or ask them to use Forgot password with their email."}), 409
+    if str((data or {}).get("active") or "") != "1":
+        return jsonify({"error": "This crew member is inactive, so they can't sign "
+                                 "in. Reactivate them first."}), 409
+    try:
+        r = http.post(GP_RECOVER_URL,
+                      json={"identifier": ein, "mode": "password", "channel": "sms"},
+                      timeout=20)
+    except Exception as e:
+        print(f"[admin] send-reset-link request failed: {e}")
+        return jsonify({"error": "Crew Hub couldn't be reached. Try again shortly."}), 502
+    if r.status_code != 200:
+        print(f"[admin] send-reset-link Crew Hub returned {r.status_code}")
+        return jsonify({"error": f"Crew Hub returned HTTP {r.status_code}."}), 502
+    _write_audit("crew_reset_link_sms", "crew", crew_id, {"ein": ein})
+    return jsonify({"ok": True, "mobile_tail": mobile.replace(" ", "")[-3:]})
 
 
 @app.route("/api/admin/crew/<crew_id>")
