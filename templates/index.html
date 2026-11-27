@@ -2662,7 +2662,7 @@ body.goat-shaking{animation:goatShake .6s cubic-bezier(.36,.07,.19,.97) both}
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.3);border-left:2px solid #22c55e;display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Full</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.12);border-left:2px solid var(--warn);display:inline-block"></span>
-          <span style="font-size:9px;color:var(--muted)">Awaiting re-confirm</span>
+          <span style="font-size:9px;color:var(--muted)">Not seen / awaiting reply</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(245,158,11,0.2);border-left:2px solid var(--warn);display:inline-block"></span>
           <span style="font-size:9px;color:var(--muted)">Partial</span>
           <span style="width:10px;height:10px;border-radius:2px;background:rgba(227,30,36,0.15);border-left:2px solid var(--accent2);display:inline-block"></span>
@@ -25800,9 +25800,11 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         var ctTag = ctId ? '<span id="ct-tag-' + ctId + '"></span>' : '';
         var ctCtl = ctId ? '<span id="ct-ctl-' + ctId + '" data-ct-row="' + callId + '" data-uid="' + Number(c.id) + '" style="display:flex;align-items:center;gap:4px"></span>' : '';
         var ctEdit = ctId ? '<div id="ct-edit-' + ctId + '"></div>' : '';
-        // A crew member with an outstanding timing change hasn't re-confirmed yet
-        // (get-booking.php sets change_pending, still guarded to status 5/7 — the
-        // grey tag below needs the backup half).
+        // A crew member with an outstanding timing change (get-booking.php sets
+        // change_pending, still guarded to status 5/7 — the grey tag below needs
+        // the backup half). Since DESIGN-time-change-no-decline (27 Nov 2026) a
+        // CONFIRMED row's flag means "hasn't seen it in Crew Hub yet": they can no
+        // longer decline, and opening the card clears it (respond-to-change seen).
         //
         // Only a CONFIRMED (5) row is a filling risk, so only that one is amber.
         // A backup (7) holds no place: an unanswered change there leaves nothing
@@ -25813,7 +25815,7 @@ function renderCallDialog(bookingId, callId, d, crew, bookingVenue, editSrc){
         if(c.change_pending){
           chg = (crewStatusInt(c.status) === 7)
             ? ' <span title="Timing changed while on standby — not answered yet. Doesn&#39;t hold a place, so the call isn&#39;t flagged." style="font-size:9px;color:var(--muted);background:rgba(148,163,184,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">time change not answered</span>'
-            : ' <span title="Timing changed after this crew member was contacted — not yet re-confirmed" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">⏳ awaiting re-confirm</span>';
+            : ' <span title="Timing changed after this crew member was contacted — they haven&#39;t opened it in Crew Hub yet" style="font-size:9px;color:#f59e0b;background:rgba(245,158,11,0.12);border-radius:3px;padding:2px 6px;white-space:nowrap;margin-left:6px">👁 hasn&#39;t seen time change</span>';
         }
         var promo = crewPromoAckPill(c, bookingId, callId);
         // Re-offered by an open backup call-out and not yet answered
@@ -26431,6 +26433,7 @@ function renderCallResponses(bookingId, callId){
     if(a.answer === 'decline') return 'declined time change';
     if(a.answer === 'accept')  return 'accepted new time';
     if(a.answer === 'dismiss') return 'cleared by ops';
+    if(a.answer === 'seen')    return 'saw new time';
     return String(a.answer || 'answered');
   }
   function changeWas(x){
@@ -26447,7 +26450,11 @@ function renderCallResponses(bookingId, callId){
     const tip = answers.map(function(a){
       return changeWord(a)+' '+goatFmtStamp(a.answered_at)+changeWas(a);
     });
-    if(pending) tip.push('time changed '+goatFmtStamp(pending.changed_at)+changeWas(pending)+' — no answer yet');
+    // A confirmed row's pending change means "not seen yet" (it can no longer be
+    // declined, and seeing it clears it); a backup's still waits for an answer
+    // (No longer available). Integer status on this tab — see below.
+    const pendingWord = (c.status === 7) ? 'no answer yet' : 'not seen yet';
+    if(pending) tip.push('time changed '+goatFmtStamp(pending.changed_at)+changeWas(pending)+' — '+pendingWord);
     const title = ' title="'+escapeHtml(tip.join('\n'))+'"';
 
     let colour, text;
@@ -26460,7 +26467,7 @@ function renderCallResponses(bookingId, callId){
       // keys on it). crewStatusInt() maps get-booking.php's LABEL STRINGS and
       // would throw on a number here, so compare the int directly.
       colour = (c.status === 7) ? 'var(--muted)' : '#f59e0b';
-      text   = 'time changed — no answer yet';
+      text   = 'time changed — '+pendingWord;
     }else{
       const last = answers[answers.length - 1];
       // Muted, not red, when the decline landed on 13 — see changeWord above.
@@ -26556,7 +26563,7 @@ function renderCallResponses(bookingId, callId){
     +     '<li><strong>This booking</strong> — other calls on this job they are still holding. Cutting someone from one call of a five-call booking is not the same as cutting their only shift.</li>'
     +     '<li><strong>90d</strong> — calls they were confirmed on that have already started, in the last '+(j.work_window_days||90)+' days.</li>'
     +     '<li><strong>History</strong> — declines and no-shows over '+(j.stats_window_days||90)+' days, and how many times <em>we</em> stood them down. Response rate is not shown: an ignored offer is usually reassigned, which deletes the record, so it reads high for almost everyone and only a low figure means anything.</li>'
-    +     '<li><strong>Time changes</strong> — when a call\'s time moves after someone has accepted, their answer to the change shows under the accept time: <span style="color:var(--conflict)">declined time change</span>, accepted new time, cleared by ops, or <span style="color:#f59e0b">time changed — no answer yet</span>. Hover for every change. These are recorded from 27 Oct 2026; an earlier time-change decline still shows only as Declined beside the original accept time.</li>'
+    +     '<li><strong>Time changes</strong> — when a call\'s time moves after someone has accepted, their answer to the change shows under the accept time: <span style="color:var(--conflict)">declined time change</span>, accepted new time, saw new time, cleared by ops, or <span style="color:#f59e0b">time changed — not seen yet</span> (a backup shows no answer yet). Since 27 Nov 2026 confirmed crew can no longer decline a time change in Crew Hub — they just see it, and if they can\'t make it they phone the office. Hover for every change. These are recorded from 27 Oct 2026; an earlier time-change decline still shows only as Declined beside the original accept time.</li>'
     +     (j.change_history_available === false ? '<li style="color:#f59e0b"><strong>Time-change answers are unavailable right now</strong> — they could not be loaded, so none are shown. That is not the same as nobody having answered one.</li>' : '')
     +     '<li><strong>Crew removed from this call earlier do not appear.</strong> Removing someone deletes the record, so this list is who is on the call now — not everyone who ever was.</li>'
     +     (j.stats_available ? '' : '<li style="color:#f59e0b"><strong>History figures are unavailable right now</strong> — the crew statistics could not be loaded. The columns are blank rather than zero on purpose.</li>')
@@ -35703,7 +35710,7 @@ const OPS_LEAD_LABELS = { under48:'< 48h', from48to168:'2–7 days', over168:'> 
 // standby". Lead time reuses lane 1's colours/labels exactly, so the same bucket
 // looks the same in both lanes.
 const OPS_KIND_COLORS = { change:'var(--accent)', promo:'var(--suggest)' };
-const OPS_KIND_LABELS = { change:'Timing changed', promo:'Promoted off standby' };
+const OPS_KIND_LABELS = { change:'Time change not seen', promo:'Promoted off standby' };
 
 // Lane A (bookings_at_risk) risk palette. "No induction" is the hardest case
 // (never inducted — red); "expired by then" will have lapsed on the day
@@ -37515,7 +37522,7 @@ function renderOpsAcksList(lane){
 // Non-exclusive labels: the kind (always) and "< 48h" (imminent). No "awaiting".
 function opsAckLabels(o){
   const L = [];
-  if(o.kind === 'change')      L.push('<span class="ops-lbl lbl-aw">Timing changed</span>');
+  if(o.kind === 'change')      L.push('<span class="ops-lbl lbl-aw">Time change not seen</span>');
   else if(o.kind === 'promo')  L.push('<span class="ops-lbl lbl-cb">Promoted off standby</span>');
   if(o.lead_bucket === 'under48') L.push('<span class="ops-lbl lbl-nm">&lt; 48h</span>');
   return L.join('');
@@ -37574,7 +37581,7 @@ function opsAckCard(o, laneKey){
 // surface the error inline on failure — never a silent no-op.
 async function opsDismissAck(ev, bookingId, callId, userId){
   if(ev && ev.stopPropagation) ev.stopPropagation();
-  if(!confirm('Dismiss this outstanding re-confirm? This clears the crew member’s question permanently and cannot be undone.')) return;
+  if(!confirm('Clear the \u2018not seen\u2019 flag for this crew member? Do this once you\u2019ve told them about the new time yourself. This cannot be undone.')) return;
   const errEl = document.getElementById('ack-err-'+callId+'-'+userId);
   if(errEl) errEl.textContent = '';
   try{
@@ -42431,7 +42438,7 @@ function _schedAwaitTitle(c){
   // `|| 0` as above: the scrape_schedule fallback carries no backup_change_pending
   // and must degrade to today's string.
   const bc = c.backup_change_pending || 0;
-  return (rc > 0 ? ` · ⏳ ${rc} awaiting re-confirm` : '')
+  return (rc > 0 ? ` · 👁 ${rc} haven't seen time change` : '')
        + (pp > 0 ? ` · ${pp} promoted, awaiting reply` : '')
        + (bc > 0
            ? ` · ${bc} backup${bc === 1 ? '' : 's'} ${bc === 1 ? "hasn't" : "haven't"} answered a time change`
@@ -42839,7 +42846,7 @@ function renderSchedule(){
               ${booking.venue ? ' · ' + booking.venue : ''}
               · ${totalCalls} call${totalCalls!==1?'s':''}
               ${fullCalls ? `<span style="color:#22c55e"> · ${fullCalls} full</span>` : ''}
-              ${awaitingCalls ? `<span style="color:var(--warn)" title="Full on paper, but someone has not answered: a timing re-confirm or a promotion off standby"> · ${awaitingCalls} awaiting reply</span>` : ''}
+              ${awaitingCalls ? `<span style="color:var(--warn)" title="Full on paper, but someone hasn't seen a time change or hasn't answered a promotion off standby"> · ${awaitingCalls} awaiting reply</span>` : ''}
               ${partialCalls ? `<span style="color:var(--warn)"> · ${partialCalls} partial</span>` : ''}
               ${emptyCalls ? `<span style="color:var(--accent2)"> · ${emptyCalls} empty</span>` : ''}
               ${overCalls ? `<span style="color:var(--accent2)"> · ${overCalls} over-booked</span>` : ''}
