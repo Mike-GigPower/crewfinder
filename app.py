@@ -9,6 +9,7 @@ Run via menubar.py or directly:
 
 import json
 import os
+import secrets
 import re
 import io
 import math
@@ -241,7 +242,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 # ─── SMARTSTAFF SESSION ───────────────────────────────────────────────────────
 
-APP_VERSION    = "5.127.0"
+APP_VERSION    = "5.128.0"
 VERSION_URL    = "https://raw.githubusercontent.com/Mike-GigPower/crewfinder/main/version.json"
 
 # ─── CREW HUB PUSH (offer notifications) ──────────────────────────────────────
@@ -5296,12 +5297,33 @@ def ss_create_contact(ss, customer_id, data):
     # credential-less portal users created by lean customer quick-adds).
     return None, "Couldn't create contact — the username may already be in use. Try a different username."
 
-# Temp password applied to a newly-created crew member. Username is their EIN,
-# so the record is portal-ready immediately; new_employee is set on the add path
-# (add-crew.php), which can drive a first-login change prompt. NOTE: this repo is
-# public — if you'd rather the default not live in source, read it from config.json
-# instead (e.g. CONFIG.get("new_crew_temp_password", "12345")).
-NEW_CREW_TEMP_PASSWORD = "12345"
+# Temporary Crew Hub password — ONE PER PERSON, random, never stored by THE GOAT.
+# Generated at the moment it is written to SmartStaff (convert create/update,
+# Administration > Add Crew Member, Resend welcome email); SmartStaff keeps only a
+# salted hash, the welcome email carries it to the crew member, and the operator
+# is shown it once in the result so it can be read out over the phone if the
+# email goes astray.
+#
+# Replaced the shared NEW_CREW_TEMP_PASSWORD = "12345" (Nov 2026). Usernames are
+# EINs and EINs are sequential (crew-lookups.php: MAX(ein)+1), so one shared
+# password let anyone who knew the scheme sign in as a just-converted crew member
+# before they did. See DESIGN-first-login-password-change.md (Crew Hub Project).
+#
+# Alphabet drops the lookalikes 0 O o 1 I l so it survives being read aloud or
+# typed on a phone; letters and digits only, so no keyboard switching. 10 chars
+# from 56 symbols is about 58 bits. `secrets`, never `random`.
+_TEMP_PW_ALPHABET = ("ABCDEFGHJKLMNPQRSTUVWXYZ"
+                     "abcdefghijkmnpqrstuvwxyz"
+                     "23456789")
+_TEMP_PW_LENGTH = 10
+
+
+def _new_temp_password():
+    """A fresh random temporary password with at least one letter and one digit."""
+    while True:
+        pw = "".join(secrets.choice(_TEMP_PW_ALPHABET) for _ in range(_TEMP_PW_LENGTH))
+        if any(c.isdigit() for c in pw) and any(c.isalpha() for c in pw):
+            return pw
 
 # The rate a conversion-created crew member starts on. add-crew.php's own form
 # offers 10 (T1) / 25 (T1A) / 26 (T1B) and nothing else, so this must stay inside
@@ -9489,7 +9511,8 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         notes_list = []
     block = _recruit_reonboard_block(_recruit_compose_notes(ref, notes_list))
     fields_out["active"] = "1"
-    fields_out["password"] = NEW_CREW_TEMP_PASSWORD
+    temp_pw = _new_temp_password()
+    fields_out["password"] = temp_pw
     fields_out["username_to_ein"] = "1"
     fields_out["notes"] = _recruit_append_notes(current.get("notes"), block)
 
@@ -9578,7 +9601,7 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
 
     # 10. Welcome email with the EXISTING EIN — last, as on the create path.
     try:
-        welcome_result = _send_welcome_email(cand_id, ein)
+        welcome_result = _send_welcome_email(cand_id, ein, temp_pw)
     except Exception as e:
         print(f"[recruitment] convert-update welcome email crashed: {e}")
         welcome_result = {"ok": False, "outcome": "failed",
@@ -9609,7 +9632,7 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
         "username": str(ein),
         "name":     name or f"{first} {last}".strip(),
         "status":   RECRUITMENT_CONVERTED_STATUS,
-        "temp_password": NEW_CREW_TEMP_PASSWORD,
+        "temp_password": temp_pw,
         "warning":  stamp_warning,
         "updated_fields": updated_fields,
         "reactivated": was_inactive,
@@ -9639,7 +9662,7 @@ def _recruit_convert_update(ss, cand_id, feed_row, detail, first, last, body):
 # treat a licence or induction push that fails: the crew member exists, their
 # login works, and an email that did not send is fixed with the Resend button.
 # Losing the conversion over it would be the far worse outcome.
-def _send_welcome_email(cand_id, ein, resend=False):
+def _send_welcome_email(cand_id, ein, temp_password, resend=False):
     """POST the welcome email to the recruitment-welcome edge function.
 
     Returns a dict the UI renders directly:
@@ -9650,13 +9673,18 @@ def _send_welcome_email(cand_id, ein, resend=False):
     if not GOAT_RECRUITMENT_KEY:
         return {"ok": False, "outcome": "failed",
                 "error": "Recruitment key not configured"}
+    if not temp_password:
+        # The caller must pass the password it actually set — there is no shared
+        # default any more, and an email with a wrong password is worse than none.
+        return {"ok": False, "outcome": "failed",
+                "error": "No temporary password supplied"}
     try:
         r = http.post(
             RECRUITMENT_WELCOME_URL,
             headers={"X-Goat-Service-Key": GOAT_RECRUITMENT_KEY},
             json={"id": str(cand_id),
                   "ein": str(ein or ""),
-                  "temp_password": NEW_CREW_TEMP_PASSWORD,
+                  "temp_password": temp_password,
                   "resend": bool(resend)},
             timeout=20,
         )
@@ -9694,10 +9722,55 @@ def api_recruitment_welcome_email(cand_id):
     cand_id = str(cand_id or "").strip()
     if not cand_id:
         return jsonify({"error": "Missing applicant id"}), 400
-    res = _send_welcome_email(cand_id, "", resend=True)
-    if not res.get("ok"):
+
+    # Temporary passwords are per person and only their hash exists, so a resend
+    # can't repeat the old one: it SETS A NEW ONE, then emails it. The old one
+    # stops working. The browser confirms this with the operator first.
+    #
+    # TODO(first-login flag): once SmartStaff users.must_change_password exists,
+    # refuse here when it is 0 — the crew member has already chosen their own
+    # password, and Forgot password is the right route (Mike, 27 Nov 2026).
+    # Until then the confirm dialog carries that instruction.
+    feed_row, ferr = _recruit_fetch_feed_row(cand_id)
+    if ferr == "not_found":
+        return jsonify({"error": "Applicant not found"}), 404
+    if ferr:
+        return jsonify({"error": ferr}), 502
+    status = str((feed_row or {}).get("status") or "").strip()
+    if status != RECRUITMENT_CONVERTED_STATUS:
+        return jsonify({"error": "This candidate hasn't been converted yet "
+                                 f"(status '{status or 'unknown'}')."}), 409
+    uid = str((feed_row or {}).get("smartstaff_user_id") or "").strip()
+    if not uid.isdigit():
+        return jsonify({"error": "No SmartStaff id on this candidate — the convert "
+                                 "status stamp didn't land. Fix the status first."}), 409
+
+    ss = get_ss_session()
+    if not ss:
+        return jsonify({"error": "Not logged in"}), 401
+
+    temp_pw = _new_temp_password()
+    _res, uerr = ss_update_crew(ss, uid, {"password": temp_pw})
+    if uerr:
+        return jsonify({"error": f"Couldn't set a new temporary password, so nothing "
+                                 f"was sent and their current password still works: "
+                                 f"{uerr}"}), 502
+    # Audit the reset, never the value.
+    _write_audit("recruit_welcome_resend", "candidate", cand_id,
+                 {"crew_id": uid, "password_reset": True})
+
+    # From here the password HAS changed, so every outcome hands the operator the
+    # new one: if the email didn't go (deduped / blocked / failed) they can read
+    # it out over the phone instead of leaving the crew member locked out.
+    res = _send_welcome_email(cand_id, "", temp_pw, resend=True)
+    res["temp_password"] = temp_pw
+    # Only a real send counts here. The edge function reports "deduped" as ok
+    # (fine on the automatic send), but after a reset it means the crew member did
+    # NOT get the new password, so it is a failure the operator must act on.
+    if res.get("outcome") != "sent":
         return jsonify({"error": res.get("error") or "Could not send the welcome email",
-                        "outcome": res.get("outcome")}), 502
+                        "outcome": res.get("outcome"),
+                        "temp_password": temp_pw}), 502
     return jsonify(res)
 
 
@@ -10065,7 +10138,8 @@ def api_recruitment_convert(cand_id):
     if ein <= 0:
         return jsonify({"error": "Couldn't determine the next EIN"}), 502
 
-    uid, cxerr = ss_create_crew(ss, data, ein, NEW_CREW_TEMP_PASSWORD, photo=photo)
+    temp_pw = _new_temp_password()
+    uid, cxerr = ss_create_crew(ss, data, ein, temp_pw, photo=photo)
     if cxerr:
         # Nothing was written to Supabase — safe to retry (e.g. 409 EIN collision).
         return jsonify({"error": cxerr}), 502
@@ -10172,7 +10246,7 @@ def api_recruitment_convert(cand_id):
     #     stamp is itself allowed to fail (stamp_warning): SmartStaff has the EIN
     #     either way, and this is the value it just gave us.
     try:
-        welcome_result = _send_welcome_email(cand_id, ein)
+        welcome_result = _send_welcome_email(cand_id, ein, temp_pw)
     except Exception as e:
         print(f"[recruitment] convert welcome email crashed: {e}")
         welcome_result = {"ok": False, "outcome": "failed",
@@ -10195,7 +10269,7 @@ def api_recruitment_convert(cand_id):
         "username": str(ein),
         "name":     f"{first} {last}".strip(),
         "status":   RECRUITMENT_CONVERTED_STATUS,
-        "temp_password": NEW_CREW_TEMP_PASSWORD,
+        "temp_password": temp_pw,
         "warning":  stamp_warning,
         # dietary_warning: the old string, kept for ONE release so an older open
         # window still shows a failed push (see _dietary_legacy_warning).
@@ -19839,8 +19913,8 @@ def api_admin_crew_lookups():
     data, err = ss_crew_lookups(ss)
     if err:
         return jsonify({"error": err}), 502
-    if isinstance(data, dict):
-        data["temp_password"] = NEW_CREW_TEMP_PASSWORD   # single source -> form note
+    # No temp_password here any more: it is generated per person at save time
+    # and returned by /api/admin/add-user, not known in advance.
     return jsonify(data)
 
 @app.route("/api/admin/crew-list")
@@ -20115,11 +20189,12 @@ def api_admin_add_user():
     if ein <= 0:
         return jsonify({"error": "Couldn't determine the next EIN"}), 502
 
-    uid, err = ss_create_crew(ss, data, ein, NEW_CREW_TEMP_PASSWORD, photo=photo)
+    temp_pw = _new_temp_password()
+    uid, err = ss_create_crew(ss, data, ein, temp_pw, photo=photo)
     if err:
         return jsonify({"error": err}), 502
     return jsonify({"id": uid, "ein": ein, "username": str(ein),
-                    "temp_password": NEW_CREW_TEMP_PASSWORD})
+                    "temp_password": temp_pw})
 
 
 @app.route("/api/booking/<booking_id>", methods=["POST"])
