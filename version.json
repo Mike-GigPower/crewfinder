@@ -1,6 +1,6 @@
 {
-  "version": "5.126.0",
-  "release_date": "2026-11-26",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.126.0/TheGOAT.dmg",
-  "release_notes": "Add a named crew member to a call straight from the Call dialog with the new + Add Crew button, without going through Crew Finder."
+  "version": "5.127.0",
+  "release_date": "2026-11-27",
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.127.0/TheGOAT.dmg",
+  "release_notes": "Confirmed crew can no longer decline a time change in Crew Hub — they just see it. The call dialog, Schedule and Ops lane now show who hasn't seen a time change yet."
 }
