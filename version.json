@@ -1,6 +1,6 @@
 {
-  "version": "5.127.0",
+  "version": "5.128.0",
   "release_date": "2026-11-27",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.127.0/TheGOAT.dmg",
-  "release_notes": "Confirmed crew can no longer decline a time change in Crew Hub — they just see it. The call dialog, Schedule and Ops lane now show who hasn't seen a time change yet."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.128.0/TheGOAT.dmg",
+  "release_notes": "New crew now get their own random temporary password instead of a shared one, shown to you once and sent in the welcome email. Resend welcome email sets a new temporary password before sending."
 }
