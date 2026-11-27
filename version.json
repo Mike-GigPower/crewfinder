@@ -1,6 +1,6 @@
 {
-  "version": "5.128.0",
+  "version": "5.129.0",
   "release_date": "2026-11-27",
-  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.128.0/TheGOAT.dmg",
-  "release_notes": "New crew now get their own random temporary password instead of a shared one, shown to you once and sent in the welcome email. Resend welcome email sets a new temporary password before sending."
+  "dmg_url": "https://github.com/Mike-GigPower/crewfinder/releases/download/v5.129.0/TheGOAT.dmg",
+  "release_notes": "New crew get a one-time Set your password link in the welcome email instead of a password, and no password is shown in THE GOAT. Admins can text a crew member a reset link from Edit Crew Member."
 }
