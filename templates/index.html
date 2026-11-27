@@ -10107,8 +10107,11 @@ async function recruitResendWelcome(id, btn){
   const cand = (_recruitRows || []).find(c => String(c.id) === String(id)) || {};
   const who  = cand.name || 'this crew member';
   const to   = cand.email || '(no email on file)';
-  if(!confirm('Email ' + who + ' their Crew Hub login again?\n\n'
-    + 'Goes to ' + to + ' and includes their EIN and the temporary password.')) return;
+  if(!confirm('Reset ' + who + '\u2019s Crew Hub password and email it to them?\n\n'
+    + 'This sets a NEW temporary password \u2014 their current one stops working \u2014 '
+    + 'and emails it with their EIN to ' + to + '.\n\n'
+    + 'If they have already logged in to Crew Hub and chosen their own password, '
+    + 'press Cancel and ask them to use \u201cForgot password\u201d on the sign-in screen instead.')) return;
   if(btn) btn.disabled = true;
   try{
     const r = await fetch('/api/recruitment/candidate/' + encodeURIComponent(id) + '/welcome-email', {
@@ -10117,21 +10120,29 @@ async function recruitResendWelcome(id, btn){
       body: JSON.stringify({})
     });
     const body = await r.json().catch(() => ({}));
+    // Once the server has reset the password it always returns the new one, even
+    // when the email didn't go, so the operator can read it out by phone.
+    const pwLine = body.temp_password
+      ? '\n\nTheir new temporary password is: ' + body.temp_password
+      : '';
     if(!r.ok){
-      alert(r.status === 403
-        ? 'You do not have access to send crew welcome emails.'
-        : (body.error || 'Could not send the welcome email. Please try again.'));
+      if(body.temp_password){
+        const why = body.outcome === 'deduped'
+          ? 'A welcome email was already resent today, so this one did not go out.'
+          : body.outcome === 'blocked'
+            ? 'Email sending is currently switched off (EMAIL_LIVE), so it did not go out.'
+            : 'The email could not be sent (' + (body.error || 'error') + ').';
+        alert('Password reset, but NOT emailed. ' + why
+          + '\n\nThe old password no longer works \u2014 phone them with the new one.' + pwLine);
+      } else {
+        alert(r.status === 403
+          ? 'You do not have access to send crew welcome emails.'
+          : (body.error || 'Could not send the welcome email. Please try again.'));
+      }
       if(btn) btn.disabled = false;
       return;
     }
-    if(body.outcome === 'deduped'){
-      alert('Already resent today. Try again tomorrow if it still has not arrived \u2014\n'
-        + 'if neither landed, the address or their spam filter is the likely cause.');
-    } else if(body.outcome === 'blocked'){
-      alert('Blocked \u2014 email sending is currently switched off (EMAIL_LIVE).');
-    } else {
-      alert('Sent \u2014 their Crew Hub login is on its way.');
-    }
+    alert('Sent \u2014 their new Crew Hub login is on its way.' + pwLine);
   }catch(e){
     alert('Could not send the welcome email. Please try again.');
   }
@@ -14580,7 +14591,6 @@ async function adminAddUser(){
   }
 
   const ein = look.next_ein;
-  const tempPw = String(look.temp_password || '');
   document.getElementById('entity-modal-body').innerHTML =
       efRow('First name *',    efInput('au-first',''))
     + efRow('Last name *',     efInput('au-last',''))
@@ -14596,7 +14606,7 @@ async function adminAddUser(){
     + efRow('Crew groups',     auGroupsHtml(look.crew_groups))
     + efRow('Notes',           efTextarea('au-notes',''))
     + efRow('Profile picture', '<input id="au-photo" type="file" accept="image/*" style="width:100%;color:var(--text);font-size:12px;font-family:inherit"> <span style="font-size:10px;color:var(--muted)">optional &mdash; cropped to a thumbnail</span>')
-    + '<div style="font-size:10px;color:var(--muted);padding:6px 0 0 122px">EIN <b style="color:var(--accent)">'+escapeHtml(String(ein))+'</b> will be assigned. Username = EIN, temp password <b>'+escapeHtml(tempPw)+'</b> (change on first login).</div>'
+    + '<div style="font-size:10px;color:var(--muted);padding:6px 0 0 122px">EIN <b style="color:var(--accent)">'+escapeHtml(String(ein))+'</b> will be assigned. Username = EIN. A temporary password is generated when you save and shown once.</div>'
     + '<div id="au-error" style="color:var(--conflict);font-size:11px;padding:6px 0 0 122px;min-height:14px"></div>';
   document.getElementById('entity-modal-actions').innerHTML =
       entityBtn('Cancel','closeEntityModal()')
